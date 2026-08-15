@@ -1,0 +1,22 @@
+{
+  "name": "codex-mcp-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MCP bridge that forwards prompts into a running Codex thread through a shared Codex app-server.",
+  "type": "module",
+  "bin": {
+    "codex-mcp-bridge": "src/index.mjs"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "app-server": "codex app-server --listen ws://127.0.0.1:8791",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.76"
+  }
+}

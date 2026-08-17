@@ -10,13 +10,14 @@ import {
   claudeDesktopConfigPath,
   codexThreadUrl,
   hasCodexDesktopApp,
+  isDesktopAppServerRunning,
   isLaunchAgentInstalled,
   launchAgentPath,
   openThreadInCodexApp,
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 
-const VERSION = "1.0.0";
+const VERSION = "1.2.1";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 const client = new CodexAppServerClient({
@@ -313,10 +314,20 @@ server.registerTool(
       `claude desktop config: ${claudeDesktopConfigPath()}`,
     ];
     if (IS_MACOS) {
+      const desktopServer = isDesktopAppServerRunning();
       lines.push(
         `codex desktop app:     ${hasCodexDesktopApp() ? "installed (codex:// deep links available)" : "not installed"}`,
-        `launchd agent:         ${isLaunchAgentInstalled() ? `installed at ${launchAgentPath()}` : "not installed (run scripts/install-launch-agent.mjs to keep the app-server alive)"}`,
+        `desktop app-server:    ${desktopServer ? "running (its own stdio server)" : "not running"}`,
+        `launchd agent:         ${isLaunchAgentInstalled() ? `installed at ${launchAgentPath()}` : "not installed"}`,
       );
+      if (desktopServer && isLaunchAgentInstalled()) {
+        lines.push(
+          "",
+          "WARNING: the desktop app-server and the launchd app-server both hold the sqlite state in ~/.codex.",
+          "That contention makes the Codex app stutter. Keep only one alive:",
+          "  node scripts/install-launch-agent.mjs --uninstall   # let the desktop app own it",
+        );
+      }
     }
     if (!up) {
       lines.push(

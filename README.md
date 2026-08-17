@@ -138,6 +138,10 @@ launchctl kickstart -k gui/$UID/com.codex-mcp-bridge.app-server
 
 ### App-server chạy nền bằng launchd
 
+> ⚠️ **Đừng bật LaunchAgent nếu sếp dùng Codex Desktop.** App có app-server **riêng** (stdio) chạy trên **cùng** state sqlite `~/.codex`. Hai app-server cùng nằm im vẫn tranh chấp state — đã đo: bản launchd ăn ~11% CPU lúc rảnh và **giao diện Codex app bị giật**. Chỉ giữ một cái sống. `codex_bridge_status` phát hiện và cảnh báo tình huống này.
+>
+> LaunchAgent hợp lý khi chạy **không có Codex Desktop** (server headless, máy chỉ dùng CLI/TUI). Còn khi dùng app: bỏ LaunchAgent, để bridge tự spawn app-server lúc cần — tranh chấp chỉ kéo dài trong lúc giao việc thay vì 24/7.
+
 ```bash
 node scripts/install-launch-agent.mjs
 ```
@@ -164,7 +168,9 @@ send_to_codex_thread { threadId: "01a0…", prompt: "…", openInApp: true }
 
 ### Giới hạn trên macOS
 
-- Codex desktop app tự chạy app-server riêng qua stdio (`ChatGPT.app/Contents/Resources/codex … app-server`) và không nhận endpoint ngoài. Thread mở trong app vẫn gửi được qua bridge, nhưng theo cơ chế resume từ rollout `.jsonl` chứ không phải attach live. **Không gửi vào thread đang chạy turn trong desktop app** — hai app-server cùng ghi một rollout có thể làm hỏng lịch sử. Kiểm tra `status` bằng `list_codex_threads` trước, chỉ gửi khi `idle`/`notLoaded`.
+- Codex desktop app tự chạy app-server riêng qua stdio (`ChatGPT.app/Contents/Resources/codex … app-server`, **không** có `--listen`) nên không nối vào được từ ngoài. `~/.codex/ipc/ipc.sock` là IPC nội bộ của Electron app, không phải app-server. Thread mở trong app vẫn gửi được qua bridge, nhưng theo cơ chế resume từ rollout `.jsonl` chứ không phải attach live.
+- **Thread đang mở trong desktop app thì không gửi vào được** — Codex khoá writer theo thread (`~/.codex/thread-writer-locks/`) và trả lỗi `thread <id> already has an active writer`. Lỗi này là bảo vệ, không phải hỏng dữ liệu. Kiểm tra `status` bằng `list_codex_threads` trước, chỉ gửi khi `idle`/`notLoaded` và thread không đang mở trong app.
+- **Thread do bridge tạo không tự hiện tên trong app.** App liệt kê theo `~/.codex/session_index.jsonl`, mà mục ở đó chỉ được ghi khi thread đã được đặt tên — việc đặt tên do app làm, không phải app-server. Thread vẫn nằm trong `~/.codex/state_5.sqlite` và mở được bằng deep link `codex://threads/<id>`.
 - Repo đặt trên phân vùng NTFS của máy dual-boot (`/Volumes/...`) chỉ **đọc được** trên macOS — macOS mount NTFS read-only. Giữ một checkout riêng trên ổ APFS (vd `~/code/codex-mcp-bridge`) để chạy và sửa.
 - `codex app-server daemon start` dùng transport `unix://` với control socket `~/.codex/app-server-control/app-server-control.sock`. Bridge **không** dùng đường này (giao thức khung khác WebSocket, chưa có API công khai) — luôn nói chuyện qua `ws://`.
 

@@ -144,6 +144,10 @@ Set `CLAUDE_BRIDGE_PEER_NAME` to advertise a name other than `codex` — that is
 
 ### Keep the app-server alive with launchd
 
+> ⚠️ **Do not enable the LaunchAgent while using the Codex desktop app.** The app runs its **own** stdio app-server against the **same** `~/.codex` sqlite state. Two app-servers contend even while idle — measured here: the launchd one burned ~11% CPU doing nothing and **the Codex app UI stuttered**. Keep exactly one alive; `codex_bridge_status` detects and warns about this.
+>
+> The LaunchAgent makes sense on a machine **without** the desktop app (headless box, CLI/TUI only). With the app running, drop it and let the bridge spawn an app-server on demand — contention then lasts only while you are actually delegating work, not 24/7.
+
 ```bash
 node scripts/install-launch-agent.mjs
 ```
@@ -170,7 +174,9 @@ This is how a human watches Codex work in real time instead of reading the rollo
 
 ### macOS caveats
 
-- The Codex desktop app runs its own app-server over stdio and accepts no external endpoint. Threads opened there can still be driven through the bridge, but by resuming from the rollout `.jsonl` rather than attaching live. **Do not send into a thread that is mid-turn inside the desktop app** — two app-servers writing one rollout can corrupt the history. Check `status` with `list_codex_threads` first and only send when it is `idle` or `notLoaded`.
+- The Codex desktop app runs its own app-server over stdio (`ChatGPT.app/Contents/Resources/codex … app-server`, **no** `--listen`), so nothing external can attach to it. `~/.codex/ipc/ipc.sock` is the Electron app's internal IPC, not an app-server. Threads opened there can still be driven through the bridge, but by resuming from the rollout `.jsonl` rather than attaching live.
+- **A thread currently open in the desktop app cannot be written to** — Codex holds a per-thread writer lock (`~/.codex/thread-writer-locks/`) and returns `thread <id> already has an active writer`. That error is the guard working, not data loss. Check `status` with `list_codex_threads` first and only send when it is `idle` or `notLoaded` and not open in the app.
+- **Threads created by the bridge do not show a title in the app.** The app lists from `~/.codex/session_index.jsonl`, and entries land there only once a thread has been named — naming is done by the app, not the app-server. The thread still exists in `~/.codex/state_5.sqlite` and opens via the `codex://threads/<id>` deep link.
 - A repo living on the NTFS partition of a dual-boot machine (`/Volumes/...`) is **read-only** under macOS. Keep a separate checkout on an APFS volume to run and edit it.
 - `codex app-server daemon start` uses the `unix://` transport with a control socket at `~/.codex/app-server-control/app-server-control.sock`. The bridge does **not** use that path (different framing, no public API) — it always talks over `ws://`.
 

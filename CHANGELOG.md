@@ -2,6 +2,17 @@
 
 Theo [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) và [SemVer](https://semver.org/lang/vi/).
 
+## [1.2.1] - 2026-08-17
+
+### Fixed
+
+- `codex_bridge_status` phát hiện app-server của Codex desktop và cảnh báo khi LaunchAgent chạy song song — hai app-server dùng chung state sqlite `~/.codex` làm giao diện Codex app giật (đo được ~11% CPU lúc rảnh).
+- `isDesktopAppServerRunning()` thiếu import `execFileSync` nên luôn trả `false` trong im lặng.
+
+### Documentation
+
+- Ghi rõ: không bật LaunchAgent khi dùng Codex Desktop; thread đang mở trong app bị khoá writer; thread do bridge tạo không có tên trong `session_index.jsonl` nên app không hiện tiêu đề.
+
 ## [1.2.0] - 2026-08-17
 
 ### Added

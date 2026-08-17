@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -135,6 +135,21 @@ export function hasCodexDesktopApp() {
 
 export function isLaunchAgentInstalled() {
   return IS_MACOS && existsSync(launchAgentPath());
+}
+
+/**
+ * The desktop app runs its own stdio app-server against the same ~/.codex
+ * sqlite state. A second long-lived app-server contends for that state and the
+ * app's UI stutters, so the two should not both sit idle in the background.
+ */
+export function isDesktopAppServerRunning() {
+  if (!IS_MACOS) return false;
+  try {
+    const out = execFileSync("/bin/ps", ["-Ao", "command="], { maxBuffer: 4 * 1024 * 1024 }).toString();
+    return out.split("\n").some((line) => line.includes("ChatGPT.app") && line.includes("app-server"));
+  } catch {
+    return false;
+  }
 }
 
 /**

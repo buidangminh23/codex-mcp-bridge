@@ -2,6 +2,15 @@
 
 Theo [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) và [SemVer](https://semver.org/lang/vi/).
 
+## [1.3.0] - 2026-08-17
+
+### Added
+
+- `CODEX_BRIDGE_MODEL` và `CODEX_BRIDGE_EFFORT` — model/effort mặc định cho thread và turn do bridge tạo, vì Codex Desktop không đọc `model`/`model_reasoning_effort` trong `~/.codex/config.toml` mà chạy cấu hình riêng.
+- `effort` nhận thêm mức `ultra` (đã kiểm chứng: `state_5.sqlite` và rollout đều ghi `ultra`, không bị nuốt im lặng).
+- `codex_bridge_status` in ra model/effort mặc định đang áp dụng.
+- `install-claude-desktop.mjs` ghi hai biến trên vào `env` của MCP server khi được truyền.
+
 ## [1.2.1] - 2026-08-17
 
 ### Added

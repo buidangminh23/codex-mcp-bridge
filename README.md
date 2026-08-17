@@ -195,8 +195,16 @@ launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.codex-mcp-bridge.app-ser
 | `CODEX_BIN` | tự dò | Đường dẫn `codex` để autostart. |
 | `CODEX_BRIDGE_AUTOSTART` | `1` | `0` = không tự spawn app-server, bắt buộc phải có sẵn. |
 | `CODEX_BRIDGE_APPROVAL` | `approve` | Cách trả lời approval request từ Codex. Đặt `deny` để từ chối. |
+| `CODEX_BRIDGE_MODEL` | theo `~/.codex/config.toml` | Model mặc định cho thread/turn bridge tạo, vd `gpt-5.6-luna`. |
+| `CODEX_BRIDGE_EFFORT` | theo `~/.codex/config.toml` | Reasoning effort mặc định: `minimal` · `low` · `medium` · `high` · `xhigh` · `ultra`. |
 | `CLAUDE_DESKTOP_CONFIG` | tự dò theo OS | Ép đường dẫn config khi chạy `install-claude-desktop.mjs`. |
 | `CODEX_EXE` | tự dò | Ép đường dẫn `codex` cho hai script cài đặt. |
+
+**Về model và effort:** Codex Desktop **không đọc** `model`/`model_reasoning_effort` trong `~/.codex/config.toml` — nó tự chạy cấu hình riêng. Nên thread mở qua bridge dễ yếu hơn cùng việc làm trong app mà không ai nhận ra. Đặt `CODEX_BRIDGE_MODEL` + `CODEX_BRIDGE_EFFORT` (trong `env` của MCP server) để hai đường ra cùng chất lượng; `codex_bridge_status` in ra giá trị đang dùng. Kiểm chứng bằng cách đọc thẳng state của Codex thay vì tin là lệnh đã có tác dụng:
+
+```bash
+sqlite3 ~/.codex/state_5.sqlite "select model, reasoning_effort from threads order by updated_at desc limit 3;"
+```
 
 **Về approval:** Codex sẽ hỏi duyệt lệnh/patch nếu `approval_policy` không phải `never`. Không ai ngồi trước Claude Desktop để bấm, nên bridge tự trả lời theo `CODEX_BRIDGE_APPROVAL` và log ra stderr. Mặc định `approve` khớp với cấu hình `approval_policy = "never"` + `sandbox_mode = "danger-full-access"` trong `~/.codex/config.toml`; nếu siết sandbox lại thì cân nhắc đổi sang `deny`.
 

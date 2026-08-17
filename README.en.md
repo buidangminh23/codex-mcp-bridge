@@ -201,8 +201,16 @@ launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.codex-mcp-bridge.app-ser
 | `CODEX_BIN` | auto-detected | Path to `codex` used for autostart. |
 | `CODEX_BRIDGE_AUTOSTART` | `1` | `0` = never spawn an app-server; one must already be running. |
 | `CODEX_BRIDGE_APPROVAL` | `approve` | How to answer approval requests from Codex. Set `deny` to refuse. |
+| `CODEX_BRIDGE_MODEL` | from `~/.codex/config.toml` | Default model for threads and turns the bridge creates, e.g. `gpt-5.6-luna`. |
+| `CODEX_BRIDGE_EFFORT` | from `~/.codex/config.toml` | Default reasoning effort: `minimal` · `low` · `medium` · `high` · `xhigh` · `ultra`. |
 | `CLAUDE_DESKTOP_CONFIG` | auto-detected | Override the config path used by `install-claude-desktop.mjs`. |
 | `CODEX_EXE` | auto-detected | Override the `codex` path used by both install scripts. |
+
+**About model and effort:** the Codex desktop app **does not read** `model`/`model_reasoning_effort` from `~/.codex/config.toml` — it runs its own. A thread opened through the bridge can therefore be quietly weaker than the same work done in the app. Set `CODEX_BRIDGE_MODEL` and `CODEX_BRIDGE_EFFORT` in the MCP server's `env` so both paths match; `codex_bridge_status` prints what is in effect. Verify by reading Codex's own state rather than trusting that the override applied:
+
+```bash
+sqlite3 ~/.codex/state_5.sqlite "select model, reasoning_effort from threads order by updated_at desc limit 3;"
+```
 
 **About approvals:** Codex asks for command and patch approval unless `approval_policy` is `never`. Nobody is sitting in front of Claude Desktop to click, so the bridge answers according to `CODEX_BRIDGE_APPROVAL` and logs each decision to stderr. The `approve` default matches an `approval_policy = "never"` + `sandbox_mode = "danger-full-access"` setup in `~/.codex/config.toml`; with a tighter sandbox, consider `deny`.
 

@@ -27,6 +27,8 @@ cfg.mcpServers["codex-bridge"] = {
   env: {
     CODEX_BIN: codexBin,
     CODEX_APP_SERVER_URL: process.env.CODEX_APP_SERVER_URL ?? "ws://127.0.0.1:8791",
+    ...(process.env.CODEX_BRIDGE_MODEL ? { CODEX_BRIDGE_MODEL: process.env.CODEX_BRIDGE_MODEL } : {}),
+    ...(process.env.CODEX_BRIDGE_EFFORT ? { CODEX_BRIDGE_EFFORT: process.env.CODEX_BRIDGE_EFFORT } : {}),
   },
 };
 

@@ -17,8 +17,16 @@ import {
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 
-const VERSION = "1.2.1";
+const VERSION = "1.3.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
+
+/**
+ * The Codex desktop app ignores ~/.codex/config.toml and runs its own model and
+ * effort, so a thread opened through the bridge would otherwise be weaker than
+ * the same work done in the app. These defaults keep both paths equivalent.
+ */
+const DEFAULT_MODEL = process.env.CODEX_BRIDGE_MODEL || null;
+const DEFAULT_EFFORT = process.env.CODEX_BRIDGE_EFFORT || null;
 
 const client = new CodexAppServerClient({
   clientInfo: { name: "codex-mcp-bridge", title: "Codex MCP Bridge", version: VERSION },
@@ -102,7 +110,10 @@ server.registerTool(
         .describe("How long to wait for the turn to finish (default 240s)"),
       cwd: z.string().optional().describe("Override the working directory for this turn"),
       model: z.string().optional().describe("Override the model for this turn"),
-      effort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional().describe("Override reasoning effort"),
+      effort: z
+        .enum(["minimal", "low", "medium", "high", "xhigh", "ultra"])
+        .optional()
+        .describe(`Override reasoning effort (default ${DEFAULT_EFFORT ?? "whatever ~/.codex/config.toml says"})`),
       openInApp: z
         .boolean()
         .optional()
@@ -126,8 +137,8 @@ server.registerTool(
         timeoutMs: (timeoutSec ?? 240) * 1000,
         turnOverrides: {
           ...(cwd ? { cwd } : {}),
-          ...(model ? { model } : {}),
-          ...(effort ? { effort } : {}),
+          ...(model ?? DEFAULT_MODEL ? { model: model ?? DEFAULT_MODEL } : {}),
+          ...(effort ?? DEFAULT_EFFORT ? { effort: effort ?? DEFAULT_EFFORT } : {}),
         },
       });
       const body = formatTurn(result);
@@ -188,7 +199,7 @@ server.registerTool(
     try {
       const res = await client.call("thread/start", {
         cwd,
-        ...(model ? { model } : {}),
+        ...(model ?? DEFAULT_MODEL ? { model: model ?? DEFAULT_MODEL } : {}),
         ...(approvalPolicy ? { approvalPolicy } : {}),
         ...(sandbox ? { sandbox } : {}),
       });
@@ -332,6 +343,7 @@ server.registerTool(
       `bridge version: ${VERSION}`,
       `node:           ${process.version} at ${process.execPath}`,
       `codex binary:   ${client.codexBin}`,
+      `defaults:       model ${DEFAULT_MODEL ?? "(from ~/.codex/config.toml)"}, effort ${DEFAULT_EFFORT ?? "(from ~/.codex/config.toml)"}`,
       `app-server:     ${client.url} - ${up ? "live" : "not reachable"}`,
       `autostart:      ${client.autoStart ? "on" : "off"}   approvals: ${client.approval}`,
       `live threads:   ${liveThreads ?? "(unknown)"}`,

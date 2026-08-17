@@ -10,7 +10,11 @@
   "scripts": {
     "start": "node src/index.mjs",
     "app-server": "codex app-server --listen ws://127.0.0.1:8791",
-    "smoke": "node scripts/smoke.mjs"
+    "check": "node scripts/check.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "install:desktop": "node scripts/install-claude-desktop.mjs",
+    "install:agent": "node scripts/install-launch-agent.mjs",
+    "uninstall:agent": "node scripts/install-launch-agent.mjs --uninstall"
   },
   "engines": {
     "node": ">=22"

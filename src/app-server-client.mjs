@@ -1,34 +1,12 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+
+import { PLATFORM_LABEL, resolveCodexBin, spawnEnv } from "./platform.mjs";
 
 const DEFAULT_URL = "ws://127.0.0.1:8791";
 
 function httpBase(wsUrl) {
   return wsUrl.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
-}
-
-/**
- * Claude Desktop launches MCP servers with a trimmed environment, so `codex`
- * is frequently absent from PATH. Probe the known install locations first and
- * only fall back to bare `codex` when nothing concrete is on disk.
- */
-function resolveCodexBin(explicit) {
-  const candidates = [
-    explicit,
-    process.env.CODEX_BIN,
-    process.env.LOCALAPPDATA &&
-      path.join(process.env.LOCALAPPDATA, "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
-    process.env.APPDATA && path.join(process.env.APPDATA, "npm", "codex.cmd"),
-    process.env.HOME && path.join(process.env.HOME, ".local", "bin", "codex"),
-    "/usr/local/bin/codex",
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return "codex";
 }
 
 export class AppServerError extends Error {
@@ -68,13 +46,14 @@ export class CodexAppServerClient {
   }
 
   async startServer() {
-    this.log(`starting shared app-server: ${this.codexBin} app-server --listen ${this.url}`);
+    this.log(`starting shared app-server on ${PLATFORM_LABEL}: ${this.codexBin} app-server --listen ${this.url}`);
     const needsShell = /\.(cmd|bat)$/i.test(this.codexBin);
     const child = spawn(this.codexBin, ["app-server", "--listen", this.url], {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
       shell: needsShell,
+      env: spawnEnv(),
     });
     child.on("error", (err) => this.log(`spawn error: ${err.message}`));
     child.unref();

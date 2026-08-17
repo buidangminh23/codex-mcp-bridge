@@ -4,6 +4,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { CodexAppServerClient } from "./app-server-client.mjs";
+import {
+  IS_MACOS,
+  PLATFORM_LABEL,
+  claudeDesktopConfigPath,
+  codexThreadUrl,
+  hasCodexDesktopApp,
+  isLaunchAgentInstalled,
+  launchAgentPath,
+  openThreadInCodexApp,
+} from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 
 const VERSION = "1.0.0";
@@ -25,7 +35,8 @@ function formatThreadRow(t) {
   const title = t.name || (t.preview ?? "").replace(/\s+/g, " ").slice(0, 70) || "(no title)";
   const updated = t.updatedAt ? new Date(t.updatedAt * 1000).toISOString().replace("T", " ").slice(0, 16) : "?";
   const status = t.status?.type ?? "?";
-  return `- ${t.id}\n    title: ${title}\n    cwd: ${t.cwd ?? "?"}\n    updated: ${updated}  status: ${status}  source: ${t.source ?? "?"}`;
+  const deepLink = IS_MACOS && hasCodexDesktopApp() ? `\n    open: ${codexThreadUrl(t.id)}` : "";
+  return `- ${t.id}\n    title: ${title}\n    cwd: ${t.cwd ?? "?"}\n    updated: ${updated}  status: ${status}  source: ${t.source ?? "?"}${deepLink}`;
 }
 
 function formatTurn(result) {
@@ -65,7 +76,9 @@ const server = new McpServer(
   {
     instructions:
       "Bridge into a live Codex session. Use list_codex_threads to find the right threadId, " +
-      "then send_to_codex_thread to push a prompt into that exact thread and read Codex's reply.",
+      "then send_to_codex_thread to push a prompt into that exact thread and read Codex's reply. " +
+      "On macOS, open_codex_thread (or openInApp) surfaces the thread in the Codex desktop app so a " +
+      "human can watch it run, and codex_bridge_status reports how the bridge is wired on this machine.",
   },
 );
 
@@ -89,10 +102,22 @@ server.registerTool(
       cwd: z.string().optional().describe("Override the working directory for this turn"),
       model: z.string().optional().describe("Override the model for this turn"),
       effort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional().describe("Override reasoning effort"),
+      openInApp: z
+        .boolean()
+        .optional()
+        .describe("macOS only: open the thread in the Codex desktop app before sending so a human can watch it live"),
     },
   },
-  async ({ threadId, prompt, timeoutSec, cwd, model, effort }) => {
+  async ({ threadId, prompt, timeoutSec, cwd, model, effort, openInApp }) => {
+    let openNote = null;
     try {
+      if (openInApp) {
+        try {
+          openNote = `opened in Codex app: ${await openThreadInCodexApp(threadId)}`;
+        } catch (err) {
+          openNote = `could not open the thread in the Codex app: ${err.message}`;
+        }
+      }
       await client.ensureThreadAttached(threadId, cwd ? { cwd } : {});
       const result = await runTurn(client, {
         threadId,
@@ -104,7 +129,8 @@ server.registerTool(
           ...(effort ? { effort } : {}),
         },
       });
-      return textResult(formatTurn(result), result.status === "failed");
+      const body = formatTurn(result);
+      return textResult(openNote ? `${openNote}\n${body}` : body, result.status === "failed");
     } catch (err) {
       return failure(err);
     }
@@ -231,6 +257,77 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "open_codex_thread",
+  {
+    title: "Open a Codex thread in the desktop app",
+    description:
+      "macOS only: bring a Codex thread to the front in the Codex desktop app (codex://threads/<id>) " +
+      "so a human can watch the work live instead of reading the transcript afterwards.",
+    inputSchema: {
+      threadId: z.string().describe("Codex thread id"),
+      background: z
+        .boolean()
+        .optional()
+        .describe("Open without stealing focus from the current app (default false)"),
+    },
+  },
+  async ({ threadId, background }) => {
+    try {
+      const url = await openThreadInCodexApp(threadId, { activate: !background });
+      return textResult(`Opened ${url} in the Codex desktop app.`);
+    } catch (err) {
+      return textResult(`${err.message}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "codex_bridge_status",
+  {
+    title: "Check the Codex bridge environment",
+    description:
+      "Report how this bridge is wired on the current machine: platform, resolved codex binary, " +
+      "app-server endpoint and whether it is live, plus the macOS integrations (LaunchAgent, desktop app).",
+    inputSchema: {},
+  },
+  async () => {
+    const up = await client.isServerUp();
+    let liveThreads = null;
+    if (up) {
+      try {
+        const res = await client.call("thread/loaded/list", { limit: 20 });
+        liveThreads = (res?.data ?? res?.threads ?? []).length;
+      } catch {
+        liveThreads = null;
+      }
+    }
+    const lines = [
+      `platform:       ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
+      `bridge version: ${VERSION}`,
+      `node:           ${process.version} at ${process.execPath}`,
+      `codex binary:   ${client.codexBin}`,
+      `app-server:     ${client.url} - ${up ? "live" : "not reachable"}`,
+      `autostart:      ${client.autoStart ? "on" : "off"}   approvals: ${client.approval}`,
+      `live threads:   ${liveThreads ?? "(unknown)"}`,
+      `claude desktop config: ${claudeDesktopConfigPath()}`,
+    ];
+    if (IS_MACOS) {
+      lines.push(
+        `codex desktop app:     ${hasCodexDesktopApp() ? "installed (codex:// deep links available)" : "not installed"}`,
+        `launchd agent:         ${isLaunchAgentInstalled() ? `installed at ${launchAgentPath()}` : "not installed (run scripts/install-launch-agent.mjs to keep the app-server alive)"}`,
+      );
+    }
+    if (!up) {
+      lines.push(
+        "",
+        `Start one with: ${client.codexBin} app-server --listen ${client.url}`,
+      );
+    }
+    return textResult(lines.join("\n"));
+  },
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
-log(`ready (app-server endpoint: ${client.url})`);
+log(`ready on ${PLATFORM_LABEL} (app-server endpoint: ${client.url}, codex: ${client.codexBin})`);

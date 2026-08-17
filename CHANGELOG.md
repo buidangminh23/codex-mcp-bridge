@@ -4,6 +4,10 @@ Theo [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) và [SemVer](https
 
 ## [1.2.1] - 2026-08-17
 
+### Added
+
+- Tool `stop_codex_app_server` — dừng app-server dùng chung sau khi giao việc xong để Codex Desktop giữ `~/.codex` một mình; bridge tự bật lại khi cần.
+
 ### Fixed
 
 - `codex_bridge_status` phát hiện app-server của Codex desktop và cảnh báo khi LaunchAgent chạy song song — hai app-server dùng chung state sqlite `~/.codex` làm giao diện Codex app giật (đo được ~11% CPU lúc rảnh).

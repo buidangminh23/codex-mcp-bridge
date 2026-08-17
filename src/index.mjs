@@ -284,6 +284,30 @@ server.registerTool(
 );
 
 server.registerTool(
+  "stop_codex_app_server",
+  {
+    title: "Stop the shared Codex app-server",
+    description:
+      "Stop the shared app-server this bridge talks to. Use it when work is handed off and the Codex desktop " +
+      "app is open: two app-servers on the same ~/.codex state make the app stutter. The bridge starts a new " +
+      "one automatically the next time it needs it.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const result = await client.stopServer();
+      return textResult(
+        result.stopped
+          ? `Stopped the shared app-server (pid ${result.pids.join(", ")}). The Codex desktop app now owns ~/.codex alone.`
+          : `Nothing to stop: ${result.reason}.`,
+      );
+    } catch (err) {
+      return failure(err);
+    }
+  },
+);
+
+server.registerTool(
   "codex_bridge_status",
   {
     title: "Check the Codex bridge environment",

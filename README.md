@@ -36,7 +36,8 @@ Codex TUI  ──codex --remote ws://127.0.0.1:8791──> cùng app-server, cù
 | `read_codex_thread` | Đọc hội thoại gần đây của thread, không gửi gì. |
 | `interrupt_codex_turn` | Dừng một turn đang chạy. |
 | `open_codex_thread` | **macOS**: bật thread lên trong Codex desktop app qua `codex://threads/<id>` để người dùng xem trực tiếp. `background: true` để mở mà không cướp focus. |
-| `codex_bridge_status` | Báo cáo môi trường: platform, `codex` binary đã resolve, endpoint app-server còn sống không, LaunchAgent + desktop app trên macOS. Dùng đầu tiên khi bridge có vấn đề. |
+| `stop_codex_app_server` | Dừng app-server dùng chung sau khi giao việc xong — tránh để nó tranh chấp state `~/.codex` với Codex Desktop. Bridge tự bật lại khi cần lần sau. |
+| `codex_bridge_status` | Báo cáo môi trường: platform, `codex` binary đã resolve, endpoint app-server còn sống không, LaunchAgent + desktop app trên macOS, và **cảnh báo khi hai app-server cùng chạy**. Dùng đầu tiên khi bridge có vấn đề. |
 
 `send_to_codex_thread` nhận thêm `timeoutSec` (mặc định 240), `cwd`, `model`, `effort`, và `openInApp` (macOS — mở thread trong app trước khi gửi để xem live). Hết thời gian chờ **không** hủy turn — bridge trả về những gì đã thu được kèm `turnId`; đọc tiếp bằng `read_codex_thread` hoặc dừng bằng `interrupt_codex_turn`.
 

@@ -65,6 +65,35 @@ export class CodexAppServerClient {
     return false;
   }
 
+  /**
+   * The shared app-server keeps running after the bridge stops using it, and
+   * alongside the desktop app it competes for the same ~/.codex sqlite state.
+   * Stopping it on demand is what keeps the Codex app responsive between
+   * delegations.
+   */
+  async stopServer() {
+    if (!(await this.isServerUp())) return { stopped: false, reason: "no app-server was listening" };
+    const port = this.url.replace(/^wss?:\/\//, "").split("/")[0].split(":").pop();
+    const { execFileSync } = await import("node:child_process");
+    const pids = execFileSync("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+      env: spawnEnv(),
+    })
+      .toString()
+      .split("\n")
+      .map((line) => Number(line.trim()))
+      .filter(Boolean);
+    if (!pids.length) return { stopped: false, reason: `nothing is listening on port ${port}` };
+    this.ws?.close();
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (err) {
+        this.log(`could not stop pid ${pid}: ${err.message}`);
+      }
+    }
+    return { stopped: true, pids };
+  }
+
   async connect() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     if (this.connecting) return this.connecting;

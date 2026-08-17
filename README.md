@@ -1,5 +1,7 @@
 # codex-mcp-bridge
 
+*[English version](README.en.md)*
+
 MCP server cho Claude Desktop để **gửi prompt thẳng vào một thread Codex đang có**, qua **một Codex app-server dùng chung**. Chạy trên **macOS, Windows và Linux**.
 
 Không phải `codex exec` (tạo phiên mới mỗi lần). Bridge nói JSON-RPC với app-server thật của Codex, nên thread giữ nguyên lịch sử, `cwd`, model và rollout file.
@@ -52,7 +54,7 @@ Kết quả trên macOS:
   "mcpServers": {
     "codex-bridge": {
       "command": "/Users/<user>/.local/node/v24.18.0/bin/node",
-      "args": ["/Users/<user>/minhspark/codex-mcp-bridge/src/index.mjs"],
+      "args": ["/Users/<user>/code/codex-mcp-bridge/src/index.mjs"],
       "env": {
         "CODEX_BIN": "/Users/<user>/.local/bin/codex",
         "CODEX_APP_SERVER_URL": "ws://127.0.0.1:8791"
@@ -104,7 +106,7 @@ send_to_codex_thread { threadId: "01a0…", prompt: "…", openInApp: true }
 ### Giới hạn trên macOS
 
 - Codex desktop app tự chạy app-server riêng qua stdio (`ChatGPT.app/Contents/Resources/codex … app-server`) và không nhận endpoint ngoài. Thread mở trong app vẫn gửi được qua bridge, nhưng theo cơ chế resume từ rollout `.jsonl` chứ không phải attach live. **Không gửi vào thread đang chạy turn trong desktop app** — hai app-server cùng ghi một rollout có thể làm hỏng lịch sử. Kiểm tra `status` bằng `list_codex_threads` trước, chỉ gửi khi `idle`/`notLoaded`.
-- Repo đặt trên phân vùng NTFS của máy dual-boot (`/Volumes/...`) chỉ **đọc được** trên macOS — Finder/macOS mount NTFS read-only. Giữ một checkout riêng trên ổ APFS (vd `~/minhspark/codex-mcp-bridge`) để chạy và sửa.
+- Repo đặt trên phân vùng NTFS của máy dual-boot (`/Volumes/...`) chỉ **đọc được** trên macOS — macOS mount NTFS read-only. Giữ một checkout riêng trên ổ APFS (vd `~/code/codex-mcp-bridge`) để chạy và sửa.
 - `codex app-server daemon start` dùng transport `unix://` với control socket `~/.codex/app-server-control/app-server-control.sock`. Bridge **không** dùng đường này (giao thức khung khác WebSocket, chưa có API công khai) — luôn nói chuyện qua `ws://`.
 
 ## Env

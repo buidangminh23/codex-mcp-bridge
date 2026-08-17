@@ -1,8 +1,18 @@
 {
   "name": "codex-mcp-bridge",
-  "version": "1.0.0",
-  "private": true,
+  "version": "1.1.0",
   "description": "MCP bridge that forwards prompts into a running Codex thread through a shared Codex app-server.",
+  "keywords": ["mcp", "codex", "claude-desktop", "app-server", "model-context-protocol"],
+  "license": "MIT",
+  "author": "Bui Dang Minh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/buidangminh23/codex-mcp-bridge.git"
+  },
+  "homepage": "https://github.com/buidangminh23/codex-mcp-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/buidangminh23/codex-mcp-bridge/issues"
+  },
   "type": "module",
   "bin": {
     "codex-mcp-bridge": "src/index.mjs"

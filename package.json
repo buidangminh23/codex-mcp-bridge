@@ -1,8 +1,8 @@
 {
   "name": "codex-mcp-bridge",
-  "version": "1.1.0",
-  "description": "MCP bridge that forwards prompts into a running Codex thread through a shared Codex app-server.",
-  "keywords": ["mcp", "codex", "claude-desktop", "app-server", "model-context-protocol"],
+  "version": "1.2.0",
+  "description": "Two-way MCP bridge between Claude and Codex: prompts into a live Codex thread, messages into a running Claude Code session.",
+  "keywords": ["mcp", "codex", "claude-code", "claude-desktop", "app-server", "model-context-protocol"],
   "license": "MIT",
   "author": "Bui Dang Minh",
   "repository": {
@@ -15,14 +15,19 @@
   },
   "type": "module",
   "bin": {
-    "codex-mcp-bridge": "src/index.mjs"
+    "codex-mcp-bridge": "src/index.mjs",
+    "claude-mcp-bridge": "src/claude-bridge.mjs"
   },
   "scripts": {
     "start": "node src/index.mjs",
+    "claude-bridge": "node src/claude-bridge.mjs",
     "app-server": "codex app-server --listen ws://127.0.0.1:8791",
     "check": "node scripts/check.mjs",
+    "check:claude": "node scripts/check-claude-bridge.mjs",
     "smoke": "node scripts/smoke.mjs",
     "install:desktop": "node scripts/install-claude-desktop.mjs",
+    "install:codex": "node scripts/install-codex-mcp.mjs",
+    "uninstall:codex": "node scripts/install-codex-mcp.mjs --remove",
     "install:agent": "node scripts/install-launch-agent.mjs",
     "uninstall:agent": "node scripts/install-launch-agent.mjs --uninstall"
   },

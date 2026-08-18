@@ -2,6 +2,22 @@
 
 Theo [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) và [SemVer](https://semver.org/lang/vi/).
 
+## [1.4.0] - 2026-08-18
+
+### Fixed
+
+- **Turn dừng giữa chừng như thể Codex tự pause.** App-server chờ client trả lời từng server request rồi mới chạy tiếp, nên một method không được trả lời **không** nổi thành lỗi — turn chỉ đứng im. `#handleServerRequest` mới trả lời đủ **10 method** của `ServerRequest` (lấy từ `codex app-server generate-json-schema`, giống nhau ở codex-cli 0.147 và 0.148). Ba method trước đây rơi vào `default:` và bị trả `-32601`:
+  - `item/permissions/requestApproval` — Codex xin nâng quyền (ghi ngoài workspace, network). Đây là cái hay gặp nhất.
+  - `mcpServer/elicitation/request` — MCP server hỏi input.
+  - `item/tool/call` — dynamic tool call gọi về client.
+  Mỗi method trả đúng shape schema của nó, **không dùng chung được**: `commandExecution`/`fileChange` cần `{decision}`, `permissions` cần `{permissions, scope}`, `elicitation` cần `{action}`, `tool/call` cần `{success, contentItems}`. `attestation/generate` và `account/chatgptAuthTokens/refresh` bị từ chối có chủ đích — bridge không tạo được token thật và không đụng vào auth.
+- **Thread mở sai thư mục.** Cùng một dự án nằm ở `L:\X` trên Windows, `/Volumes/Win_Dev/X` khi mount ổ đó trên macOS (read-only), và một checkout riêng dưới `$HOME` trên macOS. `resolveWorkspacePath()` chọn ứng viên **tồn tại và ghi được** cho máy đang chạy, ưu tiên `$HOME/X` rồi `$HOME/minhspark/X`. Không tìm được thư mục dùng được thì báo lỗi ngay thay vì mở thread ở chỗ sai; tìm được nhưng read-only thì cảnh báo rõ. Tắt bằng `CODEX_BRIDGE_REMAP=0`.
+- **Sai bản codex khi spawn app-server.** Trên macOS bridge dò `~/.local/bin/codex` trước, nên spawn app-server bản 0.147 trong khi Codex Desktop chạy 0.148 — hai bản cùng ghi `~/.codex/state_5.sqlite`. Khi có Codex Desktop thì ưu tiên binary của chính app.
+
+### Added
+
+- `npm run check:approvals` — dựng app-server giả (WebSocket tự implement, không thêm dependency), bắn đủ 10 server request và assert từng response đúng shape schema. Chạy trên code trước bản vá thì đỏ đúng 3 method trên.
+
 ## [1.3.0] - 2026-08-17
 
 ### Added

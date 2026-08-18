@@ -185,6 +185,17 @@ pkill -9 -f "codex-darwin-arm64/vendor.*app-server"
 launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.codex-mcp-bridge.app-server.plist
 ```
 
+**Turn chạy được vài bước rồi đứng im, nhìn như Codex tự pause.** App-server **chờ client trả lời** từng server request rồi mới chạy tiếp, nên một method không được trả lời không nổi thành lỗi — turn chỉ dừng lại. Trước 1.4.0 bridge chỉ trả lời 7/10 method; ba cái rơi vào `default:` và bị trả `-32601` là `item/permissions/requestApproval` (Codex xin nâng quyền — hay gặp nhất), `mcpServer/elicitation/request`, `item/tool/call`. Kiểm tra bằng `npm run check:approvals`. Danh sách method đầy đủ lấy từ chính Codex, không đoán:
+
+```bash
+codex app-server generate-json-schema --out /tmp/codex-schema
+python3 -c "import json;[print(v['properties']['method'].get('const') or v['properties']['method'].get('enum')) for v in json.load(open('/tmp/codex-schema/ServerRequest.json'))['oneOf']]"
+```
+
+**Thread mở sai thư mục / không thấy đâu trong app.** Cùng một dự án có đường dẫn khác nhau trên từng máy: `L:\X` (Windows), `/Volumes/Win_Dev/X` (ổ đó mount trên macOS — **read-only**), và checkout riêng dưới `$HOME` trên macOS. Từ 1.4.0 bridge tự chọn ứng viên **tồn tại và ghi được** cho máy đang chạy (`$HOME/X` → `$HOME/minhspark/X` → giữ nguyên) và in dòng `note: cwd remapped …` khi có đổi. Không tìm được thư mục dùng được thì báo lỗi ngay thay vì mở thread ở chỗ sai. Đưa cwd read-only cho Codex là cách chắc chắn để gặp đúng lỗi treo ở trên: nó chạy vài lệnh đọc rồi xin quyền ghi và đứng đó.
+
+Lưu ý: Codex Desktop **không** nhóm thread theo thư mục — sidebar chỉ có `Pinned` và phần còn lại, và protocol không có API gán thread vào mục (`thread/start` không nhận `sectionId`, `thread/metadata/update` chỉ sửa gitInfo). Thứ quyết định thread thuộc dự án nào là `cwd`.
+
 **Codex treo khi mở thread mới sau khi thêm MCP server.** Client MCP chờ handshake `initialize`; server chết trước đó thì biểu hiện là *treo*, không phải lỗi. Đã trả giá thật: `claude-bridge` gọi `execFileSync("ps", …)` mà Codex spawn MCP server với **PATH rỗng** → `ENOENT` → chết trước handshake → mọi `thread/start` timeout 60s. Fix: gọi `/bin/ps` bằng đường dẫn tuyệt đối và bọc try/catch (`src/peer-protocol.mjs`). Bài học chung: **MCP server không được phụ thuộc PATH của tiến trình cha** — luôn test bằng `env -i PATH="" node <server>` trước khi ship.
 
 ## Env
@@ -195,6 +206,7 @@ launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.codex-mcp-bridge.app-ser
 | `CODEX_BIN` | tự dò | Đường dẫn `codex` để autostart. |
 | `CODEX_BRIDGE_AUTOSTART` | `1` | `0` = không tự spawn app-server, bắt buộc phải có sẵn. |
 | `CODEX_BRIDGE_APPROVAL` | `approve` | Cách trả lời approval request từ Codex. Đặt `deny` để từ chối. |
+| `CODEX_BRIDGE_REMAP` | `1` | `0` = tắt việc tự đổi cwd giữa `L:\X`, `/Volumes/Win_Dev/X` và checkout dưới `$HOME`. |
 | `CODEX_BRIDGE_MODEL` | theo `~/.codex/config.toml` | Model mặc định cho thread/turn bridge tạo, vd `gpt-5.6-luna`. |
 | `CODEX_BRIDGE_EFFORT` | theo `~/.codex/config.toml` | Reasoning effort mặc định: `minimal` · `low` · `medium` · `high` · `xhigh` · `ultra`. |
 | `CLAUDE_DESKTOP_CONFIG` | tự dò theo OS | Ép đường dẫn config khi chạy `install-claude-desktop.mjs`. |
@@ -229,6 +241,12 @@ npm run check
 ```
 
 Kiểm tra nhanh: bridge khởi động, autostart app-server nếu cần, liệt kê thread.
+
+```bash
+npm run check:approvals
+```
+
+Dựng app-server giả rồi bắn đủ 10 server request, assert từng response đúng shape schema. Không cần Codex thật, không tốn quota. Đây là test pin cho lỗi "turn tự pause" — chạy nó trên code trước 1.4.0 thì đỏ đúng ba method.
 
 ```bash
 npm run smoke

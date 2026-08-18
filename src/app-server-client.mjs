@@ -205,28 +205,72 @@ export class CodexAppServerClient {
     }
   }
 
+  /**
+   * Every server->client request must get a reply. The app-server blocks the
+   * turn until it hears back, so an unanswered method does not surface as an
+   * error - the turn simply stops mid-run and looks like Codex paused itself.
+   * The ten methods below are the full ServerRequest set of the app-server
+   * protocol (identical in codex-cli 0.147 and 0.148), each answered with the
+   * response shape its own schema declares - they are not interchangeable.
+   */
   #handleServerRequest(msg) {
     const approve = this.approval === "approve";
-    const respond = (result) => this.#send({ jsonrpc: "2.0", id: msg.id, result });
-    const refuse = (message) =>
-      this.#send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message } });
+    const respond = (result) => {
+      try {
+        this.#send({ jsonrpc: "2.0", id: msg.id, result });
+      } catch (err) {
+        this.log(`failed to answer ${msg.method}: ${err.message}`);
+      }
+    };
+    const refuse = (message) => {
+      try {
+        this.#send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message } });
+      } catch (err) {
+        this.log(`failed to refuse ${msg.method}: ${err.message}`);
+      }
+    };
 
     this.log(`server request ${msg.method} -> ${approve ? "approve" : "deny"}`);
 
-    switch (msg.method) {
-      case "item/commandExecution/requestApproval":
-      case "item/fileChange/requestApproval":
-        respond({ decision: approve ? "accept" : "decline" });
-        return;
-      case "execCommandApproval":
-      case "applyPatchApproval":
-        respond({ decision: approve ? "approved" : "denied" });
-        return;
-      case "item/tool/requestUserInput":
-        respond({ answers: {} });
-        return;
-      default:
-        refuse(`codex-mcp-bridge does not handle ${msg.method}`);
+    try {
+      switch (msg.method) {
+        case "item/commandExecution/requestApproval":
+        case "item/fileChange/requestApproval":
+          respond({ decision: approve ? "accept" : "decline" });
+          return;
+        case "item/permissions/requestApproval":
+          respond({
+            permissions: approve ? (msg.params?.permissions ?? {}) : {},
+            scope: "turn",
+          });
+          return;
+        case "execCommandApproval":
+        case "applyPatchApproval":
+          respond({ decision: approve ? "approved" : "denied" });
+          return;
+        case "item/tool/requestUserInput":
+          respond({ answers: {} });
+          return;
+        case "mcpServer/elicitation/request":
+          respond({ action: "decline", content: null });
+          return;
+        case "item/tool/call":
+          respond({
+            success: false,
+            contentItems: [
+              { type: "text", text: "codex-mcp-bridge registers no dynamic tools." },
+            ],
+          });
+          return;
+        case "attestation/generate":
+        case "account/chatgptAuthTokens/refresh":
+          refuse(`codex-mcp-bridge cannot serve ${msg.method}; run this thread from the Codex app instead.`);
+          return;
+        default:
+          refuse(`codex-mcp-bridge does not handle ${msg.method}`);
+      }
+    } catch (err) {
+      refuse(`codex-mcp-bridge failed handling ${msg.method}: ${err.message}`);
     }
   }
 

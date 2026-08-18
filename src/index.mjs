@@ -14,10 +14,11 @@ import {
   isLaunchAgentInstalled,
   launchAgentPath,
   openThreadInCodexApp,
+  resolveWorkspacePath,
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -130,13 +131,19 @@ server.registerTool(
           openNote = `could not open the thread in the Codex app: ${err.message}`;
         }
       }
-      await client.ensureThreadAttached(threadId, cwd ? { cwd } : {});
+      let resolvedCwd = null;
+      if (cwd) {
+        const workspace = resolveWorkspacePath(cwd);
+        resolvedCwd = workspace.path;
+        if (workspace.note) openNote = openNote ? `${openNote}\n${workspace.note}` : workspace.note;
+      }
+      await client.ensureThreadAttached(threadId, resolvedCwd ? { cwd: resolvedCwd } : {});
       const result = await runTurn(client, {
         threadId,
         input: [{ type: "text", text: prompt }],
         timeoutMs: (timeoutSec ?? 240) * 1000,
         turnOverrides: {
-          ...(cwd ? { cwd } : {}),
+          ...(resolvedCwd ? { cwd: resolvedCwd } : {}),
           ...(model ?? DEFAULT_MODEL ? { model: model ?? DEFAULT_MODEL } : {}),
           ...(effort ?? DEFAULT_EFFORT ? { effort: effort ?? DEFAULT_EFFORT } : {}),
         },
@@ -168,7 +175,7 @@ server.registerTool(
   async ({ limit, cwd, searchTerm, loadedOnly }) => {
     try {
       const params = { limit: limit ?? 15 };
-      if (cwd) params.cwd = { paths: [cwd] };
+      if (cwd) params.cwd = { paths: [resolveWorkspacePath(cwd).path] };
       if (searchTerm) params.searchTerm = searchTerm;
       const method = loadedOnly ? "thread/loaded/list" : "thread/list";
       const res = await client.call(method, loadedOnly ? { limit: limit ?? 15 } : params);
@@ -197,8 +204,9 @@ server.registerTool(
   },
   async ({ cwd, model, approvalPolicy, sandbox }) => {
     try {
+      const workspace = resolveWorkspacePath(cwd);
       const res = await client.call("thread/start", {
-        cwd,
+        cwd: workspace.path,
         ...(model ?? DEFAULT_MODEL ? { model: model ?? DEFAULT_MODEL } : {}),
         ...(approvalPolicy ? { approvalPolicy } : {}),
         ...(sandbox ? { sandbox } : {}),
@@ -206,7 +214,13 @@ server.registerTool(
       const thread = res?.thread ?? {};
       if (thread.id) client.markAttached(thread.id);
       return textResult(
-        `Created Codex thread\n  threadId: ${thread.id}\n  cwd: ${thread.cwd}\n  rollout: ${thread.path ?? "(not written yet)"}`,
+        [
+          "Created Codex thread",
+          `  threadId: ${thread.id}`,
+          `  cwd: ${thread.cwd}`,
+          `  rollout: ${thread.path ?? "(not written yet)"}`,
+          ...(workspace.note ? [`  note: ${workspace.note}`] : []),
+        ].join("\n"),
       );
     } catch (err) {
       return failure(err);

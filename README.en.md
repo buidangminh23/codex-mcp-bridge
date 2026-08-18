@@ -191,6 +191,17 @@ pkill -9 -f "codex-darwin-arm64/vendor.*app-server"
 launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.codex-mcp-bridge.app-server.plist
 ```
 
+**A turn runs a few steps then freezes, as if Codex paused itself.** The app-server **blocks on the client's reply** to each server request before continuing, so an unanswered method never surfaces as an error — the turn simply stops. Before 1.4.0 the bridge answered only 7 of 10 methods; the three that fell through to `default:` and got `-32601` were `item/permissions/requestApproval` (Codex asking to widen permissions — by far the most common), `mcpServer/elicitation/request` and `item/tool/call`. Verify with `npm run check:approvals`. Get the authoritative method list from Codex itself rather than guessing:
+
+```bash
+codex app-server generate-json-schema --out /tmp/codex-schema
+python3 -c "import json;[print(v['properties']['method'].get('const') or v['properties']['method'].get('enum')) for v in json.load(open('/tmp/codex-schema/ServerRequest.json'))['oneOf']]"
+```
+
+**A thread opens against the wrong directory.** The same project sits at a different absolute path on each machine: `L:\X` on Windows, `/Volumes/Win_Dev/X` when that drive is mounted on macOS (**read-only**), and a native checkout under `$HOME` on macOS. Since 1.4.0 the bridge picks the candidate that both **exists and is writable** on the current machine (`$HOME/X` → `$HOME/minhspark/X` → unchanged) and prints a `note: cwd remapped …` line whenever it rewrites one. If nothing usable exists it fails immediately instead of opening a thread somewhere wrong. Handing Codex a read-only cwd is a reliable way to hit the freeze above: it runs a few reads, then asks for write permission and stalls.
+
+Note: Codex Desktop does **not** group threads by directory — the sidebar has `Pinned` and everything else, and the protocol exposes no API to file a thread under a section (`thread/start` takes no `sectionId`; `thread/metadata/update` only patches gitInfo). What ties a thread to a project is its `cwd`.
+
 **Codex hangs when opening a new thread after adding an MCP server.** An MCP client waits on the `initialize` handshake, so a server that dies before answering looks like a *hang*, not an error. Paid for in practice here: `claude-bridge` called `execFileSync("ps", …)` while Codex spawns MCP servers with an **empty PATH** → `ENOENT` → death before the handshake → every `thread/start` timed out after 60s. Fix: call `/bin/ps` by absolute path inside a try/catch (`src/peer-protocol.mjs`). General lesson: **an MCP server must not depend on its parent's PATH** — test with `env -i PATH="" node <server>` before shipping.
 
 ## Environment variables
@@ -200,6 +211,7 @@ launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.codex-mcp-bridge.app-ser
 | `CODEX_APP_SERVER_URL` | `ws://127.0.0.1:8791` | Shared app-server endpoint. |
 | `CODEX_BIN` | auto-detected | Path to `codex` used for autostart. |
 | `CODEX_BRIDGE_AUTOSTART` | `1` | `0` = never spawn an app-server; one must already be running. |
+| `CODEX_BRIDGE_REMAP` | `1` | `0` disables cwd remapping between `L:\X`, `/Volumes/Win_Dev/X` and a `$HOME` checkout. |
 | `CODEX_BRIDGE_APPROVAL` | `approve` | How to answer approval requests from Codex. Set `deny` to refuse. |
 | `CODEX_BRIDGE_MODEL` | from `~/.codex/config.toml` | Default model for threads and turns the bridge creates, e.g. `gpt-5.6-luna`. |
 | `CODEX_BRIDGE_EFFORT` | from `~/.codex/config.toml` | Default reasoning effort: `minimal` · `low` · `medium` · `high` · `xhigh` · `ultra`. |
@@ -235,6 +247,12 @@ npm run check
 ```
 
 Quick check: the bridge boots, autostarts an app-server if needed, lists threads.
+
+```bash
+npm run check:approvals
+```
+
+Stands up a fake app-server, fires all 10 server requests and asserts each reply matches the shape its schema declares. Needs no real Codex and burns no quota. This is the regression test for the "turn pauses itself" bug — run it against pre-1.4.0 code and exactly three methods fail.
 
 ```bash
 npm run smoke

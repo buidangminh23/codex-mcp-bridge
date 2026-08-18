@@ -22,6 +22,10 @@ const CODEX_DESKTOP_APP_MACOS = "/Applications/ChatGPT.app";
 const CODEX_DESKTOP_BIN_MACOS = `${CODEX_DESKTOP_APP_MACOS}/Contents/Resources/codex`;
 const CODEX_THREAD_URL_PREFIX = "codex://threads/";
 
+const WINDOWS_SHARE_MOUNT_MACOS = "/Volumes/Win_Dev";
+const WINDOWS_SHARE_DRIVE = "L:";
+const REMAP_ENABLED = process.env.CODEX_BRIDGE_REMAP !== "0";
+
 const homeDir = () => process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
 
 function isRunnable(candidate) {
@@ -56,7 +60,19 @@ function unixCodexCandidates() {
     path.join(home, ".bun", "bin", "codex"),
     path.join(home, ".cargo", "bin", "codex"),
     path.join(home, ".codex", "packages", "standalone", "current", "codex"),
-    IS_MACOS ? CODEX_DESKTOP_BIN_MACOS : null,
+  ];
+}
+
+/**
+ * The desktop app ships its own codex build and holds ~/.codex/state_*.sqlite
+ * open while it runs. Spawning the app-server from a different CLI build makes
+ * two versions write that same state, so prefer the app's binary whenever the
+ * app is installed and fall back to the standalone CLI installs otherwise.
+ */
+function macosCodexCandidates() {
+  return [
+    hasCodexDesktopApp() ? CODEX_DESKTOP_BIN_MACOS : null,
+    ...unixCodexCandidates(),
   ];
 }
 
@@ -79,7 +95,7 @@ export function resolveCodexBin(explicit) {
   const candidates = [
     explicit,
     process.env.CODEX_BIN,
-    ...(IS_WINDOWS ? windowsCodexCandidates() : unixCodexCandidates()),
+    ...(IS_WINDOWS ? windowsCodexCandidates() : IS_MACOS ? macosCodexCandidates() : unixCodexCandidates()),
     ...pathCandidates(),
   ].filter(Boolean);
 
@@ -94,6 +110,89 @@ export function resolveCodexBin(explicit) {
  * `#!/usr/bin/env node` shebang, so the spawned child needs a PATH that
  * actually contains node - the trimmed PATH handed to MCP servers does not.
  */
+/**
+ * A path is only usable as a Codex cwd when the agent can also write to it.
+ * The NTFS mounts this project is shared through are read-only on macOS, so an
+ * existence check alone would still hand Codex a directory it cannot edit.
+ */
+export function isWritableDir(target) {
+  try {
+    accessSync(target, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeSeparators(input) {
+  return input.replace(/\\/g, "/").replace(/\/+$/, "") || input;
+}
+
+function shareRelativePath(input) {
+  const normalized = normalizeSeparators(input);
+  if (normalized.toLowerCase().startsWith(`${WINDOWS_SHARE_MOUNT_MACOS.toLowerCase()}/`)) {
+    return normalized.slice(WINDOWS_SHARE_MOUNT_MACOS.length + 1);
+  }
+  if (/^[a-z]:\//i.test(normalized) && normalized.slice(0, 2).toUpperCase() === WINDOWS_SHARE_DRIVE) {
+    return normalized.slice(3);
+  }
+  return null;
+}
+
+function remapCandidates(input) {
+  const relative = shareRelativePath(input);
+  if (!relative) return [];
+  const home = homeDir();
+  if (IS_WINDOWS) return [path.win32.join(`${WINDOWS_SHARE_DRIVE}\\`, relative.replace(/\//g, "\\"))];
+  return [
+    path.join(home, relative),
+    path.join(home, "minhspark", relative),
+    path.join(WINDOWS_SHARE_MOUNT_MACOS, relative),
+  ];
+}
+
+/**
+ * The same project lives at a different absolute path on each machine: `L:\\X`
+ * on Windows, `/Volumes/Win_Dev/X` when that drive is mounted on macOS, and a
+ * native checkout under $HOME on macOS because the mount is read-only there.
+ * Handing Codex the wrong one starts the thread against a directory the user is
+ * not looking at, or one the agent cannot write to - which then stalls the turn
+ * on a permission request instead of failing outright.
+ */
+export function resolveWorkspacePath(input) {
+  if (!input) return { path: input, remapped: false, writable: false, note: null };
+  const original = input;
+  const candidates = REMAP_ENABLED ? remapCandidates(input) : [];
+  const ordered = candidates.length ? candidates : [input];
+
+  const writable = ordered.find((candidate) => existsSync(candidate) && isWritableDir(candidate));
+  if (writable) {
+    return {
+      path: writable,
+      remapped: writable !== original,
+      writable: true,
+      note:
+        writable !== original
+          ? `cwd remapped for ${PLATFORM_LABEL}: ${original} -> ${writable}`
+          : null,
+    };
+  }
+
+  const existing = ordered.find((candidate) => existsSync(candidate));
+  if (existing) {
+    return {
+      path: existing,
+      remapped: existing !== original,
+      writable: false,
+      note: `cwd ${existing} exists but is not writable on ${PLATFORM_LABEL}; Codex will fail on any file edit.`,
+    };
+  }
+
+  throw new Error(
+    `No usable working directory for "${original}" on ${PLATFORM_LABEL}. Tried: ${ordered.join(", ")}.`,
+  );
+}
+
 export function spawnEnv(extra = {}) {
   const separator = IS_WINDOWS ? ";" : ":";
   const systemDirs = IS_WINDOWS

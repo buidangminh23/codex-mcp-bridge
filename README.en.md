@@ -202,6 +202,8 @@ python3 -c "import json;[print(v['properties']['method'].get('const') or v['prop
 
 Note: Codex Desktop does **not** group threads by directory — the sidebar has `Pinned` and everything else, and the protocol exposes no API to file a thread under a section (`thread/start` takes no `sectionId`; `thread/metadata/update` only patches gitInfo). What ties a thread to a project is its `cwd`.
 
+**Connection errors or a silent stall on the first call after rebooting.** The app-server does not survive a restart, so the first call after boot has to bring it back. Since 1.5.0 `connect()` retries once for boot-time transients, `onclose` only tears down its own socket (a late close from the previous one used to wipe the freshly established connection), and **a turn interrupted by a dropped connection ends immediately with status `disconnected`** instead of waiting out `timeoutSec` (240s by default). Verify with `npm run check:reconnect`. No LaunchAgent is needed for this - the bridge spawns an app-server on demand, and running a LaunchAgent alongside Codex Desktop only contends for the `~/.codex` state.
+
 **Codex hangs when opening a new thread after adding an MCP server.** An MCP client waits on the `initialize` handshake, so a server that dies before answering looks like a *hang*, not an error. Paid for in practice here: `claude-bridge` called `execFileSync("ps", …)` while Codex spawns MCP servers with an **empty PATH** → `ENOENT` → death before the handshake → every `thread/start` timed out after 60s. Fix: call `/bin/ps` by absolute path inside a try/catch (`src/peer-protocol.mjs`). General lesson: **an MCP server must not depend on its parent's PATH** — test with `env -i PATH="" node <server>` before shipping.
 
 ## Environment variables
@@ -251,6 +253,12 @@ Quick check: the bridge boots, autostarts an app-server if needed, lists threads
 ```bash
 npm run check:approvals
 ```
+
+```bash
+npm run check:reconnect
+```
+
+Simulates connection loss: the app-server drops the socket, a turn is interrupted mid-run, and the first handshake is refused. This is the regression test for "connection error after rebooting".
 
 Stands up a fake app-server, fires all 10 server requests and asserts each reply matches the shape its schema declares. Needs no real Codex and burns no quota. This is the regression test for the "turn pauses itself" bug — run it against pre-1.4.0 code and exactly three methods fail.
 

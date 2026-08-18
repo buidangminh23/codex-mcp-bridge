@@ -1,9 +1,6 @@
-import { createHash } from "node:crypto";
-import { createServer } from "node:http";
-
 import { CodexAppServerClient } from "../src/app-server-client.mjs";
+import { startFakeAppServer } from "./fake-app-server.mjs";
 
-const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const PORT = Number(process.env.APPROVAL_TEST_PORT ?? 8799);
 
 /**
@@ -24,73 +21,7 @@ const SERVER_REQUESTS = [
   { method: "account/chatgptAuthTokens/refresh", params: {}, expect: "error" },
 ];
 
-function encodeFrame(text) {
-  const payload = Buffer.from(text, "utf8");
-  const header = payload.length < 126
-    ? Buffer.from([0x81, payload.length])
-    : Buffer.concat([Buffer.from([0x81, 126]), Buffer.from([payload.length >> 8, payload.length & 0xff])]);
-  return Buffer.concat([header, payload]);
-}
-
-function decodeFrames(buffer) {
-  const messages = [];
-  let offset = 0;
-  while (offset + 2 <= buffer.length) {
-    const masked = (buffer[offset + 1] & 0x80) !== 0;
-    let length = buffer[offset + 1] & 0x7f;
-    let cursor = offset + 2;
-    if (length === 126) {
-      if (cursor + 2 > buffer.length) break;
-      length = buffer.readUInt16BE(cursor);
-      cursor += 2;
-    } else if (length === 127) {
-      if (cursor + 8 > buffer.length) break;
-      length = Number(buffer.readBigUInt64BE(cursor));
-      cursor += 8;
-    }
-    const maskKey = masked ? buffer.subarray(cursor, cursor + 4) : null;
-    if (masked) cursor += 4;
-    if (cursor + length > buffer.length) break;
-    const payload = Buffer.from(buffer.subarray(cursor, cursor + length));
-    if (maskKey) for (let i = 0; i < payload.length; i += 1) payload[i] ^= maskKey[i % 4];
-    if ((buffer[offset] & 0x0f) === 0x01) messages.push(payload.toString("utf8"));
-    offset = cursor + length;
-  }
-  return { messages, rest: buffer.subarray(offset) };
-}
-
-const received = [];
-let socket = null;
-
-const http = createServer((req, res) => {
-  if (req.url === "/readyz") return res.writeHead(200).end("ok");
-  res.writeHead(404).end();
-});
-
-http.on("upgrade", (req, sock) => {
-  const accept = createHash("sha1").update(req.headers["sec-websocket-key"] + WS_GUID).digest("base64");
-  sock.write(
-    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
-      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
-  );
-  socket = sock;
-  let buffered = Buffer.alloc(0);
-  sock.on("data", (chunk) => {
-    buffered = Buffer.concat([buffered, chunk]);
-    const { messages, rest } = decodeFrames(buffered);
-    buffered = rest;
-    for (const raw of messages) {
-      const msg = JSON.parse(raw);
-      if (msg.method === "initialize") {
-        sock.write(encodeFrame(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { codexHome: "/fake" } })));
-      } else if (msg.id !== undefined && msg.method === undefined) {
-        received.push(msg);
-      }
-    }
-  });
-});
-
-await new Promise((resolve) => http.listen(PORT, "127.0.0.1", resolve));
+const server = await startFakeAppServer({ port: PORT });
 
 const client = new CodexAppServerClient({
   url: `ws://127.0.0.1:${PORT}`,
@@ -103,12 +34,12 @@ let nextId = 1000;
 const failures = [];
 for (const testCase of SERVER_REQUESTS) {
   const id = nextId++;
-  socket.write(encodeFrame(JSON.stringify({ jsonrpc: "2.0", id, method: testCase.method, params: testCase.params })));
+  server.send({ jsonrpc: "2.0", id, method: testCase.method, params: testCase.params });
   const deadline = Date.now() + 3000;
   let answer = null;
   while (Date.now() < deadline && !answer) {
     await new Promise((r) => globalThis.setTimeout(r, 25));
-    answer = received.find((m) => m.id === id);
+    answer = server.replies.find((m) => m.id === id);
   }
   if (!answer) {
     failures.push(`${testCase.method}: NO REPLY (this is what stalls a turn mid-run)`);
@@ -135,7 +66,7 @@ for (const testCase of SERVER_REQUESTS) {
 }
 
 client.ws?.close();
-http.close();
+await server.close();
 
 console.log("");
 if (failures.length) {

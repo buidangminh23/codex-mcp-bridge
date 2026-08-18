@@ -4,6 +4,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { PLATFORM_LABEL, resolveCodexBin, spawnEnv } from "./platform.mjs";
 
 const DEFAULT_URL = "ws://127.0.0.1:8791";
+const CONNECT_ATTEMPTS = 2;
+const CONNECT_RETRY_DELAY_MS = 750;
 
 function httpBase(wsUrl) {
   return wsUrl.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
@@ -31,6 +33,7 @@ export class CodexAppServerClient {
     this.nextId = 0;
     this.pending = new Map();
     this.threadListeners = new Map();
+    this.disconnectListeners = new Set();
     this.attachedThreads = new Set();
   }
 
@@ -94,58 +97,29 @@ export class CodexAppServerClient {
     return { stopped: true, pids };
   }
 
+  /**
+   * A freshly booted machine hands out transient failures: the app-server is
+   * still opening its sqlite state under ~/.codex, or an old one is shutting
+   * down yet still answering /readyz. Retrying once turns those into a slower
+   * first call instead of a failed tool call the user has to repeat by hand.
+   */
   async connect() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     if (this.connecting) return this.connecting;
 
     this.connecting = (async () => {
-      if (!(await this.isServerUp())) {
-        if (!this.autoStart) {
-          throw new AppServerError(
-            `No Codex app-server reachable at ${this.url}. Start one with: codex app-server --listen ${this.url}`,
-          );
-        }
-        const ok = await this.startServer();
-        if (!ok) {
-          throw new AppServerError(`Failed to start a Codex app-server at ${this.url} within 20s.`);
+      let lastError = null;
+      for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt += 1) {
+        try {
+          await this.#openConnection();
+          return;
+        } catch (err) {
+          lastError = err;
+          this.log(`connect attempt ${attempt}/${CONNECT_ATTEMPTS} failed: ${err.message}`);
+          if (attempt < CONNECT_ATTEMPTS) await delay(CONNECT_RETRY_DELAY_MS);
         }
       }
-
-      const ws = new WebSocket(this.url);
-      await new Promise((resolve, reject) => {
-        const timer = globalThis.setTimeout(
-          () => reject(new AppServerError(`Timed out connecting to ${this.url}`)),
-          15000,
-        );
-        ws.onopen = () => {
-          globalThis.clearTimeout(timer);
-          resolve();
-        };
-        ws.onerror = (event) => {
-          globalThis.clearTimeout(timer);
-          reject(new AppServerError(`WebSocket error against ${this.url}: ${event?.message ?? "unknown"}`));
-        };
-      });
-
-      ws.onmessage = (event) => this.#handleMessage(event.data);
-      ws.onclose = () => {
-        this.log("app-server connection closed");
-        this.ws = null;
-        this.attachedThreads.clear();
-        for (const [, entry] of this.pending) {
-          entry.reject(new AppServerError("Connection to Codex app-server closed"));
-        }
-        this.pending.clear();
-      };
-      ws.onerror = (event) => this.log(`websocket error: ${event?.message ?? "unknown"}`);
-
-      this.ws = ws;
-      const init = await this.request("initialize", {
-        clientInfo: this.clientInfo,
-        capabilities: { experimentalApi: true },
-      });
-      this.#send({ jsonrpc: "2.0", method: "initialized", params: {} });
-      this.log(`connected to app-server (codexHome=${init?.codexHome ?? "?"})`);
+      throw lastError;
     })();
 
     try {
@@ -153,6 +127,62 @@ export class CodexAppServerClient {
     } finally {
       this.connecting = null;
     }
+  }
+
+  async #openConnection() {
+    if (!(await this.isServerUp())) {
+      if (!this.autoStart) {
+        throw new AppServerError(
+          `No Codex app-server reachable at ${this.url}. Start one with: codex app-server --listen ${this.url}`,
+        );
+      }
+      const ok = await this.startServer();
+      if (!ok) {
+        throw new AppServerError(`Failed to start a Codex app-server at ${this.url} within 20s.`);
+      }
+    }
+
+    const ws = new WebSocket(this.url);
+    await new Promise((resolve, reject) => {
+      const timer = globalThis.setTimeout(
+        () => reject(new AppServerError(`Timed out connecting to ${this.url}`)),
+        15000,
+      );
+      ws.onopen = () => {
+        globalThis.clearTimeout(timer);
+        resolve();
+      };
+      ws.onerror = (event) => {
+        globalThis.clearTimeout(timer);
+        reject(new AppServerError(`WebSocket error against ${this.url}: ${event?.message ?? "unknown"}`));
+      };
+      ws.onclose = () => {
+        globalThis.clearTimeout(timer);
+        reject(new AppServerError(`Connection to ${this.url} closed during the handshake`));
+      };
+    });
+
+    ws.onmessage = (event) => this.#handleMessage(event.data);
+    ws.onclose = () => {
+      if (this.ws !== ws) return;
+      this.log("app-server connection closed");
+      this.ws = null;
+      this.attachedThreads.clear();
+      for (const [, entry] of this.pending) {
+        entry.reject(new AppServerError("Connection to Codex app-server closed"));
+      }
+      this.pending.clear();
+      this.#notifyDisconnect();
+    };
+    ws.onerror = (event) => this.log(`websocket error: ${event?.message ?? "unknown"}`);
+
+    this.ws = ws;
+    const init = await this.request("initialize", {
+      clientInfo: this.clientInfo,
+      capabilities: { experimentalApi: true },
+    });
+    this.#send({ jsonrpc: "2.0", method: "initialized", params: {} });
+    this.log(`connected to app-server (codexHome=${init?.codexHome ?? "?"})`);
   }
 
   #send(payload) {
@@ -299,6 +329,27 @@ export class CodexAppServerClient {
   async call(method, params, opts) {
     await this.connect();
     return this.request(method, params, opts);
+  }
+
+  /**
+   * A turn waits on `turn/completed`, which can only arrive over a live socket.
+   * Without an explicit disconnect signal a dropped app-server - the machine
+   * sleeping, a reboot, the desktop app reclaiming the state - leaves the
+   * caller blocked until its own timeout expires, four minutes by default.
+   */
+  subscribeDisconnect(listener) {
+    this.disconnectListeners.add(listener);
+    return () => this.disconnectListeners.delete(listener);
+  }
+
+  #notifyDisconnect() {
+    for (const listener of [...this.disconnectListeners]) {
+      try {
+        listener();
+      } catch (err) {
+        this.log(`disconnect listener error: ${err.message}`);
+      }
+    }
   }
 
   subscribe(threadId, listener) {

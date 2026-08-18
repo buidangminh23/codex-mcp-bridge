@@ -18,7 +18,7 @@ import {
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 
-const VERSION = "1.4.0";
+const VERSION = "1.5.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -76,6 +76,14 @@ function formatTurn(result) {
       "",
       "NOTE: the bridge stopped waiting, but the turn is still running inside Codex.",
       `Read it later with read_codex_thread, or stop it with interrupt_codex_turn (turnId ${result.turnId}).`,
+    );
+  }
+  if (result.status === "disconnected") {
+    lines.push(
+      "",
+      "NOTE: the app-server connection dropped mid-turn - typically the machine slept, rebooted, or the",
+      "Codex desktop app reclaimed the shared state. The turn may have kept running inside Codex.",
+      `Reconnect happens on the next call: check with read_codex_thread (threadId ${result.threadId}).`,
     );
   }
   return lines.join("\n");
@@ -149,7 +157,8 @@ server.registerTool(
         },
       });
       const body = formatTurn(result);
-      return textResult(openNote ? `${openNote}\n${body}` : body, result.status === "failed");
+      const failed = result.status === "failed" || result.status === "disconnected";
+      return textResult(openNote ? `${openNote}\n${body}` : body, failed);
     } catch (err) {
       return failure(err);
     }

@@ -95,6 +95,15 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
     resolveDone({ status: "timeout", error: null });
   }, timeoutMs);
 
+  const unsubscribeDisconnect = client.subscribeDisconnect(() => {
+    if (settled) return;
+    settled = true;
+    resolveDone({
+      status: "disconnected",
+      error: { message: "the app-server connection dropped while the turn was running" },
+    });
+  });
+
   try {
     const started = await client.request(
       "turn/start",
@@ -121,5 +130,6 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
   } finally {
     globalThis.clearTimeout(timer);
     unsubscribe();
+    unsubscribeDisconnect();
   }
 }

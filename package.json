@@ -1,6 +1,6 @@
 {
   "name": "codex-mcp-bridge",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Two-way MCP bridge between Claude and Codex: prompts into a live Codex thread, messages into a running Claude Code session.",
   "keywords": ["mcp", "codex", "claude-code", "claude-desktop", "app-server", "model-context-protocol"],
   "license": "MIT",
@@ -25,6 +25,7 @@
     "check": "node scripts/check.mjs",
     "check:claude": "node scripts/check-claude-bridge.mjs",
     "check:approvals": "node scripts/check-approvals.mjs",
+    "check:reconnect": "node scripts/check-reconnect.mjs",
     "smoke": "node scripts/smoke.mjs",
     "install:desktop": "node scripts/install-claude-desktop.mjs",
     "install:codex": "node scripts/install-codex-mcp.mjs",

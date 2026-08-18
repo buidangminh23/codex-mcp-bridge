@@ -2,6 +2,19 @@
 
 Theo [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) và [SemVer](https://semver.org/lang/vi/).
 
+## [1.5.0] - 2026-08-18
+
+### Fixed
+
+- **Turn đang chạy mà mất kết nối thì đứng im tới hết timeout — mặc định 4 phút.** `runTurn` chờ notification `turn/completed`, thứ chỉ đến qua socket còn sống; socket chết thì không ai đánh thức nó. Đây là thứ hay gặp nhất sau khi mở lại máy: app-server cũ đã chết theo phiên đăng nhập trước, còn bridge vẫn ngồi đợi. Client giờ phát tín hiệu ngắt qua `subscribeDisconnect()` và turn kết thúc ngay với status `disconnected` kèm gợi ý đọc lại thread. **Đo được: 20 004 ms → 302 ms.**
+- **`onclose` của socket cũ xoá socket mới.** Handler gán `this.ws = null` vô điều kiện, nên khi lần reconnect đã tạo socket mới mà sự kiện `close` của socket cũ mới tới, nó xoá luôn kết nối đang khoẻ và reject sạch `pending` của nó. Giờ chỉ dọn khi `this.ws === ws`.
+- **Không retry lúc khởi động.** Máy vừa mở sinh ra đủ loại lỗi tạm: app-server đang mở sqlite state, hoặc bản cũ đang tắt dở nhưng vẫn trả `/readyz`. `connect()` thử lại một lần (cách nhau 750 ms) thay vì để tool call hỏng và bắt người dùng gọi lại. Bắt tay hỏng giữa chừng cũng được tính là lỗi thay vì treo 15 s chờ timeout.
+
+### Added
+
+- `npm run check:reconnect` — 9 assertion trên app-server giả: reconnect sau khi mất kết nối, không rò `pending`/listener, turn bị ngắt phải thoát nhanh, và bắt tay bị từ chối lần đầu phải được thử lại. Chạy trên 1.4.0 thì đỏ đúng hai mục đầu.
+- `scripts/fake-app-server.mjs` — app-server giả dùng chung cho các test kết nối (WebSocket tự implement, không thêm dependency).
+
 ## [1.4.0] - 2026-08-18
 
 ### Fixed

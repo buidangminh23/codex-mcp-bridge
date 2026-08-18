@@ -196,6 +196,8 @@ python3 -c "import json;[print(v['properties']['method'].get('const') or v['prop
 
 Lưu ý: Codex Desktop **không** nhóm thread theo thư mục — sidebar chỉ có `Pinned` và phần còn lại, và protocol không có API gán thread vào mục (`thread/start` không nhận `sectionId`, `thread/metadata/update` chỉ sửa gitInfo). Thứ quyết định thread thuộc dự án nào là `cwd`.
 
+**Mở lại máy xong gọi bridge thì lỗi kết nối / đứng im.** App-server không sống qua lần khởi động lại, nên lần gọi đầu tiên sau khi mở máy phải tự dựng lại nó. Từ 1.5.0: `connect()` thử lại một lần cho các lỗi tạm lúc boot, `onclose` chỉ dọn đúng socket của nó (trước đây socket cũ đóng muộn sẽ xoá luôn kết nối mới vừa lập), và **turn đang chạy mà mất kết nối thì kết thúc ngay với status `disconnected`** thay vì đợi hết `timeoutSec` (mặc định 240s). Kiểm bằng `npm run check:reconnect`. Không cần LaunchAgent cho việc này — bridge tự spawn app-server khi cần; bật LaunchAgent song song với Codex Desktop còn gây tranh state `~/.codex`.
+
 **Codex treo khi mở thread mới sau khi thêm MCP server.** Client MCP chờ handshake `initialize`; server chết trước đó thì biểu hiện là *treo*, không phải lỗi. Đã trả giá thật: `claude-bridge` gọi `execFileSync("ps", …)` mà Codex spawn MCP server với **PATH rỗng** → `ENOENT` → chết trước handshake → mọi `thread/start` timeout 60s. Fix: gọi `/bin/ps` bằng đường dẫn tuyệt đối và bọc try/catch (`src/peer-protocol.mjs`). Bài học chung: **MCP server không được phụ thuộc PATH của tiến trình cha** — luôn test bằng `env -i PATH="" node <server>` trước khi ship.
 
 ## Env
@@ -245,6 +247,12 @@ Kiểm tra nhanh: bridge khởi động, autostart app-server nếu cần, liệ
 ```bash
 npm run check:approvals
 ```
+
+```bash
+npm run check:reconnect
+```
+
+Mô phỏng mất kết nối: app-server đóng socket đột ngột, turn đang chạy bị ngắt giữa chừng, và bắt tay bị từ chối lần đầu. Đây là test pin cho lỗi "mở lại máy thì lỗi kết nối".
 
 Dựng app-server giả rồi bắn đủ 10 server request, assert từng response đúng shape schema. Không cần Codex thật, không tốn quota. Đây là test pin cho lỗi "turn tự pause" — chạy nó trên code trước 1.4.0 thì đỏ đúng ba method.
 

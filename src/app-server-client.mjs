@@ -43,6 +43,7 @@ export class CodexAppServerClient {
     this.threadListeners = new Map();
     this.disconnectListeners = new Set();
     this.attachedThreads = new Set();
+    this.threadCwds = new Map();
   }
 
   async isServerUp() {
@@ -176,6 +177,7 @@ export class CodexAppServerClient {
       this.log("app-server connection closed");
       this.ws = null;
       this.attachedThreads.clear();
+      this.threadCwds.clear();
       for (const [, entry] of this.pending) {
         entry.reject(new AppServerError("Connection to Codex app-server closed"));
       }
@@ -373,13 +375,15 @@ export class CodexAppServerClient {
 
   async ensureThreadAttached(threadId, resumeParams = {}) {
     await this.connect();
-    if (this.attachedThreads.has(threadId)) return { resumed: false };
+    if (this.attachedThreads.has(threadId)) return { resumed: false, thread: this.threadCwds.get(threadId) };
     const result = await this.request("thread/resume", { threadId, ...resumeParams });
     this.attachedThreads.add(threadId);
+    if (result?.thread?.cwd) this.threadCwds.set(threadId, result.thread);
     return { resumed: true, thread: result?.thread };
   }
 
-  markAttached(threadId) {
+  markAttached(threadId, thread = null) {
     this.attachedThreads.add(threadId);
+    if (thread?.cwd) this.threadCwds.set(threadId, thread);
   }
 }

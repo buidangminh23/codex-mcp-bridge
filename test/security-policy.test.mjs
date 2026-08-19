@@ -17,10 +17,18 @@ describe("bridge security policy", () => {
   });
 
   it("keeps newly created threads in the bridge-owned capability set", () => {
-    const policy = new BridgeSecurityPolicy({});
-    policy.registerThread("created-here");
-    policy.assertThread("created-here");
-    assert.deepEqual(policy.filterThreads([{ id: "created-here" }, { id: "other" }]), [{ id: "created-here" }]);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-policy-"));
+    try {
+      const policy = new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: root });
+      policy.registerThread("created-here");
+      policy.assertThread("created-here");
+      assert.deepEqual(
+        policy.filterThreads([{ id: "created-here", cwd: root }, { id: "other", cwd: root }]),
+        [{ id: "created-here", cwd: root }],
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("contains cwd access to configured roots, including traversal attempts", () => {

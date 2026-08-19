@@ -2,6 +2,19 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.9.0] - 2026-08-19
+
+### Security
+
+- **Thread operations are deny-by-default.** Existing threads require an exact ID in `CODEX_BRIDGE_ALLOWED_THREADS`; newly created threads are authorized only for the lifetime of that bridge process. Listing, reading, sending, interrupting, and opening all enforce the same capability check.
+- **Working directories are confined.** `CODEX_BRIDGE_ALLOWED_ROOTS` is required for thread creation and every authorized thread's cwd is checked against it, including symlink canonicalization and traversal attempts. Callers can no longer supply arbitrary approval or sandbox settings; new threads use the bridge's safe policy (`on-request` plus `workspace-write` by default).
+- **Automatic approval is disabled by default.** `CODEX_BRIDGE_APPROVAL=approve` now requires the explicit `CODEX_BRIDGE_AUTO_APPROVE_ACK=1` acknowledgement.
+- **App-server endpoints are loopback-only.** The bridge rejects non-loopback `CODEX_APP_SERVER_URL` values because its WebSocket transport does not implement remote authentication.
+
+### Added
+
+- Security-policy regression coverage for thread capabilities, workspace containment, endpoint validation, and approval defaults.
+
 ## [1.8.0] - 2026-08-19
 
 ### Changed

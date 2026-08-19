@@ -91,7 +91,13 @@ export class BridgeSecurityPolicy {
   }
 
   filterThreads(threads) {
-    return threads.filter((thread) => this.isThreadAuthorized(thread?.id));
+    return threads.filter((thread) => this.isThreadAuthorized(thread?.id) && this.isCwdAuthorized(thread?.cwd));
+  }
+
+  isCwdAuthorized(cwd) {
+    if (!this.allowedRoots.length || !cwd) return false;
+    const candidate = canonicalPath(cwd);
+    return this.allowedRoots.some((root) => isWithin(root, candidate));
   }
 
   assertCwd(cwd) {
@@ -100,8 +106,7 @@ export class BridgeSecurityPolicy {
         "No authorized workspace roots are configured. Set CODEX_BRIDGE_ALLOWED_ROOTS to one or more project directories.",
       );
     }
-    const candidate = canonicalPath(cwd);
-    if (this.allowedRoots.some((root) => isWithin(root, candidate))) return;
+    if (this.isCwdAuthorized(cwd)) return;
     throw new Error(`Working directory is outside CODEX_BRIDGE_ALLOWED_ROOTS: ${cwd}`);
   }
 

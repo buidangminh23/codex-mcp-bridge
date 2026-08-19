@@ -19,7 +19,7 @@ import {
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
 
-const VERSION = "1.8.0";
+const VERSION = "1.9.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -155,7 +155,8 @@ server.registerTool(
         resolvedCwd = workspace.path;
         if (workspace.note) openNote = openNote ? `${openNote}\n${workspace.note}` : workspace.note;
       }
-      await client.ensureThreadAttached(threadId, resolvedCwd ? { cwd: resolvedCwd } : {});
+      const attached = await client.ensureThreadAttached(threadId, resolvedCwd ? { cwd: resolvedCwd } : {});
+      security.assertCwd(attached.thread?.cwd);
       const result = await runTurn(client, {
         threadId,
         input: [{ type: "text", text: prompt }],
@@ -245,7 +246,7 @@ server.registerTool(
       });
       const thread = res?.thread ?? {};
       if (thread.id) {
-        client.markAttached(thread.id);
+        client.markAttached(thread.id, thread);
         security.registerThread(thread.id);
       }
       return textResult(
@@ -282,6 +283,7 @@ server.registerTool(
       security.assertThread(threadId);
       const res = await client.call("thread/read", { threadId, includeTurns: true });
       const thread = res?.thread ?? res ?? {};
+      security.assertCwd(thread.cwd);
       const items = (thread.turns ?? []).flatMap((t) => t.items ?? []);
       const msgs = items
         .filter((i) => i?.type === "agentMessage" || i?.type === "userMessage")
@@ -322,6 +324,8 @@ server.registerTool(
   async ({ threadId, turnId }) => {
     try {
       security.assertThread(threadId);
+      const thread = await client.call("thread/read", { threadId });
+      security.assertCwd((thread?.thread ?? thread)?.cwd);
       await client.call("turn/interrupt", { threadId, turnId });
       return textResult(`Interrupted turn ${turnId} in thread ${threadId}.`);
     } catch (err) {
@@ -354,6 +358,8 @@ server.registerTool(
   async ({ threadId, background }) => {
     try {
       security.assertThread(threadId);
+      const thread = await client.call("thread/read", { threadId });
+      security.assertCwd((thread?.thread ?? thread)?.cwd);
       const url = await openThreadInCodexApp(threadId, { activate: !background });
       return textResult(`Opened ${url} in the Codex desktop app.`);
     } catch (err) {

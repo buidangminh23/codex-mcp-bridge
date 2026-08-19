@@ -12,6 +12,22 @@ function httpBase(wsUrl) {
   return wsUrl.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
 }
 
+/**
+ * Opening a thread in the desktop app while this bridge still holds it produces
+ * a message with no cause attached to it - the app just says the thread is open
+ * somewhere else. Saying so at the moment of opening turns that into something
+ * the reader can act on.
+ */
+export function writerLockWarning(threadId) {
+  return [
+    "",
+    `NOTE: this bridge still holds the writer lock on thread ${threadId}, because its app-server has the`,
+    "thread loaded. Until that app-server stops, the Codex app will refuse to write to it and show",
+    '"open in another application". Release it with stop_codex_app_server when the hand-off is done;',
+    "the bridge starts a new app-server the next time it needs one.",
+  ].join("\n");
+}
+
 export class AppServerError extends Error {
   constructor(message, code) {
     super(message);
@@ -380,6 +396,15 @@ export class CodexAppServerClient {
     this.attachedThreads.add(threadId);
     if (result?.thread?.cwd) this.threadCwds.set(threadId, result.thread);
     return { resumed: true, thread: result?.thread };
+  }
+
+  /**
+   * The app-server takes the per-thread writer lock when it loads a thread and
+   * keeps it until it exits, so a thread this bridge has attached cannot be
+   * written to from anywhere else - the desktop app included.
+   */
+  holdsThread(threadId) {
+    return this.attachedThreads.has(threadId);
   }
 
   markAttached(threadId, thread = null) {

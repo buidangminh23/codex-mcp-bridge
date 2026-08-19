@@ -2,6 +2,14 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.9.2] - 2026-08-19
+
+### Added
+
+- **`open_codex_thread` and `openInApp` warn when the bridge is still holding the thread's writer lock.** The app-server takes that lock when it loads a thread and keeps it until it exits, so opening the same thread in the Codex app produces a message with no cause attached to it - the app only says the thread is open somewhere else, and the bridge is the somewhere else. The warning names the thread and the way out (`stop_codex_app_server`) at the moment of opening, which is the moment the reader can still act on it.
+- `stop_codex_app_server` now says it released the writer locks too, not only the `~/.codex` state.
+- `CodexAppServerClient.holdsThread()` and coverage for it: attaching takes the claim, creating a thread takes it too, and a dropped connection drops it - because the lock died with the app-server and continuing to claim it would be a lie.
+
 ## [1.9.1] - 2026-08-19
 
 ### Changed

@@ -38,11 +38,19 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
   let turnId = null;
   let settled = false;
   let resolveDone;
-  let rejectDone;
 
-  const done = new Promise((resolve, reject) => {
+  /**
+   * Only ever resolved, never rejected. `done` has exactly one consumer, and it
+   * sits after `turn/start` has already returned - so rejecting it from the
+   * catch below would reject a promise nobody is awaiting, which Node turns
+   * into an unhandledRejection and, by default, into process exit. A failing
+   * `turn/start` (a thread locked by the desktop app is the everyday case) used
+   * to take the whole MCP server down that way, while the tool handler was
+   * still busy formatting a tidy error message for a client that no longer had
+   * a server to talk to.
+   */
+  const done = new Promise((resolve) => {
     resolveDone = resolve;
-    rejectDone = reject;
   });
 
   const process = (msg) => {
@@ -124,9 +132,6 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
       activity,
       errors,
     };
-  } catch (err) {
-    rejectDone?.(err);
-    throw err;
   } finally {
     globalThis.clearTimeout(timer);
     unsubscribe();

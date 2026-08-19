@@ -8,7 +8,7 @@ import { PLATFORM_LABEL } from "./platform.mjs";
 import { PeerEndpoint, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
 import { runTurn } from "./turn.mjs";
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 
@@ -106,6 +106,10 @@ server.registerTool(
     inputSchema: {
       includeDead: z.boolean().optional().describe("Also list sessions whose process is gone (default false)"),
     },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
   },
   async ({ includeDead }) => {
     try {
@@ -137,6 +141,12 @@ server.registerTool(
         .max(1800)
         .optional()
         .describe("How long to wait for Claude's reply (default 180, 0 = do not wait)"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
     },
   },
   async ({ target, message, waitSec }) => {
@@ -175,6 +185,12 @@ server.registerTool(
     inputSchema: {
       limit: z.number().int().min(1).max(100).optional().describe("How many messages to return (default 20)"),
     },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
   },
   async ({ limit }) => {
     try {
@@ -204,6 +220,10 @@ server.registerTool(
       target: z.string().describe("Session name, pid or sessionId from list_claude_sessions"),
       limit: z.number().int().min(1).max(100).optional().describe("How many recent messages (default 10)"),
     },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
   },
   async ({ target, limit }) => {
     try {
@@ -229,6 +249,12 @@ server.registerTool(
     inputSchema: {
       threadId: z.string().describe("Codex thread id, or an empty string to unbind"),
     },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   async ({ threadId }) => {
     const trimmed = threadId.trim();
@@ -252,6 +278,12 @@ server.registerTool(
       "Report the peer endpoint this bridge exposes, how many Claude sessions are live, and whether messages " +
       "are being relayed into a Codex thread.",
     inputSchema: {},
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   async () => {
     try {

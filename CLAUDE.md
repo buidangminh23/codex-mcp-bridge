@@ -31,13 +31,31 @@ against whichever path the brief happened to quote.
 ## Before pushing
 
 ```bash
-npm run check:approvals   # every app-server request gets a reply, no real Codex needed
-npm run check:reconnect   # recovery from a dropped connection
-npm run check             # boots the bridge against a real app-server
+npm test          # the whole suite: no Codex install, no login, no quota
+npm run check     # boots the bridge against a real app-server and lists threads
 ```
+
+`npm test` is the gate. It runs against a fake app-server and a throwaway
+`HOME`, so it is the one to run on every commit.
 
 `npm run smoke` sends real turns to Codex and spends quota — run it when the
 change touches turn handling, not on every commit.
+
+## Adding a tool
+
+Every tool declares `annotations` with all four hints (`readOnlyHint`,
+`destructiveHint`, `idempotentHint`, `openWorldHint`), a description, and a
+description on every parameter. `test/tool-contract.test.mjs` enforces it and
+also pins which tools are read-only and which are destructive, so a tool that
+changes character has to say so in the test too.
+
+Be literal about `readOnlyHint`: `read_claude_inbox` drains the inbox as it
+reads, and `claude_bridge_status` registers the peer endpoint on its first
+call. Neither is read-only, whatever its name suggests.
+
+## Documentation language
+
+The repository is English-only, enforced by `test/repo-hygiene.test.mjs`.
 
 ## Protocol questions
 

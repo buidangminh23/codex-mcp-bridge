@@ -18,7 +18,7 @@ import {
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 
-const VERSION = "1.5.0";
+const VERSION = "1.6.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -128,6 +128,12 @@ server.registerTool(
         .optional()
         .describe("macOS only: open the thread in the Codex desktop app before sending so a human can watch it live"),
     },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
   },
   async ({ threadId, prompt, timeoutSec, cwd, model, effort, openInApp }) => {
     let openNote = null;
@@ -180,6 +186,10 @@ server.registerTool(
         .optional()
         .describe("Only threads currently loaded/live inside this app-server (default false)"),
     },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
   },
   async ({ limit, cwd, searchTerm, loadedOnly }) => {
     try {
@@ -207,8 +217,23 @@ server.registerTool(
     inputSchema: {
       cwd: z.string().describe("Absolute working directory for the new Codex session"),
       model: z.string().optional().describe("Model override, e.g. gpt-5.6-luna"),
-      approvalPolicy: z.enum(["untrusted", "on-failure", "on-request", "never"]).optional(),
-      sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]).optional(),
+      approvalPolicy: z
+        .enum(["untrusted", "on-failure", "on-request", "never"])
+        .optional()
+        .describe(
+          "When Codex should ask before running a command. Nobody is watching a bridged thread, so " +
+            "anything other than 'never' means the turn stalls on the first prompt unless CODEX_BRIDGE_APPROVAL answers it.",
+        ),
+      sandbox: z
+        .enum(["read-only", "workspace-write", "danger-full-access"])
+        .optional()
+        .describe("How much of the machine Codex may touch in this thread (default: whatever ~/.codex/config.toml says)"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
     },
   },
   async ({ cwd, model, approvalPolicy, sandbox }) => {
@@ -246,6 +271,10 @@ server.registerTool(
       threadId: z.string().describe("Codex thread id"),
       limit: z.number().int().min(1).max(50).optional().describe("How many recent messages to show (default 10)"),
     },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
   },
   async ({ threadId, limit }) => {
     try {
@@ -281,6 +310,12 @@ server.registerTool(
       threadId: z.string().describe("Codex thread id"),
       turnId: z.string().describe("Turn id reported by send_to_codex_thread"),
     },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   async ({ threadId, turnId }) => {
     try {
@@ -306,6 +341,12 @@ server.registerTool(
         .optional()
         .describe("Open without stealing focus from the current app (default false)"),
     },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   async ({ threadId, background }) => {
     try {
@@ -326,6 +367,12 @@ server.registerTool(
       "app is open: two app-servers on the same ~/.codex state make the app stutter. The bridge starts a new " +
       "one automatically the next time it needs it.",
     inputSchema: {},
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   async () => {
     try {
@@ -349,6 +396,10 @@ server.registerTool(
       "Report how this bridge is wired on the current machine: platform, resolved codex binary, " +
       "app-server endpoint and whether it is live, plus the macOS integrations (LaunchAgent, desktop app).",
     inputSchema: {},
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
   },
   async () => {
     const up = await client.isServerUp();

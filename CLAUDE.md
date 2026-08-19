@@ -1,32 +1,25 @@
 # Working on this repo
 
-## Pick the right checkout first
+## Check which copy you are in
 
-This project is developed from two machines and the same tree is reachable at
-more than one path, so the first thing to check is **which copy you are in**.
-
-| Machine | Use this checkout | Notes |
-|---|---|---|
-| Windows | `L:\codex-mcp-bridge` | the working copy |
-| macOS | `~/minhspark/codex-mcp-bridge` | internal SSD, the working copy |
-| macOS | `/Volumes/Win_Dev/codex-mcp-bridge` | **do not use** — this is the Windows copy seen through an NTFS mount |
-
-`/Volumes/Win_Dev` is an external drive mounted **read-only** on macOS: writes
-fail, so edits made there are lost and the checkout drifts behind `origin`.
-On macOS, work in `~/minhspark/codex-mcp-bridge` and let the other machine pull.
+The same tree is often reachable at more than one path. A project on a drive
+shared between a dual-boot Windows install and macOS appears under its drive
+letter on one side and under a mount point on the other, and **macOS mounts
+NTFS read-only**: writes fail there, so edits are lost and that checkout
+silently drifts behind `origin`.
 
 Confirm before editing:
 
 ```bash
-git rev-parse --show-toplevel && df -h . | tail -1
+git rev-parse --show-toplevel
+test -w . && echo "writable" || echo "READ-ONLY - you are in the wrong copy"
 ```
 
-`/dev/disk3s5` (or any `/System/Volumes/Data` row) is the internal disk and is
-fine. A `/Volumes/Win_Dev` row means you are in the read-only Windows copy.
+Work in a checkout on a writable local disk and let the other machine pull.
 
-The same split applies to any project shared this way — `resolveWorkspacePath()`
-in `src/platform.mjs` exists precisely because Codex threads kept being opened
-against whichever path the brief happened to quote.
+`resolveWorkspacePath()` in `src/platform.mjs` exists for the same reason: a
+brief written on one machine quotes whichever path that machine uses, and the
+other machine cannot always use it.
 
 ## Before pushing
 
@@ -53,9 +46,12 @@ Be literal about `readOnlyHint`: `read_claude_inbox` drains the inbox as it
 reads, and `claude_bridge_status` registers the peer endpoint on its first
 call. Neither is read-only, whatever its name suggests.
 
-## Documentation language
+## No machine-specific paths
 
-The repository is English-only, enforced by `test/repo-hygiene.test.mjs`.
+Nothing tracked here may name a real home directory, volume or checkout. Use
+placeholders (`/Users/<user>`, `/Volumes/<label>`, `~/code/<project>`) so the
+repository reads the same for everyone who clones it.
+`test/repo-hygiene.test.mjs` enforces it, alongside the English-only rule.
 
 ## Protocol questions
 

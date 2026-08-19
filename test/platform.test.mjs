@@ -146,7 +146,7 @@ describe("workspace resolution", () => {
   });
 
   /**
-   * The same project sits at L:\X on Windows, /Volumes/<label>/X through the
+   * The same project sits at D:\X on Windows, /Volumes/<label>/X through the
    * NTFS mount on macOS (read-only there) and a native checkout under $HOME.
    * A brief written on one machine quotes a path the other cannot use.
    */
@@ -170,7 +170,7 @@ describe("workspace resolution", () => {
     { skip: IS_WINDOWS ? "the remap targets POSIX homes" : false },
     () => {
       fs.mkdirSync(path.join(sandbox, "nested-project"), { recursive: true });
-      const workspace = resolveWorkspacePath("L:\\nested-project");
+      const workspace = resolveWorkspacePath("D:\\nested-project");
       assert.equal(workspace.path, path.join(sandbox, "nested-project"));
       assert.equal(workspace.remapped, true);
     },

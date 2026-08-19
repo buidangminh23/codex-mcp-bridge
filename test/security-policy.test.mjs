@@ -17,18 +17,50 @@ describe("bridge security policy", () => {
   });
 
   it("keeps newly created threads in the bridge-owned capability set", () => {
+    const policy = new BridgeSecurityPolicy({});
+    policy.registerThread("created-here");
+    policy.assertThread("created-here");
+    assert.throws(() => policy.assertThread("other"), /not authorized/);
+  });
+
+  /**
+   * Gating the listing on the send allowlist as well left no way to reach a
+   * thread at all: an id cannot be allowlisted before it is known, and the
+   * bridge is the only thing that can report it. Naming a root is the
+   * operator declaring that project in scope, which is what makes the id
+   * safe to disclose - acting on it still needs the allowlist.
+   */
+  it("lists threads inside an allowed root even before they are allowlisted", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-policy-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-"));
     try {
+      fs.mkdirSync(path.join(root, "project"));
       const policy = new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: root });
-      policy.registerThread("created-here");
-      policy.assertThread("created-here");
+      const listed = policy.filterThreads([
+        { id: "in-scope", cwd: root },
+        { id: "nested", cwd: path.join(root, "project") },
+        { id: "elsewhere", cwd: outside },
+        { id: "no-cwd" },
+        { id: "gone", cwd: path.join(root, "deleted-since") },
+      ]);
+
       assert.deepEqual(
-        policy.filterThreads([{ id: "created-here", cwd: root }, { id: "other", cwd: root }]),
-        [{ id: "created-here", cwd: root }],
+        listed.map((thread) => thread.id),
+        ["in-scope", "nested"],
+        "a cwd this machine cannot resolve stays out: containment is decided on the real path, " +
+          "and a directory that is not there cannot be shown to be inside the root",
       );
+      assert.equal(policy.isThreadAuthorized("in-scope"), false, "listing must not grant the right to send");
+      assert.throws(() => policy.assertThread("in-scope"), /No authorized Codex threads/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  it("lists nothing at all when no workspace root is configured", () => {
+    const policy = new BridgeSecurityPolicy({});
+    assert.deepEqual(policy.filterThreads([{ id: "a", cwd: "/tmp" }, { id: "b", cwd: "/" }]), []);
   });
 
   it("contains cwd access to configured roots, including traversal attempts", () => {

@@ -90,8 +90,16 @@ export class BridgeSecurityPolicy {
     throw new Error(`Codex thread ${threadId} is not authorized for this bridge`);
   }
 
+  /**
+   * Listing is gated on the workspace root, not on the send allowlist. Gating
+   * both ways left no path to a thread id at all: you cannot allowlist a
+   * thread whose id you have no way to learn, so the only usable thread was
+   * one the bridge had created itself. An operator who names a root has
+   * declared that project in scope, and the id is still useless without being
+   * allowlisted for the calls that act.
+   */
   filterThreads(threads) {
-    return threads.filter((thread) => this.isThreadAuthorized(thread?.id) && this.isCwdAuthorized(thread?.cwd));
+    return threads.filter((thread) => this.isCwdAuthorized(thread?.cwd));
   }
 
   isCwdAuthorized(cwd) {

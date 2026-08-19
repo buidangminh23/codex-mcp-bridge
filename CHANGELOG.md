@@ -6,14 +6,15 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Security
 
-- **Thread operations are deny-by-default.** Existing threads require an exact ID in `CODEX_BRIDGE_ALLOWED_THREADS`; newly created threads are authorized only for the lifetime of that bridge process. Listing, reading, sending, interrupting, and opening all enforce the same capability check.
+- **Thread operations are deny-by-default.** Existing threads require an exact ID in `CODEX_BRIDGE_ALLOWED_THREADS`; newly created threads are authorized only for the lifetime of that bridge process. Reading, sending, interrupting and opening all enforce that capability check.
+- **Listing is gated on the workspace root instead**, because gating it on the same allowlist left no path to a thread id at all: an id cannot be allowlisted before it is known, and the bridge is the only thing that can report it, so the only usable thread was one the bridge had created itself. Naming a root in `CODEX_BRIDGE_ALLOWED_ROOTS` is the operator declaring that project in scope, which is what makes the id safe to disclose - acting on it still needs the allowlist, and every listed row says so when it is missing. A cwd this machine cannot resolve stays out of the listing: containment is decided on the real path, and a directory that is not there cannot be shown to be inside the root.
 - **Working directories are confined.** `CODEX_BRIDGE_ALLOWED_ROOTS` is required for thread creation and every authorized thread's cwd is checked against it, including symlink canonicalization and traversal attempts. Callers can no longer supply arbitrary approval or sandbox settings; new threads use the bridge's safe policy (`on-request` plus `workspace-write` by default).
 - **Automatic approval is disabled by default.** `CODEX_BRIDGE_APPROVAL=approve` now requires the explicit `CODEX_BRIDGE_AUTO_APPROVE_ACK=1` acknowledgement.
 - **App-server endpoints are loopback-only.** The bridge rejects non-loopback `CODEX_APP_SERVER_URL` values because its WebSocket transport does not implement remote authentication.
 
 ### Added
 
-- Security-policy regression coverage for thread capabilities, workspace containment, endpoint validation, and approval defaults.
+- Security-policy regression coverage for thread capabilities, workspace containment, endpoint validation, approval defaults, and the split between listing a thread and acting on one.
 
 ## [1.8.0] - 2026-08-19
 

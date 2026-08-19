@@ -18,7 +18,7 @@ import {
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 
-const VERSION = "1.6.0";
+const VERSION = "1.7.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**

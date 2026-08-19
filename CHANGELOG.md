@@ -2,6 +2,20 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.7.0] - 2026-08-19
+
+### Changed
+
+- **The cwd remapping no longer hardcodes one developer's directory layout.** `remapCandidates()` used to probe a literal `$HOME/minhspark/<project>`, which is a fact about one machine sitting in the source of a public repository. The second candidate is now derived from where the bridge itself is checked out: a bridge at `~/code/codex-mcp-bridge` makes `~/code` the place to look for a sibling project. That is a measurement rather than a guess, and it needs no configuration to be right. Verified unchanged on the machine the hardcoded value came from — every path that resolved before resolves to the same directory now.
+
+### Added
+
+- `CODEX_BRIDGE_SHARE_MOUNT` and `CODEX_BRIDGE_SHARE_DRIVE` — the two halves of the dual-boot pair the remapping bridges, previously fixed at `/Volumes/Win_Dev` and `L:`. Those remain the defaults; a drive letter is normalised, so `d`, `D` and `D:` all mean the same thing.
+- `CODEX_BRIDGE_WORKSPACE_ROOTS` — take over the search entirely with an explicit, ordered, `path.delimiter`-separated list. It replaces the derived roots rather than adding to them, so the order is exactly what was written.
+- Candidate lists are deduplicated, so a bridge checked out directly in `$HOME` no longer probes the same directory twice.
+- `CODEX_BRIDGE_REMAP`, `CODEX_BRIDGE_SHARE_MOUNT` and `CODEX_BRIDGE_SHARE_DRIVE` are read per call instead of at import, so a client that changes the environment does not have to restart the bridge to be believed — and so the behaviour is testable in-process.
+- Five tests covering the derived root, the explicit override and its ordering, a reconfigured mount and drive letter, and the `CODEX_BRIDGE_REMAP=0` opt-out.
+
 ## [1.6.0] - 2026-08-19
 
 ### Fixed

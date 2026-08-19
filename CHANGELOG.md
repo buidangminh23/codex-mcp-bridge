@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.9.4] - 2026-08-19
+
+### Changed
+
+- **`CLAUDE.md` removed; its contributor guidance now lives in `CONTRIBUTING.md`.** A file named for one vendor's agent reads as part of one person's toolchain rather than as this project's conventions, which is the wrong shape for a public repository. Nothing was dropped: how to tell which checkout you are in, the `npm test` gate, the annotation contract every tool must satisfy, the rule that nothing here may depend on one person's setup, and how to get the app-server schema instead of guessing at it - all of it moved, under the name a contributor already knows to look for.
+
 ## [1.9.3] - 2026-08-19
 
 ### Added

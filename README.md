@@ -406,6 +406,10 @@ CLAUDE_TARGET=<sessionId> CLAUDE_WAIT=150 npm run check:claude   # deliver a mes
 
 A reply coming back proves both directions work.
 
+## Contributing
+
+Conventions, the test gate and the tool-annotation contract are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

@@ -1,6 +1,6 @@
 {
   "name": "codex-mcp-bridge",
-  "version": "1.9.3",
+  "version": "1.9.4",
   "description": "Two-way MCP bridge between Claude and Codex: prompts into a live Codex thread, messages into a running Claude Code session.",
   "keywords": [
     "mcp",

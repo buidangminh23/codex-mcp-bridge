@@ -4,12 +4,32 @@ import path from "node:path";
 const APPROVAL_POLICIES = new Set(["untrusted", "on-failure", "on-request", "never"]);
 const SANDBOXES = new Set(["read-only", "workspace-write"]);
 
+/**
+ * Resolves the deepest ancestor that exists and re-appends the rest, rather
+ * than giving up on the whole path when the leaf is missing. Falling back to
+ * the unresolved path made containment depend on the platform: macOS puts
+ * temporary and home directories behind symlinks (/var -> /private/var), so an
+ * allowed root canonicalised while a missing candidate did not, and the two
+ * stopped sharing a prefix; on Linux, with no symlink in the way, the same
+ * pair matched. Same policy, opposite answer, decided by a detail of the disk.
+ *
+ * Resolving the existing prefix keeps the protection that matters: a symlink
+ * pointing out of an allowed root resolves to where it really goes, so it is
+ * still recognised as outside.
+ */
 function canonicalPath(input) {
   const resolved = path.resolve(input);
-  try {
-    return realpathSync.native(resolved);
-  } catch {
-    return resolved;
+  let head = resolved;
+  const missing = [];
+  for (;;) {
+    try {
+      return path.join(realpathSync.native(head), ...missing);
+    } catch {
+      const parent = path.dirname(head);
+      if (parent === head) return resolved;
+      missing.unshift(path.basename(head));
+      head = parent;
+    }
   }
 }
 
@@ -90,8 +110,22 @@ export class BridgeSecurityPolicy {
     throw new Error(`Codex thread ${threadId} is not authorized for this bridge`);
   }
 
+  /**
+   * Listing is gated on the workspace root, not on the send allowlist. Gating
+   * both ways left no path to a thread id at all: you cannot allowlist a
+   * thread whose id you have no way to learn, so the only usable thread was
+   * one the bridge had created itself. An operator who names a root has
+   * declared that project in scope, and the id is still useless without being
+   * allowlisted for the calls that act.
+   */
   filterThreads(threads) {
-    return threads.filter((thread) => this.isThreadAuthorized(thread?.id));
+    return threads.filter((thread) => this.isCwdAuthorized(thread?.cwd));
+  }
+
+  isCwdAuthorized(cwd) {
+    if (!this.allowedRoots.length || !cwd) return false;
+    const candidate = canonicalPath(cwd);
+    return this.allowedRoots.some((root) => isWithin(root, candidate));
   }
 
   assertCwd(cwd) {
@@ -100,8 +134,7 @@ export class BridgeSecurityPolicy {
         "No authorized workspace roots are configured. Set CODEX_BRIDGE_ALLOWED_ROOTS to one or more project directories.",
       );
     }
-    const candidate = canonicalPath(cwd);
-    if (this.allowedRoots.some((root) => isWithin(root, candidate))) return;
+    if (this.isCwdAuthorized(cwd)) return;
     throw new Error(`Working directory is outside CODEX_BRIDGE_ALLOWED_ROOTS: ${cwd}`);
   }
 

@@ -19,7 +19,7 @@ import {
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
 
-const VERSION = "1.8.0";
+const VERSION = "1.9.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -48,7 +48,10 @@ function formatThreadRow(t) {
   const updated = t.updatedAt ? new Date(t.updatedAt * 1000).toISOString().replace("T", " ").slice(0, 16) : "?";
   const status = t.status?.type ?? "?";
   const deepLink = IS_MACOS && hasCodexDesktopApp() ? `\n    open: ${codexThreadUrl(t.id)}` : "";
-  return `- ${t.id}\n    title: ${title}\n    cwd: ${t.cwd ?? "?"}\n    updated: ${updated}  status: ${status}  source: ${t.source ?? "?"}${deepLink}`;
+  const authorized = security.isThreadAuthorized(t.id)
+    ? ""
+    : "\n    NOT AUTHORIZED: add this id to CODEX_BRIDGE_ALLOWED_THREADS to send into it";
+  return `- ${t.id}\n    title: ${title}\n    cwd: ${t.cwd ?? "?"}\n    updated: ${updated}  status: ${status}  source: ${t.source ?? "?"}${deepLink}${authorized}`;
 }
 
 function formatTurn(result) {
@@ -155,7 +158,8 @@ server.registerTool(
         resolvedCwd = workspace.path;
         if (workspace.note) openNote = openNote ? `${openNote}\n${workspace.note}` : workspace.note;
       }
-      await client.ensureThreadAttached(threadId, resolvedCwd ? { cwd: resolvedCwd } : {});
+      const attached = await client.ensureThreadAttached(threadId, resolvedCwd ? { cwd: resolvedCwd } : {});
+      security.assertCwd(attached.thread?.cwd);
       const result = await runTurn(client, {
         threadId,
         input: [{ type: "text", text: prompt }],
@@ -207,7 +211,14 @@ server.registerTool(
       const method = loadedOnly ? "thread/loaded/list" : "thread/list";
       const res = await client.call(method, loadedOnly ? { limit: limit ?? 15 } : params);
       const rows = security.filterThreads(res?.data ?? res?.threads ?? []);
-      if (!rows.length) return textResult("No Codex threads matched.");
+      if (!rows.length) {
+        return textResult(
+          security.summary().allowedRoots.length
+            ? "No Codex threads matched inside the allowed workspace roots."
+            : "No workspace roots are configured, so no thread can be listed. Set CODEX_BRIDGE_ALLOWED_ROOTS to one or more project directories.",
+          !security.summary().allowedRoots.length,
+        );
+      }
       return textResult(
         `${rows.length} Codex thread(s) via ${client.url}:\n\n${rows.map(formatThreadRow).join("\n")}`,
       );
@@ -245,7 +256,7 @@ server.registerTool(
       });
       const thread = res?.thread ?? {};
       if (thread.id) {
-        client.markAttached(thread.id);
+        client.markAttached(thread.id, thread);
         security.registerThread(thread.id);
       }
       return textResult(
@@ -282,6 +293,7 @@ server.registerTool(
       security.assertThread(threadId);
       const res = await client.call("thread/read", { threadId, includeTurns: true });
       const thread = res?.thread ?? res ?? {};
+      security.assertCwd(thread.cwd);
       const items = (thread.turns ?? []).flatMap((t) => t.items ?? []);
       const msgs = items
         .filter((i) => i?.type === "agentMessage" || i?.type === "userMessage")
@@ -322,6 +334,8 @@ server.registerTool(
   async ({ threadId, turnId }) => {
     try {
       security.assertThread(threadId);
+      const thread = await client.call("thread/read", { threadId });
+      security.assertCwd((thread?.thread ?? thread)?.cwd);
       await client.call("turn/interrupt", { threadId, turnId });
       return textResult(`Interrupted turn ${turnId} in thread ${threadId}.`);
     } catch (err) {
@@ -354,6 +368,8 @@ server.registerTool(
   async ({ threadId, background }) => {
     try {
       security.assertThread(threadId);
+      const thread = await client.call("thread/read", { threadId });
+      security.assertCwd((thread?.thread ?? thread)?.cwd);
       const url = await openThreadInCodexApp(threadId, { activate: !background });
       return textResult(`Opened ${url} in the Codex desktop app.`);
     } catch (err) {

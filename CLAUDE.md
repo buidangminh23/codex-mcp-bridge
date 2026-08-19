@@ -46,12 +46,17 @@ Be literal about `readOnlyHint`: `read_claude_inbox` drains the inbox as it
 reads, and `claude_bridge_status` registers the peer endpoint on its first
 call. Neither is read-only, whatever its name suggests.
 
-## No machine-specific paths
+## Nothing here may depend on one person's setup
 
 Nothing tracked here may name a real home directory, volume or checkout. Use
 placeholders (`/Users/<user>`, `/Volumes/<label>`, `~/code/<project>`) so the
 repository reads the same for everyone who clones it.
-`test/repo-hygiene.test.mjs` enforces it, alongside the English-only rule.
+
+Nor may it carry instructions from somewhere the reader cannot open — a private
+repository, or a personal rule, memory or skills file kept outside this
+project. Whatever a contributor has to obey belongs in this repo, in English.
+
+`test/repo-hygiene.test.mjs` enforces both, alongside the English-only rule.
 
 ## Protocol questions
 

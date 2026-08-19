@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.9.3] - 2026-08-19
+
+### Added
+
+- `test/repo-hygiene.test.mjs` fails the build on an instruction that only works inside one person's setup: a link to a private repository, or a reference to a personal rule, memory or skills file kept outside this project. A public repository cannot lean on a private one - an instruction pointing somewhere the reader cannot open is a dead end wearing the clothes of a rule. Verified by adding such a reference and watching the suite go red at that line.
+
 ## [1.9.2] - 2026-08-19
 
 ### Added

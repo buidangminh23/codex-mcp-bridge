@@ -2,6 +2,21 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.8.0] - 2026-08-19
+
+### Changed
+
+- **No drive letter or volume label is blessed any more.** 1.7.0 still shipped `/Volumes/Win_Dev` and `L:` as defaults, which is one machine's storage layout wearing a configuration hat. A path now counts as coming from another machine by its *shape* — a drive letter (`D:\project`) or an attached volume (`/Volumes/<label>/`, `/mnt/<label>/`, `/media/<user>/<label>/`) — so every dual-boot and external-disk setup is handled without configuring anything.
+- **The path as given is tried first.** Rewriting a directory this machine can already write to would be guessing over an explicit instruction. Rewriting now only happens for a path this machine cannot use, which is exactly the case it exists for: macOS mounts NTFS read-only (measured: `EROFS` on the mount this was built for), so the drive a Windows brief quotes is visible and useless at the same time. This is what makes recognising every volume safe rather than reckless.
+
+### Removed
+
+- `CODEX_BRIDGE_SHARE_MOUNT` and `CODEX_BRIDGE_SHARE_DRIVE`, added in 1.7.0 earlier the same day. Generic detection makes them dead knobs, and a dead knob in the documentation costs more than it saves. `CODEX_BRIDGE_WORKSPACE_ROOTS` and `CODEX_BRIDGE_REMAP` still cover overriding and opting out.
+
+### Verified
+
+- Every path that resolved under the hardcoded version resolves to the same directory: `/Volumes/Win_Dev/<repo>` and `L:\<repo>` to the checkout beside the bridge, `L:\PCC4SH` to the `$HOME`-level one, a nonexistent project still failing with the list of what was tried.
+
 ## [1.7.0] - 2026-08-19
 
 ### Changed

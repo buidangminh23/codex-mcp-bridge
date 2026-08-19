@@ -27,6 +27,10 @@ cfg.mcpServers["codex-bridge"] = {
   env: {
     CODEX_BIN: codexBin,
     CODEX_APP_SERVER_URL: process.env.CODEX_APP_SERVER_URL ?? "ws://127.0.0.1:8791",
+    CODEX_BRIDGE_ALLOWED_ROOTS: process.env.CODEX_BRIDGE_ALLOWED_ROOTS ?? root,
+    CODEX_BRIDGE_APPROVAL: process.env.CODEX_BRIDGE_APPROVAL ?? "deny",
+    CODEX_BRIDGE_APPROVAL_POLICY: process.env.CODEX_BRIDGE_APPROVAL_POLICY ?? "on-request",
+    CODEX_BRIDGE_SANDBOX: process.env.CODEX_BRIDGE_SANDBOX ?? "workspace-write",
     ...(process.env.CODEX_BRIDGE_MODEL ? { CODEX_BRIDGE_MODEL: process.env.CODEX_BRIDGE_MODEL } : {}),
     ...(process.env.CODEX_BRIDGE_EFFORT ? { CODEX_BRIDGE_EFFORT: process.env.CODEX_BRIDGE_EFFORT } : {}),
   },

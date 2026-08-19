@@ -114,9 +114,9 @@ export function findClaudeSession(target) {
 
 /**
  * Claude Code stores a transcript at ~/.claude/projects/<slug>/<sessionId>.jsonl
- * where the slug rewrites more than just path separators (/Volumes/Win_Dev ->
- * -Volumes-Win-Dev), so the file is located by scanning rather than by
- * reconstructing the slug.
+ * where the slug rewrites more than just path separators (/mnt/dev_disk ->
+ * -mnt-dev-disk, losing the underscore), so the file is located by scanning
+ * rather than by reconstructing the slug.
  */
 function findTranscriptFile(sessionId, cwd) {
   const dir = projectsDir();

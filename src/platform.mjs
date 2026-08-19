@@ -24,24 +24,26 @@ const CODEX_DESKTOP_BIN_MACOS = `${CODEX_DESKTOP_APP_MACOS}/Contents/Resources/c
 const CODEX_THREAD_URL_PREFIX = "codex://threads/";
 
 /**
- * A drive shared between a dual-boot Windows install and macOS is the case
- * this remapping exists for: the same project is `L:\\X` on one side and
- * `/Volumes/<label>/X` on the other. Both halves are configuration, not facts
- * about any particular machine, so both are overridable - the defaults only
- * decide which pair is probed when nobody says otherwise. Read per call rather
- * than at import, so a client that changes the environment does not have to
- * restart the bridge to be believed.
+ * Read per call rather than at import, so a client that changes the
+ * environment does not have to restart the bridge to be believed.
  */
 const remapEnabled = () => process.env.CODEX_BRIDGE_REMAP !== "0";
-const shareMount = () => process.env.CODEX_BRIDGE_SHARE_MOUNT || "/Volumes/Win_Dev";
-const shareDrive = () => normalizeDriveLetter(process.env.CODEX_BRIDGE_SHARE_DRIVE || "L:");
 
 const homeDir = () => process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
 
-function normalizeDriveLetter(value) {
-  const letter = value.trim().charAt(0).toUpperCase();
-  return /[A-Z]/.test(letter) ? `${letter}:` : "L:";
-}
+/**
+ * A path that names a drive letter or an attached volume was almost certainly
+ * written on the other machine - that is the whole signal, and it needs no
+ * configuration to read. Naming one particular drive here would have been a
+ * fact about one machine, and the generic form covers every dual-boot and
+ * external-disk layout instead of a single blessed one.
+ */
+const FOREIGN_ROOT_PATTERNS = [
+  /^[A-Za-z]:\/(.+)$/,
+  /^\/Volumes\/[^/]+\/(.+)$/,
+  /^\/mnt\/[^/]+\/(.+)$/,
+  /^\/media\/[^/]+\/[^/]+\/(.+)$/,
+];
 
 /**
  * Where the bridge itself is checked out answers the question "where does this
@@ -171,46 +173,41 @@ function normalizeSeparators(input) {
   return input.replace(/\\/g, "/").replace(/\/+$/, "") || input;
 }
 
-function shareRelativePath(input) {
+function foreignRootRelative(input) {
   const normalized = normalizeSeparators(input);
-  const mount = shareMount();
-  if (normalized.toLowerCase().startsWith(`${mount.toLowerCase()}/`)) {
-    return normalized.slice(mount.length + 1);
-  }
-  if (/^[a-z]:\//i.test(normalized) && normalized.slice(0, 2).toUpperCase() === shareDrive()) {
-    return normalized.slice(3);
+  for (const pattern of FOREIGN_ROOT_PATTERNS) {
+    const match = normalized.match(pattern);
+    if (match) return match[1];
   }
   return null;
 }
 
-/**
- * The side the path came from is always tried last: a path quoted from the
- * other machine is the least likely to be the one this machine can write to,
- * and on macOS the NTFS mount is read-only anyway.
- */
 function remapCandidates(input) {
-  const relative = shareRelativePath(input);
+  const relative = foreignRootRelative(input);
   if (!relative) return [];
   const segments = relative.split("/").filter(Boolean);
-  const roots = IS_WINDOWS ? [`${shareDrive()}\\`, ...workspaceRoots()] : [...workspaceRoots(), shareMount()];
-  const candidates = roots.map((root) => path.join(root, ...segments));
-  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
+  return workspaceRoots().map((root) => path.join(root, ...segments));
 }
 
 /**
  * The same project lives at a different absolute path on each machine: on the
  * shared drive's own letter under Windows, under its mount point when that
- * drive is visible from macOS, and in a native checkout otherwise, because the
- * mount is read-only there. Handing Codex the wrong one starts the thread
- * against a directory the user is not looking at, or one the agent cannot write
- * to - which then stalls the turn on a permission request instead of failing
- * outright.
+ * drive is visible from macOS, and in a native checkout otherwise. Handing
+ * Codex the wrong one starts the thread against a directory the user is not
+ * looking at, or one the agent cannot write to - which then stalls the turn on
+ * a permission request instead of failing outright.
+ *
+ * The path as given always goes first: if this machine can already write
+ * there, no rewriting is warranted and guessing would be the bug. Rewriting
+ * only happens for a path this machine cannot use, which is exactly the case
+ * it was written for - macOS mounts NTFS read-only, so the drive a Windows
+ * brief quotes is visible and useless at the same time.
  */
 export function resolveWorkspacePath(input) {
   if (!input) return { path: input, remapped: false, writable: false, note: null };
   const original = input;
-  const candidates = remapEnabled() ? remapCandidates(input) : [];
-  const ordered = candidates.length ? candidates : [input];
+  const candidates = [input, ...(remapEnabled() ? remapCandidates(input) : [])];
+  const ordered = candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
 
   const writable = ordered.find((candidate) => existsSync(candidate) && isWritableDir(candidate));
   if (writable) {

@@ -140,11 +140,11 @@ describe("session registry", () => {
 describe("transcript reading", () => {
   /**
    * Claude Code slugifies the cwd into the project directory name and the
-   * rewrite is lossy (/Volumes/Win_Dev becomes -Volumes-Win-Dev), so the
-   * transcript is found by scanning rather than by rebuilding the slug.
+   * rewrite is lossy (/mnt/dev_disk becomes -mnt-dev-disk), so the transcript
+   * is found by scanning rather than by rebuilding the slug.
    */
   it("finds a transcript whose project directory does not match the cwd slug", () => {
-    const projectDir = path.join(projectsDir, "-Volumes-Win-Dev-codex-mcp-bridge");
+    const projectDir = path.join(projectsDir, "-mnt-dev-disk-codex-mcp-bridge");
     fs.mkdirSync(projectDir, { recursive: true });
     const lines = [
       { message: { role: "user", content: [{ type: "text", text: "first" }] } },
@@ -157,7 +157,7 @@ describe("transcript reading", () => {
     ].map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)));
     fs.writeFileSync(path.join(projectDir, "abc.jsonl"), `${lines.join("\n")}\n`);
 
-    const { file, messages } = readTranscript("abc", "/Volumes/Win_Dev/codex-mcp-bridge", 10);
+    const { file, messages } = readTranscript("abc", "/mnt/dev_disk/codex-mcp-bridge", 10);
     assert.equal(file, path.join(projectDir, "abc.jsonl"));
     assert.deepEqual(
       messages.map((m) => m.text),
@@ -166,7 +166,7 @@ describe("transcript reading", () => {
   });
 
   it("returns the last N messages only", () => {
-    const { messages } = readTranscript("abc", "/Volumes/Win_Dev/codex-mcp-bridge", 2);
+    const { messages } = readTranscript("abc", "/mnt/dev_disk/codex-mcp-bridge", 2);
     assert.deepEqual(
       messages.map((m) => m.text),
       ["second", "third"],

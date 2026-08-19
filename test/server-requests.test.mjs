@@ -108,4 +108,22 @@ describe("app-server requests are all answered", () => {
       await denying.close();
     }
   });
+
+  it("denies approvals by default", async () => {
+    assert.equal(client.approval, "deny");
+    const answer = await answerOf(server, "item/fileChange/requestApproval", { changes: [{ path: "/tmp/x" }] });
+    assert.equal(answer.result.decision, "decline");
+  });
+
+  it("requires an explicit acknowledgement before enabling automatic approval", () => {
+    const messages = [];
+    const guarded = new CodexAppServerClient({
+      url: "ws://127.0.0.1:9",
+      autoStart: false,
+      approval: "approve",
+      log: (message) => messages.push(message),
+    });
+    assert.equal(guarded.approval, "deny");
+    assert.match(messages.join("\n"), /AUTO_APPROVE_ACK/);
+  });
 });

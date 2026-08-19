@@ -101,6 +101,40 @@ describe("repository hygiene", { skip: notAGitCheckout }, () => {
     assert.deepEqual(offences, [], `machine-specific paths must not be committed:\n${offences.join("\n")}`);
   });
 
+  /**
+   * A public repository cannot lean on a private one. An instruction that
+   * points at a repo, a rule file or a workflow only the author can open is
+   * not guidance to anyone else - it is a dead end wearing the clothes of a
+   * rule, and it drags one person's operating manual into a project other
+   * people are meant to run.
+   *
+   * This file is excluded from its own scan: the names it forbids have to
+   * appear here to be forbidden at all.
+   */
+  it("carries no instruction that only works inside one person's setup", () => {
+    const forbidden = [
+      { pattern: /github\.com\/[A-Za-z0-9-]+\/Windows\b/g, why: "the author's private rules repository" },
+      { pattern: /\bRules\.md\b/g, why: "a personal rule file that lives outside this repo" },
+      { pattern: /\bMEMORY\.md\b/g, why: "a personal memory file that lives outside this repo" },
+      { pattern: /\bSkills\.md\b/g, why: "a personal skills catalogue that lives outside this repo" },
+    ];
+    const self = "test/repo-hygiene.test.mjs";
+    const offences = [];
+
+    for (const file of tracked.filter((f) => f !== self)) {
+      const text = fs.readFileSync(path.join(root, file), "utf8");
+      text.split("\n").forEach((line, index) => {
+        for (const { pattern, why } of forbidden) {
+          for (const match of line.matchAll(pattern)) {
+            offences.push(`${file}:${index + 1} ${match[0]} - ${why}`);
+          }
+        }
+      });
+    }
+
+    assert.deepEqual(offences, [], `this repo must stand on its own:\n${offences.join("\n")}`);
+  });
+
   it("documents the repository in English only", () => {
     const markdown = tracked.filter((file) => file.endsWith(".md"));
     const vietnamese = /[àáâãèéêìíòóôõùúýăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i;

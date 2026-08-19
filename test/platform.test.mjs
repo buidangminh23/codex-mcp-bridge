@@ -16,18 +16,30 @@ import {
   spawnEnv,
 } from "../src/platform.mjs";
 
-const realHome = process.env.HOME;
-const realUserProfile = process.env.USERPROFILE;
+const realEnv = {
+  HOME: process.env.HOME,
+  USERPROFILE: process.env.USERPROFILE,
+  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+};
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-platform-"));
 
 before(() => {
   process.env.HOME = sandbox;
   process.env.USERPROFILE = sandbox;
+  /**
+   * On Linux the config path is `${XDG_CONFIG_HOME:-~/.config}`, and a CI
+   * runner may well export XDG_CONFIG_HOME outside the sandbox home. Clearing
+   * it here is what makes the default path assertion mean the same thing on
+   * every machine; the override itself is asserted separately below.
+   */
+  delete process.env.XDG_CONFIG_HOME;
 });
 
 after(() => {
-  process.env.HOME = realHome;
-  process.env.USERPROFILE = realUserProfile;
+  for (const [key, value] of Object.entries(realEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
@@ -46,6 +58,22 @@ describe("platform facts", () => {
     assert.equal(path.basename(cfg), "claude_desktop_config.json");
     assert.ok(cfg.startsWith(sandbox), "the config path must follow the home directory");
   });
+
+  it(
+    "lets XDG_CONFIG_HOME override the Linux config location",
+    { skip: process.platform === "linux" ? false : "XDG only applies to the Linux branch" },
+    () => {
+      process.env.XDG_CONFIG_HOME = path.join(sandbox, "xdg");
+      try {
+        assert.equal(
+          claudeDesktopConfigPath(),
+          path.join(sandbox, "xdg", "Claude", "claude_desktop_config.json"),
+        );
+      } finally {
+        delete process.env.XDG_CONFIG_HOME;
+      }
+    },
+  );
 
   it("names the LaunchAgent plist under the user's LaunchAgents", () => {
     assert.equal(path.basename(launchAgentPath()), "com.codex-mcp-bridge.app-server.plist");

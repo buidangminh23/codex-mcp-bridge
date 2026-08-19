@@ -12,7 +12,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 ### Added
 
 - **Annotation hints on all 14 tools** (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). Clients decide whether a call needs a human in the loop from these, and a tool without them reads as an unknown quantity — the wrong default for tools that reach another agent with shell access. Two are worth naming: `read_claude_inbox` empties the inbox as it reads it, so it is not read-only despite the name, and `claude_bridge_status` registers the peer endpoint on first call, so it writes too.
-- **A real test suite: `npm test`, 95 tests across 7 files, no Codex install or quota needed.** Connection behaviour runs against the fake app-server; anything touching `~/.claude` or `~/.codex` runs against a throwaway `HOME`. Covers the tool contract, all 10 server requests, connection recovery, the turn state machine, the peer protocol over a real unix socket, platform resolution, and repository hygiene.
+- **A real test suite: `npm test`, 96 tests across 7 files, no Codex install or quota needed.** Connection behaviour runs against the fake app-server; anything touching `~/.claude` or `~/.codex` runs against a throwaway `HOME`. Covers the tool contract, all 10 server requests, connection recovery, the turn state machine, the peer protocol over a real unix socket, platform resolution, and repository hygiene.
 - GitHub Actions runs `npm test` on every push and pull request, across Node 22 and 24 on Linux and macOS.
 - `test/repo-hygiene.test.mjs` fails the build if an environment file or build output is ever committed, if the version in `src/index.mjs` drifts from `package.json`, or if documentation stops being English.
 

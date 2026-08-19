@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   IS_WINDOWS,
@@ -20,6 +21,10 @@ const realEnv = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
   XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+  CODEX_BRIDGE_REMAP: process.env.CODEX_BRIDGE_REMAP,
+  CODEX_BRIDGE_SHARE_MOUNT: process.env.CODEX_BRIDGE_SHARE_MOUNT,
+  CODEX_BRIDGE_SHARE_DRIVE: process.env.CODEX_BRIDGE_SHARE_DRIVE,
+  CODEX_BRIDGE_WORKSPACE_ROOTS: process.env.CODEX_BRIDGE_WORKSPACE_ROOTS,
 };
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-platform-"));
 
@@ -151,10 +156,10 @@ describe("workspace resolution", () => {
     "remaps a Windows-share path onto the local checkout",
     { skip: IS_WINDOWS ? "the remap targets POSIX homes" : false },
     () => {
-      const project = path.join(sandbox, "codex-mcp-bridge");
+      const project = path.join(sandbox, "shared-project");
       fs.mkdirSync(project, { recursive: true });
 
-      const workspace = resolveWorkspacePath("/Volumes/Win_Dev/codex-mcp-bridge");
+      const workspace = resolveWorkspacePath("/Volumes/Win_Dev/shared-project");
       assert.equal(workspace.path, project);
       assert.equal(workspace.remapped, true);
       assert.equal(workspace.writable, true);
@@ -166,12 +171,80 @@ describe("workspace resolution", () => {
     "remaps a drive-letter path the same way",
     { skip: IS_WINDOWS ? "the remap targets POSIX homes" : false },
     () => {
-      fs.mkdirSync(path.join(sandbox, "minhspark", "nested-project"), { recursive: true });
+      fs.mkdirSync(path.join(sandbox, "nested-project"), { recursive: true });
       const workspace = resolveWorkspacePath("L:\\nested-project");
-      assert.equal(workspace.path, path.join(sandbox, "minhspark", "nested-project"));
+      assert.equal(workspace.path, path.join(sandbox, "nested-project"));
       assert.equal(workspace.remapped, true);
     },
   );
+
+  /**
+   * The bridge's own checkout tells us where this user keeps projects, so a
+   * sibling of the bridge is found without anybody configuring a thing. This
+   * is what replaced a hardcoded directory name in the source, and it asserts
+   * against the real repo rather than a fixture: the bridge is always a
+   * sibling of itself.
+   */
+  it(
+    "finds a project sitting next to the bridge's own checkout",
+    { skip: IS_WINDOWS ? "the remap targets POSIX homes" : false },
+    () => {
+      const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+      const workspace = resolveWorkspacePath(`/Volumes/Win_Dev/${path.basename(repoRoot)}`);
+      assert.equal(workspace.path, repoRoot, "the sibling lookup should have found this repo");
+      assert.equal(workspace.remapped, true);
+      assert.ok(!workspace.path.startsWith(sandbox), "HOME does not contain it, so this came from the derived root");
+    },
+  );
+
+  it("lets CODEX_BRIDGE_WORKSPACE_ROOTS take over the search order", () => {
+    const first = path.join(sandbox, "roots", "first");
+    const second = path.join(sandbox, "roots", "second");
+    fs.mkdirSync(path.join(second, "only-here"), { recursive: true });
+    fs.mkdirSync(path.join(first, "in-both"), { recursive: true });
+    fs.mkdirSync(path.join(second, "in-both"), { recursive: true });
+
+    process.env.CODEX_BRIDGE_WORKSPACE_ROOTS = [first, second].join(path.delimiter);
+    try {
+      assert.equal(resolveWorkspacePath("/Volumes/Win_Dev/only-here").path, path.join(second, "only-here"));
+      assert.equal(
+        resolveWorkspacePath("/Volumes/Win_Dev/in-both").path,
+        path.join(first, "in-both"),
+        "the configured order decides, not the filesystem",
+      );
+    } finally {
+      delete process.env.CODEX_BRIDGE_WORKSPACE_ROOTS;
+    }
+  });
+
+  it("honours a different share mount and drive letter", () => {
+    const project = path.join(sandbox, "other-share-project");
+    fs.mkdirSync(project, { recursive: true });
+    process.env.CODEX_BRIDGE_SHARE_MOUNT = "/Volumes/Data";
+    process.env.CODEX_BRIDGE_SHARE_DRIVE = "d";
+    try {
+      assert.equal(resolveWorkspacePath("/Volumes/Data/other-share-project").path, project);
+      assert.equal(resolveWorkspacePath("D:\\other-share-project").path, project);
+      assert.throws(
+        () => resolveWorkspacePath("/Volumes/Win_Dev/other-share-project"),
+        /No usable working directory/,
+        "the old mount must stop being special once it is reconfigured",
+      );
+    } finally {
+      delete process.env.CODEX_BRIDGE_SHARE_MOUNT;
+      delete process.env.CODEX_BRIDGE_SHARE_DRIVE;
+    }
+  });
+
+  it("does not remap at all when CODEX_BRIDGE_REMAP is off", () => {
+    fs.mkdirSync(path.join(sandbox, "opt-out"), { recursive: true });
+    process.env.CODEX_BRIDGE_REMAP = "0";
+    try {
+      assert.throws(() => resolveWorkspacePath("/Volumes/Win_Dev/opt-out"), /No usable working directory/);
+    } finally {
+      delete process.env.CODEX_BRIDGE_REMAP;
+    }
+  });
 
   it("leaves unrelated absolute paths alone", () => {
     const other = path.join(sandbox, "elsewhere");

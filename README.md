@@ -306,7 +306,9 @@ python3 -c "import json;[print(v['properties']['method'].get('const') or v['prop
 
 **The bridge disappears from Claude after sending into a busy thread.** Fixed in 1.6.0. A rejected `turn/start` — which is exactly what a thread locked by the desktop app produces — also rejected an internal promise nothing was awaiting. Node treats that as an unhandled rejection and, by default, exits the process, so the MCP server died while the tool handler was still formatting a tidy error message for a client that no longer had a server. Pinned by a test that runs the failure in a real child process and asserts it exits 0.
 
-**A thread opens against the wrong directory.** The same project sits at a different absolute path on each machine: `L:\X` on Windows, `/Volumes/Win_Dev/X` when that drive is mounted on macOS (**read-only**), and a native checkout under `$HOME` on macOS. Since 1.4.0 the bridge picks the candidate that both **exists and is writable** on the current machine and prints a `note: cwd remapped …` line whenever it rewrites one. If nothing usable exists it fails immediately instead of opening a thread somewhere wrong. Handing Codex a read-only cwd is a reliable way to hit the freeze above: it runs a few reads, then asks for write permission and stalls. Set `CODEX_BRIDGE_REMAP=0` to switch the rewriting off.
+**A thread opens against the wrong directory.** The same project sits at a different absolute path on each machine: on the shared drive's letter under Windows, under its mount point when that drive is visible from macOS (**read-only** there), and in a native checkout otherwise. Since 1.4.0 the bridge picks the candidate that both **exists and is writable** on the current machine and prints a `note: cwd remapped …` line whenever it rewrites one. If nothing usable exists it fails immediately instead of opening a thread somewhere wrong. Handing Codex a read-only cwd is a reliable way to hit the freeze above: it runs a few reads, then asks for write permission and stalls.
+
+Where it looks, in order: `$HOME/<project>`, then `<the bridge's own parent directory>/<project>`, then the share mount itself. The second one is derived rather than configured — a bridge checked out at `~/code/codex-mcp-bridge` makes `~/code` the obvious place to find a sibling project, so a working setup needs no configuration at all. Override the whole list with `CODEX_BRIDGE_WORKSPACE_ROOTS`, point `CODEX_BRIDGE_SHARE_MOUNT` and `CODEX_BRIDGE_SHARE_DRIVE` at your own dual-boot pair, or set `CODEX_BRIDGE_REMAP=0` to switch the rewriting off entirely.
 
 Note: Codex Desktop does **not** group threads by directory — the sidebar has `Pinned` and everything else, and the protocol exposes no API to file a thread under a section (`thread/start` takes no `sectionId`; `thread/metadata/update` only patches gitInfo). What ties a thread to a project is its `cwd`.
 
@@ -324,7 +326,10 @@ The bridge reads these from the environment its MCP client hands it — there is
 | `CODEX_BIN` | auto-detected | Path to `codex` used for autostart. |
 | `CODEX_BRIDGE_AUTOSTART` | `1` | `0` = never spawn an app-server; one must already be running. |
 | `CODEX_BRIDGE_APPROVAL` | `approve` | How to answer approval requests from Codex. Set `deny` to refuse. |
-| `CODEX_BRIDGE_REMAP` | `1` | `0` disables cwd remapping between `L:\X`, `/Volumes/Win_Dev/X` and a `$HOME` checkout. |
+| `CODEX_BRIDGE_REMAP` | `1` | `0` disables cwd remapping between the shared drive and a local checkout. |
+| `CODEX_BRIDGE_SHARE_MOUNT` | `/Volumes/Win_Dev` | Where the shared drive appears on this machine. |
+| `CODEX_BRIDGE_SHARE_DRIVE` | `L:` | The same drive's letter on the Windows side. |
+| `CODEX_BRIDGE_WORKSPACE_ROOTS` | `$HOME` and the bridge's parent directory | Where to look for a project by name, most preferred first, separated by `:` (`;` on Windows). Setting it replaces the derived roots rather than adding to them. |
 | `CODEX_BRIDGE_MODEL` | from `~/.codex/config.toml` | Default model for threads and turns the bridge creates, e.g. `gpt-5.6-luna`. |
 | `CODEX_BRIDGE_EFFORT` | from `~/.codex/config.toml` | Default reasoning effort: `minimal` · `low` · `medium` · `high` · `xhigh` · `ultra`. |
 | `CLAUDE_BRIDGE_PEER_NAME` | `codex-<pid>` | The name Claude shows for this bridge in its agent list. |

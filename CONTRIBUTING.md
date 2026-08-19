@@ -1,4 +1,4 @@
-# Working on this repo
+# Contributing
 
 ## Check which copy you are in
 
@@ -28,8 +28,9 @@ npm test          # the whole suite: no Codex install, no login, no quota
 npm run check     # boots the bridge against a real app-server and lists threads
 ```
 
-`npm test` is the gate. It runs against a fake app-server and a throwaway
-`HOME`, so it is the one to run on every commit.
+`npm test` is the gate, and CI runs the same command on Node 22 and 24 across
+Linux and macOS. It works against a fake app-server and a throwaway `HOME`, so
+it is the one to run on every commit.
 
 `npm run smoke` sends real turns to Codex and spends quota — run it when the
 change touches turn handling, not on every commit.

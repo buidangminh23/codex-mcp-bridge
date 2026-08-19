@@ -4,12 +4,32 @@ import path from "node:path";
 const APPROVAL_POLICIES = new Set(["untrusted", "on-failure", "on-request", "never"]);
 const SANDBOXES = new Set(["read-only", "workspace-write"]);
 
+/**
+ * Resolves the deepest ancestor that exists and re-appends the rest, rather
+ * than giving up on the whole path when the leaf is missing. Falling back to
+ * the unresolved path made containment depend on the platform: macOS puts
+ * temporary and home directories behind symlinks (/var -> /private/var), so an
+ * allowed root canonicalised while a missing candidate did not, and the two
+ * stopped sharing a prefix; on Linux, with no symlink in the way, the same
+ * pair matched. Same policy, opposite answer, decided by a detail of the disk.
+ *
+ * Resolving the existing prefix keeps the protection that matters: a symlink
+ * pointing out of an allowed root resolves to where it really goes, so it is
+ * still recognised as outside.
+ */
 function canonicalPath(input) {
   const resolved = path.resolve(input);
-  try {
-    return realpathSync.native(resolved);
-  } catch {
-    return resolved;
+  let head = resolved;
+  const missing = [];
+  for (;;) {
+    try {
+      return path.join(realpathSync.native(head), ...missing);
+    } catch {
+      const parent = path.dirname(head);
+      if (parent === head) return resolved;
+      missing.unshift(path.basename(head));
+      head = parent;
+    }
   }
 }
 

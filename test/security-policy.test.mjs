@@ -46,12 +46,39 @@ describe("bridge security policy", () => {
 
       assert.deepEqual(
         listed.map((thread) => thread.id),
-        ["in-scope", "nested"],
-        "a cwd this machine cannot resolve stays out: containment is decided on the real path, " +
-          "and a directory that is not there cannot be shown to be inside the root",
+        ["in-scope", "nested", "gone"],
+        "a directory inside the root counts as inside it whether or not it still exists - " +
+          "the answer must not depend on whether the platform put a symlink above the root",
       );
       assert.equal(policy.isThreadAuthorized("in-scope"), false, "listing must not grant the right to send");
       assert.throws(() => policy.assertThread("in-scope"), /No authorized Codex threads/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The case containment exists for. A link inside an allowed root that points
+   * out of it must resolve to where it really goes - otherwise the root is a
+   * suggestion, and anything reachable by one hop is in scope.
+   */
+  it("treats a symlink out of an allowed root as outside it", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-root-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-"));
+    try {
+      fs.mkdirSync(path.join(outside, "secrets"));
+      fs.symlinkSync(outside, path.join(root, "escape"));
+      const policy = new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: root });
+
+      assert.equal(policy.isCwdAuthorized(path.join(root, "escape")), false);
+      assert.equal(policy.isCwdAuthorized(path.join(root, "escape", "secrets")), false);
+      assert.equal(
+        policy.isCwdAuthorized(path.join(root, "escape", "not-created-yet")),
+        false,
+        "a missing leaf must not launder a path back inside the root",
+      );
+      assert.equal(policy.isCwdAuthorized(path.join(root, "real")), true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(outside, { recursive: true, force: true });

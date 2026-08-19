@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { CodexAppServerClient } from "../src/app-server-client.mjs";
+import { CodexAppServerClient, writerLockWarning } from "../src/app-server-client.mjs";
 import { runTurn } from "../src/turn.mjs";
 import { startFakeAppServer } from "./helpers/fake-app-server.mjs";
 
@@ -89,6 +89,45 @@ describe("recovery from a dropped app-server connection", () => {
       client.ws?.close();
       await server.close();
     }
+  });
+
+  /**
+   * The app-server takes the per-thread writer lock when it loads a thread, so
+   * the desktop app refuses to write to it and says only that the thread is
+   * open somewhere else. The bridge knows exactly which threads it is holding,
+   * so it can say so at the moment it opens one.
+   */
+  it("knows which threads it is holding the writer lock on", async () => {
+    const server = await startFakeAppServer({ onRequest: respondToEverything });
+    const client = new CodexAppServerClient({ url: server.url, autoStart: false, log: () => {} });
+    try {
+      assert.equal(client.holdsThread("thread-a"), false, "nothing is held before anything is attached");
+
+      await client.ensureThreadAttached("thread-a");
+      assert.equal(client.holdsThread("thread-a"), true);
+      assert.equal(client.holdsThread("thread-b"), false);
+
+      client.markAttached("thread-b", { cwd: "/anywhere" });
+      assert.equal(client.holdsThread("thread-b"), true, "a thread the bridge created is held too");
+
+      server.dropConnection();
+      await sleep(150);
+      assert.equal(
+        client.holdsThread("thread-a"),
+        false,
+        "a dropped app-server released the lock with it, so the bridge must stop claiming it",
+      );
+    } finally {
+      client.ws?.close();
+      await server.close();
+    }
+  });
+
+  it("names the thread and the way out in the warning", () => {
+    const warning = writerLockWarning("01a0-beef");
+    assert.match(warning, /01a0-beef/);
+    assert.match(warning, /stop_codex_app_server/);
+    assert.match(warning, /open in another application/);
   });
 
   it("reports a clear error when nothing is listening and autostart is off", async () => {

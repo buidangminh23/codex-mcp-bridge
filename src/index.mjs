@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { CodexAppServerClient } from "./app-server-client.mjs";
+import { CodexAppServerClient, writerLockWarning } from "./app-server-client.mjs";
 import {
   IS_MACOS,
   PLATFORM_LABEL,
@@ -19,7 +19,7 @@ import {
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
 
-const VERSION = "1.9.1";
+const VERSION = "1.9.2";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -172,7 +172,8 @@ server.registerTool(
       });
       const body = formatTurn(result);
       const failed = result.status === "failed" || result.status === "disconnected";
-      return textResult(openNote ? `${openNote}\n${body}` : body, failed);
+      const held = openInApp && client.holdsThread(threadId) ? writerLockWarning(threadId) : "";
+      return textResult(`${openNote ? `${openNote}\n${body}` : body}${held}`, failed);
     } catch (err) {
       return failure(err);
     }
@@ -371,7 +372,8 @@ server.registerTool(
       const thread = await client.call("thread/read", { threadId });
       security.assertCwd((thread?.thread ?? thread)?.cwd);
       const url = await openThreadInCodexApp(threadId, { activate: !background });
-      return textResult(`Opened ${url} in the Codex desktop app.`);
+      const held = client.holdsThread(threadId) ? writerLockWarning(threadId) : "";
+      return textResult(`Opened ${url} in the Codex desktop app.${held}`);
     } catch (err) {
       return textResult(`${err.message}`, true);
     }
@@ -399,7 +401,7 @@ server.registerTool(
       const result = await client.stopServer();
       return textResult(
         result.stopped
-          ? `Stopped the shared app-server (pid ${result.pids.join(", ")}). The Codex desktop app now owns ~/.codex alone.`
+          ? `Stopped the shared app-server (pid ${result.pids.join(", ")}). Its thread writer locks are released, so the Codex desktop app now owns ~/.codex and every thread it was holding.`
           : `Nothing to stop: ${result.reason}.`,
       );
     } catch (err) {

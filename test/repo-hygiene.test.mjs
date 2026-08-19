@@ -63,6 +63,44 @@ describe("repository hygiene", { skip: notAGitCheckout }, () => {
     }
   });
 
+  /**
+   * A path naming a real home directory, volume or checkout is a fact about
+   * one machine, and it reads as an instruction to everyone else who clones
+   * the repository. Placeholders say the same thing without pinning it to a
+   * disk that only one person has.
+   *
+   * This file is excluded from its own scan: the patterns it forbids have to
+   * appear here to be forbidden at all.
+   */
+  it("names no real home directory, volume or checkout", () => {
+    const everywhere = [
+      { pattern: /\/Users\/(?!<user>)[A-Za-z0-9._-]+/g, hint: "use /Users/<user>" },
+      { pattern: /\/home\/(?!<user>)[A-Za-z0-9._-]+/g, hint: "use /home/<user>" },
+    ];
+    /**
+     * Prose has no reason to name a volume, but a test has to hand the code
+     * under test a concrete string - the invented labels in the fixtures name
+     * nobody's disk.
+     */
+    const proseOnly = [{ pattern: /\/Volumes\/(?!<label>)[A-Za-z0-9._-]+/g, hint: "use /Volumes/<label>" }];
+    const self = "test/repo-hygiene.test.mjs";
+    const offences = [];
+
+    for (const file of tracked.filter((f) => f !== self && !f.endsWith(".json"))) {
+      const text = fs.readFileSync(path.join(root, file), "utf8");
+      const patterns = file.endsWith(".md") ? [...everywhere, ...proseOnly] : everywhere;
+      text.split("\n").forEach((line, index) => {
+        for (const { pattern, hint } of patterns) {
+          for (const match of line.matchAll(pattern)) {
+            offences.push(`${file}:${index + 1} ${match[0]} (${hint})`);
+          }
+        }
+      });
+    }
+
+    assert.deepEqual(offences, [], `machine-specific paths must not be committed:\n${offences.join("\n")}`);
+  });
+
   it("documents the repository in English only", () => {
     const markdown = tracked.filter((file) => file.endsWith(".md"));
     const vietnamese = /[àáâãèéêìíòóôõùúýăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i;

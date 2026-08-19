@@ -2,6 +2,16 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.9.1] - 2026-08-19
+
+### Changed
+
+- **Nothing tracked here names a real home directory, volume or checkout any more.** `CLAUDE.md` documented one contributor's machines by absolute path and the changelog quoted the same drive letter and mount point. To anyone else cloning the repository that reads as an instruction rather than as one person's setup. The same guidance is now stated as the situation it actually is - a tree reachable at more than one path, read-only on the macOS side of a shared NTFS drive - together with the two commands that tell you which copy you are in.
+
+### Added
+
+- `test/repo-hygiene.test.mjs` fails the build on a path naming a real home directory, and on a real volume name in prose. Fixtures may still use invented volume labels, because a test has to hand the code under test a concrete string. Verified by injecting a real path and watching the suite go red.
+
 ## [1.9.0] - 2026-08-19
 
 ### Security
@@ -20,7 +30,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Changed
 
-- **No drive letter or volume label is blessed any more.** 1.7.0 still shipped `/Volumes/Win_Dev` and `L:` as defaults, which is one machine's storage layout wearing a configuration hat. A path now counts as coming from another machine by its *shape* — a drive letter (`D:\project`) or an attached volume (`/Volumes/<label>/`, `/mnt/<label>/`, `/media/<user>/<label>/`) — so every dual-boot and external-disk setup is handled without configuring anything.
+- **No drive letter or volume label is blessed any more.** 1.7.0 still shipped one machine's mount point and drive letter as defaults, which is a storage layout wearing a configuration hat. A path now counts as coming from another machine by its *shape* — a drive letter (`D:\project`) or an attached volume (`/Volumes/<label>/`, `/mnt/<label>/`, `/media/<user>/<label>/`) — so every dual-boot and external-disk setup is handled without configuring anything.
 - **The path as given is tried first.** Rewriting a directory this machine can already write to would be guessing over an explicit instruction. Rewriting now only happens for a path this machine cannot use, which is exactly the case it exists for: macOS mounts NTFS read-only (measured: `EROFS` on the mount this was built for), so the drive a Windows brief quotes is visible and useless at the same time. This is what makes recognising every volume safe rather than reckless.
 
 ### Removed
@@ -29,17 +39,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Verified
 
-- Every path that resolved under the hardcoded version resolves to the same directory: `/Volumes/Win_Dev/<repo>` and `L:\<repo>` to the checkout beside the bridge, `L:\PCC4SH` to the `$HOME`-level one, a nonexistent project still failing with the list of what was tried.
+- Every path that resolved under the hardcoded version resolves to the same directory: the mounted-drive and drive-letter forms of a repo both reach the checkout beside the bridge, another project reaches its `$HOME`-level checkout, and a nonexistent project still fails with the list of what was tried.
 
 ## [1.7.0] - 2026-08-19
 
 ### Changed
 
-- **The cwd remapping no longer hardcodes one developer's directory layout.** `remapCandidates()` used to probe a literal `$HOME/minhspark/<project>`, which is a fact about one machine sitting in the source of a public repository. The second candidate is now derived from where the bridge itself is checked out: a bridge at `~/code/codex-mcp-bridge` makes `~/code` the place to look for a sibling project. That is a measurement rather than a guess, and it needs no configuration to be right. Verified unchanged on the machine the hardcoded value came from — every path that resolved before resolves to the same directory now.
+- **The cwd remapping no longer hardcodes one developer's directory layout.** `remapCandidates()` used to probe a literal `$HOME/<a developer's own folder>/<project>`, which is a fact about one machine sitting in the source of a public repository. The second candidate is now derived from where the bridge itself is checked out: a bridge at `~/code/codex-mcp-bridge` makes `~/code` the place to look for a sibling project. That is a measurement rather than a guess, and it needs no configuration to be right. Verified unchanged on the machine the hardcoded value came from — every path that resolved before resolves to the same directory now.
 
 ### Added
 
-- `CODEX_BRIDGE_SHARE_MOUNT` and `CODEX_BRIDGE_SHARE_DRIVE` — the two halves of the dual-boot pair the remapping bridges, previously fixed at `/Volumes/Win_Dev` and `L:`. Those remain the defaults; a drive letter is normalised, so `d`, `D` and `D:` all mean the same thing.
+- `CODEX_BRIDGE_SHARE_MOUNT` and `CODEX_BRIDGE_SHARE_DRIVE` — the two halves of the dual-boot pair the remapping bridges, previously fixed at one machine's mount point and drive letter. Those remain the defaults; a drive letter is normalised, so `d`, `D` and `D:` all mean the same thing.
 - `CODEX_BRIDGE_WORKSPACE_ROOTS` — take over the search entirely with an explicit, ordered, `path.delimiter`-separated list. It replaces the derived roots rather than adding to them, so the order is exactly what was written.
 - Candidate lists are deduplicated, so a bridge checked out directly in `$HOME` no longer probes the same directory twice.
 - `CODEX_BRIDGE_REMAP`, `CODEX_BRIDGE_SHARE_MOUNT` and `CODEX_BRIDGE_SHARE_DRIVE` are read per call instead of at import, so a client that changes the environment does not have to restart the bridge to be believed — and so the behaviour is testable in-process.
@@ -88,7 +98,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
   - `item/tool/call` — a dynamic tool call back to the client.
 
   Each method needs the response shape its own schema declares; they are **not** interchangeable: `commandExecution`/`fileChange` need `{decision}`, `permissions` needs `{permissions, scope}`, `elicitation` needs `{action}`, `tool/call` needs `{success, contentItems}`. `attestation/generate` and `account/chatgptAuthTokens/refresh` are refused deliberately — the bridge cannot mint real tokens and does not touch auth.
-- **Threads opened against the wrong directory.** The same project sits at `L:\X` on Windows, `/Volumes/Win_Dev/X` when that drive is mounted on macOS (read-only), and a separate checkout under `$HOME` on macOS. `resolveWorkspacePath()` picks the candidate that both exists and is writable on the current machine. If nothing usable exists it fails immediately instead of opening a thread somewhere wrong; if the only match is read-only it says so. Disable with `CODEX_BRIDGE_REMAP=0`.
+- **Threads opened against the wrong directory.** The same project sits at `D:\X` on Windows, `/Volumes/<label>/X` when that drive is mounted on macOS (read-only), and a separate checkout under `$HOME` on macOS. `resolveWorkspacePath()` picks the candidate that both exists and is writable on the current machine. If nothing usable exists it fails immediately instead of opening a thread somewhere wrong; if the only match is read-only it says so. Disable with `CODEX_BRIDGE_REMAP=0`.
 - **The wrong codex build spawned the app-server.** On macOS the bridge probed `~/.local/bin/codex` first and started a 0.147 app-server while Codex Desktop ran 0.148 — two builds writing the same `~/.codex/state_5.sqlite`. When the desktop app is installed, its own binary now wins.
 
 ### Added
@@ -131,7 +141,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 ### Fixed
 
 - The MCP server died when spawned with an empty PATH: `/bin/ps` is now called by absolute path and a failed peer registration no longer takes the server down (the old symptom was Codex hanging for 60s on every `thread/start`).
-- Claude transcripts are found by scanning `~/.claude/projects/` instead of rebuilding the directory slug (`/Volumes/Win_Dev` becomes `-Volumes-Win-Dev`, which does not preserve `_`).
+- Claude transcripts are found by scanning `~/.claude/projects/` instead of rebuilding the directory slug (`/mnt/dev_disk` becomes `-mnt-dev-disk`, which does not preserve `_`).
 
 ## [1.1.0] - 2026-08-17
 

@@ -44,8 +44,12 @@ export function decodeFrames(buffer) {
  * to exercise the bridge: the WebSocket handshake, the `initialize` reply, and
  * whatever the test decides to answer. Keeping it dependency-free means the
  * connection tests run anywhere without a real Codex install or quota.
+ *
+ * `port` defaults to 0 so the OS assigns a free one and test files running in
+ * parallel cannot collide on a hardcoded port. Read the real port back from
+ * the returned `port` field.
  */
-export async function startFakeAppServer({ port, onRequest, autoInitialize = true, failFirstUpgrades = 0 } = {}) {
+export async function startFakeAppServer({ port = 0, onRequest, autoInitialize = true, failFirstUpgrades = 0 } = {}) {
   const state = { socket: null, replies: [], sockets: new Set(), connections: 0, refused: 0 };
 
   const http = createServer((req, res) => {
@@ -102,9 +106,12 @@ export async function startFakeAppServer({ port, onRequest, autoInitialize = tru
   });
 
   await new Promise((resolve) => http.listen(port, "127.0.0.1", resolve));
+  const boundPort = http.address().port;
 
   return {
     ...state,
+    port: boundPort,
+    url: `ws://127.0.0.1:${boundPort}`,
     get socket() {
       return state.socket;
     },

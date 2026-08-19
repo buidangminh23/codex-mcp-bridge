@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { PLATFORM_LABEL, resolveCodexBin, spawnEnv } from "./platform.mjs";
+import { assertAllowedAppServerUrl } from "./security-policy.mjs";
 
 const DEFAULT_URL = "ws://127.0.0.1:8791";
 const CONNECT_ATTEMPTS = 2;
@@ -22,11 +23,18 @@ export class AppServerError extends Error {
 export class CodexAppServerClient {
   constructor(options = {}) {
     this.url = options.url ?? process.env.CODEX_APP_SERVER_URL ?? DEFAULT_URL;
+    assertAllowedAppServerUrl(this.url);
     this.codexBin = resolveCodexBin(options.codexBin);
     this.autoStart = options.autoStart ?? process.env.CODEX_BRIDGE_AUTOSTART !== "0";
-    this.approval = options.approval ?? process.env.CODEX_BRIDGE_APPROVAL ?? "approve";
     this.log = options.log ?? (() => {});
+    const requestedApproval = options.approval ?? process.env.CODEX_BRIDGE_APPROVAL ?? "deny";
+    const autoApproveAcknowledged = options.allowAutoApprove ?? process.env.CODEX_BRIDGE_AUTO_APPROVE_ACK === "1";
+    this.approval = requestedApproval === "approve" && !autoApproveAcknowledged ? "deny" : requestedApproval;
     this.clientInfo = options.clientInfo ?? { name: "codex-mcp-bridge", version: "1.0.0" };
+
+    if (requestedApproval === "approve" && !autoApproveAcknowledged) {
+      this.log("CODEX_BRIDGE_APPROVAL=approve ignored without CODEX_BRIDGE_AUTO_APPROVE_ACK=1");
+    }
 
     this.ws = null;
     this.connecting = null;

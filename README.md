@@ -220,7 +220,7 @@ On macOS and Linux the `codex` launcher is a Node script with a `#!/usr/bin/env 
 |---|---|---|
 | `send_to_codex_thread` | Sends a prompt as a user turn into `threadId`, waits for `turn/completed`, returns Codex's reply plus an activity trail (commands run, files changed). | destructive |
 | `list_codex_threads` | Lists threads (id, title, cwd, last update, status) so you can pick the **exact** `threadId`. `loadedOnly: true` shows only threads live inside the app-server. On macOS each row carries a `codex://threads/<id>` deep link. | read-only |
-| `start_codex_thread` | Opens a new Codex thread at a given `cwd` and returns its `threadId`. | writes |
+| `start_codex_thread` | Opens a new Codex thread at a permitted `cwd` and returns its `threadId`; the bridge applies its configured safe sandbox and approval policy. | writes |
 | `read_codex_thread` | Reads the recent conversation without sending anything. | read-only |
 | `interrupt_codex_turn` | Stops a turn that is still running. | destructive |
 | `open_codex_thread` | **macOS**: brings a thread to the front in the Codex desktop app via `codex://threads/<id>` so a human can watch it work. Pass `background: true` to open without stealing focus. | writes |
@@ -228,6 +228,8 @@ On macOS and Linux the `codex` launcher is a Node script with a `#!/usr/bin/env 
 | `codex_bridge_status` | Reports the environment: platform, resolved `codex` binary, whether the app-server endpoint is live, plus the macOS integrations (LaunchAgent, desktop app), and **warns when two app-servers are running**. Start here when something misbehaves. | read-only |
 
 `send_to_codex_thread` also accepts `timeoutSec` (default 240), `cwd`, `model`, `effort`, and `openInApp` (macOS — surface the thread in the desktop app before sending). A timeout does **not** cancel the turn: the bridge returns what it collected plus the `turnId`; keep reading with `read_codex_thread` or stop it with `interrupt_codex_turn`.
+
+Thread operations are deny-by-default. Set `CODEX_BRIDGE_ALLOWED_THREADS` to a comma-separated list of exact thread IDs you want this MCP server to access; threads created by `start_codex_thread` are authorized for the lifetime of this bridge process. Set `CODEX_BRIDGE_ALLOWED_ROOTS` to the absolute project directories the bridge may use. The installer defaults that root to this repository, so change it when delegating into another project.
 
 ## Tools — `claude-bridge` (runs inside Codex)
 
@@ -308,7 +310,9 @@ python3 -c "import json;[print(v['properties']['method'].get('const') or v['prop
 
 **A thread opens against the wrong directory.** The same project sits at a different absolute path on each machine: on the shared drive's letter under Windows, under its mount point when that drive is visible from macOS (**read-only** there), and in a native checkout otherwise. Since 1.4.0 the bridge picks the candidate that both **exists and is writable** on the current machine and prints a `note: cwd remapped …` line whenever it rewrites one. If nothing usable exists it fails immediately instead of opening a thread somewhere wrong. Handing Codex a read-only cwd is a reliable way to hit the freeze above: it runs a few reads, then asks for write permission and stalls.
 
-Where it looks, in order: `$HOME/<project>`, then `<the bridge's own parent directory>/<project>`, then the share mount itself. The second one is derived rather than configured — a bridge checked out at `~/code/codex-mcp-bridge` makes `~/code` the obvious place to find a sibling project, so a working setup needs no configuration at all. Override the whole list with `CODEX_BRIDGE_WORKSPACE_ROOTS`, point `CODEX_BRIDGE_SHARE_MOUNT` and `CODEX_BRIDGE_SHARE_DRIVE` at your own dual-boot pair, or set `CODEX_BRIDGE_REMAP=0` to switch the rewriting off entirely.
+**The path as given always goes first.** If this machine can already write there, nothing is rewritten — guessing over an explicit instruction would be the bug. Rewriting only happens for a path this machine cannot use, which is exactly the case it exists for: macOS mounts NTFS read-only, so the drive a Windows brief quotes is visible and useless at the same time.
+
+A path counts as coming from elsewhere when it names a drive letter (`D:\project`) or an attached volume (`/Volumes/<label>/project`, `/mnt/<label>/project`, `/media/<user>/<label>/project`). No particular letter or label is blessed, so any dual-boot or external-disk layout works without configuration. The bridge then looks for that project name under `$HOME`, then under **its own parent directory** — a bridge checked out at `~/code/codex-mcp-bridge` makes `~/code` the obvious place to find a sibling project, which is measured rather than configured. Override the list with `CODEX_BRIDGE_WORKSPACE_ROOTS`, or set `CODEX_BRIDGE_REMAP=0` to switch the rewriting off entirely.
 
 Note: Codex Desktop does **not** group threads by directory — the sidebar has `Pinned` and everything else, and the protocol exposes no API to file a thread under a section (`thread/start` takes no `sectionId`; `thread/metadata/update` only patches gitInfo). What ties a thread to a project is its `cwd`.
 
@@ -322,13 +326,16 @@ The bridge reads these from the environment its MCP client hands it — there is
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CODEX_APP_SERVER_URL` | `ws://127.0.0.1:8791` | Shared app-server endpoint. |
+| `CODEX_APP_SERVER_URL` | `ws://127.0.0.1:8791` | Shared **loopback-only** app-server endpoint. Non-loopback endpoints are rejected because this bridge does not implement remote WebSocket authentication. |
 | `CODEX_BIN` | auto-detected | Path to `codex` used for autostart. |
 | `CODEX_BRIDGE_AUTOSTART` | `1` | `0` = never spawn an app-server; one must already be running. |
-| `CODEX_BRIDGE_APPROVAL` | `approve` | How to answer approval requests from Codex. Set `deny` to refuse. |
-| `CODEX_BRIDGE_REMAP` | `1` | `0` disables cwd remapping between the shared drive and a local checkout. |
-| `CODEX_BRIDGE_SHARE_MOUNT` | `/Volumes/Win_Dev` | Where the shared drive appears on this machine. |
-| `CODEX_BRIDGE_SHARE_DRIVE` | `L:` | The same drive's letter on the Windows side. |
+| `CODEX_BRIDGE_ALLOWED_THREADS` | empty | Exact comma-separated thread IDs permitted for read/send/interrupt/open/list. Empty means no pre-existing thread access. |
+| `CODEX_BRIDGE_ALLOWED_ROOTS` | empty (installer sets its repo root) | Absolute project directories permitted for `cwd`, separated by `:` (`;` on Windows). |
+| `CODEX_BRIDGE_APPROVAL` | `deny` | How to answer approval requests from Codex. `approve` is ignored unless `CODEX_BRIDGE_AUTO_APPROVE_ACK=1` is also set. |
+| `CODEX_BRIDGE_AUTO_APPROVE_ACK` | empty | Explicit acknowledgement required to enable automatic command/file approval; set to `1` only after reviewing the risk. |
+| `CODEX_BRIDGE_APPROVAL_POLICY` | `on-request` | Policy applied to threads created by the bridge. It is no longer caller-controlled. |
+| `CODEX_BRIDGE_SANDBOX` | `workspace-write` | Sandbox applied to threads created by the bridge: `read-only` or `workspace-write`; unrestricted `danger-full-access` is rejected. |
+| `CODEX_BRIDGE_REMAP` | `1` | `0` disables cwd remapping between a shared drive and a local checkout. |
 | `CODEX_BRIDGE_WORKSPACE_ROOTS` | `$HOME` and the bridge's parent directory | Where to look for a project by name, most preferred first, separated by `:` (`;` on Windows). Setting it replaces the derived roots rather than adding to them. |
 | `CODEX_BRIDGE_MODEL` | from `~/.codex/config.toml` | Default model for threads and turns the bridge creates, e.g. `gpt-5.6-luna`. |
 | `CODEX_BRIDGE_EFFORT` | from `~/.codex/config.toml` | Default reasoning effort: `minimal` · `low` · `medium` · `high` · `xhigh` · `ultra`. |
@@ -343,7 +350,7 @@ The bridge reads these from the environment its MCP client hands it — there is
 sqlite3 ~/.codex/state_5.sqlite "select model, reasoning_effort from threads order by updated_at desc limit 3;"
 ```
 
-**About approvals:** Codex asks for command and patch approval unless `approval_policy` is `never`. Nobody is sitting in front of Claude Desktop to click, so the bridge answers according to `CODEX_BRIDGE_APPROVAL` and logs each decision to stderr. The `approve` default matches an `approval_policy = "never"` + `sandbox_mode = "danger-full-access"` setup in `~/.codex/config.toml`; with a tighter sandbox, consider `deny`.
+**About approvals:** Codex asks for command and patch approval unless `approval_policy` is `never`. The bridge denies those requests by default and logs each decision to stderr. Automatic approval is an explicit opt-in requiring both `CODEX_BRIDGE_APPROVAL=approve` and `CODEX_BRIDGE_AUTO_APPROVE_ACK=1`; keep the sandbox at `workspace-write` or `read-only`.
 
 ## Sharing the app-server with an interactive Codex session
 

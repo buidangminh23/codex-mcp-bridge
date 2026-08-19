@@ -9,6 +9,7 @@ const cwdForTest = process.env.SMOKE_CWD ?? root;
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [path.join(root, "src", "index.mjs")],
+  env: { ...process.env, CODEX_BRIDGE_ALLOWED_ROOTS: process.env.CODEX_BRIDGE_ALLOWED_ROOTS ?? cwdForTest },
   stderr: "inherit",
 });
 const client = new Client({ name: "smoke", version: "1.0.0" });
@@ -22,7 +23,7 @@ console.log("\n--- list_codex_threads ---\n" + listed.content[0].text.slice(0, 9
 
 const created = await client.callTool({
   name: "start_codex_thread",
-  arguments: { cwd: cwdForTest, approvalPolicy: "never", sandbox: "read-only" },
+  arguments: { cwd: cwdForTest },
 });
 console.log("\n--- start_codex_thread ---\n" + created.content[0].text);
 const threadId = created.content[0].text.match(/threadId: ([0-9a-f-]+)/)?.[1];

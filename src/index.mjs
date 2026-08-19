@@ -17,8 +17,9 @@ import {
   resolveWorkspacePath,
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
+import { BridgeSecurityPolicy } from "./security-policy.mjs";
 
-const VERSION = "1.7.0";
+const VERSION = "1.8.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -28,6 +29,7 @@ const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
  */
 const DEFAULT_MODEL = process.env.CODEX_BRIDGE_MODEL || null;
 const DEFAULT_EFFORT = process.env.CODEX_BRIDGE_EFFORT || null;
+const security = new BridgeSecurityPolicy();
 
 const client = new CodexAppServerClient({
   clientInfo: { name: "codex-mcp-bridge", title: "Codex MCP Bridge", version: VERSION },
@@ -138,6 +140,7 @@ server.registerTool(
   async ({ threadId, prompt, timeoutSec, cwd, model, effort, openInApp }) => {
     let openNote = null;
     try {
+      security.assertThread(threadId);
       if (openInApp) {
         try {
           openNote = `opened in Codex app: ${await openThreadInCodexApp(threadId)}`;
@@ -148,6 +151,7 @@ server.registerTool(
       let resolvedCwd = null;
       if (cwd) {
         const workspace = resolveWorkspacePath(cwd);
+        security.assertCwd(workspace.path);
         resolvedCwd = workspace.path;
         if (workspace.note) openNote = openNote ? `${openNote}\n${workspace.note}` : workspace.note;
       }
@@ -194,11 +198,15 @@ server.registerTool(
   async ({ limit, cwd, searchTerm, loadedOnly }) => {
     try {
       const params = { limit: limit ?? 15 };
-      if (cwd) params.cwd = { paths: [resolveWorkspacePath(cwd).path] };
+      if (cwd) {
+        const workspace = resolveWorkspacePath(cwd);
+        security.assertCwd(workspace.path);
+        params.cwd = { paths: [workspace.path] };
+      }
       if (searchTerm) params.searchTerm = searchTerm;
       const method = loadedOnly ? "thread/loaded/list" : "thread/list";
       const res = await client.call(method, loadedOnly ? { limit: limit ?? 15 } : params);
-      const rows = res?.data ?? res?.threads ?? [];
+      const rows = security.filterThreads(res?.data ?? res?.threads ?? []);
       if (!rows.length) return textResult("No Codex threads matched.");
       return textResult(
         `${rows.length} Codex thread(s) via ${client.url}:\n\n${rows.map(formatThreadRow).join("\n")}`,
@@ -217,17 +225,6 @@ server.registerTool(
     inputSchema: {
       cwd: z.string().describe("Absolute working directory for the new Codex session"),
       model: z.string().optional().describe("Model override, e.g. gpt-5.6-luna"),
-      approvalPolicy: z
-        .enum(["untrusted", "on-failure", "on-request", "never"])
-        .optional()
-        .describe(
-          "When Codex should ask before running a command. Nobody is watching a bridged thread, so " +
-            "anything other than 'never' means the turn stalls on the first prompt unless CODEX_BRIDGE_APPROVAL answers it.",
-        ),
-      sandbox: z
-        .enum(["read-only", "workspace-write", "danger-full-access"])
-        .optional()
-        .describe("How much of the machine Codex may touch in this thread (default: whatever ~/.codex/config.toml says)"),
     },
     annotations: {
       readOnlyHint: false,
@@ -236,17 +233,21 @@ server.registerTool(
       openWorldHint: true,
     },
   },
-  async ({ cwd, model, approvalPolicy, sandbox }) => {
+  async ({ cwd, model }) => {
     try {
       const workspace = resolveWorkspacePath(cwd);
+      security.assertCwd(workspace.path);
       const res = await client.call("thread/start", {
         cwd: workspace.path,
         ...(model ?? DEFAULT_MODEL ? { model: model ?? DEFAULT_MODEL } : {}),
-        ...(approvalPolicy ? { approvalPolicy } : {}),
-        ...(sandbox ? { sandbox } : {}),
+        approvalPolicy: security.approvalPolicy,
+        sandbox: security.sandbox,
       });
       const thread = res?.thread ?? {};
-      if (thread.id) client.markAttached(thread.id);
+      if (thread.id) {
+        client.markAttached(thread.id);
+        security.registerThread(thread.id);
+      }
       return textResult(
         [
           "Created Codex thread",
@@ -278,6 +279,7 @@ server.registerTool(
   },
   async ({ threadId, limit }) => {
     try {
+      security.assertThread(threadId);
       const res = await client.call("thread/read", { threadId, includeTurns: true });
       const thread = res?.thread ?? res ?? {};
       const items = (thread.turns ?? []).flatMap((t) => t.items ?? []);
@@ -319,6 +321,7 @@ server.registerTool(
   },
   async ({ threadId, turnId }) => {
     try {
+      security.assertThread(threadId);
       await client.call("turn/interrupt", { threadId, turnId });
       return textResult(`Interrupted turn ${turnId} in thread ${threadId}.`);
     } catch (err) {
@@ -350,6 +353,7 @@ server.registerTool(
   },
   async ({ threadId, background }) => {
     try {
+      security.assertThread(threadId);
       const url = await openThreadInCodexApp(threadId, { activate: !background });
       return textResult(`Opened ${url} in the Codex desktop app.`);
     } catch (err) {
@@ -420,6 +424,7 @@ server.registerTool(
       `defaults:       model ${DEFAULT_MODEL ?? "(from ~/.codex/config.toml)"}, effort ${DEFAULT_EFFORT ?? "(from ~/.codex/config.toml)"}`,
       `app-server:     ${client.url} - ${up ? "live" : "not reachable"}`,
       `autostart:      ${client.autoStart ? "on" : "off"}   approvals: ${client.approval}`,
+      `security:       ${security.summary().authorizedThreads} authorized thread(s), ${security.summary().allowedRoots.length} allowed root(s), sandbox ${security.sandbox}, thread policy ${security.approvalPolicy}`,
       `live threads:   ${liveThreads ?? "(unknown)"}`,
       `claude desktop config: ${claudeDesktopConfigPath()}`,
     ];

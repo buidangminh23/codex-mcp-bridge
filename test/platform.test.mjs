@@ -22,8 +22,6 @@ const realEnv = {
   USERPROFILE: process.env.USERPROFILE,
   XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
   CODEX_BRIDGE_REMAP: process.env.CODEX_BRIDGE_REMAP,
-  CODEX_BRIDGE_SHARE_MOUNT: process.env.CODEX_BRIDGE_SHARE_MOUNT,
-  CODEX_BRIDGE_SHARE_DRIVE: process.env.CODEX_BRIDGE_SHARE_DRIVE,
   CODEX_BRIDGE_WORKSPACE_ROOTS: process.env.CODEX_BRIDGE_WORKSPACE_ROOTS,
 };
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-platform-"));
@@ -148,7 +146,7 @@ describe("workspace resolution", () => {
   });
 
   /**
-   * The same project sits at L:\X on Windows, /Volumes/Win_Dev/X through the
+   * The same project sits at L:\X on Windows, /Volumes/<label>/X through the
    * NTFS mount on macOS (read-only there) and a native checkout under $HOME.
    * A brief written on one machine quotes a path the other cannot use.
    */
@@ -159,7 +157,7 @@ describe("workspace resolution", () => {
       const project = path.join(sandbox, "shared-project");
       fs.mkdirSync(project, { recursive: true });
 
-      const workspace = resolveWorkspacePath("/Volumes/Win_Dev/shared-project");
+      const workspace = resolveWorkspacePath("/Volumes/Shared/shared-project");
       assert.equal(workspace.path, project);
       assert.equal(workspace.remapped, true);
       assert.equal(workspace.writable, true);
@@ -190,7 +188,7 @@ describe("workspace resolution", () => {
     { skip: IS_WINDOWS ? "the remap targets POSIX homes" : false },
     () => {
       const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-      const workspace = resolveWorkspacePath(`/Volumes/Win_Dev/${path.basename(repoRoot)}`);
+      const workspace = resolveWorkspacePath(`/Volumes/Shared/${path.basename(repoRoot)}`);
       assert.equal(workspace.path, repoRoot, "the sibling lookup should have found this repo");
       assert.equal(workspace.remapped, true);
       assert.ok(!workspace.path.startsWith(sandbox), "HOME does not contain it, so this came from the derived root");
@@ -206,9 +204,9 @@ describe("workspace resolution", () => {
 
     process.env.CODEX_BRIDGE_WORKSPACE_ROOTS = [first, second].join(path.delimiter);
     try {
-      assert.equal(resolveWorkspacePath("/Volumes/Win_Dev/only-here").path, path.join(second, "only-here"));
+      assert.equal(resolveWorkspacePath("/Volumes/Shared/only-here").path, path.join(second, "only-here"));
       assert.equal(
-        resolveWorkspacePath("/Volumes/Win_Dev/in-both").path,
+        resolveWorkspacePath("/Volumes/Shared/in-both").path,
         path.join(first, "in-both"),
         "the configured order decides, not the filesystem",
       );
@@ -217,30 +215,61 @@ describe("workspace resolution", () => {
     }
   });
 
-  it("honours a different share mount and drive letter", () => {
-    const project = path.join(sandbox, "other-share-project");
-    fs.mkdirSync(project, { recursive: true });
-    process.env.CODEX_BRIDGE_SHARE_MOUNT = "/Volumes/Data";
-    process.env.CODEX_BRIDGE_SHARE_DRIVE = "d";
-    try {
-      assert.equal(resolveWorkspacePath("/Volumes/Data/other-share-project").path, project);
-      assert.equal(resolveWorkspacePath("D:\\other-share-project").path, project);
-      assert.throws(
-        () => resolveWorkspacePath("/Volumes/Win_Dev/other-share-project"),
-        /No usable working directory/,
-        "the old mount must stop being special once it is reconfigured",
-      );
-    } finally {
-      delete process.env.CODEX_BRIDGE_SHARE_MOUNT;
-      delete process.env.CODEX_BRIDGE_SHARE_DRIVE;
-    }
-  });
+  /**
+   * No volume label or drive letter is blessed: the shape of the path is the
+   * whole signal, so a setup with any label on any of these mount roots works
+   * without configuring a thing.
+   */
+  it(
+    "recognises any drive letter and any attached volume",
+    { skip: IS_WINDOWS ? "the remap targets POSIX homes" : false },
+    () => {
+      const project = path.join(sandbox, "any-root-project");
+      fs.mkdirSync(project, { recursive: true });
+      for (const quoted of [
+        "D:\\any-root-project",
+        "z:/any-root-project",
+        "/Volumes/Whatever Label/any-root-project",
+        "/mnt/data/any-root-project",
+        "/media/someone/backup/any-root-project",
+      ]) {
+        const workspace = resolveWorkspacePath(quoted);
+        assert.equal(workspace.path, project, `${quoted} was not recognised as a foreign root`);
+        assert.equal(workspace.remapped, true);
+      }
+    },
+  );
+
+  /**
+   * Rewriting a path this machine can already write to would be guessing over
+   * an explicit instruction - the input wins whenever it is usable, and that
+   * is what makes recognising every volume safe rather than reckless.
+   */
+  it(
+    "keeps a usable path exactly as given",
+    { skip: IS_WINDOWS ? "the remap targets POSIX homes" : false },
+    () => {
+      const decoy = path.join(sandbox, "both-places");
+      const real = path.join(sandbox, "volumes", "Scratch", "both-places");
+      fs.mkdirSync(decoy, { recursive: true });
+      fs.mkdirSync(real, { recursive: true });
+
+      process.env.CODEX_BRIDGE_WORKSPACE_ROOTS = sandbox;
+      try {
+        const workspace = resolveWorkspacePath(real);
+        assert.equal(workspace.path, real, "a writable path must not be rewritten to a same-named sibling");
+        assert.equal(workspace.remapped, false);
+      } finally {
+        delete process.env.CODEX_BRIDGE_WORKSPACE_ROOTS;
+      }
+    },
+  );
 
   it("does not remap at all when CODEX_BRIDGE_REMAP is off", () => {
     fs.mkdirSync(path.join(sandbox, "opt-out"), { recursive: true });
     process.env.CODEX_BRIDGE_REMAP = "0";
     try {
-      assert.throws(() => resolveWorkspacePath("/Volumes/Win_Dev/opt-out"), /No usable working directory/);
+      assert.throws(() => resolveWorkspacePath("/Volumes/Anything/opt-out"), /No usable working directory/);
     } finally {
       delete process.env.CODEX_BRIDGE_REMAP;
     }

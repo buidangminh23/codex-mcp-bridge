@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.9.5] - 2026-08-19
+
+### Added
+
+- M8ven Trust Index badge in the README, linking to the third-party audit of this server. Two of that audit's findings were real and are fixed in 1.6.0 (missing annotation hints, no test suite); a third - "11 of 14 tool handlers declare input schemas" - is a scanner artefact: all 14 declare `inputSchema`, and the three counted as missing are empty because those tools take no parameters. The publisher has been told.
+
 ## [1.9.4] - 2026-08-19
 
 ### Changed

@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.9.6] - 2026-08-19
+
+### Changed
+
+- The M8ven badge now requests `?variant=verified`, which their listing page documents as the way to show the verified mark without the letter grade. **It has no effect today**: with cache-busting query strings, `?variant=verified`, `?variant=nonsense` and no variant at all return byte-identical 1017-byte SVGs still reading `C · Emerging`, and the edge cache advertises `netlify-vary: query=__nextDataReq|_rsc`, so the parameter never reaches the application. The URL is written the documented way regardless, so it starts behaving correctly the moment they fix it rather than needing another commit here. The listing itself is claimed and verified, which the badge does show.
+
 ## [1.9.5] - 2026-08-19
 
 ### Added

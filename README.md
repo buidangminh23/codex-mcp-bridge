@@ -1,6 +1,6 @@
 # codex-mcp-bridge
 
-[![M8ven Score](https://m8ven.ai/badge/mcp/buidangminh23-codex-mcp-bridge-1ke8t1)](https://m8ven.ai/mcp/buidangminh23-codex-mcp-bridge-1ke8t1)
+[![M8ven Verified](https://m8ven.ai/badge/mcp/buidangminh23-codex-mcp-bridge-1ke8t1?variant=verified)](https://m8ven.ai/mcp/buidangminh23-codex-mcp-bridge-1ke8t1)
 
 A **two-way** bridge between Claude and Codex: Claude pushes prompts into a **live Codex thread**, and Codex messages back into a **running Claude Code session**. Each side sees the other's sessions and follows the conversation inside its own app. Runs on **macOS, Windows and Linux** (the Codex → Claude direction needs unix sockets, so macOS/Linux only).
 

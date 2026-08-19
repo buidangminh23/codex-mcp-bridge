@@ -1,5 +1,7 @@
 # codex-mcp-bridge
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/buidangminh23-codex-mcp-bridge-1ke8t1)](https://m8ven.ai/mcp/buidangminh23-codex-mcp-bridge-1ke8t1)
+
 A **two-way** bridge between Claude and Codex: Claude pushes prompts into a **live Codex thread**, and Codex messages back into a **running Claude Code session**. Each side sees the other's sessions and follows the conversation inside its own app. Runs on **macOS, Windows and Linux** (the Codex → Claude direction needs unix sockets, so macOS/Linux only).
 
 This is not `codex exec`, which starts a fresh session every time. The bridge speaks JSON-RPC to the real Codex app-server, so the thread keeps its history, its `cwd`, its model and its rollout file — and a human can watch it run in the Codex desktop app instead of reading the transcript afterwards.

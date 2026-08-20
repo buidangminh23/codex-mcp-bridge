@@ -35,8 +35,7 @@
     "CHANGELOG.md"
   ],
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "scripts": {
     "start": "node src/index.mjs",
@@ -50,7 +49,8 @@
     "install:codex": "node scripts/install-codex-mcp.mjs",
     "uninstall:codex": "node scripts/install-codex-mcp.mjs --remove",
     "install:agent": "node scripts/install-launch-agent.mjs",
-    "uninstall:agent": "node scripts/install-launch-agent.mjs --uninstall"
+    "uninstall:agent": "node scripts/install-launch-agent.mjs --uninstall",
+    "version": "node scripts/sync-version.mjs && git add src/index.mjs"
   },
   "engines": {
     "node": ">=22"

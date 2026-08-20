@@ -11,6 +11,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - `publish` workflow, tag-triggered, with provenance and a guard that fails when the tag and `package.json` version disagree.
 - `.gitattributes` pinning `eol=lf`, so a Windows clone and a macOS clone stop producing different bytes for the same file.
 - `windows-latest` in the CI matrix.
+- The publish workflow authenticates with npm through OIDC trusted publishing, so the repository stores no access token at all. npm attaches provenance automatically in that mode, so the `provenance` flag came back out of `publishConfig` - it would also have broken the one publish that cannot use OIDC, which is the first one. Note the version pin: trusted publishing needs npm 11.5.1 or newer and Node 22 still bundles npm 10.9.x, so the publish job runs Node 24 and fails early with a clear message if npm is older.
+- `npm version` now rewrites the `VERSION` constant in `src/index.mjs` and stages it, via a `version` lifecycle script. The repo-hygiene test has always required the two to match; keeping them in step by hand was an avoidable way to fail a release.
 - Workflows pin `actions/checkout@v7` and `actions/setup-node@v7`. The v4 pair targets Node.js 20, which GitHub deprecated and now force-runs on Node 24 with a warning on every job. The platform layer has Windows-specific branches and this is where the bridge is most used, so leaving it untested was the wrong gap to carry.
 
 ### Changed

@@ -2,6 +2,13 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.10.1] - 2026-08-20
+
+### Fixed
+
+- **`claude_bridge_status` advertised `claude-bridge 1.3.0` inside a 1.10.0 package.** Seven releases of drift, and the only thing it could tell a bug reporter was a wrong answer about which build was running. The stale constant was the symptom: `scripts/sync-version.mjs` named `src/index.mjs` and the repo-hygiene test checked that same single file, so nothing in the release path ever looked at the second entry point. The sync script now walks both, the `version` lifecycle stages both, and the test **discovers** every `src/*.mjs` declaring `const VERSION` rather than naming one - a third bridge added later is covered without editing any of this again. Confirmed red on the previous tree: `src/claude-bridge.mjs declares 1.3.0, package.json says 1.10.0`.
+- README said Windows was supported but not covered by CI, while `windows-latest` has been in the matrix since 1.10.0. A README that undersells its own coverage reads as a warning, and it is the first thing anyone evaluating the bridge sees. What stays true is narrower and is now what it says: the Codex to Claude tests skip on Windows because they need unix sockets, and the rest of the suite runs there.
+
 ## [1.10.0] - 2026-08-20
 
 ### Added

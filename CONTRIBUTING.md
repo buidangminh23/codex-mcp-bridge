@@ -29,7 +29,7 @@ npm run check     # boots the bridge against a real app-server and lists threads
 ```
 
 `npm test` is the gate, and CI runs the same command on Node 22 and 24 across
-Linux and macOS. It works against a fake app-server and a throwaway `HOME`, so
+Linux, macOS and Windows. It works against a fake app-server and a throwaway `HOME`, so
 it is the one to run on every commit.
 
 `npm run smoke` sends real turns to Codex and spends quota — run it when the
@@ -58,6 +58,48 @@ repository, or a personal rule, memory or skills file kept outside this
 project. Whatever a contributor has to obey belongs in this repo, in English.
 
 `test/repo-hygiene.test.mjs` enforces both, alongside the English-only rule.
+
+## Releasing
+
+`.github/workflows/publish.yml` publishes on a `v*` tag and authenticates with
+npm through OIDC trusted publishing. **There is no access token in this
+repository and none needs to be added.**
+
+One gap belongs to npm rather than to this project: a trusted publisher can
+only be configured on a package that already exists, so the first release of a
+name cannot use OIDC. Publish that one by hand, once:
+
+```bash
+npm login
+npm publish --access public
+```
+
+Then on npmjs.com open the package, go to Settings, and add a GitHub Actions
+trusted publisher:
+
+| Field | Value |
+|---|---|
+| Organization or user | the account that owns this repository |
+| Repository | `codex-mcp-bridge` |
+| Workflow filename | `publish.yml` |
+| Environment | leave empty |
+
+Every release after that is a tag:
+
+```bash
+npm version minor      # or patch / major
+git push --follow-tags
+```
+
+`npm version` runs `scripts/sync-version.mjs`, which rewrites the `VERSION`
+constant in `src/index.mjs` to match and stages it - `test/repo-hygiene.test.mjs`
+fails the build if the two ever disagree, and `codex_bridge_status` reports that
+constant to anyone filing a bug.
+
+The workflow refuses to publish when the tag and `package.json` disagree, and
+checks the npm CLI is at least 11.5.1 before trying: trusted publishing needs
+it, and Node 22 still bundles npm 10.9.x, which is why the publish job pins
+Node 24 while the test matrix covers both.
 
 ## Protocol questions
 

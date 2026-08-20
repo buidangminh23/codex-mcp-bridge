@@ -6,7 +6,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Added
 
-- The package can be installed instead of cloned: `npm install -g @buidangminh23/codex-mcp-bridge`, or straight from the repository with `npm install -g git+https://github.com/buidangminh23/codex-mcp-bridge.git` for anyone who would rather not involve a registry. Measured end to end on a clean directory before this was documented: 94 packages, both server bins resolve, and the server prints its ready line.
+- The package can be installed instead of cloned: `npm install -g @minhspark/codex-mcp-bridge`, or straight from the repository with `npm install -g git+https://github.com/buidangminh23/codex-mcp-bridge.git` for anyone who would rather not involve a registry. Measured end to end on a clean directory before this was documented: 94 packages, both server bins resolve, and the server prints its ready line.
 - Two installer bins, `codex-mcp-bridge-install` and `claude-mcp-bridge-install`, so a copy installed as a package can do the wiring without `node scripts/...` paths into `node_modules`. Both installer scripts gained the shebang this requires.
 - `publish` workflow, tag-triggered, with provenance and a guard that fails when the tag and `package.json` version disagree.
 - `.gitattributes` pinning `eol=lf`, so a Windows clone and a macOS clone stop producing different bytes for the same file.
@@ -17,7 +17,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Changed
 
-- **Package renamed to `@buidangminh23/codex-mcp-bridge`.** The unscoped name on npm belongs to an unrelated project by another author, so the scoped name is the only one this package can honestly publish under.
+- **Package renamed to `@minhspark/codex-mcp-bridge`.** The unscoped name on npm belongs to an unrelated project by another author, so a scoped name is the only one this package can honestly publish under. The scope is `@minhspark` because npm only accepts a scope matching the publishing account or an organisation it belongs to, and the account here is `minhspark` - the GitHub handle and the npm handle are not the same.
 - `CODEX_BRIDGE_ALLOWED_ROOTS` no longer defaults to the install directory when the package is installed as a dependency — it defaults to the directory the installer was run from, and the installer warns when the roots it wrote point inside `node_modules`. The old default produced an entry that started fine and then refused every thread.
 
 ### Fixed

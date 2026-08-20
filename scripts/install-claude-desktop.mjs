@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,15 @@ import { PLATFORM_LABEL, claudeDesktopConfigPath, resolveCodexBin } from "../src
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();
+
+/**
+ * When the package is installed as a dependency its own directory is never a
+ * workspace anybody wants to drive Codex in - defaulting to it produces an
+ * entry that starts fine and then refuses every thread. Fall back to the
+ * directory the operator ran the installer from instead, and say so out loud.
+ */
+const installedAsDependency = root.split(path.sep).includes("node_modules");
+const defaultRoots = installedAsDependency ? process.cwd() : root;
 
 const nodeBin = process.env.NODE_EXE ?? process.execPath;
 const codexBin = resolveCodexBin(process.env.CODEX_EXE);
@@ -27,7 +37,7 @@ cfg.mcpServers["codex-bridge"] = {
   env: {
     CODEX_BIN: codexBin,
     CODEX_APP_SERVER_URL: process.env.CODEX_APP_SERVER_URL ?? "ws://127.0.0.1:8791",
-    CODEX_BRIDGE_ALLOWED_ROOTS: process.env.CODEX_BRIDGE_ALLOWED_ROOTS ?? root,
+    CODEX_BRIDGE_ALLOWED_ROOTS: process.env.CODEX_BRIDGE_ALLOWED_ROOTS ?? defaultRoots,
     CODEX_BRIDGE_APPROVAL: process.env.CODEX_BRIDGE_APPROVAL ?? "deny",
     CODEX_BRIDGE_APPROVAL_POLICY: process.env.CODEX_BRIDGE_APPROVAL_POLICY ?? "on-request",
     CODEX_BRIDGE_SANDBOX: process.env.CODEX_BRIDGE_SANDBOX ?? "workspace-write",
@@ -45,4 +55,13 @@ fs.writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
 console.log(`platform: ${PLATFORM_LABEL}`);
 console.log(`updated ${cfgPath}`);
 console.log(JSON.stringify(cfg.mcpServers["codex-bridge"], null, 2));
+const writtenRoots = cfg.mcpServers["codex-bridge"].env.CODEX_BRIDGE_ALLOWED_ROOTS;
+if (writtenRoots.split(path.delimiter).some((entry) => entry.split(path.sep).includes("node_modules"))) {
+  console.log(
+    "\nWARNING: CODEX_BRIDGE_ALLOWED_ROOTS points inside an install directory, which is not a workspace.\n" +
+      "The bridge will start but refuse every thread. Re-run with the projects you actually work in:\n" +
+      `  CODEX_BRIDGE_ALLOWED_ROOTS="${["<project-a>", "<project-b>"].join(path.delimiter)}" codex-mcp-bridge-install`,
+  );
+}
+
 console.log("\nRestart Claude Desktop to load the bridge.");

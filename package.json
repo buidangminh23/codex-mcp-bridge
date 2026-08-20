@@ -1,6 +1,6 @@
 {
-  "name": "codex-mcp-bridge",
-  "version": "1.9.6",
+  "name": "@buidangminh23/codex-mcp-bridge",
+  "version": "1.10.0",
   "description": "Two-way MCP bridge between Claude and Codex: prompts into a live Codex thread, messages into a running Claude Code session.",
   "keywords": [
     "mcp",
@@ -23,7 +23,20 @@
   "type": "module",
   "bin": {
     "codex-mcp-bridge": "src/index.mjs",
-    "claude-mcp-bridge": "src/claude-bridge.mjs"
+    "claude-mcp-bridge": "src/claude-bridge.mjs",
+    "codex-mcp-bridge-install": "scripts/install-claude-desktop.mjs",
+    "claude-mcp-bridge-install": "scripts/install-codex-mcp.mjs"
+  },
+  "files": [
+    "src",
+    "scripts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "start": "node src/index.mjs",

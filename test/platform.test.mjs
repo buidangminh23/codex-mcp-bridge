@@ -20,6 +20,7 @@ import {
 const realEnv = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
+  APPDATA: process.env.APPDATA,
   XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
   CODEX_BRIDGE_REMAP: process.env.CODEX_BRIDGE_REMAP,
   CODEX_BRIDGE_WORKSPACE_ROOTS: process.env.CODEX_BRIDGE_WORKSPACE_ROOTS,
@@ -36,6 +37,14 @@ before(() => {
    * every machine; the override itself is asserted separately below.
    */
   delete process.env.XDG_CONFIG_HOME;
+  /**
+   * Windows resolves the config under APPDATA rather than the home directory,
+   * and that preference is correct - a roaming profile is where the file
+   * genuinely lives. Point APPDATA into the sandbox too, so the assertion
+   * below means "follows the environment" on all three platforms instead of
+   * silently only testing two.
+   */
+  process.env.APPDATA = path.join(sandbox, "AppData", "Roaming");
 });
 
 after(() => {

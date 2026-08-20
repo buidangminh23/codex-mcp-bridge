@@ -63,12 +63,26 @@ describe("bridge security policy", () => {
    * out of it must resolve to where it really goes - otherwise the root is a
    * suggestion, and anything reachable by one hop is in scope.
    */
-  it("treats a symlink out of an allowed root as outside it", () => {
+  it("treats a symlink out of an allowed root as outside it", (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-root-"));
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-"));
     try {
       fs.mkdirSync(path.join(outside, "secrets"));
-      fs.symlinkSync(outside, path.join(root, "escape"));
+      try {
+        fs.symlinkSync(outside, path.join(root, "escape"));
+      } catch (error) {
+        /**
+         * Windows only grants symlink creation to an elevated process or one
+         * running with Developer Mode on. Skipping states that plainly rather
+         * than reporting a containment failure that never happened - the
+         * behaviour under test is unchanged, it just cannot be staged here.
+         */
+        if (error.code === "EPERM" || error.code === "EACCES") {
+          t.skip("this OS does not grant symlink creation to an unprivileged process");
+          return;
+        }
+        throw error;
+      }
       const policy = new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: root });
 
       assert.equal(policy.isCwdAuthorized(path.join(root, "escape")), false);

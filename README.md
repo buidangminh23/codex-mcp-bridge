@@ -66,7 +66,25 @@ node --version && codex --version
 
 ## Install
 
-### 1. Get the code
+### 1. Get the bridge
+
+Two ways in. Pick by what you intend to do with it.
+
+**Install it — no clone, no checkout to keep in sync.** Right for a machine that only has to run the bridge:
+
+```bash
+npm install -g @buidangminh23/codex-mcp-bridge
+```
+
+Installing straight from the repository works the same way and needs no registry account:
+
+```bash
+npm install -g git+https://github.com/buidangminh23/codex-mcp-bridge.git
+```
+
+Either route puts four commands on your PATH — `codex-mcp-bridge` and `claude-mcp-bridge` are the two servers, `codex-mcp-bridge-install` and `claude-mcp-bridge-install` do the wiring in the steps below. Wherever this README runs `node scripts/install-claude-desktop.mjs`, an installed copy runs `codex-mcp-bridge-install` instead.
+
+**Clone it** — right if you intend to read, test or change the code:
 
 ```bash
 git clone https://github.com/buidangminh23/codex-mcp-bridge.git
@@ -93,6 +111,15 @@ The script detects the platform, creates the config file if it does not exist, b
 | macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
 | Linux | `${XDG_CONFIG_HOME:-~/.config}/Claude/claude_desktop_config.json` |
+
+Tell it which projects the bridge may drive. The default is the checkout when you cloned, and the directory you ran the installer from when you installed the package — neither is a sensible guess for more than one project, so name them:
+
+```bash
+# macOS and Linux separate entries with ":", Windows with ";"
+CODEX_BRIDGE_ALLOWED_ROOTS="/path/to/project-a:/path/to/project-b" codex-mcp-bridge-install
+```
+
+Skip this and the bridge still starts cleanly, then answers every `list_codex_threads` with `No workspace roots are configured`. It is the most common way an otherwise correct install refuses to do anything, so the installer now prints a warning when the roots it wrote point inside an install directory.
 
 Pass defaults through the environment if you want them written into the entry:
 

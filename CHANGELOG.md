@@ -2,6 +2,27 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.10.0] - 2026-08-20
+
+### Added
+
+- The package can be installed instead of cloned: `npm install -g @buidangminh23/codex-mcp-bridge`, or straight from the repository with `npm install -g git+https://github.com/buidangminh23/codex-mcp-bridge.git` for anyone who would rather not involve a registry. Measured end to end on a clean directory before this was documented: 94 packages, both server bins resolve, and the server prints its ready line.
+- Two installer bins, `codex-mcp-bridge-install` and `claude-mcp-bridge-install`, so a copy installed as a package can do the wiring without `node scripts/...` paths into `node_modules`. Both installer scripts gained the shebang this requires.
+- `publish` workflow, tag-triggered, with provenance and a guard that fails when the tag and `package.json` version disagree.
+- `.gitattributes` pinning `eol=lf`, so a Windows clone and a macOS clone stop producing different bytes for the same file.
+- `windows-latest` in the CI matrix. The platform layer has Windows-specific branches and this is where the bridge is most used, so leaving it untested was the wrong gap to carry.
+
+### Changed
+
+- **Package renamed to `@buidangminh23/codex-mcp-bridge`.** The unscoped name on npm belongs to an unrelated project by another author, so the scoped name is the only one this package can honestly publish under.
+- `CODEX_BRIDGE_ALLOWED_ROOTS` no longer defaults to the install directory when the package is installed as a dependency — it defaults to the directory the installer was run from, and the installer warns when the roots it wrote point inside `node_modules`. The old default produced an entry that started fine and then refused every thread.
+
+### Fixed
+
+- **The peer bridge ignored `HOME` on Windows.** `src/peer-protocol.mjs` resolved `~/.claude` through `os.homedir()`, which reads `HOME` on macOS and Linux but `USERPROFILE` on Windows. A Windows user whose `HOME` points somewhere else - the default for Git Bash and MSYS shells - had the bridge look for Claude Code sessions and transcripts in a directory that holds neither, and get an empty list with no error. It now resolves the home directory through the same `homeDir()` helper as the rest of the code, so all three platforms agree.
+- `files` now limits the tarball to what a consumer runs. Before this, `npm pack` shipped 37 files including `.github/`, the whole test suite, and a stray tooling directory carrying a second, older copy of the source. It now ships 17 files, 45.6 kB packed.
+- Two tests could never pass on Windows and had gone unnoticed because CI never ran there: the Claude Desktop config assertion assumed the path follows `HOME` when Windows correctly follows `APPDATA`, and the symlink containment test needs a privilege Windows withholds from an unelevated process. The first now points `APPDATA` into its sandbox; the second skips with a stated reason instead of reporting a containment failure that never happened.
+
 ## [1.9.6] - 2026-08-19
 
 ### Changed

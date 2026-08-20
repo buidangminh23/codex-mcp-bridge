@@ -73,7 +73,7 @@ Two ways in. Pick by what you intend to do with it.
 **Install it — no clone, no checkout to keep in sync.** Right for a machine that only has to run the bridge:
 
 ```bash
-npm install -g @buidangminh23/codex-mcp-bridge
+npm install -g @minhspark/codex-mcp-bridge
 ```
 
 Installing straight from the repository works the same way and needs no registry account:

@@ -419,7 +419,7 @@ Runs the whole suite with `node --test`. It needs no Codex install, no login and
 | `test/platform.test.mjs` | binary resolution, the PATH handed to child processes, per-OS config paths and cwd remapping |
 | `test/repo-hygiene.test.mjs` | no environment file or build output is ever tracked, versions do not drift, documentation stays in English |
 
-GitHub Actions runs the same command on every push and pull request, across Node 22 and 24 on Linux and macOS (`.github/workflows/ci.yml`). Windows is supported by the bridge but not covered by CI: the Codex → Claude direction needs unix sockets, so those tests skip there anyway.
+GitHub Actions runs the same command on every push and pull request, across Node 22 and 24 on Linux, macOS and Windows (`.github/workflows/ci.yml`). The Codex → Claude direction needs unix sockets, so those tests skip on Windows; the rest of the suite runs there like anywhere else.
 
 Two checks need a real Codex and are not part of `npm test`:
 

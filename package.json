@@ -50,7 +50,7 @@
     "uninstall:codex": "node scripts/install-codex-mcp.mjs --remove",
     "install:agent": "node scripts/install-launch-agent.mjs",
     "uninstall:agent": "node scripts/install-launch-agent.mjs --uninstall",
-    "version": "node scripts/sync-version.mjs && git add src/index.mjs"
+    "version": "node scripts/sync-version.mjs && git add src/index.mjs src/claude-bridge.mjs"
   },
   "engines": {
     "node": ">=22"

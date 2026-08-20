@@ -1,5 +1,9 @@
 # codex-mcp-bridge
 
+[![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
+[![CI](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml)
+[![node](https://img.shields.io/node/v/@minhspark/codex-mcp-bridge?logo=node.js&color=5FA04E)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge)](LICENSE)
 [![M8ven Verified](https://m8ven.ai/badge/mcp/buidangminh23-codex-mcp-bridge-1ke8t1?variant=verified)](https://m8ven.ai/mcp/buidangminh23-codex-mcp-bridge-1ke8t1)
 
 A **two-way** bridge between Claude and Codex: Claude pushes prompts into a **live Codex thread**, and Codex messages back into a **running Claude Code session**. Each side sees the other's sessions and follows the conversation inside its own app. Runs on **macOS, Windows and Linux** (the Codex → Claude direction needs unix sockets, so macOS/Linux only).

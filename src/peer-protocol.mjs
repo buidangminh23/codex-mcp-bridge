@@ -5,13 +5,15 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
+import { homeDir } from "./platform.mjs";
+
 const SOCKET_DIR = "/tmp/cc-socks";
 const PEER_PROTOCOL_VERSION = 1;
 const CLAUDE_VERSION_HINT = "2.1.229";
 const PS_BIN = "/bin/ps";
 
-const sessionsDir = () => path.join(os.homedir(), ".claude", "sessions");
-const projectsDir = () => path.join(os.homedir(), ".claude", "projects");
+const sessionsDir = () => path.join(homeDir(), ".claude", "sessions");
+const projectsDir = () => path.join(homeDir(), ".claude", "projects");
 
 /**
  * A Claude Code session advertises itself in ~/.claude/sessions/<pid>.json and

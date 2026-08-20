@@ -1,0 +1,3 @@
+# One line ending everywhere, decided by the repo rather than by each
+# contributor's core.autocrlf setting.
+* text=auto eol=lf

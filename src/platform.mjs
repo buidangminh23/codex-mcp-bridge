@@ -29,7 +29,13 @@ const CODEX_THREAD_URL_PREFIX = "codex://threads/";
  */
 const remapEnabled = () => process.env.CODEX_BRIDGE_REMAP !== "0";
 
-const homeDir = () => process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
+/**
+ * `os.homedir()` reads HOME on macOS and Linux but USERPROFILE on Windows, so
+ * a process that sets only HOME is obeyed on two platforms and ignored on the
+ * third. Every module resolves the home directory through here so all three
+ * behave the same.
+ */
+export const homeDir = () => process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
 
 /**
  * A path that names a drive letter or an attached volume was almost certainly

@@ -44,14 +44,26 @@ describe("repository hygiene", { skip: notAGitCheckout }, () => {
   });
 
   /**
-   * `codex_bridge_status` prints this version, and a drifting one turns every
-   * bug report into a guess about which build is actually running.
+   * `codex_bridge_status` and `claude_bridge_status` print this version, and a
+   * drifting one turns every bug report into a guess about which build is
+   * actually running. Checking only one entry point is how claude-bridge sat
+   * at 1.3.0 while the package shipped 1.10.0, so every file declaring the
+   * constant is checked here.
    */
-  it("reports the same version as package.json", () => {
+  it("reports the same version as package.json from every entry point", () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-    const source = fs.readFileSync(path.join(root, "src", "index.mjs"), "utf8");
-    const declared = source.match(/^const VERSION = "([^"]+)";$/m)?.[1];
-    assert.equal(declared, pkg.version);
+    const entries = tracked.filter((file) => /^src\/.+\.mjs$/.test(file));
+    const declaring = entries.filter((file) =>
+      /^const VERSION = "[^"]+";$/m.test(fs.readFileSync(path.join(root, file), "utf8")),
+    );
+
+    assert.ok(declaring.length >= 2, `expected both bridges to declare a version, found: ${declaring.join(", ")}`);
+
+    for (const file of declaring) {
+      const source = fs.readFileSync(path.join(root, file), "utf8");
+      const declared = source.match(/^const VERSION = "([^"]+)";$/m)?.[1];
+      assert.equal(declared, pkg.version, `${file} declares ${declared}, package.json says ${pkg.version}`);
+    }
   });
 
   it("keeps every documented npm script runnable", () => {

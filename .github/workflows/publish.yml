@@ -46,6 +46,25 @@ jobs:
             exit 1
           fi
 
+      # A tag can be pushed for a version that was already published by hand -
+      # the first release of a name has to be, since npm will not configure a
+      # trusted publisher for a package that does not exist yet. Publishing over
+      # it is refused by the registry, so check first and skip rather than fail:
+      # a red run for an expected state teaches everyone to ignore red runs.
+      - name: Check whether this version is already on npm
+        id: published
+        run: |
+          pkg="$(node -p "require('./package.json').name")"
+          ver="$(node -p "require('./package.json').version")"
+          if npm view "$pkg@$ver" version > /dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "$pkg@$ver is already on npm - nothing to publish"
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+            echo "$pkg@$ver is not on npm yet"
+          fi
+
       # No NODE_AUTH_TOKEN. npm authenticates the OIDC token minted above, and
       # attaches provenance by itself - the --provenance flag is not needed.
       - run: npm publish
+        if: steps.published.outputs.already == 'false'

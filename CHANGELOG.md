@@ -10,7 +10,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Two installer bins, `codex-mcp-bridge-install` and `claude-mcp-bridge-install`, so a copy installed as a package can do the wiring without `node scripts/...` paths into `node_modules`. Both installer scripts gained the shebang this requires.
 - `publish` workflow, tag-triggered, with provenance and a guard that fails when the tag and `package.json` version disagree.
 - `.gitattributes` pinning `eol=lf`, so a Windows clone and a macOS clone stop producing different bytes for the same file.
-- `windows-latest` in the CI matrix. The platform layer has Windows-specific branches and this is where the bridge is most used, so leaving it untested was the wrong gap to carry.
+- `windows-latest` in the CI matrix.
+- Workflows pin `actions/checkout@v7` and `actions/setup-node@v7`. The v4 pair targets Node.js 20, which GitHub deprecated and now force-runs on Node 24 with a warning on every job. The platform layer has Windows-specific branches and this is where the bridge is most used, so leaving it untested was the wrong gap to carry.
 
 ### Changed
 

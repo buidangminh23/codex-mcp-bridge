@@ -80,6 +80,12 @@ Two ways in. Pick by what you intend to do with it.
 npm install -g @minhspark/codex-mcp-bridge
 ```
 
+Already installed? The same command with `@latest` upgrades it in place — then restart the client. Details in [Upgrading an install you already have](#upgrading-an-install-you-already-have):
+
+```bash
+npm install -g @minhspark/codex-mcp-bridge@latest
+```
+
 Installing straight from the repository works the same way and needs no registry account:
 
 ```bash
@@ -90,11 +96,7 @@ Either route puts four commands on your PATH — `codex-mcp-bridge` and `claude-
 
 #### Upgrading an install you already have
 
-```bash
-npm install -g @minhspark/codex-mcp-bridge@latest
-```
-
-Then restart Claude Desktop or Claude Code — an MCP server only loads its code when the client spawns it. Check `codex_bridge_status` reports the version you expect. The config needs no edit: the global install path carries no version number, so the entry keeps pointing at the right file.
+`npm install -g @minhspark/codex-mcp-bridge@latest`, then restart Claude Desktop or Claude Code — an MCP server only loads its code when the client spawns it. Check `codex_bridge_status` reports the version you expect. The config needs no edit: the global install path carries no version number, so the entry keeps pointing at the right file.
 
 Re-running `codex-mcp-bridge-install` is **not** required to upgrade, and before 1.11.1 it actively hurt: it replaced the whole entry, discarding `CODEX_BRIDGE_ALLOWED_THREADS`, any hand-added `CODEX_BRIDGE_THREAD_POLICY`, and resetting `CODEX_BRIDGE_ALLOWED_ROOTS` to the install directory. From 1.11.1 it keeps what is already there — an environment variable you pass wins, the existing value is the fallback, and `--reset` gives you the defaults back.
 

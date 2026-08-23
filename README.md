@@ -88,6 +88,16 @@ npm install -g git+https://github.com/buidangminh23/codex-mcp-bridge.git
 
 Either route puts four commands on your PATH — `codex-mcp-bridge` and `claude-mcp-bridge` are the two servers, `codex-mcp-bridge-install` and `claude-mcp-bridge-install` do the wiring in the steps below. Wherever this README runs `node scripts/install-claude-desktop.mjs`, an installed copy runs `codex-mcp-bridge-install` instead.
 
+#### Upgrading an install you already have
+
+```bash
+npm install -g @minhspark/codex-mcp-bridge@latest
+```
+
+Then restart Claude Desktop or Claude Code — an MCP server only loads its code when the client spawns it. Check `codex_bridge_status` reports the version you expect. The config needs no edit: the global install path carries no version number, so the entry keeps pointing at the right file.
+
+Re-running `codex-mcp-bridge-install` is **not** required to upgrade, and before 1.11.1 it actively hurt: it replaced the whole entry, discarding `CODEX_BRIDGE_ALLOWED_THREADS`, any hand-added `CODEX_BRIDGE_THREAD_POLICY`, and resetting `CODEX_BRIDGE_ALLOWED_ROOTS` to the install directory. From 1.11.1 it keeps what is already there — an environment variable you pass wins, the existing value is the fallback, and `--reset` gives you the defaults back.
+
 **Clone it** — right if you intend to read, test or change the code:
 
 ```bash
@@ -95,6 +105,8 @@ git clone https://github.com/buidangminh23/codex-mcp-bridge.git
 cd codex-mcp-bridge
 npm install
 ```
+
+A clone upgrades with `git pull && npm ci`, then the same restart.
 
 Confirm the tree is healthy before wiring it into anything:
 

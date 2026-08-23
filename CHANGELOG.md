@@ -2,6 +2,31 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.11.1] - 2026-08-23
+
+### Fixed
+
+- **Re-running `codex-mcp-bridge-install` deleted settings it does not write.** It assigned a whole new
+  entry over the old one, so `CODEX_BRIDGE_ALLOWED_THREADS`, a hand-added `CODEX_BRIDGE_THREAD_POLICY`
+  and any key from a later version were dropped, and `CODEX_BRIDGE_ALLOWED_ROOTS` was reset to the
+  install directory. Upgrading is exactly when people re-run it, so the command you reach for to keep
+  the bridge current was the command that silently broke it. Measured on a config carrying four custom
+  values: all four gone, roots narrowed from two projects to the install directory, other MCP servers
+  untouched.
+
+  Existing values are now the fallback rather than the casualty. Precedence, highest first: a variable
+  passed to this run, what the config already says, then the default. `command`, `args` and `CODEX_BIN`
+  are still resolved fresh — pointing the entry at the code installed now is the reason to re-run at
+  all. `--reset` discards inherited values for the rare case of wanting the defaults back.
+
+### Added
+
+- The installer now writes `CODEX_BRIDGE_THREAD_POLICY` explicitly, and when it is left at `owned` it
+  says what that means: a thread opened in the Codex app or the VS Code extension will answer
+  `NOT AUTHORIZED`, because its id is assigned as it opens and cannot be allowlisted in advance. Shipping
+  1.11.0 without this left the fix reachable only by reading the environment table — and the symptom
+  points nowhere near the setting responsible.
+
 ## [1.11.0] - 2026-08-23
 
 ### Added

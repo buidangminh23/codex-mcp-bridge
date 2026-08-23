@@ -3,6 +3,7 @@ import path from "node:path";
 
 const APPROVAL_POLICIES = new Set(["untrusted", "on-failure", "on-request", "never"]);
 const SANDBOXES = new Set(["read-only", "workspace-write"]);
+const THREAD_POLICIES = new Set(["owned", "roots"]);
 
 /**
  * Resolves the deepest ancestor that exists and re-appends the rest, rather
@@ -81,6 +82,30 @@ export class BridgeSecurityPolicy {
     this.allowedRoots = parseRoots(env.CODEX_BRIDGE_ALLOWED_ROOTS);
     this.ownedThreadIds = new Set();
 
+    /**
+     * Which threads this bridge may act on, beyond the ones it created itself.
+     *
+     * `owned` was the only behaviour until now, and it does not merely
+     * restrict the everyday workflow - it makes it impossible. A thread opened
+     * in the Codex app or the VS Code extension is given its id at that
+     * moment, so it can never have appeared in CODEX_BRIDGE_ALLOWED_THREADS
+     * beforehand; and the bridge-owned set lives in memory, so it empties
+     * every time the MCP server restarts. That left the operator allowlisting
+     * an id that is already stale by the next turn, and every thread a human
+     * actually opened answered "not authorized".
+     *
+     * `roots` grants on the workspace instead of the id: a thread already
+     * working inside a directory the operator declared in scope is reachable.
+     * This is not a weaker gate bolted on - it is the same containment every
+     * acting tool already enforces on the cwd it is handed, applied to the cwd
+     * the thread itself reports. It stays opt-in so an existing install cannot
+     * widen silently on upgrade.
+     */
+    this.threadPolicy = env.CODEX_BRIDGE_THREAD_POLICY ?? "owned";
+    if (!THREAD_POLICIES.has(this.threadPolicy)) {
+      throw new Error(`CODEX_BRIDGE_THREAD_POLICY must be owned or roots: ${this.threadPolicy}`);
+    }
+
     this.approvalPolicy = env.CODEX_BRIDGE_APPROVAL_POLICY ?? "on-request";
     if (!APPROVAL_POLICIES.has(this.approvalPolicy)) {
       throw new Error(`Invalid CODEX_BRIDGE_APPROVAL_POLICY: ${this.approvalPolicy}`);
@@ -96,18 +121,49 @@ export class BridgeSecurityPolicy {
     if (threadId) this.ownedThreadIds.add(threadId);
   }
 
-  isThreadAuthorized(threadId) {
-    return this.ownedThreadIds.has(threadId) || this.allowedThreadIds.has(threadId);
+  /**
+   * `cwd` is optional because the id almost always arrives before the
+   * workspace does: a caller holds an id from a listing, and the cwd is only
+   * known once the thread has been read. Under `owned` the answer never
+   * depended on the workspace, so omitting it changes nothing. Under `roots`
+   * an unknown workspace is never a grant - a thread that cannot be placed
+   * inside a root is refused exactly like one placed outside it.
+   */
+  isThreadAuthorized(threadId, cwd) {
+    if (this.ownedThreadIds.has(threadId) || this.allowedThreadIds.has(threadId)) return true;
+    if (this.threadPolicy !== "roots") return false;
+    return cwd == null ? false : this.isCwdAuthorized(cwd);
   }
 
-  assertThread(threadId) {
-    if (this.isThreadAuthorized(threadId)) return;
-    if (!this.allowedThreadIds.size && !this.ownedThreadIds.size) {
+  assertThread(threadId, cwd) {
+    if (this.isThreadAuthorized(threadId, cwd)) return;
+
+    if (this.threadPolicy === "roots") {
+      /**
+       * Refused here rather than waved through to a later cwd check, because
+       * the caller has to attach to a thread before it can act on it, and
+       * attaching takes the per-thread writer lock away from whoever else has
+       * the thread open. Deciding afterwards would mean a thread outside every
+       * root still got locked on the way to being rejected.
+       */
       throw new Error(
-        "No authorized Codex threads are configured. Set CODEX_BRIDGE_ALLOWED_THREADS or create a thread with start_codex_thread.",
+        cwd == null
+          ? `Codex thread ${threadId} reports no workspace, so it cannot be matched against CODEX_BRIDGE_ALLOWED_ROOTS`
+          : `Codex thread ${threadId} works in ${cwd}, which is outside CODEX_BRIDGE_ALLOWED_ROOTS`,
       );
     }
-    throw new Error(`Codex thread ${threadId} is not authorized for this bridge`);
+
+    if (!this.allowedThreadIds.size && !this.ownedThreadIds.size) {
+      throw new Error(
+        "No authorized Codex threads are configured. Set CODEX_BRIDGE_ALLOWED_THREADS, create one with " +
+          "start_codex_thread, or set CODEX_BRIDGE_THREAD_POLICY=roots to reach any thread already working " +
+          "inside CODEX_BRIDGE_ALLOWED_ROOTS.",
+      );
+    }
+    throw new Error(
+      `Codex thread ${threadId} is not authorized for this bridge. Add it to CODEX_BRIDGE_ALLOWED_THREADS, ` +
+        "or set CODEX_BRIDGE_THREAD_POLICY=roots to reach any thread inside CODEX_BRIDGE_ALLOWED_ROOTS.",
+    );
   }
 
   /**
@@ -115,8 +171,8 @@ export class BridgeSecurityPolicy {
    * both ways left no path to a thread id at all: you cannot allowlist a
    * thread whose id you have no way to learn, so the only usable thread was
    * one the bridge had created itself. An operator who names a root has
-   * declared that project in scope, and the id is still useless without being
-   * allowlisted for the calls that act.
+   * declared that project in scope, and under the default `owned` policy the
+   * id is still useless without being allowlisted for the calls that act.
    */
   filterThreads(threads) {
     return threads.filter((thread) => this.isCwdAuthorized(thread?.cwd));
@@ -142,6 +198,7 @@ export class BridgeSecurityPolicy {
     return {
       authorizedThreads: this.allowedThreadIds.size + this.ownedThreadIds.size,
       allowedRoots: this.allowedRoots,
+      threadPolicy: this.threadPolicy,
       approvalPolicy: this.approvalPolicy,
       sandbox: this.sandbox,
     };

@@ -262,7 +262,16 @@ On macOS and Linux the `codex` launcher is a Node script with a `#!/usr/bin/env 
 
 `send_to_codex_thread` also accepts `timeoutSec` (default 240), `cwd`, `model`, `effort`, and `openInApp` (macOS — surface the thread in the desktop app before sending). A timeout does **not** cancel the turn: the bridge returns what it collected plus the `turnId`; keep reading with `read_codex_thread` or stop it with `interrupt_codex_turn`.
 
-Thread operations are deny-by-default. Set `CODEX_BRIDGE_ALLOWED_THREADS` to a comma-separated list of exact thread IDs you want this MCP server to access; threads created by `start_codex_thread` are authorized for the lifetime of this bridge process. Set `CODEX_BRIDGE_ALLOWED_ROOTS` to the absolute project directories the bridge may use. The installer defaults that root to this repository, so change it when delegating into another project.
+Thread operations are deny-by-default, and `CODEX_BRIDGE_THREAD_POLICY` decides what counts as permission:
+
+| Policy | A thread is reachable when | Use it when |
+|---|---|---|
+| `owned` *(default)* | the bridge created it with `start_codex_thread`, or its exact ID is listed in `CODEX_BRIDGE_ALLOWED_THREADS` | the bridge drives threads it opens itself |
+| `roots` | it is working inside a directory named in `CODEX_BRIDGE_ALLOWED_ROOTS` | you open threads in the Codex app or VS Code and want Claude to talk to them |
+
+Under `owned`, a thread a human opened is **unreachable rather than merely restricted**: Codex assigns its ID at the moment it opens, so the ID cannot have been allowlisted beforehand, and the bridge-owned set lives in memory and empties whenever the MCP server restarts. If every live thread answers `NOT AUTHORIZED`, that is the cause — switch to `roots`.
+
+`roots` does not remove a gate; it moves it from the ID to the workspace, which is the containment every tool already applies to the `cwd` it is handed. The bridge resolves a thread's workspace with a read **before** attaching, so a thread outside every root is refused without ever taking its writer lock. Set `CODEX_BRIDGE_ALLOWED_ROOTS` to the absolute project directories the bridge may use — the installer defaults that root to this repository, so change it when delegating into another project. A root as broad as `/` or `C:\` makes `roots` mean *every thread on this machine*.
 
 ## Tools — `claude-bridge` (runs inside Codex)
 
@@ -364,6 +373,7 @@ The bridge reads these from the environment its MCP client hands it — there is
 | `CODEX_APP_SERVER_URL` | `ws://127.0.0.1:8791` | Shared **loopback-only** app-server endpoint. Non-loopback endpoints are rejected because this bridge does not implement remote WebSocket authentication. |
 | `CODEX_BIN` | auto-detected | Path to `codex` used for autostart. |
 | `CODEX_BRIDGE_AUTOSTART` | `1` | `0` = never spawn an app-server; one must already be running. |
+| `CODEX_BRIDGE_THREAD_POLICY` | `owned` | What authorizes a thread: `owned` (created by this bridge, or listed in `CODEX_BRIDGE_ALLOWED_THREADS`) or `roots` (working inside `CODEX_BRIDGE_ALLOWED_ROOTS`). Default is unchanged on upgrade, so an existing install never widens by itself. |
 | `CODEX_BRIDGE_ALLOWED_THREADS` | empty | Exact comma-separated thread IDs permitted for read/send/interrupt/open/list. Empty means no pre-existing thread access. |
 | `CODEX_BRIDGE_ALLOWED_ROOTS` | empty (installer sets its repo root) | Absolute project directories permitted for `cwd`, separated by `:` (`;` on Windows). |
 | `CODEX_BRIDGE_APPROVAL` | `deny` | How to answer approval requests from Codex. `approve` is ignored unless `CODEX_BRIDGE_AUTO_APPROVE_ACK=1` is also set. |

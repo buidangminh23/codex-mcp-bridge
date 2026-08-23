@@ -19,7 +19,7 @@ import {
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
 
-const VERSION = "1.10.1";
+const VERSION = "1.11.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -43,14 +43,38 @@ const textResult = (text, isError = false) => ({
 
 const failure = (err) => textResult(`Codex bridge error: ${err?.message ?? String(err)}`, true);
 
+/**
+ * Decides whether this bridge may act on a thread, before anything acts on it.
+ *
+ * Under `roots` the answer depends on where the thread works, which only
+ * `thread/read` reports - and it must be asked before `thread/resume`, because
+ * resuming takes the per-thread writer lock away from whoever else has the
+ * thread open. Reading first means a thread outside every root is refused
+ * without ever being locked. A thread the bridge already owns or the operator
+ * allowlisted skips the round-trip entirely: its answer cannot change.
+ */
+async function assertThreadAccess(threadId) {
+  if (security.isThreadAuthorized(threadId)) return null;
+  if (security.threadPolicy !== "roots") {
+    security.assertThread(threadId);
+    return null;
+  }
+  const res = await client.call("thread/read", { threadId });
+  const thread = res?.thread ?? res ?? {};
+  security.assertThread(threadId, thread.cwd);
+  security.assertCwd(thread.cwd);
+  return thread;
+}
+
 function formatThreadRow(t) {
   const title = t.name || (t.preview ?? "").replace(/\s+/g, " ").slice(0, 70) || "(no title)";
   const updated = t.updatedAt ? new Date(t.updatedAt * 1000).toISOString().replace("T", " ").slice(0, 16) : "?";
   const status = t.status?.type ?? "?";
   const deepLink = IS_MACOS && hasCodexDesktopApp() ? `\n    open: ${codexThreadUrl(t.id)}` : "";
-  const authorized = security.isThreadAuthorized(t.id)
+  const authorized = security.isThreadAuthorized(t.id, t.cwd)
     ? ""
-    : "\n    NOT AUTHORIZED: add this id to CODEX_BRIDGE_ALLOWED_THREADS to send into it";
+    : "\n    NOT AUTHORIZED: add this id to CODEX_BRIDGE_ALLOWED_THREADS, or set " +
+      "CODEX_BRIDGE_THREAD_POLICY=roots to reach every thread inside an allowed root";
   return `- ${t.id}\n    title: ${title}\n    cwd: ${t.cwd ?? "?"}\n    updated: ${updated}  status: ${status}  source: ${t.source ?? "?"}${deepLink}${authorized}`;
 }
 
@@ -143,14 +167,7 @@ server.registerTool(
   async ({ threadId, prompt, timeoutSec, cwd, model, effort, openInApp }) => {
     let openNote = null;
     try {
-      security.assertThread(threadId);
-      if (openInApp) {
-        try {
-          openNote = `opened in Codex app: ${await openThreadInCodexApp(threadId)}`;
-        } catch (err) {
-          openNote = `could not open the thread in the Codex app: ${err.message}`;
-        }
-      }
+      await assertThreadAccess(threadId);
       let resolvedCwd = null;
       if (cwd) {
         const workspace = resolveWorkspacePath(cwd);
@@ -160,6 +177,18 @@ server.registerTool(
       }
       const attached = await client.ensureThreadAttached(threadId, resolvedCwd ? { cwd: resolvedCwd } : {});
       security.assertCwd(attached.thread?.cwd);
+      /**
+       * Opening the thread in the app comes after both gates. It ran first
+       * once, which meant a thread this bridge was about to refuse still got
+       * raised on screen - a refusal that leaked which threads exist.
+       */
+      if (openInApp) {
+        try {
+          openNote = `opened in Codex app: ${await openThreadInCodexApp(threadId)}`;
+        } catch (err) {
+          openNote = `could not open the thread in the Codex app: ${err.message}`;
+        }
+      }
       const result = await runTurn(client, {
         threadId,
         input: [{ type: "text", text: prompt }],
@@ -291,7 +320,7 @@ server.registerTool(
   },
   async ({ threadId, limit }) => {
     try {
-      security.assertThread(threadId);
+      await assertThreadAccess(threadId);
       const res = await client.call("thread/read", { threadId, includeTurns: true });
       const thread = res?.thread ?? res ?? {};
       security.assertCwd(thread.cwd);
@@ -334,7 +363,7 @@ server.registerTool(
   },
   async ({ threadId, turnId }) => {
     try {
-      security.assertThread(threadId);
+      await assertThreadAccess(threadId);
       const thread = await client.call("thread/read", { threadId });
       security.assertCwd((thread?.thread ?? thread)?.cwd);
       await client.call("turn/interrupt", { threadId, turnId });
@@ -368,7 +397,7 @@ server.registerTool(
   },
   async ({ threadId, background }) => {
     try {
-      security.assertThread(threadId);
+      await assertThreadAccess(threadId);
       const thread = await client.call("thread/read", { threadId });
       security.assertCwd((thread?.thread ?? thread)?.cwd);
       const url = await openThreadInCodexApp(threadId, { activate: !background });
@@ -442,7 +471,7 @@ server.registerTool(
       `defaults:       model ${DEFAULT_MODEL ?? "(from ~/.codex/config.toml)"}, effort ${DEFAULT_EFFORT ?? "(from ~/.codex/config.toml)"}`,
       `app-server:     ${client.url} - ${up ? "live" : "not reachable"}`,
       `autostart:      ${client.autoStart ? "on" : "off"}   approvals: ${client.approval}`,
-      `security:       ${security.summary().authorizedThreads} authorized thread(s), ${security.summary().allowedRoots.length} allowed root(s), sandbox ${security.sandbox}, thread policy ${security.approvalPolicy}`,
+      `security:       thread policy ${security.threadPolicy} (${security.summary().authorizedThreads} pre-authorized thread(s)), ${security.summary().allowedRoots.length} allowed root(s), sandbox ${security.sandbox}, approvals ${security.approvalPolicy}`,
       `live threads:   ${liveThreads ?? "(unknown)"}`,
       `claude desktop config: ${claudeDesktopConfigPath()}`,
     ];

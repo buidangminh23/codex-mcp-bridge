@@ -2,6 +2,38 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.11.0] - 2026-08-23
+
+### Added
+
+- `CODEX_BRIDGE_THREAD_POLICY` selects what authorizes a thread: `owned` (unchanged default) or `roots`.
+
+  Under the only behaviour that existed before, a thread opened in the Codex app or the VS Code extension
+  was not merely restricted - it was unreachable. Codex assigns the thread ID at the moment it opens, so
+  the ID cannot have been listed in `CODEX_BRIDGE_ALLOWED_THREADS` beforehand, and the bridge-owned set
+  lives in memory and empties on every MCP server restart. The listing showed those threads, because
+  listing is gated on the workspace, and then every send into one answered `not authorized`. On a machine
+  with ten live threads, nine of them were unreachable and the tenth only because the bridge had just
+  created it.
+
+  `roots` grants on the workspace instead of the ID: a thread already working inside a directory named in
+  `CODEX_BRIDGE_ALLOWED_ROOTS` is reachable. That is the same containment every tool already enforces on
+  the `cwd` it is handed, applied to the `cwd` the thread reports. It is opt-in so an existing install
+  cannot widen silently on upgrade, and an unknown workspace fails closed exactly like one outside the
+  roots.
+
+### Fixed
+
+- Authorization now happens **before** `thread/resume`. Attaching takes the per-thread writer lock away
+  from whoever else has the thread open, so deciding afterwards would have locked a thread on its way to
+  being refused.
+- `openInApp` no longer raises a thread on screen before that thread is known to be in scope - a refusal
+  that leaked which threads exist.
+- `codex_bridge_status` printed the approval policy under a `thread policy` label. Two different settings:
+  one was misreported, the other invisible. It now names both.
+- The `NOT AUTHORIZED` line in `list_codex_threads` pointed only at `CODEX_BRIDGE_ALLOWED_THREADS`, which
+  is the option that cannot work for a thread a human just opened. It now names the policy as well.
+
 ## [1.10.1] - 2026-08-20
 
 ### Fixed

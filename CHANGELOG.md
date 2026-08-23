@@ -2,6 +2,25 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A tag is not a release, and nothing was creating the release.** Pushing `v1.10.1`, `v1.11.0` and
+  `v1.11.1` published all three to npm, while the Releases page still showed `v1.10.0` as *Latest* -
+  the one release that had been created by hand. Anyone reading the repository saw a project that had
+  not shipped in days, and the three versions people were actually installing had no notes anywhere
+  except this file.
+
+  The publish workflow now creates the release from the changelog entry, in a separate job that is the
+  only one granted `contents: write` - the job that talks to npm keeps the read-only default. Generated
+  commit lists say what changed; the entry says why it mattered, so the entry is what ships. Re-running
+  a tag is safe: an existing release is left alone.
+
+- `scripts/release-notes.mjs` prints one version's changelog section, and a test asserts the version in
+  `package.json` has an entry substantial enough to be a release note - so forgetting to write it fails
+  before the tag is pushed rather than at the end of a release.
+
 ## [1.11.1] - 2026-08-23
 
 ### Fixed

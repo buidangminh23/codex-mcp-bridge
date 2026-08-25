@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { CodexAppServerClient, writerLockWarning } from "../src/app-server-client.mjs";
+import { CodexAppServerClient, parseListeningPids, writerLockWarning } from "../src/app-server-client.mjs";
 import { runTurn } from "../src/turn.mjs";
 import { startFakeAppServer } from "./helpers/fake-app-server.mjs";
 
@@ -24,6 +24,15 @@ function respondToEverything(msg, { respond, notify }) {
  * "the bridge errors or hangs on the first call after the machine wakes up".
  */
 describe("recovery from a dropped app-server connection", () => {
+  it("parses the Windows listener pid for the configured app-server port", () => {
+    const output = [
+      "  TCP    127.0.0.1:8791    0.0.0.0:0    LISTENING    89140",
+      "  TCP    127.0.0.1:4321    0.0.0.0:0    LISTENING    12345",
+      "  TCP    [::]:8791        [::]:0       LISTENING    89140",
+    ].join("\r\n");
+    assert.deepEqual(parseListeningPids(output, "8791"), [89140]);
+  });
+
   it("reconnects on the next call after the server drops the socket", async () => {
     const server = await startFakeAppServer({ onRequest: respondToEverything });
     const client = new CodexAppServerClient({ url: server.url, autoStart: false, log: () => {} });

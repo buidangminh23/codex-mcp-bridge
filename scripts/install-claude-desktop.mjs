@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { PLATFORM_LABEL, claudeDesktopConfigPath, resolveCodexBin } from "../src/platform.mjs";
+import { IS_WINDOWS, PLATFORM_LABEL, claudeDesktopConfigPath, resolveCodexBin } from "../src/platform.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();
@@ -81,6 +81,8 @@ cfg.mcpServers["codex-bridge"] = {
      */
     CODEX_BRIDGE_THREAD_POLICY: settled("CODEX_BRIDGE_THREAD_POLICY", "owned"),
     CODEX_BRIDGE_SANDBOX: settled("CODEX_BRIDGE_SANDBOX", "workspace-write"),
+    CODEX_BRIDGE_OPEN_IN_APP: settled("CODEX_BRIDGE_OPEN_IN_APP", IS_WINDOWS ? "1" : "0"),
+    CODEX_BRIDGE_RELEASE_AFTER_TURN: settled("CODEX_BRIDGE_RELEASE_AFTER_TURN", IS_WINDOWS ? "1" : "0"),
     ...(process.env.CODEX_BRIDGE_MODEL ? { CODEX_BRIDGE_MODEL: process.env.CODEX_BRIDGE_MODEL } : {}),
     ...(process.env.CODEX_BRIDGE_EFFORT ? { CODEX_BRIDGE_EFFORT: process.env.CODEX_BRIDGE_EFFORT } : {}),
   },

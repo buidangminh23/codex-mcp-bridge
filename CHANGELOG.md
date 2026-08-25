@@ -21,6 +21,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
   `package.json` has an entry substantial enough to be a release note - so forgetting to write it fails
   before the tag is pushed rather than at the end of a release.
 
+### Added
+
+- `delegate_to_codex` now gives Claude a single contract for handing work to Codex: it creates the thread
+  at the requested project directory, names it through `thread/name/set`, returns the exact `threadId` and
+  `cwd`, releases the bridge writer lock after a terminal turn, and opens the Windows or macOS `codex://`
+  deep link when configured. Windows app-server shutdown uses `netstat` and `taskkill` instead of the Unix-only
+  `lsof` path, which removes the lock that previously left Codex Desktop showing "open in another app".
+
 ## [1.11.1] - 2026-08-23
 
 ### Fixed

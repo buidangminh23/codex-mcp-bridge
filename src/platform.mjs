@@ -282,6 +282,10 @@ export function hasCodexDesktopApp() {
   return IS_MACOS && existsSync(CODEX_DESKTOP_APP_MACOS);
 }
 
+export function supportsCodexThreadLinks() {
+  return IS_WINDOWS || hasCodexDesktopApp();
+}
+
 export function isLaunchAgentInstalled() {
   return IS_MACOS && existsSync(launchAgentPath());
 }
@@ -304,12 +308,17 @@ export function isDesktopAppServerRunning() {
 /**
  * Bring a thread to the foreground in the Codex desktop app so a human can
  * watch the turn run instead of only reading the transcript afterwards.
- * macOS registers the `codex://` scheme through /Applications/ChatGPT.app.
+ * Windows registers the `codex://` scheme through the packaged Codex app, and
+ * macOS registers it through /Applications/ChatGPT.app.
  */
 export async function openThreadInCodexApp(threadId, { activate = true } = {}) {
   const url = codexThreadUrl(threadId);
+  if (IS_WINDOWS) {
+    await execFileAsync("explorer.exe", [url], { windowsHide: true, timeout: 10000 });
+    return url;
+  }
   if (!IS_MACOS) {
-    throw new Error(`Opening a Codex thread in the desktop app is macOS-only. Open ${url} manually.`);
+    throw new Error(`Opening a Codex thread in the desktop app is supported on Windows and macOS. Open ${url} manually.`);
   }
   if (!hasCodexDesktopApp()) {
     throw new Error(`Codex desktop app not found at ${CODEX_DESKTOP_APP_MACOS}. Install it to use ${url}.`);

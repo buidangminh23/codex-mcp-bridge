@@ -29,6 +29,7 @@ Codex TUI  ──codex --remote ws://127.0.0.1:8791──> same app-server, same
 - The app-server is a **singleton per port**. The bridge probes `http://127.0.0.1:8791/readyz`; if nothing answers it spawns a detached `codex app-server --listen ws://127.0.0.1:8791`, which keeps running after the bridge exits.
 - Every client pointed at the same URL shares **one app-server**, so `thread/resume` with a `threadId` rejoins the running thread instead of opening a new session.
 - The bridge keeps exactly one WebSocket, calls `initialize` once, and routes notifications by `threadId`, so parallel threads never bleed into each other.
+- `delegate_to_codex` is the one-call Claude → Codex hand-off: it starts the thread at the supplied `cwd`, names it, sends the prompt, stops the bridge app-server after a terminal turn, and opens `codex://threads/<id>` in Codex Desktop when enabled.
 
 ## Requirements
 
@@ -265,16 +266,19 @@ On macOS and Linux the `codex` launcher is a Node script with a `#!/usr/bin/env 
 
 | Tool | What it does | Hints |
 |---|---|---|
+| `delegate_to_codex` | Creates a named Codex thread at the requested project `cwd`, sends Claude's prompt, returns the reply, releases the bridge writer lock, and opens the exact session in Codex Desktop when enabled. | destructive |
 | `send_to_codex_thread` | Sends a prompt as a user turn into `threadId`, waits for `turn/completed`, returns Codex's reply plus an activity trail (commands run, files changed). | destructive |
-| `list_codex_threads` | Lists threads (id, title, cwd, last update, status) so you can pick the **exact** `threadId`. `loadedOnly: true` shows only threads live inside the app-server. On macOS each row carries a `codex://threads/<id>` deep link. | read-only |
-| `start_codex_thread` | Opens a new Codex thread at a permitted `cwd` and returns its `threadId`; the bridge applies its configured safe sandbox and approval policy. | writes |
+| `list_codex_threads` | Lists threads (id, title, cwd, last update, status) so you can pick the **exact** `threadId`. `loadedOnly: true` shows only threads live inside the app-server. Windows and macOS rows carry a `codex://threads/<id>` deep link. | read-only |
+| `start_codex_thread` | Opens a new Codex thread at a permitted `cwd`, optionally names it, and returns its `threadId`; the bridge applies its configured safe sandbox and approval policy. | writes |
 | `read_codex_thread` | Reads the recent conversation without sending anything. | read-only |
 | `interrupt_codex_turn` | Stops a turn that is still running. | destructive |
-| `open_codex_thread` | **macOS**: brings a thread to the front in the Codex desktop app via `codex://threads/<id>` so a human can watch it work. Pass `background: true` to open without stealing focus. | writes |
+| `open_codex_thread` | **Windows or macOS**: brings a thread to the front in the Codex desktop app via `codex://threads/<id>` so a human can watch it work. Pass `background: true` to open without stealing focus. | writes |
 | `stop_codex_app_server` | Stops the shared app-server once a hand-off is done, so it stops competing with Codex Desktop for the `~/.codex` state. The bridge starts a new one when it next needs it. | destructive |
 | `codex_bridge_status` | Reports the environment: platform, resolved `codex` binary, whether the app-server endpoint is live, plus the macOS integrations (LaunchAgent, desktop app), and **warns when two app-servers are running**. Start here when something misbehaves. | read-only |
 
-`send_to_codex_thread` also accepts `timeoutSec` (default 240), `cwd`, `model`, `effort`, and `openInApp` (macOS — surface the thread in the desktop app before sending). A timeout does **not** cancel the turn: the bridge returns what it collected plus the `turnId`; keep reading with `read_codex_thread` or stop it with `interrupt_codex_turn`.
+`delegate_to_codex` accepts `cwd`, `prompt`, an optional `name`, `timeoutSec` (default 240), `model`, `effort`, `openInApp`, and `releaseAfterTurn`. `send_to_codex_thread` accepts the same hand-off controls plus an existing `threadId`. On Windows, the installer defaults `openInApp` and `releaseAfterTurn` to `1`; explicit tool arguments override them. A timeout does **not** cancel the turn: the bridge returns what it collected plus the `turnId`; keep reading with `read_codex_thread` or stop it with `interrupt_codex_turn`.
+
+For the normal Claude → Codex workflow, Claude should call `delegate_to_codex` with the exact project directory in `cwd`. The response always includes the Codex `threadId`, visible session `name`, exact `cwd`, rollout path, and the desktop deep link or the reason it could not be opened. The bridge sets the protocol-supported `thread/name/set` before the first turn, so the session is not an unnamed entry in Recents.
 
 Thread operations are deny-by-default, and `CODEX_BRIDGE_THREAD_POLICY` decides what counts as permission:
 
@@ -341,7 +345,7 @@ This is how a human watches Codex work in real time instead of reading the rollo
 
 - The Codex desktop app runs its own app-server over stdio (`ChatGPT.app/Contents/Resources/codex … app-server`, **no** `--listen`), so nothing external can attach to it. `~/.codex/ipc/ipc.sock` is the Electron app's internal IPC, not an app-server. Threads opened there can still be driven through the bridge, but by resuming from the rollout `.jsonl` rather than attaching live.
 - **A thread currently open in the desktop app cannot be written to** — Codex holds a per-thread writer lock (`~/.codex/thread-writer-locks/`) and returns `thread <id> already has an active writer`. That error is the guard working, not data loss. Check `status` with `list_codex_threads` first and only send when it is `idle` or `notLoaded` and not open in the app.
-- **Threads created by the bridge do not show a title in the app.** The app lists from `~/.codex/session_index.jsonl`, and entries land there only once a thread has been named — naming is done by the app, not the app-server. The thread still exists in `~/.codex/state_5.sqlite` and opens via the `codex://threads/<id>` deep link.
+- **Bridge-created threads are named before they are opened.** The bridge calls the app-server's `thread/name/set` with the requested title, or derives `[project] first line of prompt`, then opens the exact `codex://threads/<id>` link. This gives Codex Desktop a visible session title and preserves the precise `cwd` in the thread metadata.
 - A repo living on the NTFS partition of a dual-boot machine (`/Volumes/<label>/...`) is **read-only** under macOS. Keep a separate checkout on an APFS volume to run and edit it.
 - `codex app-server daemon start` uses the `unix://` transport with a control socket at `~/.codex/app-server-control/app-server-control.sock`. The bridge does **not** use that path (different framing, no public API) — it always talks over `ws://`.
 
@@ -364,7 +368,7 @@ python3 -c "import json;[print(v['properties']['method'].get('const') or v['prop
 
 **The bridge disappears from Claude after sending into a busy thread.** Fixed in 1.6.0. A rejected `turn/start` — which is exactly what a thread locked by the desktop app produces — also rejected an internal promise nothing was awaiting. Node treats that as an unhandled rejection and, by default, exits the process, so the MCP server died while the tool handler was still formatting a tidy error message for a client that no longer had a server. Pinned by a test that runs the failure in a real child process and asserts it exits 0.
 
-**The Codex app says a thread is "open in another application".** That is the per-thread writer lock, and the other application is usually this bridge: the shared app-server takes the lock when it loads a thread and keeps it until it exits, so the desktop app cannot write to the same thread. `open_codex_thread` and `openInApp` now say so at the moment they open a thread the bridge is holding, instead of leaving the app's message to be decoded. Release it with `stop_codex_app_server` once the hand-off is done — the bridge starts a new app-server the next time it needs one. A thread held by a *different* Codex window is the app's own lock; close it there.
+**The Codex app says a thread is "open in another application".** That is the per-thread writer lock, and the other application is usually this bridge: the shared app-server takes the lock when it loads a thread and keeps it until it exits, so the desktop app cannot write to the same thread. `delegate_to_codex` releases the bridge server before opening the final desktop link when `releaseAfterTurn` is enabled. For an existing thread, pass `releaseAfterTurn: true` or call `stop_codex_app_server` once the hand-off is done — the bridge starts a new app-server the next time it needs one. A thread held by a *different* Codex window is the app's own lock; close it there.
 
 **A thread opens against the wrong directory.** The same project sits at a different absolute path on each machine: on the shared drive's letter under Windows, under its mount point when that drive is visible from macOS (**read-only** there), and in a native checkout otherwise. Since 1.4.0 the bridge picks the candidate that both **exists and is writable** on the current machine and prints a `note: cwd remapped …` line whenever it rewrites one. If nothing usable exists it fails immediately instead of opening a thread somewhere wrong. Handing Codex a read-only cwd is a reliable way to hit the freeze above: it runs a few reads, then asks for write permission and stalls.
 
@@ -398,6 +402,8 @@ The bridge reads these from the environment its MCP client hands it — there is
 | `CODEX_BRIDGE_WORKSPACE_ROOTS` | `$HOME` and the bridge's parent directory | Where to look for a project by name, most preferred first, separated by `:` (`;` on Windows). Setting it replaces the derived roots rather than adding to them. |
 | `CODEX_BRIDGE_MODEL` | from `~/.codex/config.toml` | Default model for threads and turns the bridge creates, e.g. `gpt-5.6-luna`. |
 | `CODEX_BRIDGE_EFFORT` | from `~/.codex/config.toml` | Default reasoning effort: `minimal` · `low` · `medium` · `high` · `xhigh` · `ultra`. |
+| `CODEX_BRIDGE_OPEN_IN_APP` | `1` on Windows, `0` elsewhere | Open delegated or sent threads through the `codex://threads/<id>` desktop link. |
+| `CODEX_BRIDGE_RELEASE_AFTER_TURN` | `1` on Windows, `0` elsewhere | Stop the shared bridge app-server after a terminal turn so Codex Desktop can write the handed-off thread. |
 | `CLAUDE_BRIDGE_PEER_NAME` | `codex-<pid>` | The name Claude shows for this bridge in its agent list. |
 | `CLAUDE_BRIDGE_CWD` | the process cwd | The working directory the peer advertises. |
 | `CLAUDE_DESKTOP_CONFIG` | auto-detected | Override the config path used by `install-claude-desktop.mjs`. |

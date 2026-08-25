@@ -11,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const CODEX_TOOLS = [
+  "delegate_to_codex",
   "send_to_codex_thread",
   "list_codex_threads",
   "start_codex_thread",
@@ -123,6 +124,7 @@ describe("codex-bridge tool contract", async () => {
   it("marks the tools that can destroy work as destructive", () => {
     const destructive = tools.filter((t) => t.annotations.destructiveHint).map((t) => t.name);
     assert.deepEqual(destructive.sort(), [
+      "delegate_to_codex",
       "interrupt_codex_turn",
       "send_to_codex_thread",
       "stop_codex_app_server",

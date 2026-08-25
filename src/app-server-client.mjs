@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { PLATFORM_LABEL, resolveCodexBin, spawnEnv } from "./platform.mjs";
@@ -7,6 +7,45 @@ import { assertAllowedAppServerUrl } from "./security-policy.mjs";
 const DEFAULT_URL = "ws://127.0.0.1:8791";
 const CONNECT_ATTEMPTS = 2;
 const CONNECT_RETRY_DELAY_MS = 750;
+
+export function parseListeningPids(output, port) {
+  const suffix = `:${port}`;
+  return [
+    ...new Set(
+      String(output)
+        .split(/\r?\n/)
+        .map((line) => line.trim().split(/\s+/))
+        .filter((fields) => fields[0]?.toUpperCase() === "TCP")
+        .filter((fields) => fields.some((field) => field.toUpperCase() === "LISTENING"))
+        .filter((fields) => fields[1]?.endsWith(suffix))
+        .map((fields) => Number(fields.at(-1)))
+        .filter((pid) => Number.isInteger(pid) && pid > 0),
+    ),
+  ];
+}
+
+function appServerPort(url) {
+  return url.replace(/^wss?:\/\//, "").split("/")[0].split(":").pop();
+}
+
+function listeningPids(port) {
+  if (process.platform === "win32") {
+    return parseListeningPids(
+      execFileSync("netstat.exe", ["-ano", "-p", "tcp"], {
+        env: spawnEnv(),
+        windowsHide: true,
+      }),
+      port,
+    );
+  }
+  return execFileSync("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+    env: spawnEnv(),
+  })
+    .toString()
+    .split("\n")
+    .map((line) => Number(line.trim()))
+    .filter(Boolean);
+}
 
 function httpBase(wsUrl) {
   return wsUrl.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
@@ -101,25 +140,32 @@ export class CodexAppServerClient {
    */
   async stopServer() {
     if (!(await this.isServerUp())) return { stopped: false, reason: "no app-server was listening" };
-    const port = this.url.replace(/^wss?:\/\//, "").split("/")[0].split(":").pop();
-    const { execFileSync } = await import("node:child_process");
-    const pids = execFileSync("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
-      env: spawnEnv(),
-    })
-      .toString()
-      .split("\n")
-      .map((line) => Number(line.trim()))
-      .filter(Boolean);
+    const port = appServerPort(this.url);
+    const pids = listeningPids(port);
     if (!pids.length) return { stopped: false, reason: `nothing is listening on port ${port}` };
     this.ws?.close();
     for (const pid of pids) {
       try {
-        process.kill(pid, "SIGTERM");
+        if (process.platform === "win32") {
+          execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+            stdio: "ignore",
+            windowsHide: true,
+          });
+        } else {
+          process.kill(pid, "SIGTERM");
+        }
       } catch (err) {
         this.log(`could not stop pid ${pid}: ${err.message}`);
       }
     }
-    return { stopped: true, pids };
+    this.ws = null;
+    this.attachedThreads.clear();
+    this.threadCwds.clear();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (!(await this.isServerUp())) return { stopped: true, pids };
+      await delay(100);
+    }
+    return { stopped: true, pids, stillListening: true };
   }
 
   /**

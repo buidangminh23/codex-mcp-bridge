@@ -164,7 +164,7 @@ describe("every thread tool is gated on the workspace", () => {
       "send_to_codex_thread attaches to the thread before deciding whether it is allowed to",
     );
     assert.ok(
-      send.indexOf("security.assertCwd(attached.thread?.cwd)") < send.indexOf("openThreadInCodexApp"),
+      send.indexOf("security.assertCwd(attachedThread?.cwd)") < send.indexOf("openThreadInCodexApp"),
       "send_to_codex_thread raises the thread on screen before it is known to be in scope",
     );
   });

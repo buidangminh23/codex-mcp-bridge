@@ -4,6 +4,8 @@ import path from "node:path";
 const APPROVAL_POLICIES = new Set(["untrusted", "on-failure", "on-request", "never"]);
 const SANDBOXES = new Set(["read-only", "workspace-write"]);
 const THREAD_POLICIES = new Set(["owned", "roots"]);
+const ALLOW_ALL_ROOTS = "*";
+const ALLOW_ALL_THREADS = "*";
 
 /**
  * Resolves the deepest ancestor that exists and re-appends the rest, rather
@@ -49,11 +51,15 @@ function parseList(value) {
 }
 
 function parseRoots(value) {
-  return String(value ?? "")
+  const entries = String(value ?? "")
     .split(path.delimiter)
     .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map(canonicalPath);
+    .filter(Boolean);
+
+  return {
+    allowAll: entries.includes(ALLOW_ALL_ROOTS),
+    roots: entries.filter((entry) => entry !== ALLOW_ALL_ROOTS).map(canonicalPath),
+  };
 }
 
 export function assertAllowedAppServerUrl(value) {
@@ -78,8 +84,12 @@ export function assertAllowedAppServerUrl(value) {
 
 export class BridgeSecurityPolicy {
   constructor(env = process.env) {
-    this.allowedThreadIds = parseList(env.CODEX_BRIDGE_ALLOWED_THREADS);
-    this.allowedRoots = parseRoots(env.CODEX_BRIDGE_ALLOWED_ROOTS);
+    const configuredThreads = parseList(env.CODEX_BRIDGE_ALLOWED_THREADS);
+    this.allowAllThreads = configuredThreads.has(ALLOW_ALL_THREADS);
+    this.allowedThreadIds = new Set([...configuredThreads].filter((threadId) => threadId !== ALLOW_ALL_THREADS));
+    const roots = parseRoots(env.CODEX_BRIDGE_ALLOWED_ROOTS ?? ALLOW_ALL_ROOTS);
+    this.allowAllRoots = roots.allowAll;
+    this.allowedRoots = roots.roots;
     this.ownedThreadIds = new Set();
 
     /**
@@ -130,7 +140,7 @@ export class BridgeSecurityPolicy {
    * inside a root is refused exactly like one placed outside it.
    */
   isThreadAuthorized(threadId, cwd) {
-    if (this.ownedThreadIds.has(threadId) || this.allowedThreadIds.has(threadId)) return true;
+    if (this.allowAllThreads || this.ownedThreadIds.has(threadId) || this.allowedThreadIds.has(threadId)) return true;
     if (this.threadPolicy !== "roots") return false;
     return cwd == null ? false : this.isCwdAuthorized(cwd);
   }
@@ -179,13 +189,15 @@ export class BridgeSecurityPolicy {
   }
 
   isCwdAuthorized(cwd) {
-    if (!this.allowedRoots.length || !cwd) return false;
+    if (!cwd) return false;
+    if (this.allowAllRoots) return true;
+    if (!this.allowedRoots.length) return false;
     const candidate = canonicalPath(cwd);
     return this.allowedRoots.some((root) => isWithin(root, candidate));
   }
 
   assertCwd(cwd) {
-    if (!this.allowedRoots.length) {
+    if (!this.allowAllRoots && !this.allowedRoots.length) {
       throw new Error(
         "No authorized workspace roots are configured. Set CODEX_BRIDGE_ALLOWED_ROOTS to one or more project directories.",
       );
@@ -197,7 +209,9 @@ export class BridgeSecurityPolicy {
   summary() {
     return {
       authorizedThreads: this.allowedThreadIds.size + this.ownedThreadIds.size,
-      allowedRoots: this.allowedRoots,
+      allowAllThreads: this.allowAllThreads,
+      allowedRoots: this.allowAllRoots ? [ALLOW_ALL_ROOTS] : this.allowedRoots,
+      allowAllRoots: this.allowAllRoots,
       threadPolicy: this.threadPolicy,
       approvalPolicy: this.approvalPolicy,
       sandbox: this.sandbox,

@@ -97,7 +97,7 @@ Either route puts four commands on your PATH — `codex-mcp-bridge` and `claude-
 
 #### Upgrading an install you already have
 
-`npm install -g @minhspark/codex-mcp-bridge@latest`, then restart Claude Desktop or Claude Code — an MCP server only loads its code when the client spawns it. Check `codex_bridge_status` reports the version you expect. The config needs no edit: the global install path carries no version number, so the entry keeps pointing at the right file.
+`npm install -g @minhspark/codex-mcp-bridge@latest`, then restart Claude Desktop or Claude Code — an MCP server only loads its code when the client spawns it. Check `codex_bridge_status` reports the version you expect. The global install path carries no version number, so the entry keeps pointing at the right file. If the existing entry still has `CODEX_BRIDGE_THREAD_POLICY=owned`, pass `CODEX_BRIDGE_THREAD_POLICY=roots` once when re-running the installer to enable human-opened threads.
 
 Re-running `codex-mcp-bridge-install` is **not** required to upgrade, and before 1.11.1 it actively hurt: it replaced the whole entry, discarding `CODEX_BRIDGE_ALLOWED_THREADS`, any hand-added `CODEX_BRIDGE_THREAD_POLICY`, and resetting `CODEX_BRIDGE_ALLOWED_ROOTS` to the install directory. From 1.11.1 it keeps what is already there — an environment variable you pass wins, the existing value is the fallback, and `--reset` gives you the defaults back.
 
@@ -131,14 +131,20 @@ The script detects the platform, creates the config file if it does not exist, b
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
 | Linux | `${XDG_CONFIG_HOME:-~/.config}/Claude/claude_desktop_config.json` |
 
-Tell it which projects the bridge may drive. The default is the checkout when you cloned, and the directory you ran the installer from when you installed the package — neither is a sensible guess for more than one project, so name them:
+The v1.11.2 installer accepts threads from every usable workspace by default, so it does not bake one machine's clone path into the config. Narrow the scope to named projects when you want that:
 
 ```bash
 # macOS and Linux separate entries with ":", Windows with ";"
 CODEX_BRIDGE_ALLOWED_ROOTS="/path/to/project-a:/path/to/project-b" codex-mcp-bridge-install
 ```
 
-Skip this and the bridge still starts cleanly, then answers every `list_codex_threads` with `No workspace roots are configured`. It is the most common way an otherwise correct install refuses to do anything, so the installer now prints a warning when the roots it wrote point inside an install directory.
+On an older config, existing values are preserved. To migrate that entry to the cross-machine behaviour explicitly, run:
+
+```bash
+CODEX_BRIDGE_ALLOWED_ROOTS="*" CODEX_BRIDGE_THREAD_POLICY=roots codex-mcp-bridge-install
+```
+
+The wildcard means every usable workspace; the bridge still resolves the thread's reported `cwd` and refuses a path that does not exist or cannot be written.
 
 Pass defaults through the environment if you want them written into the entry:
 
@@ -280,16 +286,16 @@ On macOS and Linux the `codex` launcher is a Node script with a `#!/usr/bin/env 
 
 For the normal Claude → Codex workflow, Claude should call `delegate_to_codex` with the exact project directory in `cwd`. The response always includes the Codex `threadId`, visible session `name`, exact `cwd`, rollout path, and the desktop deep link or the reason it could not be opened. The bridge sets the protocol-supported `thread/name/set` before the first turn, so the session is not an unnamed entry in Recents.
 
-Thread operations are deny-by-default, and `CODEX_BRIDGE_THREAD_POLICY` decides what counts as permission:
+Thread operations are checked before the bridge attaches, and `CODEX_BRIDGE_THREAD_POLICY` decides what counts as permission:
 
 | Policy | A thread is reachable when | Use it when |
 |---|---|---|
-| `owned` *(default)* | the bridge created it with `start_codex_thread`, or its exact ID is listed in `CODEX_BRIDGE_ALLOWED_THREADS` | the bridge drives threads it opens itself |
-| `roots` | it is working inside a directory named in `CODEX_BRIDGE_ALLOWED_ROOTS` | you open threads in the Codex app or VS Code and want Claude to talk to them |
+| `owned` *(runtime default)* | the bridge created it with `start_codex_thread`, or its exact ID is listed in `CODEX_BRIDGE_ALLOWED_THREADS` | the bridge drives only threads it opens itself |
+| `roots` *(v1.11.2 installer default)* | it is working inside a directory allowed by `CODEX_BRIDGE_ALLOWED_ROOTS` | you open threads in the Codex app or VS Code and want Claude to talk to them |
 
 Under `owned`, a thread a human opened is **unreachable rather than merely restricted**: Codex assigns its ID at the moment it opens, so the ID cannot have been allowlisted beforehand, and the bridge-owned set lives in memory and empties whenever the MCP server restarts. If every live thread answers `NOT AUTHORIZED`, that is the cause — switch to `roots`.
 
-`roots` does not remove a gate; it moves it from the ID to the workspace, which is the containment every tool already applies to the `cwd` it is handed. The bridge resolves a thread's workspace with a read **before** attaching, so a thread outside every root is refused without ever taking its writer lock. Set `CODEX_BRIDGE_ALLOWED_ROOTS` to the absolute project directories the bridge may use — the installer defaults that root to this repository, so change it when delegating into another project. A root as broad as `/` or `C:\` makes `roots` mean *every thread on this machine*.
+`roots` does not remove a gate; it moves it from the ID to the workspace, which is the containment every tool already applies to the `cwd` it is handed. The bridge resolves a thread's workspace with a read **before** attaching, so a thread outside every root is refused without ever taking its writer lock. `CODEX_BRIDGE_ALLOWED_ROOTS=*` means every usable workspace. Otherwise set it to absolute project directories, separated by `:` (`;` on Windows). A root as broad as `/` or `C:\` has the same all-directories meaning, but `*` is portable across operating systems and machines.
 
 ## Tools — `claude-bridge` (runs inside Codex)
 
@@ -372,9 +378,9 @@ python3 -c "import json;[print(v['properties']['method'].get('const') or v['prop
 
 **A thread opens against the wrong directory.** The same project sits at a different absolute path on each machine: on the shared drive's letter under Windows, under its mount point when that drive is visible from macOS (**read-only** there), and in a native checkout otherwise. Since 1.4.0 the bridge picks the candidate that both **exists and is writable** on the current machine and prints a `note: cwd remapped …` line whenever it rewrites one. If nothing usable exists it fails immediately instead of opening a thread somewhere wrong. Handing Codex a read-only cwd is a reliable way to hit the freeze above: it runs a few reads, then asks for write permission and stalls.
 
-**The path as given always goes first.** If this machine can already write there, nothing is rewritten — guessing over an explicit instruction would be the bug. Rewriting only happens for a path this machine cannot use, which is exactly the case it exists for: macOS mounts NTFS read-only, so the drive a Windows brief quotes is visible and useless at the same time.
+**A path from another machine is remapped before it can cause a wrong checkout.** An explicit `CODEX_BRIDGE_PATH_MAP` is checked first. Otherwise the bridge keeps a path that already exists and is writable, and only then tries portable candidates for foreign drive letters, mount points, or UNC shares. If nothing usable exists it fails with the paths it tried instead of opening Codex in a guessed directory.
 
-A path counts as coming from elsewhere when it names a drive letter (`D:\project`) or an attached volume (`/Volumes/<label>/project`, `/mnt/<label>/project`, `/media/<user>/<label>/project`). No particular letter or label is blessed, so any dual-boot or external-disk layout works without configuration. The bridge then looks for that project name under `$HOME`, then under **its own parent directory** — a bridge checked out at `~/code/codex-mcp-bridge` makes `~/code` the obvious place to find a sibling project, which is measured rather than configured. Override the list with `CODEX_BRIDGE_WORKSPACE_ROOTS`, or set `CODEX_BRIDGE_REMAP=0` to switch the rewriting off entirely.
+A path counts as coming from elsewhere when it names a drive letter (`D:\project`), a UNC share (`\\server\share\project`), or an attached volume (`/Volumes/<label>/project`, `/mnt/<label>/project`, `/media/<user>/<label>/project`). No particular letter, share, or label is blessed, so any dual-boot or external-disk layout works without configuration. The bridge then looks for that project under `$HOME`, then under **its own parent directory** — a bridge checked out at `~/code/codex-mcp-bridge` makes `~/code` the obvious place to find a sibling project. Override the list with `CODEX_BRIDGE_WORKSPACE_ROOTS`, provide deterministic source/target pairs with `CODEX_BRIDGE_PATH_MAP='{"L:\\project":"C:\\project"}'`, or set `CODEX_BRIDGE_REMAP=0` to switch heuristic rewriting off entirely.
 
 Note: Codex Desktop does **not** group threads by directory — the sidebar has `Pinned` and everything else, and the protocol exposes no API to file a thread under a section (`thread/start` takes no `sectionId`; `thread/metadata/update` only patches gitInfo). What ties a thread to a project is its `cwd`.
 
@@ -391,14 +397,15 @@ The bridge reads these from the environment its MCP client hands it — there is
 | `CODEX_APP_SERVER_URL` | `ws://127.0.0.1:8791` | Shared **loopback-only** app-server endpoint. Non-loopback endpoints are rejected because this bridge does not implement remote WebSocket authentication. |
 | `CODEX_BIN` | auto-detected | Path to `codex` used for autostart. |
 | `CODEX_BRIDGE_AUTOSTART` | `1` | `0` = never spawn an app-server; one must already be running. |
-| `CODEX_BRIDGE_THREAD_POLICY` | `owned` | What authorizes a thread: `owned` (created by this bridge, or listed in `CODEX_BRIDGE_ALLOWED_THREADS`) or `roots` (working inside `CODEX_BRIDGE_ALLOWED_ROOTS`). Default is unchanged on upgrade, so an existing install never widens by itself. |
-| `CODEX_BRIDGE_ALLOWED_THREADS` | empty | Exact comma-separated thread IDs permitted for read/send/interrupt/open/list. Empty means no pre-existing thread access. |
-| `CODEX_BRIDGE_ALLOWED_ROOTS` | empty (installer sets its repo root) | Absolute project directories permitted for `cwd`, separated by `:` (`;` on Windows). |
+| `CODEX_BRIDGE_THREAD_POLICY` | `owned` in the direct server; installer writes `roots` for new v1.11.2 entries | What authorizes a thread: `owned` (created by this bridge, or listed in `CODEX_BRIDGE_ALLOWED_THREADS`) or `roots` (working inside `CODEX_BRIDGE_ALLOWED_ROOTS`). Existing config values are preserved on upgrade. |
+| `CODEX_BRIDGE_ALLOWED_THREADS` | empty | Exact comma-separated thread IDs permitted for read/send/interrupt/open/list; `*` explicitly permits every thread ID. Under `roots`, the workspace check still runs. |
+| `CODEX_BRIDGE_ALLOWED_ROOTS` | `*` in the v1.11.2 installer | Absolute project directories permitted for `cwd`, separated by `:` (`;` on Windows); `*` means every usable workspace. |
 | `CODEX_BRIDGE_APPROVAL` | `deny` | How to answer approval requests from Codex. `approve` is ignored unless `CODEX_BRIDGE_AUTO_APPROVE_ACK=1` is also set. |
 | `CODEX_BRIDGE_AUTO_APPROVE_ACK` | empty | Explicit acknowledgement required to enable automatic command/file approval; set to `1` only after reviewing the risk. |
 | `CODEX_BRIDGE_APPROVAL_POLICY` | `on-request` | Policy applied to threads created by the bridge. It is no longer caller-controlled. |
 | `CODEX_BRIDGE_SANDBOX` | `workspace-write` | Sandbox applied to threads created by the bridge: `read-only` or `workspace-write`; unrestricted `danger-full-access` is rejected. |
 | `CODEX_BRIDGE_REMAP` | `1` | `0` disables cwd remapping between a shared drive and a local checkout. |
+| `CODEX_BRIDGE_PATH_MAP` | empty | Optional JSON object mapping absolute source paths to absolute target paths; use it when the same project has a known different path on another machine. |
 | `CODEX_BRIDGE_WORKSPACE_ROOTS` | `$HOME` and the bridge's parent directory | Where to look for a project by name, most preferred first, separated by `:` (`;` on Windows). Setting it replaces the derived roots rather than adding to them. |
 | `CODEX_BRIDGE_MODEL` | from `~/.codex/config.toml` | Default model for threads and turns the bridge creates, e.g. `gpt-5.6-luna`. |
 | `CODEX_BRIDGE_EFFORT` | from `~/.codex/config.toml` | Default reasoning effort: `minimal` · `low` · `medium` · `high` · `xhigh` · `ultra`. |

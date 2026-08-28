@@ -24,6 +24,7 @@ const realEnv = {
   XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
   CODEX_BRIDGE_REMAP: process.env.CODEX_BRIDGE_REMAP,
   CODEX_BRIDGE_WORKSPACE_ROOTS: process.env.CODEX_BRIDGE_WORKSPACE_ROOTS,
+  CODEX_BRIDGE_PATH_MAP: process.env.CODEX_BRIDGE_PATH_MAP,
 };
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-platform-"));
 
@@ -214,6 +215,7 @@ describe("workspace resolution", () => {
     process.env.CODEX_BRIDGE_WORKSPACE_ROOTS = [first, second].join(path.delimiter);
     try {
       assert.equal(resolveWorkspacePath("/Volumes/Shared/only-here").path, path.join(second, "only-here"));
+      assert.equal(resolveWorkspacePath("\\\\server\\share\\only-here").path, path.join(second, "only-here"));
       assert.equal(
         resolveWorkspacePath("/Volumes/Shared/in-both").path,
         path.join(first, "in-both"),
@@ -221,6 +223,23 @@ describe("workspace resolution", () => {
       );
     } finally {
       delete process.env.CODEX_BRIDGE_WORKSPACE_ROOTS;
+    }
+  });
+
+  it("applies an explicit path map before trusting a stale writable alias", () => {
+    const alias = path.join(sandbox, "stale-alias");
+    const target = path.join(sandbox, "real-project");
+    fs.mkdirSync(alias, { recursive: true });
+    fs.mkdirSync(path.join(target, "src"), { recursive: true });
+
+    process.env.CODEX_BRIDGE_PATH_MAP = JSON.stringify({ [alias]: target });
+    try {
+      const workspace = resolveWorkspacePath(path.join(alias, "src"));
+      assert.equal(workspace.path, path.join(target, "src"));
+      assert.equal(workspace.remapped, true);
+      assert.match(workspace.note, /CODEX_BRIDGE_PATH_MAP/);
+    } finally {
+      delete process.env.CODEX_BRIDGE_PATH_MAP;
     }
   });
 

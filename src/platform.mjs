@@ -46,6 +46,7 @@ export const homeDir = () => process.env.HOME ?? process.env.USERPROFILE ?? os.h
  */
 const FOREIGN_ROOT_PATTERNS = [
   /^[A-Za-z]:\/(.+)$/,
+  /^\/\/[^/]+\/[^/]+\/(.+)$/,
   /^\/Volumes\/[^/]+\/(.+)$/,
   /^\/mnt\/[^/]+\/(.+)$/,
   /^\/media\/[^/]+\/[^/]+\/(.+)$/,
@@ -179,6 +180,55 @@ function normalizeSeparators(input) {
   return input.replace(/\\/g, "/").replace(/\/+$/, "") || input;
 }
 
+function isNetworkPath(input) {
+  return normalizeSeparators(input).startsWith("//");
+}
+
+function isSameOrWithin(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+/**
+ * Absolute paths in a Claude session can refer to a stale mount or checkout
+ * that happens to remain as an empty directory on this machine. An explicit
+ * JSON map is the deterministic escape hatch: it is checked before the input
+ * path, while the normal workspace-root policy still validates the result.
+ *
+ * Example:
+ *   {"L:\\codex-mcp-bridge":"C:\\codex-mcp-bridge"}
+ */
+function configuredPathMaps() {
+  const raw = process.env.CODEX_BRIDGE_PATH_MAP;
+  if (!raw) return [];
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Invalid CODEX_BRIDGE_PATH_MAP: expected a JSON object of absolute source paths to targets");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Invalid CODEX_BRIDGE_PATH_MAP: expected a JSON object of absolute source paths to targets");
+  }
+
+  return Object.entries(parsed)
+    .map(([from, to]) => {
+      if (typeof from !== "string" || typeof to !== "string" || !path.isAbsolute(from) || !path.isAbsolute(to)) {
+        throw new Error("Invalid CODEX_BRIDGE_PATH_MAP: every source and target must be an absolute path");
+      }
+      return { from: path.resolve(from), to: path.resolve(to) };
+    })
+    .sort((a, b) => b.from.length - a.from.length);
+}
+
+function pathMapCandidates(input) {
+  const candidate = path.resolve(input);
+  return configuredPathMaps()
+    .filter(({ from }) => isSameOrWithin(from, candidate))
+    .map(({ from, to }) => path.join(to, path.relative(from, candidate)));
+}
+
 function foreignRootRelative(input) {
   const normalized = normalizeSeparators(input);
   for (const pattern of FOREIGN_ROOT_PATTERNS) {
@@ -203,16 +253,22 @@ function remapCandidates(input) {
  * looking at, or one the agent cannot write to - which then stalls the turn on
  * a permission request instead of failing outright.
  *
- * The path as given always goes first: if this machine can already write
- * there, no rewriting is warranted and guessing would be the bug. Rewriting
- * only happens for a path this machine cannot use, which is exactly the case
- * it was written for - macOS mounts NTFS read-only, so the drive a Windows
- * brief quotes is visible and useless at the same time.
+ * An explicit map takes precedence for a stale alias. Otherwise the path as
+ * given goes first: if this machine can already write there, no rewriting is
+ * warranted and guessing would be the bug. Rewriting only happens for a path
+ * this machine cannot use, which is exactly the case it was written for - a
+ * foreign drive, mount, or UNC share can be visible while the original
+ * checkout is unavailable locally. UNC shares are tried after local remap
+ * candidates so a disconnected network location cannot stall the bridge.
  */
 export function resolveWorkspacePath(input) {
   if (!input) return { path: input, remapped: false, writable: false, note: null };
   const original = input;
-  const candidates = [input, ...(remapEnabled() ? remapCandidates(input) : [])];
+  const mapped = pathMapCandidates(input);
+  const remapped = remapEnabled() ? remapCandidates(input) : [];
+  const candidates = isNetworkPath(input)
+    ? [...mapped, ...remapped, input]
+    : [...mapped, input, ...remapped];
   const ordered = candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
 
   const writable = ordered.find((candidate) => existsSync(candidate) && isWritableDir(candidate));
@@ -223,7 +279,9 @@ export function resolveWorkspacePath(input) {
       writable: true,
       note:
         writable !== original
-          ? `cwd remapped for ${PLATFORM_LABEL}: ${original} -> ${writable}`
+          ? mapped.includes(writable)
+            ? `cwd mapped for ${PLATFORM_LABEL} via CODEX_BRIDGE_PATH_MAP: ${original} -> ${writable}`
+            : `cwd remapped for ${PLATFORM_LABEL}: ${original} -> ${writable}`
           : null,
     };
   }

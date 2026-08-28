@@ -60,9 +60,10 @@ describe("claude desktop installer", () => {
 
     assert.equal(
       env.CODEX_BRIDGE_THREAD_POLICY,
-      "owned",
-      "the setting that decides whether the bridge can reach a human-opened thread must be visible in the file, not implicit",
+      "roots",
+      "the installer must make human-opened threads reachable by workspace, not by a stale pre-authorized id",
     );
+    assert.equal(env.CODEX_BRIDGE_ALLOWED_ROOTS, "*");
     assert.equal(env.CODEX_BRIDGE_SANDBOX, "workspace-write");
     assert.equal(env.CODEX_BRIDGE_OPEN_IN_APP, process.platform === "win32" ? "1" : "0");
     assert.equal(env.CODEX_BRIDGE_RELEASE_AFTER_TURN, process.platform === "win32" ? "1" : "0");
@@ -159,9 +160,9 @@ describe("claude desktop installer", () => {
 
     const env = install({ config, args: ["--reset"] }).mcpServers["codex-bridge"].env;
 
-    assert.equal(env.CODEX_BRIDGE_THREAD_POLICY, "owned");
+    assert.equal(env.CODEX_BRIDGE_THREAD_POLICY, "roots");
     assert.equal(env.CODEX_BRIDGE_ALLOWED_THREADS, undefined);
-    assert.equal(env.CODEX_BRIDGE_ALLOWED_ROOTS, root);
+    assert.equal(env.CODEX_BRIDGE_ALLOWED_ROOTS, "*");
   });
 
   it("never touches another MCP server in the same file", () => {
@@ -181,12 +182,7 @@ describe("claude desktop installer", () => {
     });
   });
 
-  /**
-   * `owned` is a safe default and a confusing one: every thread a human opens
-   * answers NOT AUTHORIZED, and nothing in that message points at the setting
-   * responsible. The installer says it out loud instead.
-   */
-  it("explains the owned default rather than leaving it to be discovered", () => {
+  it("uses cross-machine defaults instead of a machine-specific install root", () => {
     const output = execFileSync(process.execPath, [installer], {
       env: {
         PATH: process.env.PATH ?? "",
@@ -197,7 +193,7 @@ describe("claude desktop installer", () => {
       encoding: "utf8",
     });
 
-    assert.match(output, /NOT AUTHORIZED/);
-    assert.match(output, /CODEX_BRIDGE_THREAD_POLICY=roots/);
+    assert.match(output, /CODEX_BRIDGE_ALLOWED_ROOTS\"\s*:\s*\"\*\"/);
+    assert.match(output, /CODEX_BRIDGE_THREAD_POLICY\"\s*:\s*\"roots\"/);
   });
 });

@@ -29,6 +29,20 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
   deep link when configured. Windows app-server shutdown uses `netstat` and `taskkill` instead of the Unix-only
   `lsof` path, which removes the lock that previously left Codex Desktop showing "open in another app".
 
+## [1.11.2] - 2026-08-28
+
+### Fixed
+
+- Thread workspaces are normalized through the cross-machine path resolver before authorization, attaching,
+  reading, interrupting, or opening. A stale drive letter, mount point, or UNC path can therefore be mapped to
+  the writable checkout on the current machine instead of sending Codex into the wrong directory.
+- `CODEX_BRIDGE_ALLOWED_ROOTS=*` now explicitly means every usable workspace, and the installer uses that
+  cross-machine default together with `CODEX_BRIDGE_THREAD_POLICY=roots`, so a thread opened by a human is not
+  rejected because its id or the install directory belongs to another machine. A workspace still has to resolve
+  to an existing writable directory before a turn acts on it.
+- `scripts/check.mjs` now forwards `CODEX_BRIDGE_THREAD_POLICY`, so validation checks the same authorization mode
+  as the MCP server.
+
 ## [1.11.1] - 2026-08-23
 
 ### Fixed

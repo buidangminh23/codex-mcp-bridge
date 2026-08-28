@@ -10,13 +10,14 @@ const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();
 const reset = process.argv.includes("--reset");
 
 /**
- * When the package is installed as a dependency its own directory is never a
- * workspace anybody wants to drive Codex in - defaulting to it produces an
- * entry that starts fine and then refuses every thread. Fall back to the
- * directory the operator ran the installer from instead, and say so out loud.
+ * This bridge is intentionally the local hand-off point between Claude and
+ * Codex. A thread can have been opened from any checkout on this machine (or
+ * report a checkout from another machine), so a machine-specific install path
+ * is the wrong default: it starts successfully and then refuses the useful
+ * thread. The bridge still resolves/remaps the reported cwd and requires a
+ * usable directory before it acts.
  */
-const installedAsDependency = root.split(path.sep).includes("node_modules");
-const defaultRoots = installedAsDependency ? process.cwd() : root;
+const defaultRoots = "*";
 
 const nodeBin = process.env.NODE_EXE ?? process.execPath;
 const codexBin = resolveCodexBin(process.env.CODEX_EXE);
@@ -79,10 +80,16 @@ cfg.mcpServers["codex-bridge"] = {
      * and the symptom when you do not, every thread answering NOT AUTHORIZED,
      * points nowhere near it.
      */
-    CODEX_BRIDGE_THREAD_POLICY: settled("CODEX_BRIDGE_THREAD_POLICY", "owned"),
+    CODEX_BRIDGE_THREAD_POLICY: settled("CODEX_BRIDGE_THREAD_POLICY", "roots"),
     CODEX_BRIDGE_SANDBOX: settled("CODEX_BRIDGE_SANDBOX", "workspace-write"),
     CODEX_BRIDGE_OPEN_IN_APP: settled("CODEX_BRIDGE_OPEN_IN_APP", IS_WINDOWS ? "1" : "0"),
     CODEX_BRIDGE_RELEASE_AFTER_TURN: settled("CODEX_BRIDGE_RELEASE_AFTER_TURN", IS_WINDOWS ? "1" : "0"),
+    ...(process.env.CODEX_BRIDGE_ALLOWED_THREADS !== undefined
+      ? { CODEX_BRIDGE_ALLOWED_THREADS: process.env.CODEX_BRIDGE_ALLOWED_THREADS }
+      : {}),
+    ...(process.env.CODEX_BRIDGE_PATH_MAP !== undefined
+      ? { CODEX_BRIDGE_PATH_MAP: process.env.CODEX_BRIDGE_PATH_MAP }
+      : {}),
     ...(process.env.CODEX_BRIDGE_MODEL ? { CODEX_BRIDGE_MODEL: process.env.CODEX_BRIDGE_MODEL } : {}),
     ...(process.env.CODEX_BRIDGE_EFFORT ? { CODEX_BRIDGE_EFFORT: process.env.CODEX_BRIDGE_EFFORT } : {}),
   },

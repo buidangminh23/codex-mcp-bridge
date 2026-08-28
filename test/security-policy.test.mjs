@@ -16,6 +16,13 @@ describe("bridge security policy", () => {
     assert.throws(() => configured.assertThread("thread-c"), /not authorized/);
   });
 
+  it("supports explicit wildcard access to all Codex threads", () => {
+    const policy = new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_THREADS: "*" });
+    policy.assertThread("thread-a");
+    policy.assertThread("thread-b");
+    assert.equal(policy.summary().allowAllThreads, true);
+  });
+
   it("keeps newly created threads in the bridge-owned capability set", () => {
     const policy = new BridgeSecurityPolicy({});
     policy.registerThread("created-here");
@@ -100,8 +107,28 @@ describe("bridge security policy", () => {
   });
 
   it("lists nothing at all when no workspace root is configured", () => {
-    const policy = new BridgeSecurityPolicy({});
+    const policy = new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: "" });
     assert.deepEqual(policy.filterThreads([{ id: "a", cwd: "/tmp" }, { id: "b", cwd: "/" }]), []);
+  });
+
+  it("defaults to the wildcard root setting and allows every cwd", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-all-roots-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-all-outside-"));
+    try {
+      const policy = new BridgeSecurityPolicy({});
+      assert.equal(policy.isCwdAuthorized(root), true);
+      policy.assertCwd(path.join(outside, "not-created-yet"));
+      assert.deepEqual(
+        policy
+          .filterThreads([{ id: "inside", cwd: root }, { id: "outside", cwd: outside }, { id: "no-cwd" }])
+          .map((thread) => thread.id),
+        ["inside", "outside"],
+      );
+      assert.equal(policy.summary().allowAllRoots, true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("contains cwd access to configured roots, including traversal attempts", () => {

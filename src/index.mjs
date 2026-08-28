@@ -21,7 +21,7 @@ import {
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
 
-const VERSION = "1.11.1";
+const VERSION = "1.11.2";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -63,16 +63,27 @@ const failure = (err) => textResult(`Codex bridge error: ${err?.message ?? Strin
  * allowlisted skips the round-trip entirely: its answer cannot change.
  */
 async function assertThreadAccess(threadId) {
-  if (security.isThreadAuthorized(threadId)) return null;
+  if (security.threadPolicy !== "roots" && security.isThreadAuthorized(threadId)) return null;
   if (security.threadPolicy !== "roots") {
     security.assertThread(threadId);
     return null;
   }
   const res = await client.call("thread/read", { threadId });
-  const thread = res?.thread ?? res ?? {};
+  const thread = normalizeThreadCwd(res?.thread ?? res ?? {}, { strict: true });
   security.assertThread(threadId, thread.cwd);
   security.assertCwd(thread.cwd);
   return thread;
+}
+
+function normalizeThreadCwd(thread, { strict = false } = {}) {
+  if (!thread?.cwd) return thread;
+  try {
+    const workspace = resolveWorkspacePath(thread.cwd);
+    return workspace.path === thread.cwd ? thread : { ...thread, cwd: workspace.path };
+  } catch (err) {
+    if (strict) throw err;
+    return thread;
+  }
 }
 
 function projectLabel(cwd) {
@@ -359,16 +370,21 @@ server.registerTool(
     const shouldOpen = openInApp ?? DEFAULT_OPEN_IN_APP;
     const shouldRelease = releaseAfterTurn ?? DEFAULT_RELEASE_AFTER_TURN;
     try {
-      await assertThreadAccess(threadId);
+      const authorizedThread = await assertThreadAccess(threadId);
       let resolvedCwd = null;
       if (cwd) {
         const workspace = resolveWorkspacePath(cwd);
         security.assertCwd(workspace.path);
         resolvedCwd = workspace.path;
         if (workspace.note) notes.push(workspace.note);
+      } else if (authorizedThread?.cwd) {
+        const workspace = resolveWorkspacePath(authorizedThread.cwd);
+        resolvedCwd = workspace.path;
+        if (workspace.note) notes.push(workspace.note);
       }
       const attached = await client.ensureThreadAttached(threadId, resolvedCwd ? { cwd: resolvedCwd } : {});
-      security.assertCwd(attached.thread?.cwd);
+      const attachedThread = normalizeThreadCwd(attached.thread ?? authorizedThread, { strict: true });
+      security.assertCwd(attachedThread?.cwd);
       if (name) {
         await client.call("thread/name/set", { threadId, name: name.trim().slice(0, 200) });
         notes.push(`session name: ${name.trim().slice(0, 200)}`);
@@ -442,7 +458,15 @@ server.registerTool(
       if (searchTerm) params.searchTerm = searchTerm;
       const method = loadedOnly ? "thread/loaded/list" : "thread/list";
       const res = await client.call(method, loadedOnly ? { limit: limit ?? 15 } : params);
-      const rows = security.filterThreads(res?.data ?? res?.threads ?? []);
+      const rows = security.filterThreads(
+        (res?.data ?? res?.threads ?? []).flatMap((thread) => {
+          try {
+            return [normalizeThreadCwd(thread, { strict: true })];
+          } catch {
+            return [];
+          }
+        }),
+      );
       if (!rows.length) {
         return textResult(
           security.summary().allowedRoots.length
@@ -514,7 +538,7 @@ server.registerTool(
     try {
       await assertThreadAccess(threadId);
       const res = await client.call("thread/read", { threadId, includeTurns: true });
-      const thread = res?.thread ?? res ?? {};
+      const thread = normalizeThreadCwd(res?.thread ?? res ?? {}, { strict: true });
       security.assertCwd(thread.cwd);
       const items = (thread.turns ?? []).flatMap((t) => t.items ?? []);
       const msgs = items
@@ -556,8 +580,9 @@ server.registerTool(
   async ({ threadId, turnId }) => {
     try {
       await assertThreadAccess(threadId);
-      const thread = await client.call("thread/read", { threadId });
-      security.assertCwd((thread?.thread ?? thread)?.cwd);
+      const res = await client.call("thread/read", { threadId });
+      const thread = normalizeThreadCwd(res?.thread ?? res ?? {}, { strict: true });
+      security.assertCwd(thread.cwd);
       await client.call("turn/interrupt", { threadId, turnId });
       return textResult(`Interrupted turn ${turnId} in thread ${threadId}.`);
     } catch (err) {
@@ -590,8 +615,9 @@ server.registerTool(
   async ({ threadId, background }) => {
     try {
       await assertThreadAccess(threadId);
-      const thread = await client.call("thread/read", { threadId });
-      security.assertCwd((thread?.thread ?? thread)?.cwd);
+      const res = await client.call("thread/read", { threadId });
+      const thread = normalizeThreadCwd(res?.thread ?? res ?? {}, { strict: true });
+      security.assertCwd(thread.cwd);
       const url = await openThreadInCodexApp(threadId, { activate: !background });
       const held = client.holdsThread(threadId) ? writerLockWarning(threadId) : "";
       return textResult(`Opened ${url} in the Codex desktop app.${held}`);
@@ -645,6 +671,7 @@ server.registerTool(
     },
   },
   async () => {
+    const summary = security.summary();
     const up = await client.isServerUp();
     let liveThreads = null;
     if (up) {
@@ -664,7 +691,7 @@ server.registerTool(
       `app-server:     ${client.url} - ${up ? "live" : "not reachable"}`,
       `autostart:      ${client.autoStart ? "on" : "off"}   approvals: ${client.approval}`,
       `desktop links:  ${supportsCodexThreadLinks() ? "codex:// available" : "not available on this platform"}`,
-      `security:       thread policy ${security.threadPolicy} (${security.summary().authorizedThreads} pre-authorized thread(s)), ${security.summary().allowedRoots.length} allowed root(s), sandbox ${security.sandbox}, approvals ${security.approvalPolicy}`,
+      `security:       thread policy ${security.threadPolicy} (${summary.allowAllThreads ? "all threads" : `${summary.authorizedThreads} pre-authorized thread(s)`}), ${summary.allowAllRoots ? "all directories" : `${summary.allowedRoots.length} allowed root(s)`}, sandbox ${security.sandbox}, approvals ${security.approvalPolicy}`,
       `live threads:   ${liveThreads ?? "(unknown)"}`,
       `claude desktop config: ${claudeDesktopConfigPath()}`,
     ];

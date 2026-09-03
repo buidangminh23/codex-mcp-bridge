@@ -2,9 +2,21 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.11.3] - 2026-09-03
 
 ### Fixed
+
+- **The peer endpoint never started on Windows, so the bridge was one-way there.** `/tmp/cc-socks` has no
+  Windows equivalent, and `path.join` rewrote it to `\tmp\cc-socks` on the system drive, where `listen()`
+  fails with `EACCES`. Codex could push a message into a live Claude session, but Claude had no address to
+  answer on - and the only sign was one line on stderr saying replies could not be received, which nothing
+  surfaces once the server is running under an MCP client. The peer now listens on a named pipe on Windows,
+  the same transport Claude Code itself advertises in `~/.claude/sessions/<pid>.json`, and skips the
+  directory, mode and unlink steps that a pipe does not have.
+
+- `fast-uri` is bumped to 3.1.7 and `qs` to 6.16.0. `fast-uri` 3.0.0-3.1.5 is vulnerable to host confusion
+  and server-side request forgery through repeated hostname percent-decoding (CVE-2026-75899, high); it
+  reaches the tree transitively through `@modelcontextprotocol/sdk` -> `ajv`.
 
 - **A tag is not a release, and nothing was creating the release.** Pushing `v1.10.1`, `v1.11.0` and
   `v1.11.1` published all three to npm, while the Releases page still showed `v1.10.0` as *Latest* -

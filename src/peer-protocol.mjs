@@ -5,9 +5,24 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { homeDir } from "./platform.mjs";
+import { homeDir, IS_WINDOWS } from "./platform.mjs";
 
 const SOCKET_DIR = "/tmp/cc-socks";
+
+/**
+ * Windows has no /tmp, and path.join rewrites the unix default to "\tmp\cc-socks"
+ * on the system drive, where listen() fails with EACCES. The endpoint then never
+ * comes up, so Claude has no address to answer on and the bridge is silently
+ * one-way: messages reach Claude, replies never come back.
+ *
+ * Claude Code advertises a named pipe on Windows for exactly this reason, so the
+ * peer uses the same transport there. net.connect({ path }) and server.listen()
+ * accept a pipe name unchanged, so only creation differs - a pipe has no
+ * directory to create, no mode to chmod and no file to unlink beforehand.
+ */
+function peerSocketPath(pid) {
+  return IS_WINDOWS ? `\\\\.\\pipe\\LOCAL\\cc-peer-${pid}` : path.join(SOCKET_DIR, `${pid}.sock`);
+}
 const PEER_PROTOCOL_VERSION = 1;
 const CLAUDE_VERSION_HINT = "2.1.229";
 const PS_BIN = "/bin/ps";
@@ -171,7 +186,7 @@ export class PeerEndpoint {
     this.cwd = cwd;
     this.log = log;
     this.pid = process.pid;
-    this.socketPath = path.join(SOCKET_DIR, `${this.pid}.sock`);
+    this.socketPath = peerSocketPath(this.pid);
     this.registryPath = path.join(sessionsDir(), `${this.pid}.json`);
     this.keyPath = null;
     this.server = null;
@@ -219,16 +234,16 @@ export class PeerEndpoint {
     const keyHash = crypto.createHash("sha256").update(`${peerToken}${procStart}`).digest("hex");
     this.keyPath = path.join(sessionsDir(), `${this.pid}.${keyHash}.key`);
 
-    fs.mkdirSync(SOCKET_DIR, { recursive: true });
+    if (!IS_WINDOWS) fs.mkdirSync(SOCKET_DIR, { recursive: true });
     fs.mkdirSync(sessionsDir(), { recursive: true });
-    if (fs.existsSync(this.socketPath)) fs.rmSync(this.socketPath, { force: true });
+    if (!IS_WINDOWS && fs.existsSync(this.socketPath)) fs.rmSync(this.socketPath, { force: true });
 
     await new Promise((resolve, reject) => {
       this.server = net.createServer((socket) => this.#handleConnection(socket));
       this.server.on("error", reject);
       this.server.listen(this.socketPath, resolve);
     });
-    fs.chmodSync(this.socketPath, 0o600);
+    if (!IS_WINDOWS) fs.chmodSync(this.socketPath, 0o600);
 
     this.registry = {
       pid: this.pid,

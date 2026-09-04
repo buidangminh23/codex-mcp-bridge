@@ -47,6 +47,19 @@ Be literal about `readOnlyHint`: `read_claude_inbox` drains the inbox as it
 reads, and `claude_bridge_status` registers the peer endpoint on its first
 call. Neither is read-only, whatever its name suggests.
 
+## Undocumented protocols
+
+Two things this project talks to have no published schema: the Claude Code peer
+protocol in `src/peer-protocol.mjs`, and the Codex Desktop native tools pipe in
+`src/native-relay.mjs`. Both are measured, not documented, and both can change
+without notice.
+
+Anything resting on one of them must be optional, feature-detected, and safe
+when it is absent - never the default path, and never a hard dependency of a
+tool that would otherwise work. Keep the unverifiable shape in one named
+function with one test pinning it, so a protocol change is a small edit in a
+place someone can find rather than a hunt through a request body.
+
 ## Nothing here may depend on one person's setup
 
 Nothing tracked here may name a real home directory, volume or checkout. Use

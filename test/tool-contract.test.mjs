@@ -31,6 +31,8 @@ const CLAUDE_TOOLS = [
   "claude_bridge_status",
 ];
 
+const NATIVE_RELAY_TOOLS = ["native_relay_status"];
+
 /**
  * Both servers touch the real machine when they run for real, so the contract
  * check boots them against a throwaway HOME and an app-server endpoint nothing
@@ -162,4 +164,28 @@ describe("claude-bridge tool contract", async () => {
     const readOnly = tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name);
     assert.deepEqual(readOnly.sort(), ["list_claude_sessions", "read_claude_transcript"]);
   });
+});
+
+/**
+ * The relay companion is launched by Codex Desktop like any other MCP server,
+ * so it has to answer `initialize` on a machine with no Codex Desktop, no
+ * relay thread and - where unix sockets are not the transport - no socket at
+ * all. A companion that died on any of those would read as a hang to the app
+ * that spawned it, which is the failure this project has already paid for once
+ * in `peer-protocol.mjs`.
+ */
+describe("native relay companion tool contract", async () => {
+  const tools = await listTools("native-relay-companion.mjs");
+
+  it("exposes exactly the documented tools", () => {
+    assert.deepEqual(tools.map((t) => t.name).sort(), [...NATIVE_RELAY_TOOLS].sort());
+  });
+
+  for (const name of NATIVE_RELAY_TOOLS) {
+    it(`${name} is annotated and described`, () => {
+      const tool = tools.find((t) => t.name === name);
+      assertDescribed(tool);
+      assertAnnotated(tool);
+    });
+  }
 });

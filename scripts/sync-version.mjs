@@ -15,7 +15,11 @@ import { fileURLToPath } from "node:url";
  * claude-bridge sat at 1.3.0 while the package shipped 1.10.0.
  */
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const entries = [path.join("src", "index.mjs"), path.join("src", "claude-bridge.mjs")];
+const entries = [
+  path.join("src", "index.mjs"),
+  path.join("src", "claude-bridge.mjs"),
+  path.join("src", "native-relay-companion.mjs"),
+];
 const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
 for (const entry of entries) {

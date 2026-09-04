@@ -31,7 +31,7 @@ import { PLATFORM_LABEL } from "./platform.mjs";
  * (`{ targetThreadId, message }`), one dispatch, one acknowledgement.
  */
 
-const VERSION = "1.11.3";
+const VERSION = "1.12.0";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message) {

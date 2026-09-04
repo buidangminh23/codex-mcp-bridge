@@ -21,7 +21,7 @@ import {
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
 
-const VERSION = "1.11.3";
+const VERSION = "1.12.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**

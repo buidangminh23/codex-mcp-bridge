@@ -6,7 +6,7 @@ import { z } from "zod";
 import { CodexAppServerClient } from "./app-server-client.mjs";
 import { PLATFORM_LABEL } from "./platform.mjs";
 import { PeerEndpoint, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
-import { runTurn } from "./turn.mjs";
+import { createThreadDelivery } from "./thread-delivery.mjs";
 
 const VERSION = "1.11.3";
 const FORWARD_MIN_INTERVAL_MS = 5000;
@@ -26,6 +26,14 @@ const codex = new CodexAppServerClient({
   clientInfo: { name: "claude-bridge", title: "Claude Bridge", version: VERSION },
   log,
 });
+
+/**
+ * Delivery is a backend choice, not a call: a thread the human is watching in
+ * Codex Desktop is written through the desktop's own app-server, and every
+ * other thread through the shared one. `claude-bridge` never picks between
+ * them - see `thread-delivery.mjs`.
+ */
+const delivery = createThreadDelivery({ codex, log });
 
 const forwarding = {
   threadId: process.env.CODEX_THREAD_ID ?? null,
@@ -64,18 +72,11 @@ async function forwardToCodexThread(record) {
   forwarding.lastAt = now;
   forwarding.count += 1;
   try {
-    await codex.ensureThreadAttached(forwarding.threadId);
-    await runTurn(codex, {
-      threadId: forwarding.threadId,
-      input: [
-        {
-          type: "text",
-          text: `[message from Claude session ${record.fromSocket ?? "?"}]\n\n${record.text}`,
-        },
-      ],
-      timeoutMs: 240000,
-    });
-    log(`forwarded a Claude message into thread ${forwarding.threadId}`);
+    const { backend } = await delivery.deliver(
+      forwarding.threadId,
+      `[message from Claude session ${record.fromSocket ?? "?"}]\n\n${record.text}`,
+    );
+    log(`forwarded a Claude message into thread ${forwarding.threadId} via ${backend}`);
   } catch (err) {
     log(`forward failed: ${err.message}`);
   }
@@ -245,7 +246,8 @@ server.registerTool(
     title: "Relay Claude messages into a Codex thread",
     description:
       "Bind a Codex thread so every message Claude pushes to this bridge is relayed into that thread, where it " +
-      "shows up in the Codex desktop app. Pass an empty threadId to stop relaying.",
+      "shows up in the Codex desktop app. On macOS a thread already open in Codex Desktop is written through " +
+      "the desktop's own app-server, so it keeps its writer lock and stays open. Pass an empty threadId to stop.",
     inputSchema: {
       threadId: z.string().describe("Codex thread id, or an empty string to unbind"),
     },
@@ -264,7 +266,7 @@ server.registerTool(
     peer.rename(name);
     return textResult(
       trimmed
-        ? `Relaying Claude messages into Codex thread ${trimmed} (max ${FORWARD_MAX_PER_SESSION} per bridge run, at most one every ${FORWARD_MIN_INTERVAL_MS / 1000}s).\nClaude now sees this bridge as "${name}".`
+        ? `Relaying Claude messages into Codex thread ${trimmed} (max ${FORWARD_MAX_PER_SESSION} per bridge run, at most one every ${FORWARD_MIN_INTERVAL_MS / 1000}s).\ndelivery: ${delivery.describe()}\nClaude now sees this bridge as "${name}".`
         : `Relay disabled. Messages stay in the inbox. Claude sees this bridge as "${name}".`,
     );
   },
@@ -296,6 +298,7 @@ server.registerTool(
         `peer socket:   ${peer.socketPath}`,
         `live sessions: ${sessions.length}`,
         `relay thread:  ${forwarding.threadId ?? "(none - use bind_codex_thread)"}`,
+        `delivery:      ${delivery.describe()}`,
         `inbox:         ${peer.inbox.length} pending message(s)`,
       ];
       return textResult(lines.join("\n"));

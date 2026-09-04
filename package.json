@@ -25,7 +25,9 @@
     "codex-mcp-bridge": "src/index.mjs",
     "claude-mcp-bridge": "src/claude-bridge.mjs",
     "codex-mcp-bridge-install": "scripts/install-claude-desktop.mjs",
-    "claude-mcp-bridge-install": "scripts/install-codex-mcp.mjs"
+    "claude-mcp-bridge-install": "scripts/install-codex-mcp.mjs",
+    "codex-native-relay": "src/native-relay-companion.mjs",
+    "codex-native-relay-install": "scripts/install-native-relay.mjs"
   },
   "files": [
     "src",
@@ -48,9 +50,11 @@
     "install:desktop": "node scripts/install-claude-desktop.mjs",
     "install:codex": "node scripts/install-codex-mcp.mjs",
     "uninstall:codex": "node scripts/install-codex-mcp.mjs --remove",
+    "install:relay": "node scripts/install-native-relay.mjs",
+    "uninstall:relay": "node scripts/install-native-relay.mjs --remove",
     "install:agent": "node scripts/install-launch-agent.mjs",
     "uninstall:agent": "node scripts/install-launch-agent.mjs --uninstall",
-    "version": "node scripts/sync-version.mjs && git add src/index.mjs src/claude-bridge.mjs"
+    "version": "node scripts/sync-version.mjs && git add src/index.mjs src/claude-bridge.mjs src/native-relay-companion.mjs"
   },
   "engines": {
     "node": ">=22"

@@ -2,6 +2,65 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **A thread open in Codex Desktop can now receive Claude's messages without being taken away from the app.**
+  Binding a thread with `bind_codex_thread` and then watching it in Codex Desktop was the workflow the relay
+  was built for, and it was the one case that could not work: Codex takes a per-thread writer lock when the
+  app loads a thread and holds it while the thread is open, so the relay's `thread/resume` was refused with
+  `thread <id> already has an active writer`. The only way through was to close the thread before every
+  message - which gives up the reason the thread was bound in the first place.
+
+  The fix is to stop bringing a second writer. `codex-native-relay` is a companion MCP process that Codex
+  Desktop launches itself, so it already sits inside the app's context and can ask the app's own app-server
+  to deliver the message. Nothing attaches, nothing resumes, no second app-server starts, and the desktop app
+  stays the single writer of the thread throughout. `claude-bridge` reaches it over a private mode-`0600`
+  unix socket at `~/.codex/native-relay.sock` and sends exactly `{ targetThreadId, message }`.
+
+  `codex_app.send_message_to_thread` runs against an *executor* thread, distinct from the destination and
+  validated by Codex - a synthetic UUID is rejected. A dedicated relay thread carries that role so the watched
+  thread never has to: `scripts/install-native-relay.mjs` creates it once, records it in
+  `~/.codex/native-relay.json`, and stops the app-server it borrowed so no lock is left held. Resolution is
+  `CODEX_RELAY_ID`, then that file, then an explicit error naming both - never an invented id, which Codex
+  would reject with a message that says nothing about the missing configuration behind it.
+
+- Delivery is now a **backend choice** rather than a call, in `src/thread-delivery.mjs`. Nothing else moves:
+  the Claude peer protocol, `list_claude_sessions`, `send_to_claude_session`, `bind_codex_thread`, the routing,
+  the ping-pong limits, `codex-mcp-bridge`, `CodexAppServerClient` and the thread authorization policies are
+  unchanged, and the app-server path stays the default for every thread Codex Desktop does not own. The native
+  path is macOS-only, feature-detected on the companion socket, and switched off entirely with
+  `CODEX_BRIDGE_NATIVE_RELAY=0`.
+
+  An unreachable companion falls back to the app-server path, because an absent relay says nothing about the
+  target thread. A companion that answered with a *refusal* does not: Codex has already been asked, and a
+  second app-server would only contend for the `~/.codex` state before failing on the very writer lock the
+  native path exists to avoid.
+
+- `claude_bridge_status` and `bind_codex_thread` report the backend in force, and carry the reason when it is
+  not the native one - a missing companion socket, an explicit `0`, and an unsupported platform are three
+  different problems that otherwise look identical from the outside.
+
+- `native_relay_status` on the companion reports its socket, its executor thread and the dispatch method.
+  `npm run install:relay` / `npm run uninstall:relay` register and remove it.
+
+### Security
+
+- The relay socket is created mode `0600` inside the Codex home and swept on exit; that file mode is the whole
+  boundary, exactly as it already is for the Claude peer protocol. The companion accepts one payload shape,
+  caps a frame at 128 KiB on both halves, and refuses a destination that is its own executor thread - otherwise
+  a mistaken bind would deliver into the invisible relay thread and report success. A socket already held by a
+  live companion is never stolen: an in-use path is probed before any leftover from a killed process is swept.
+
+### Notes
+
+- `codex_app.send_message_to_thread` and the Codex Desktop native tools pipe are **internals with no public
+  documentation**, on the same footing as the Claude peer protocol in `src/peer-protocol.mjs`. That is why this
+  path is optional, feature-detected and fallback-safe rather than the default. If Codex changes it, the two
+  places to fix are `NATIVE_DISPATCH_METHOD` and `nativeDispatchParams()` in `src/native-relay.mjs`, and
+  `CODEX_NATIVE_RELAY_METHOD` overrides the method name without a release.
+
 ## [1.11.3] - 2026-09-03
 
 ### Fixed

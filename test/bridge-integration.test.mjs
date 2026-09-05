@@ -39,7 +39,169 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
   }
 }
 
+async function additionalBridgeProcess({ home, env }) {
+  const client = new Client({ name: "bridge-restart-integration", version: "1.0.0" });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "index.mjs")], cwd: home, env, stderr: "ignore" });
+  await client.connect(transport);
+  return { client, pid: transport.pid };
+}
+
+async function withDesktopReceiptBridge(dispatch, run) {
+  let relay;
+  const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
+  const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-receipts-${randomUUID()}` : path.join(socketRoot, "d.sock");
+  try {
+    await withBridge(() => { throw new Error("Desktop receipt operations must not reach an external app-server"); }, run, async (home) => {
+      relay = new RelaySocketServer({ socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async (request) => ({ success: true, contentItems: [{ type: "inputText", text: JSON.stringify(await dispatch(request, home)) }] }) });
+      await relay.start();
+      return { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: socketPath, CODEX_APP_SERVER_URL: "invalid-unused-legacy-endpoint" };
+    });
+  } finally {
+    relay?.stop();
+    fs.rmSync(socketRoot, { recursive: true, force: true });
+  }
+}
+
+function creationReceipts(home) {
+  const directory = path.join(home, ".codex", "bridge-task-receipts");
+  return fs.readdirSync(directory).filter((file) => file.endsWith(".json")).map((file) => JSON.parse(fs.readFileSync(path.join(directory, file), "utf8")));
+}
+
 describe("Desktop task MCP integration", () => {
+  it("blocks concurrent named creation across MCP processes and reuses the completed task after restart with an edited prompt", async () => {
+    const calls = [];
+    let completed = false;
+    let observeCreate;
+    let releaseCreate;
+    const creating = new Promise((resolve) => { observeCreate = resolve; });
+    const gate = new Promise((resolve) => { releaseCreate = resolve; });
+    await withDesktopReceiptBridge(async ({ operation }, home) => {
+      calls.push(operation);
+      if (operation === "list_projects") return { projects: [{ projectId: "receipt-project", projectKind: "local", hostId: "local", path: home, label: "Receipt test" }] };
+      if (operation === "create_thread") {
+        observeCreate();
+        await gate;
+        return { threadId: "shared-receipt-task", hostId: "local", firstTurn: { status: "accepted" } };
+      }
+      if (operation === "read_thread") return { thread: { id: "shared-receipt-task", hostId: "local", cwd: home, title: "Shared title", status: completed ? "idle" : "active" }, turns: [{ id: "receipt-turn", status: completed ? "completed" : "inProgress" }] };
+      throw new Error(`Unexpected operation ${operation}`);
+    }, async ({ client, home, env, server }) => {
+      const clients = [];
+      const args = { cwd: home, name: "Shared title", prompt: "Original private brief", openInApp: false };
+      try {
+        const simultaneous = await additionalBridgeProcess({ home, env });
+        clients.push(simultaneous.client);
+        const first = client.callTool({ name: "start_codex_thread", arguments: args });
+        first.catch(() => {});
+        await creating;
+        assert.deepEqual(creationReceipts(home).map((receipt) => receipt.state), ["pending"]);
+        const duplicate = await simultaneous.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Slightly edited private brief" } });
+        assert.equal(duplicate.isError, true);
+        assert.match(duplicate.content[0].text, /pending|already in progress/);
+        assert.equal(calls.filter((operation) => operation === "create_thread").length, 1);
+        releaseCreate();
+        const accepted = await first;
+        assert.equal(accepted.isError, undefined);
+        assert.match(accepted.content[0].text, /threadId: shared-receipt-task/);
+        assert.deepEqual(creationReceipts(home).map(({ state, threadId }) => ({ state, threadId })), [{ state: "known", threadId: "shared-receipt-task" }]);
+        const activeRetry = await simultaneous.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Slightly edited private brief" } });
+        assert.equal(activeRetry.isError, undefined);
+        assert.match(activeRetry.content[0].text, /Reused the existing Codex Desktop task; the prompt was not resent/);
+        completed = true;
+        await client.close();
+        await simultaneous.client.close();
+        const restarted = await additionalBridgeProcess({ home, env });
+        clients.push(restarted.client);
+        assert.notEqual(restarted.pid, simultaneous.pid);
+        const retry = await restarted.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Slightly edited private brief" } });
+        assert.equal(retry.isError, undefined);
+        assert.match(retry.content[0].text, /Reused the existing Codex Desktop task; the prompt was not resent/);
+        assert.match(retry.content[0].text, /threadId: shared-receipt-task/);
+        assert.deepEqual(calls, ["list_projects", "create_thread", "read_thread", "read_thread"]);
+        assert.equal(server.connections, 0);
+      } finally {
+        releaseCreate();
+        await Promise.all(clients.map((other) => other.close()));
+      }
+    });
+  });
+
+  it("persists an unknown creation after a lost native reply and blocks retries from a restarted MCP process", async () => {
+    const calls = [];
+    await withDesktopReceiptBridge(async ({ operation }, home) => {
+      calls.push(operation);
+      if (operation === "list_projects") return { projects: [{ projectId: "receipt-project", projectKind: "local", hostId: "local", path: home }] };
+      if (operation === "create_thread") throw new Error("Native reply was lost after Desktop accepted creation");
+      throw new Error(`Unexpected operation ${operation}`);
+    }, async ({ client, home, env, server }) => {
+      const args = { cwd: home, name: "Lost reply title", prompt: "Original brief", openInApp: false };
+      const initial = await client.callTool({ name: "start_codex_thread", arguments: args });
+      assert.equal(initial.isError, true);
+      assert.match(initial.content[0].text, /Do not resend the prompt.*blocks duplicate tasks even after a bridge restart/);
+      assert.deepEqual(creationReceipts(home).map((receipt) => receipt.state), ["unknown"]);
+      await client.close();
+      const restarted = await additionalBridgeProcess({ home, env });
+      try {
+        const retry = await restarted.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Original brief with minor edits" } });
+        assert.equal(retry.isError, true);
+        assert.match(retry.content[0].text, /earlier Desktop creation is unknown.*Do not resend or create another task/);
+        assert.deepEqual(calls, ["list_projects", "create_thread"]);
+        assert.deepEqual(creationReceipts(home).map((receipt) => receipt.state), ["unknown"]);
+        assert.equal(server.connections, 0);
+      } finally {
+        await restarted.client.close();
+      }
+    });
+  });
+
+  it("shares a ten-second budget between creation and observation while preserving its task for restart reuse", { timeout: 20000 }, async () => {
+    const calls = [];
+    let releaseWait;
+    const gate = new Promise((resolve) => { releaseWait = resolve; });
+    try {
+      await withDesktopReceiptBridge(async ({ operation }, home) => {
+        calls.push(operation);
+        if (operation === "list_projects") return { projects: [{ projectId: "receipt-project", projectKind: "local", hostId: "local", path: home }] };
+        if (operation === "create_thread") {
+          await new Promise((resolve) => setTimeout(resolve, 1100));
+          return { threadId: "timeout-receipt-task", hostId: "local", firstTurn: { status: "accepted" } };
+        }
+        if (operation === "read_thread") return { thread: { id: "timeout-receipt-task", hostId: "local", cwd: home, title: "Timeout title", status: "active" }, turns: [{ id: "timeout-turn", status: "inProgress" }] };
+        if (operation === "wait_threads") {
+          assert.deepEqual(creationReceipts(home).map(({ state, threadId }) => ({ state, threadId })), [{ state: "known", threadId: "timeout-receipt-task" }]);
+          await gate;
+          return { polls: [] };
+        }
+        throw new Error(`Unexpected operation ${operation}`);
+      }, async ({ client, home, env, server }) => {
+        const args = { cwd: home, name: "Timeout title", prompt: "Keep working after observation ends", openInApp: false };
+        const started = Date.now();
+        const result = await client.callTool({ name: "delegate_to_codex", arguments: { ...args, timeoutSec: 10 } });
+        const elapsed = Date.now() - started;
+        assert.ok(elapsed >= 9500 && elapsed < 11000, `Whole operation took ${elapsed}ms; expected the single 10s budget`);
+        assert.equal(result.isError, undefined);
+        assert.match(result.content[0].text, /threadId: timeout-receipt-task/);
+        assert.match(result.content[0].text, /status: timeout/);
+        assert.deepEqual(creationReceipts(home).map(({ state, threadId }) => ({ state, threadId })), [{ state: "known", threadId: "timeout-receipt-task" }]);
+        releaseWait();
+        await client.close();
+        const restarted = await additionalBridgeProcess({ home, env });
+        try {
+          const retry = await restarted.client.callTool({ name: "start_codex_thread", arguments: args });
+          assert.equal(retry.isError, undefined);
+          assert.match(retry.content[0].text, /Reused the existing Codex Desktop task/);
+          assert.match(retry.content[0].text, /threadId: timeout-receipt-task/);
+          assert.deepEqual(calls, ["list_projects", "create_thread", "wait_threads", "read_thread"]);
+          assert.equal(server.connections, 0);
+        } finally {
+          await restarted.client.close();
+        }
+      });
+    } finally {
+      releaseWait();
+    }
+  });
+
   it("uses only Desktop for status, filtered listing, read, and open even when legacy autostart is requested", async () => {
     const calls = [];
     let relay;

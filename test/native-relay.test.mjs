@@ -35,6 +35,7 @@ import {
 import { RelaySocketServer, handleRelayRequest, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
 import { APP_SERVER_BACKEND, NATIVE_BACKEND, createThreadDelivery, DesktopTaskDelivery, matchDesktopProject } from "../src/thread-delivery.mjs";
 import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
+import { DesktopTaskReceipts } from "../src/desktop-task-receipts.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IS_WINDOWS = process.platform === "win32";
@@ -154,7 +155,7 @@ describe("Desktop project task delivery", () => {
 
   it("creates in the saved checkout with explicit project assignment and no worktree", async () => {
     const calls = [];
-    const delivery = new DesktopTaskDelivery({ security: policy(), relay: {
+    const delivery = new DesktopTaskDelivery({ security: policy(), receipts: new DesktopTaskReceipts({ directory: path.join(tempHome(), "receipts") }), relay: {
       requestDesktop: async (operation, args) => {
         calls.push([operation, args]);
         return { result: operation === "list_projects" ? { projects: [project] } : { threadId: "new-task", hostId: "local" } };
@@ -169,16 +170,16 @@ describe("Desktop project task delivery", () => {
 
   it("fails closed before creation outside roots or without an exact saved project", async () => {
     const calls = [];
-    const delivery = new DesktopTaskDelivery({ security: policy(), relay: { requestDesktop: async (op) => { calls.push(op); return { result: { projects: [] } }; } } });
+    const delivery = new DesktopTaskDelivery({ security: policy(), receipts: new DesktopTaskReceipts({ directory: path.join(tempHome(), "receipts") }), relay: { requestDesktop: async (op) => { calls.push(op); return { result: { projects: [] } }; } } });
     await assert.rejects(delivery.create({ cwd: path.dirname(root), prompt: "work" }), /outside/);
     assert.equal(calls.length, 0);
-    await assert.rejects(delivery.create({ cwd: root, prompt: "work" }), /No saved local/);
+    await assert.rejects(delivery.create({ cwd: root, prompt: "work" }), /No saved local.*will not create a project or substitute a different directory/);
     assert.deepEqual(calls, ["list_projects"]);
   });
 
   it("never repeats creation after an uncertain acknowledgement", async () => {
     let count = 0;
-    const delivery = new DesktopTaskDelivery({ security: policy(), relay: { requestDesktop: async (op) => {
+    const delivery = new DesktopTaskDelivery({ security: policy(), receipts: new DesktopTaskReceipts({ directory: path.join(tempHome(), "receipts") }), relay: { requestDesktop: async (op) => {
       if (op === "list_projects") return { result: { projects: [project] } };
       count++;
       return { result: { status: "outcome-unknown", clientThreadId: "pending" } };

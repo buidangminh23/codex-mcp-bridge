@@ -20,7 +20,7 @@ import {
 } from "./native-relay.mjs";
 import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
 
-const VERSION = "1.13.1";
+const VERSION = "1.13.2";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message) {

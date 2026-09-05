@@ -22,10 +22,10 @@ import {
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
-import { DesktopTaskDelivery } from "./thread-delivery.mjs";
+import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "./thread-delivery.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 
-const VERSION = "1.13.1";
+const VERSION = "1.13.2";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -111,29 +111,31 @@ function threadNameFor({ cwd, prompt, name }) {
 }
 
 async function delegateDesktopTask({ cwd, prompt, name, model, effort, timeoutSec, openInApp, waitForReply = true }) {
+  const deadline = Date.now() + Math.min((timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS);
   const workspace = resolveWorkspacePath(cwd);
   const created = await desktopTasks.create({
     cwd: workspace.path, prompt, name: threadNameFor({ cwd: workspace.path, prompt, name }),
-    model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT,
+    dedupeName: name ?? "", model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, deadline,
   });
   const notes = [];
   if (workspace.note) notes.push(workspace.note);
   if (openInApp ?? DEFAULT_OPEN_IN_APP) {
     try {
-      await desktopTasks.open(created.threadId);
+      await desktopTasks.open(created.threadId, { deadline });
       notes.push("opened in Codex Desktop while the task runs");
     } catch (err) {
       notes.push(`task was accepted; opening its page failed: ${err.message}`);
     }
   }
   const lines = [
-    "Delegated through Codex Desktop", `threadId: ${created.threadId}`, `name: ${created.name}`,
+    created.reused ? "Reused the existing Codex Desktop task; the prompt was not resent" : "Delegated through Codex Desktop", `threadId: ${created.threadId}`, `name: ${created.name}`,
     `cwd: ${created.cwd}`, `projectId: ${created.projectId}`, `project: ${created.projectName}`,
-    "permissions: Codex Desktop settings; no external app-server writer", ...notes,
+    "permissions: Codex Desktop settings; no external app-server writer",
+    ...(created.promptChanged ? ["The edited brief was not sent. Use send_to_codex_thread with this threadId for a continuation, or a distinct title for separate work."] : []), ...notes,
   ];
-  if (!waitForReply) return textResult([...lines, "status: accepted; the task is running in Desktop"].join("\n"));
+  if (!waitForReply) return textResult([...lines, created.reused ? "status: existing task; read it to check its current progress" : "status: accepted; the task is running in Desktop"].join("\n"));
   try {
-    const result = await desktopTasks.wait(created.threadId, { timeoutMs: (timeoutSec ?? 240) * 1000 });
+    const result = await desktopTasks.wait(created.threadId, { timeoutMs: Math.max(0, deadline - Date.now()) });
     return textResult([...lines, "", formatTurn(result, { desktop: true })].join("\n"), result.status === "failed" || result.status === "systemError");
   } catch (err) {
     return textResult([...lines, `Task was accepted; observation failed: ${err.message}`, "Do not resend the prompt. Inspect the existing task."].join("\n"), true);
@@ -293,7 +295,7 @@ server.registerTool(
         .min(10)
         .max(3600)
         .optional()
-        .describe("How long to wait for the turn to finish (default 240s)"),
+        .describe("How long to observe the task (Desktop caps the entire call, including creation, at 40s; the task continues and its threadId is returned)"),
       model: z.string().optional().describe("Model override, e.g. gpt-5.6-luna"),
       effort: z
         .enum(["minimal", "low", "medium", "high", "xhigh", "ultra"])
@@ -383,7 +385,7 @@ server.registerTool(
         .min(10)
         .max(3600)
         .optional()
-        .describe("How long to wait for the turn to finish (default 240s)"),
+        .describe("How long to observe the task (Desktop caps the entire call at 40s; the task continues and its threadId is returned)"),
       cwd: z.string().optional().describe("Override the working directory for this turn"),
       model: z.string().optional().describe("Override the model for this turn"),
       effort: z
@@ -408,6 +410,7 @@ server.registerTool(
     },
   },
   async ({ threadId, prompt, timeoutSec, cwd, model, effort, name, openInApp, releaseAfterTurn }) => {
+    const deadline = desktopTasksEnabled ? Date.now() + Math.min((timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS) : undefined;
     return (desktopTasksEnabled ? desktopTasks : client).withThread(threadId, async () => {
       const notes = [];
       const shouldOpen = openInApp ?? DEFAULT_OPEN_IN_APP;
@@ -416,18 +419,18 @@ server.registerTool(
         if (desktopTasksEnabled) {
           const workspace = cwd ? resolveWorkspacePath(cwd) : null;
           if (workspace) security.assertCwd(workspace.path);
-          const delivered = await desktopTasks.send({ threadId, prompt, cwd: workspace?.path, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, name });
+          const delivered = await desktopTasks.send({ threadId, prompt, cwd: workspace?.path, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, name, deadline });
           notes.push("sent through Codex Desktop; no external app-server writer", `cwd: ${delivered.cwd}`);
           if (shouldOpen) {
             try {
-              await desktopTasks.open(threadId);
+              await desktopTasks.open(threadId, { deadline });
               notes.push("opened in Codex Desktop while the task runs");
             } catch (err) {
               notes.push(`task was accepted; opening its page failed: ${err.message}`);
             }
           }
           try {
-            const result = await desktopTasks.wait(threadId, { timeoutMs: (timeoutSec ?? 240) * 1000, previousTurnId: delivered.previousTurnId });
+            const result = await desktopTasks.wait(threadId, { timeoutMs: Math.max(0, deadline - Date.now()), previousTurnId: delivered.previousTurnId });
             return textResult([...notes, formatTurn(result, { desktop: true })].join("\n"), result.status === "failed" || result.status === "systemError");
           } catch (err) {
             return textResult([...notes, `threadId: ${threadId}`, `Task was accepted; observation failed: ${err.message}. Do not resend.`].join("\n"), true);
@@ -487,7 +490,7 @@ server.registerTool(
       } catch (err) {
         return failure(err);
       }
-    });
+    }, { deadline }).catch(failure);
   },
 );
 
@@ -636,8 +639,9 @@ server.registerTool(
   async ({ threadId, limit }) => {
     try {
       if (desktopTasksEnabled) {
-        await desktopTasks.inspect(threadId);
-        const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10) });
+        const deadline = Date.now() + DESKTOP_TOOL_BUDGET_MS;
+        await desktopTasks.inspect(threadId, undefined, { deadline });
+        const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10) }, { deadline });
         return textResult(JSON.stringify(response, null, 2));
       }
       await assertThreadAccess(threadId);
@@ -723,9 +727,10 @@ server.registerTool(
   async ({ threadId, background }) => {
     try {
       if (desktopTasksEnabled) {
-        await desktopTasks.inspect(threadId);
+        const deadline = Date.now() + DESKTOP_TOOL_BUDGET_MS;
+        await desktopTasks.inspect(threadId, undefined, { deadline });
         if (background) await openThreadInCodexApp(threadId, { activate: false });
-        else await desktopTasks.open(threadId);
+        else await desktopTasks.open(threadId, { deadline });
         return textResult(`Opened ${codexThreadUrl(threadId)} in Codex Desktop.`);
       }
       await assertThreadAccess(threadId);

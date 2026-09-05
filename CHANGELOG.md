@@ -2,6 +2,20 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.13.2] - 2026-09-05
+
+### Fixed
+
+- Prevent duplicate Desktop tasks across concurrent MCP processes and restarts with durable creation receipts. The same workspace and explicit title reuse the verified existing task even after completion or an edited brief; continuations remain explicit sends to its ID.
+- Bound the entire Desktop tool call to 40 seconds, including creation, opening, observation, and queued sends. Expired queued prompts are never sent later, and an accepted task keeps running with its ID available to the caller.
+- Preserve confirmed task IDs when the first turn fails or needs attention; block uncertain creation retries without automatically expiring receipts or abandoned locks. Reusing a receipt cannot expand thread authorization.
+- Keep project selection restricted to exact existing local projects. Explain that Desktop's recent-task snapshot can omit visible agent-created tasks, so absence is not evidence that a retry should create another one.
+
+### Verification
+
+- Windows suite: 322 passed, 0 failed, 8 platform-specific skips. Includes real concurrent MCP processes, restart reuse, lost acknowledgements, persisted receipt validation, strict owned-policy checks, and call deadlines.
+- Archived two completed duplicate tasks and retained the latest task in its existing project. A direct native read verified its exact workspace before recording the existing creation receipt.
+
 ## [1.13.1] - 2026-09-05
 
 ### Fixed

@@ -12,7 +12,7 @@ The bridge preserves task history and working directories across messages. Enabl
 
 ### Visible tasks in the correct Desktop project
 
-Install the native companion, add the exact checkout directory as a local project in Codex Desktop, and enable Desktop task delivery:
+Install the native companion, choose an existing local project in Codex Desktop, and enable Desktop task delivery:
 
 ```bash
 codex-native-relay-install --desktop-tasks
@@ -20,15 +20,19 @@ codex-native-relay-install --desktop-tasks
 
 Reload the native companion and the Claude MCP client after upgrading. The installer stores the opt-in in the existing `~/.codex/native-relay.json`; `CODEX_BRIDGE_DESKTOP_TASKS=1` also enables it, and an explicit `0` overrides the shared setting. Desktop mode uses **Codex Desktop permissions**, while the bridge's workspace and thread authorization checks still apply. Existing installations keep their app-server permission settings unless they opt in.
 
-Call `delegate_to_codex` with `cwd`, `prompt`, and optionally `name`. The bridge resolves the real directory, selects the saved local project with that exact path, starts in its existing checkout, and opens the task immediately while it runs. `openInApp: false` suppresses page navigation; project assignment still happens. It never selects a parent directory, remote namesake, or a new worktree. An unsaved worktree must first be saved as its own local project; missing or ambiguous project matches return an error before creating a task.
+Call `delegate_to_codex` with `cwd`, `prompt`, and optionally `name`. The bridge resolves the real directory, selects the saved local project with that exact path, starts in its existing checkout, and opens the task immediately while it runs. `openInApp: false` suppresses page navigation; project assignment still happens. It never creates projects or selects a parent directory, remote namesake, or a new worktree. Missing or ambiguous project matches return an error before creation; choose an existing project's directory or continue a task already in the requested workspace.
 
 `start_codex_thread` requires `prompt` in Desktop mode and returns after acceptance. Use `delegate_to_codex` to also wait for the reply. `send_to_codex_thread` continues the existing Desktop task without attaching another writer; its cwd cannot be changed. On timeout, the task continues. Inspect it in Desktop and use its Stop button to interrupt it. Quota failures and approval/input requests remain visible; delivery does not bypass them. An uncertain creation or send is never automatically repeated through another backend.
+
+Desktop calls share a maximum 40-second budget across creation, opening, queueing, and observation, so a slow task returns its confirmed ID before the caller's usual 60-second timeout. The task keeps running in Desktop. If creation itself cannot be confirmed, the bridge reports uncertainty and blocks another creation instead of inventing an ID.
+
+Creation receipts persist in `$CODEX_HOME/bridge-task-receipts` (default `~/.codex/bridge-task-receipts`). The same canonical workspace and explicit title reuse the existing task, including after completion or a bridge restart; an edited brief is not resent. Use `send_to_codex_thread` to continue it, or a distinct title for separate work. Without an explicit title, the key uses the exact prompt hash. Receipts store hashes rather than prompt text and never grant thread permissions: `owned` policy still requires authorization after restart. Pending or uncertain receipts and abandoned creation locks fail closed without automatic expiry; inspect the actual task before repairing them.
 
 The updated companion exposes a separate `-desktop-tasks` endpoint so a previous companion holding the legacy reply socket need not be killed during an upgrade. `codex_bridge_status` verifies the native connection through Desktop's local project list; `native_relay_status` reports both endpoints. Reconnect the companion after upgrading so it accepts the current native operations.
 
 Desktop mode never contacts, starts, or falls back to an external app-server, including during status checks and thread discovery. The Claude Desktop installer records `CODEX_BRIDGE_AUTOSTART=0` in this mode. If Desktop or its companion is unavailable, the bridge reports the failure and leaves existing tasks in Desktop. `stop_codex_app_server` is a no-op in Desktop mode; stop an obsolete external service through its own launcher after confirming it has no active work.
 
-`list_codex_threads` lists authorized local Codex tasks from Desktop's latest 50 non-pinned tasks and all pinned tasks, then applies workspace/title filters and the requested result limit. This snapshot does not cover the complete archive. Desktop does not expose the external server's `loadedOnly` state; requesting it returns an explanation without contacting that server.
+`list_codex_threads` filters Desktop's recent/pinned task snapshot by authorization, workspace/title, and result limit. The snapshot can omit agent-created tasks visible in the sidebar and does not cover the complete archive. Absence from this list does not mean creation failed: read the returned task ID directly. Desktop does not expose the external server's `loadedOnly` state; requesting it returns an explanation without contacting that server.
 
 ## Architecture
 
@@ -510,7 +514,7 @@ python3 -c "import json;[print(v['properties']['method'].get('const') or v['prop
 
 A path counts as coming from elsewhere when it names a drive letter (`D:\project`), a UNC share (`\\server\share\project`), or an attached volume (`/Volumes/<label>/project`, `/mnt/<label>/project`, `/media/<user>/<label>/project`). No particular letter, share, or label is blessed, so any dual-boot or external-disk layout works without configuration. The bridge then looks for that project under `$HOME`, then under **its own parent directory** — a bridge checked out at `~/code/codex-mcp-bridge` makes `~/code` the obvious place to find a sibling project. Override the list with `CODEX_BRIDGE_WORKSPACE_ROOTS`, provide deterministic source/target pairs with `CODEX_BRIDGE_PATH_MAP='{"L:\\project":"C:\\project"}'`, or set `CODEX_BRIDGE_REMAP=0` to switch heuristic rewriting off entirely.
 
-Note: Codex Desktop does **not** group threads by directory — the sidebar has `Pinned` and everything else, and the protocol exposes no API to file a thread under a section (`thread/start` takes no `sectionId`; `thread/metadata/update` only patches gitInfo). What ties a thread to a project is its `cwd`.
+Desktop task mode assigns tasks to the existing saved project through Desktop's native API. The separate app-server protocol does not provide that project assignment; a thread's `cwd` alone is not evidence that it appears under the expected Desktop project.
 
 **Connection errors or a silent stall on the first call after rebooting.** The app-server does not survive a restart, so the first call after boot has to bring it back. Since 1.5.0 `connect()` retries once for boot-time transients, `onclose` only tears down its own socket (a late close from the previous one used to wipe the freshly established connection), and **a turn interrupted by a dropped connection ends immediately with status `disconnected`** instead of waiting out `timeoutSec` (240s by default). Verify with `npm test`. No LaunchAgent is needed for this — the bridge spawns an app-server on demand, and running a LaunchAgent alongside Codex Desktop only contends for the `~/.codex` state.
 

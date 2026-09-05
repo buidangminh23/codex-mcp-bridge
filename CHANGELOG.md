@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Register the native relay companion under a runtime Codex Desktop trusts instead of whichever Node happens to run the installer. The app authenticates the code-signing identity of any process connecting to its native tools pipe and closes the connection before reading a byte when that identity is not its own, so a companion started by a user-installed Node still created its socket and still reported itself installed while every delivery failed as `NATIVE_DELIVERY_UNCONFIRMED` — the refusal is only visible in the app's own log as `dynamic_app_tools_peer_rejected`. On macOS the installer now resolves the runtime the app ships, honours the variables the app declares for its own bundled plugin, and prints the runtime and its source; `CODEX_NATIVE_RELAY_NODE` overrides it. Windows and Linux keep the runtime running the installer, since neither was measured to enforce the check.
+
 ## [1.13.3] - 2026-09-05
 
 ### Fixed

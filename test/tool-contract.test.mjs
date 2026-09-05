@@ -56,6 +56,8 @@ describe("Claude message receipts", () => {
       fs.writeFileSync(path.join(registryDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, name: "receipt-target", sessionId: "receipt-session", cwd: home, messagingSocketPath: socketPath, entrypoint: scenario === "desktop" ? "claude-desktop" : "cli" }));
       fs.writeFileSync(path.join(registryDir, path.basename(peerKeyPath(process.pid, socketPath))), JSON.stringify({ peerToken: token }));
       let count = 0;
+      let received;
+      const receipt = new Promise((resolve) => { received = resolve; });
       let handlerError;
       const receiver = net.createServer((socket) => {
         let buffer = "";
@@ -73,6 +75,7 @@ describe("Claude message receipts", () => {
               assert.equal(authenticated, true);
               if (scenario === "diagnostic") assert.match(raw.message.content, /from-mode="prompting"/);
               count += 1;
+              received();
               const request = parseFrame(line);
               if (scenario === "desktop") {
                 const dir = path.join(home, ".claude", "projects", "fixture");
@@ -111,6 +114,12 @@ describe("Claude message receipts", () => {
       try {
         await client.connect(transport);
         const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", waitSec: scenario === "nowait" ? 0 : 2 } });
+        let receiptTimer;
+        try {
+          await Promise.race([receipt, new Promise((_, reject) => {
+            receiptTimer = setTimeout(() => reject(new Error("Mock peer did not receive the message")), 5000);
+          })]);
+        } finally { clearTimeout(receiptTimer); }
         if (handlerError) throw handlerError;
         const expected = { nowait: "sent_unconfirmed", timeout: "reply_timeout", peer: "reply_received", desktop: "reply_received", held: "held", refused: "refused" }[scenario];
         assert.equal(result.structuredContent.receipt.status, expected);

@@ -337,12 +337,15 @@ describe("Desktop creation receipts and deadlines", () => {
   });
 
   it("expires queued sends without running them later or releasing an active thread lock", async (t) => {
-    const f = fixture(t);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const f = fixture(t, { now: () => 0 });
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
     const calls = [];
     const first = f.delivery.withThread("task", async () => { calls.push("first"); await gate; });
-    await assert.rejects(f.delivery.withThread("task", () => calls.push("expired"), { deadline: Date.now() + 20 }), /response deadline elapsed/i);
+    const expired = assert.rejects(f.delivery.withThread("task", () => calls.push("expired"), { deadline: 20 }), /response deadline elapsed/i);
+    t.mock.timers.tick(20);
+    await expired;
     const third = f.delivery.withThread("task", () => calls.push("third"));
     assert.deepEqual(calls, ["first"]);
     release();

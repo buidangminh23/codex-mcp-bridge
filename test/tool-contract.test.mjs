@@ -219,6 +219,7 @@ describe("codex-bridge tool contract", async () => {
       "delegate_to_codex",
       "interrupt_codex_turn",
       "send_to_codex_thread",
+      "start_codex_thread",
       "stop_codex_app_server",
     ]);
   });

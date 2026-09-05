@@ -14,10 +14,13 @@ import {
   RELAY_PROTOCOL_VERSION,
   relaySocketPath,
   resolveRelayThreadId,
+  desktopTaskSocketPath,
+  validateDesktopOperation,
+  decodeNativeToolResult,
 } from "./native-relay.mjs";
 import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
 
-const VERSION = "1.12.5";
+const VERSION = "1.13.0";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message) {
@@ -40,8 +43,11 @@ function errorCode(err) {
  */
 export async function handleRelayRequest(
   payload,
-  { dispatch, resolveExecutor = resolveRelayThreadId, env = process.env } = {},
+  { dispatch, dispatchDesktop, resolveExecutor = resolveRelayThreadId, env = process.env } = {},
 ) {
+  if (payload && typeof payload === "object" && Object.hasOwn(payload, "operation")) {
+    return handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env });
+  }
   if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
       Object.keys(payload).some((key) => !["v", "targetThreadId", "message"].includes(key)) ||
       (payload.v !== undefined && payload.v !== RELAY_PROTOCOL_VERSION)) {
@@ -85,6 +91,37 @@ export async function handleRelayRequest(
   }
 }
 
+async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env }) {
+  if (Array.isArray(payload) || payload.v !== RELAY_PROTOCOL_VERSION ||
+      Object.keys(payload).some((key) => !["v", "operation", "arguments"].includes(key))) {
+    return errorResponse("RELAY_BAD_REQUEST", "expected an allowlisted Desktop operation");
+  }
+  try {
+    validateDesktopOperation(payload.operation, payload.arguments);
+    if (typeof dispatchDesktop !== "function") {
+      return errorResponse("NATIVE_OPERATION_UNAVAILABLE", "This companion does not support Desktop operations; reload the native relay");
+    }
+    const executorThreadId = resolveExecutor(env).threadId;
+    if (payload.operation === "send_message_to_thread" && payload.arguments.threadId === executorThreadId) {
+      return errorResponse("RELAY_BAD_REQUEST", "The relay executor cannot receive its own relayed message");
+    }
+    const nativeResult = await dispatchDesktop({
+      executorThreadId,
+      operation: payload.operation,
+      arguments: payload.arguments,
+    });
+    return {
+      ok: true,
+      v: RELAY_PROTOCOL_VERSION,
+      operation: payload.operation,
+      executorThreadId,
+      result: decodeNativeToolResult(nativeResult),
+    };
+  } catch (err) {
+    return errorResponse(errorCode(err), err?.message ?? String(err));
+  }
+}
+
 /**
  * Listens on a private local socket or Windows named pipe and answers one NDJSON line per request.
 *
@@ -95,6 +132,7 @@ export class RelaySocketServer {
   constructor({
     socketPath,
     dispatch,
+    dispatchDesktop,
     resolveExecutor = resolveRelayThreadId,
     restrictSocket = (target) => {
       if (!IS_WINDOWS) fs.chmodSync(target, 0o600);
@@ -103,6 +141,7 @@ export class RelaySocketServer {
   } = {}) {
     this.socketPath = socketPath;
     this.dispatch = dispatch;
+    this.dispatchDesktop = dispatchDesktop;
     this.resolveExecutor = resolveExecutor;
     this.restrictSocket = restrictSocket;
     this.log = logFn;
@@ -238,10 +277,11 @@ export class RelaySocketServer {
     }
     const response = await handleRelayRequest(payload, {
       dispatch: this.dispatch,
+      dispatchDesktop: this.dispatchDesktop,
       resolveExecutor: this.resolveExecutor,
     });
     if (!response.ok) this.log(`relay refused ${payload?.targetThreadId ?? "?"}: ${response.error.message}`);
-    else this.log(`relayed a message into thread ${response.targetThreadId}`);
+    else this.log(response.operation ? `completed Desktop operation ${response.operation}` : `relayed a message into thread ${response.targetThreadId}`);
     this.#reply(socket, response);
   }
 
@@ -338,7 +378,17 @@ if (invokedDirectly) {
   const nativeTools = new NativeToolsClient();
   const dispatch = (args) => nativeTools.dispatch(args);
 
-  const relay = new RelaySocketServer({ socketPath: relaySocketPath(), dispatch, log });
+  const relay = new RelaySocketServer({
+    socketPath: relaySocketPath(),
+    dispatch,
+    dispatchDesktop: (args) => nativeTools.dispatchDesktop(args),
+    log,
+  });
+  const desktopRelay = desktopTaskSocketPath() === relay.socketPath ? relay : new RelaySocketServer({
+    socketPath: desktopTaskSocketPath(),
+    dispatchDesktop: (args) => nativeTools.dispatchDesktop(args),
+    log,
+  });
 
   mcp.registerTool(
     "native_relay_status",
@@ -370,6 +420,7 @@ if (invokedDirectly) {
               `platform:       ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
               `companion:      codex-native-relay ${VERSION}`,
               `relay socket:   ${relay.started ? relay.socketPath : `${relay.socketPath} (${listening ? "shared companion listening" : "not listening"})`}`,
+              `desktop tasks:  ${desktopRelay.socketPath} (${await desktopRelay.isListening() ? "listening" : "not listening"})`,
               `executor:       ${executor}`,
               `dispatch:       ${process.env.CODEX_NATIVE_RELAY_METHOD ?? NATIVE_DISPATCH_METHOD}`,
               `native pipe:    ${nativeTools.socketPath ?? "unavailable (requires Codex Desktop)"}`,
@@ -381,7 +432,8 @@ if (invokedDirectly) {
   );
 
   const startup = startRelayWhenAvailable({ nativeTools, relay, log });
-  mcp.server.onclose = () => startup.stop();
+  const desktopStartup = desktopRelay === relay ? startup : startRelayWhenAvailable({ nativeTools, relay: desktopRelay, log });
+  mcp.server.onclose = () => { startup.stop(); desktopStartup.stop(); };
   await mcp.connect(new StdioServerTransport());
   log(`ready on ${PLATFORM_LABEL} (${relay.started ? relay.socketPath : "socket down"})`);
 }

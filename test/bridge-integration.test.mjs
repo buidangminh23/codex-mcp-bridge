@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { startFakeAppServer } from "./helpers/fake-app-server.mjs";
+import { RelaySocketServer } from "../src/native-relay-companion.mjs";
+import { randomUUID } from "node:crypto";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -20,7 +22,7 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
     CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_ALLOWED_ROOTS: home,
     CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_OPEN_IN_APP: "0",
     CODEX_BRIDGE_RELEASE_AFTER_TURN: "0",
-    ...extraEnv(home),
+    ...await extraEnv(home),
   };
   const client = new Client({ name: "bridge-integration", version: "1.0.0" });
   const transport = new StdioClientTransport({
@@ -36,6 +38,45 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
     fs.rmSync(home, { recursive: true, force: true });
   }
 }
+
+describe("Desktop task MCP integration", () => {
+  it("creates, assigns, opens, and waits without sending anything to a second app-server", async () => {
+    const calls = [];
+    let relay;
+    const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
+    const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-task-${randomUUID()}` : path.join(socketRoot, "d.sock");
+    try {
+      await withBridge(() => { throw new Error("Native delivery must not call the external app-server"); }, async ({ client, home }) => {
+        const result = await client.callTool({ name: "delegate_to_codex", arguments: { cwd: home, prompt: "Task", name: "Visible task", openInApp: true } });
+        assert.equal(result.isError, undefined);
+        assert.match(result.content[0].text, /projectId: project-id/);
+        assert.match(result.content[0].text, /opened in Codex Desktop while/);
+        assert.match(result.content[0].text, /COMPLETE/);
+        assert.deepEqual(calls.map(([op]) => op), ["list_projects", "create_thread", "navigate_to_codex_page", "wait_threads"]);
+        const empty = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home } });
+        assert.equal(empty.isError, true);
+        assert.match(empty.content[0].text, /No task was created/);
+        assert.equal(calls.length, 4);
+      }, async (home) => {
+        relay = new RelaySocketServer({ socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
+          calls.push([operation, args]);
+          let result;
+          if (operation === "list_projects") result = { projects: [{ projectId: "project-id", projectKind: "local", hostId: "local", path: home, label: "Test" }] };
+          else if (operation === "create_thread") result = { threadId: "new-task", hostId: "local" };
+          else if (operation === "navigate_to_codex_page") result = { navigated: true };
+          else if (operation === "wait_threads") result = { polls: [{ thread: { id: "new-task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "turn", status: "completed" }, latestAssistantMessage: { turnId: "turn", phase: "final_answer", text: "COMPLETE" } }] };
+          else throw new Error(`Unexpected operation ${operation}`);
+          return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
+        } });
+        await relay.start();
+        return { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: socketPath };
+      });
+    } finally {
+      relay?.stop();
+      fs.rmSync(socketRoot, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("bridge workspace and listing integration", () => {
   it("sends an absolute cwd to a server running in a different directory", async () => {

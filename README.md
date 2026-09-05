@@ -8,7 +8,23 @@
 
 A **two-way** bridge between Claude and Codex: Claude pushes prompts into a **live Codex thread**, and Codex messages back into a **running Claude Code session**. Each side sees the other's sessions and follows the conversation inside its own app. Runs on **macOS, Windows and Linux** (the Codex → Claude direction uses unix sockets on macOS/Linux and named pipes on Windows).
 
-This is not `codex exec`, which starts a fresh session every time. The bridge speaks JSON-RPC to the real Codex app-server, so the thread keeps its history, its `cwd`, its model and its rollout file — and a human can watch it run in the Codex desktop app instead of reading the transcript afterwards.
+The bridge preserves task history and working directories across messages. Enable **Desktop tasks** to create, assign, and watch work directly in Codex Desktop. The separate app-server backend remains available for CLI use; it cannot provide live Desktop viewing while it owns the task's writer lock.
+
+### Visible tasks in the correct Desktop project
+
+Install the native companion, add the exact checkout directory as a local project in Codex Desktop, and enable Desktop task delivery:
+
+```bash
+codex-native-relay-install --desktop-tasks
+```
+
+Reload the native companion and the Claude MCP client after upgrading. The installer stores the opt-in in the existing `~/.codex/native-relay.json`; `CODEX_BRIDGE_DESKTOP_TASKS=1` also enables it, and an explicit `0` overrides the shared setting. Desktop mode uses **Codex Desktop permissions**, while the bridge's workspace and thread authorization checks still apply. Existing installations keep their app-server permission settings unless they opt in.
+
+Call `delegate_to_codex` with `cwd`, `prompt`, and optionally `name`. The bridge resolves the real directory, selects the saved local project with that exact path, starts in its existing checkout, and opens the task immediately while it runs. `openInApp: false` suppresses page navigation; project assignment still happens. It never selects a parent directory, remote namesake, or a new worktree. An unsaved worktree must first be saved as its own local project; missing or ambiguous project matches return an error before creating a task.
+
+`start_codex_thread` requires `prompt` in Desktop mode and returns after acceptance. Use `delegate_to_codex` to also wait for the reply. `send_to_codex_thread` continues the existing Desktop task without attaching another writer; its cwd cannot be changed. On timeout, the task continues. Inspect it in Desktop and use its Stop button to interrupt it. Quota failures and approval/input requests remain visible; delivery does not bypass them. An uncertain creation or send is never automatically repeated through another backend.
+
+The updated companion exposes a separate `-desktop-tasks` endpoint so a previous companion holding the legacy reply socket need not be killed during an upgrade. `codex_bridge_status` reports the selected mode; `native_relay_status` reports both endpoints.
 
 ## Architecture
 
@@ -16,7 +32,7 @@ Two MCP servers, one living inside each agent:
 
 ```
                      ┌──────────────── codex-mcp-bridge (runs inside Claude) ──────────────┐
-Claude Desktop ──────┤ stdio                                    WebSocket                  ├──> codex app-server ──> thread shows in Codex Desktop
+Claude Desktop ──────┤ stdio                                    WebSocket                  ├──> separate codex app-server
                      └────────────────────────────────────────────────────────────────────┘
 
                      ┌──────────────── claude-bridge (runs inside Codex) ──────────────────┐
@@ -26,14 +42,14 @@ Codex ───────────────┤ stdio             unix so
 Codex TUI  ──codex --remote ws://127.0.0.1:8791──> same app-server, same live thread
 
                      ┌── codex-native-relay (launched by Codex Desktop, Windows/macOS) ────┐
-claude-bridge ───────┤ named pipe / unix socket                         native tools       ├──> the thread already open in Codex Desktop
+both bridges ───────┤ named pipe / unix socket                         native tools       ├──> visible project tasks in Codex Desktop
                      └────────────────────────────────────────────────────────────────────┘
 ```
 
 - The app-server is a **singleton per port**. The bridge probes `http://127.0.0.1:8791/readyz`; if nothing answers it spawns a detached `codex app-server --listen ws://127.0.0.1:8791`, which keeps running after the bridge exits.
 - Every client pointed at the same URL shares **one app-server**, so `thread/resume` with a `threadId` rejoins the running thread instead of opening a new session.
 - The bridge keeps exactly one WebSocket, calls `initialize` once, and routes notifications by `threadId`, so parallel threads never bleed into each other.
-- `delegate_to_codex` starts the thread at the supplied `cwd`, names it, sends the prompt, and unsubscribes that thread after a terminal turn. It opens `codex://threads/<id>` only after unload is confirmed; other threads on the shared app-server keep running.
+- In app-server mode, `delegate_to_codex` starts the thread at the supplied `cwd`, names it, sends the prompt, and unsubscribes that thread after a terminal turn. It opens `codex://threads/<id>` only after unload is confirmed; other threads on the shared app-server keep running. Desktop mode instead creates and assigns the task through the app immediately.
 - The **native relay** (Windows/macOS, optional) is the third line: a thread the human is watching in Codex Desktop belongs to the app, and a second app-server cannot write to it. Instead of taking the thread away, `claude-bridge` hands the message to a companion the app itself launched, and the app delivers it. See [Codex Desktop native relay](#codex-desktop-native-relay).
 
 ## Requirements

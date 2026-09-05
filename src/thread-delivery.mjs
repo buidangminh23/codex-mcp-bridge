@@ -1,5 +1,7 @@
-import { NativeDesktopRelay } from "./native-relay.mjs";
+import { NativeDesktopRelay, desktopTaskSocketPath } from "./native-relay.mjs";
 import { runTurn } from "./turn.mjs";
+import { realpathSync } from "node:fs";
+import path from "node:path";
 
 /**
  * Which backend puts a message into a Codex thread.
@@ -18,6 +20,124 @@ import { runTurn } from "./turn.mjs";
 export const NATIVE_BACKEND = "codex-desktop-native";
 export const APP_SERVER_BACKEND = "app-server";
 const RELEASE_STATUSES = new Set(["completed", "interrupted", "failed"]);
+
+export function matchDesktopProject(projects, cwd, { canonicalize = realpathSync.native, paths = path } = {}) {
+  const requested = canonicalize(cwd);
+  const matches = projects.filter((project) => {
+    if (project.projectKind !== "local" || project.hostId !== "local" || !project.path || !project.projectId) return false;
+    try {
+      return paths.relative(requested, canonicalize(project.path)) === "";
+    } catch {
+      return false;
+    }
+  });
+  if (matches.length !== 1) {
+    throw new Error(matches.length
+      ? `Multiple Codex Desktop projects match ${cwd}; keep one saved project for this directory before delegating.`
+      : `No saved local Codex Desktop project exactly matches ${cwd}. Add that directory as a project in Codex Desktop first.`);
+  }
+  return matches[0];
+}
+
+export class DesktopTaskDelivery {
+  constructor({ relay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath() }), security, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now } = {}) {
+    this.relay = relay;
+    this.security = security;
+    this.sleep = sleep;
+    this.now = now;
+  }
+
+  async request(operation, args) {
+    const response = await this.relay.requestDesktop(operation, args);
+    return response.result;
+  }
+
+  async create({ cwd, prompt, name, model, effort }) {
+    this.security.assertCwd(cwd);
+    const listed = await this.request("list_projects", {});
+    if (!Array.isArray(listed?.projects)) throw new Error("Codex Desktop returned no project list; no task was created.");
+    const project = matchDesktopProject(listed.projects, cwd);
+    const response = await this.request("create_thread", {
+      prompt,
+      title: name,
+      target: { type: "project", projectId: project.projectId, environment: { type: "local" } },
+      ...(model ? { model } : {}),
+      ...(effort ? { thinking: effort } : {}),
+    });
+    const threadId = response?.threadId ?? response?.conversationId;
+    if (!threadId || response?.status === "outcome-unknown" || response?.firstTurn?.status === "outcome-unknown") {
+      throw new Error(`Desktop creation is not confirmed. Do not resend the prompt: ${JSON.stringify(response)}`);
+    }
+    this.security.registerThread(threadId);
+    if (response.hostId !== "local" || (response.firstTurn && response.firstTurn.status !== "accepted")) {
+      throw new Error(`Desktop created task ${threadId}, but did not confirm a local running turn: ${JSON.stringify(response)}. Inspect this task before retrying.`);
+    }
+    return { threadId, name, cwd, projectId: project.projectId, projectName: project.label, backend: NATIVE_BACKEND };
+  }
+
+  async inspect(threadId, cwd) {
+    const response = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1 });
+    const thread = response?.thread;
+    if (thread?.id !== threadId || thread.hostId !== "local" || !thread.cwd) throw new Error("Desktop did not confirm the task's local workspace.");
+    this.security.assertThread(threadId, thread.cwd);
+    this.security.assertCwd(thread.cwd);
+    if (cwd && path.relative(realpathSync.native(cwd), realpathSync.native(thread.cwd))) {
+      throw new Error("Native Desktop delivery cannot change an existing task's workspace; create a new task at the requested cwd.");
+    }
+    return { thread, latestTurnId: response.turns?.[0]?.id ?? null };
+  }
+
+  async send({ threadId, prompt, cwd, model, effort, name }) {
+    const inspected = await this.inspect(threadId, cwd);
+    if (name) await this.request("set_thread_title", { threadId, title: name.trim().slice(0, 200) });
+    const response = await this.request("send_message_to_thread", {
+      threadId, prompt,
+      ...(model ? { model } : {}),
+      ...(effort ? { thinking: effort } : {}),
+    });
+    if (response?.threadId !== threadId || response?.success === false || response?.isError === true ||
+        (response?.status !== undefined && !["accepted", "sent"].includes(response.status)) ||
+        (response?.firstTurn && response.firstTurn.status !== "accepted")) {
+      throw new Error(`Desktop send is not confirmed for ${threadId}. Do not resend: ${JSON.stringify(response)}`);
+    }
+    return { threadId, cwd: inspected.thread.cwd, name: inspected.thread.title, previousTurnId: inspected.latestTurnId, backend: NATIVE_BACKEND };
+  }
+
+  async open(threadId) {
+    const response = await this.request("navigate_to_codex_page", { threadId });
+    if (response?.navigated !== true) throw new Error(`Desktop did not confirm opening task ${threadId}`);
+  }
+
+  async wait(threadId, { timeoutMs = 240000, previousTurnId = null } = {}) {
+    const startedAt = this.now();
+    let cursor;
+    let turnId = null;
+    let text = "";
+    for (;;) {
+      const response = await this.request("wait_threads", {
+        targets: [{ threadId, hostId: "local", ...(cursor ? { afterCursor: cursor } : {}) }], timeoutMs: 0,
+      });
+      const poll = response?.polls?.find((item) => item.thread?.id === threadId && item.thread?.hostId === "local");
+      if (response?.errors?.length || !poll) throw new Error(`Could not observe task ${threadId}; it may still be running. Read it before retrying: ${JSON.stringify(response)}`);
+      cursor = poll.cursor;
+      const turn = poll.latestTurn;
+      const threadStatus = poll.thread.status?.type;
+      if (["systemError", "waitingOnApproval", "waitingOnUserInput"].includes(threadStatus)) {
+        return { threadId, turnId: turn?.id !== previousTurnId ? turn?.id ?? null : null, status: threadStatus, text: "", activity: [], errors: [], durationMs: this.now() - startedAt };
+      }
+      if (turn?.id && turn.id !== previousTurnId) {
+        turnId = turn.id;
+        if (poll.latestAssistantMessage?.turnId === turnId && poll.latestAssistantMessage?.phase === "final_answer") text = poll.latestAssistantMessage.text ?? text;
+        const status = turn.status;
+        if (RELEASE_STATUSES.has(status)) {
+          return { threadId, turnId, status, text, activity: [], errors: turn.error ? [turn.error] : [], durationMs: turn.durationMs ?? this.now() - startedAt };
+        }
+      }
+      if (this.now() - startedAt >= timeoutMs) return { threadId, turnId, status: "timeout", text, activity: [], errors: [], durationMs: this.now() - startedAt };
+      await this.sleep(Math.min(1500, timeoutMs - (this.now() - startedAt)));
+    }
+  }
+}
 
 export function createThreadDelivery({
   codex,

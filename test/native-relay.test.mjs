@@ -26,14 +26,195 @@ import {
   resolveRelayThreadId,
   resolveNativeToolsPipePath,
   writeRelayConfig,
+  validateDesktopOperation,
+  nativeDesktopOperationParams,
+  decodeNativeToolResult,
+  desktopTasksConfigured,
+  desktopTaskSocketPath,
 } from "../src/native-relay.mjs";
 import { RelaySocketServer, handleRelayRequest, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
-import { APP_SERVER_BACKEND, NATIVE_BACKEND, createThreadDelivery } from "../src/thread-delivery.mjs";
+import { APP_SERVER_BACKEND, NATIVE_BACKEND, createThreadDelivery, DesktopTaskDelivery, matchDesktopProject } from "../src/thread-delivery.mjs";
+import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IS_WINDOWS = process.platform === "win32";
 const temps = [];
 const stubExecutor = () => ({ threadId: "relay-thread", source: "test" });
+
+describe("Desktop project task delivery", () => {
+  const project = { projectId: "project-id", projectKind: "local", hostId: "local", path: root, label: "bridge" };
+  const policy = () => new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: root, CODEX_BRIDGE_THREAD_POLICY: "roots" });
+  const nativeResult = (result) => ({ success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] });
+
+  it("keeps Desktop permissions opt-in and honors an explicit disable over the shared setting", () => {
+    const env = { CODEX_HOME: tempHome() };
+    assert.equal(desktopTasksConfigured(env), false);
+    writeRelayConfig({ relayThreadId: "relay", desktopTasks: true }, env);
+    assert.equal(desktopTasksConfigured(env), true);
+    assert.equal(desktopTasksConfigured({ ...env, CODEX_BRIDGE_DESKTOP_TASKS: "0" }), false);
+    assert.equal(desktopTasksConfigured({ ...env, CODEX_BRIDGE_DESKTOP_TASKS: "1" }), true);
+    assert.notEqual(desktopTaskSocketPath(env), relaySocketPath(env));
+    assert.equal(desktopTaskSocketPath({ ...env, CODEX_NATIVE_RELAY_SOCKET: "custom" }), "custom");
+  });
+
+  it("returns an attention state without waiting for a new turn", async () => {
+    for (const status of ["systemError", "waitingOnApproval", "waitingOnUserInput"]) {
+      const delivery = new DesktopTaskDelivery({ sleep: () => { throw new Error("must not sleep"); }, relay: { requestDesktop: async () => ({ result: { polls: [{ thread: { id: "task", hostId: "local", status: { type: status } }, latestTurn: status === "systemError" ? null : { id: "old", status: "completed" } }] } }) } });
+      const result = await delivery.wait("task", { previousTurnId: "old" });
+      assert.equal(result.status, status);
+      assert.equal(result.turnId, null);
+    }
+  });
+
+  it("uses an exact canonical saved local project rather than its parent or a remote namesake", () => {
+    const options = { canonicalize: (value) => value === "C:\\alias" ? "C:\\PCC4SH" : value, paths: path.win32 };
+    const exact = { ...project, path: "C:\\PCC4SH" };
+    assert.equal(matchDesktopProject([{ ...project, path: "C:\\" }, exact, { ...exact, hostId: "remote" }], "c:\\pcc4sh\\", options), exact);
+    assert.equal(matchDesktopProject([exact], "C:\\alias", options), exact);
+    assert.throws(() => matchDesktopProject([exact], "C:\\PCC4SH\\web", options), /No saved local/);
+    assert.throws(() => matchDesktopProject([exact, { ...exact, projectId: "duplicate" }], "C:\\PCC4SH", options), /Multiple/);
+  });
+
+  it("rejects arbitrary proxy operations, remote targets, unsupported worktrees, and extra arguments", async () => {
+    const requests = [
+      ["delete_project", {}], ["list_projects", { injected: true }],
+      ["create_thread", { prompt: "work", target: { type: "projectless" } }],
+      ["create_thread", { prompt: "work", target: { type: "project", projectId: "p", environment: { type: "worktree" } } }],
+      ["send_message_to_thread", { threadId: "t", prompt: "work", hostId: "remote" }],
+      ["wait_threads", { targets: [{ threadId: "t" }], timeoutMs: 120000 }],
+    ];
+    for (const [operation, args] of requests) {
+      assert.throws(() => validateDesktopOperation(operation, args), /invalid Desktop/);
+      const result = await handleRelayRequest({ v: 1, operation, arguments: args }, { resolveExecutor: stubExecutor, dispatchDesktop: () => { throw new Error("must not dispatch"); } });
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "RELAY_BAD_REQUEST");
+    }
+  });
+
+  it("dispatches one allowlisted operation and decodes native results", async () => {
+    let count = 0;
+    const result = await handleRelayRequest({ v: 1, operation: "list_projects", arguments: {} }, {
+      resolveExecutor: stubExecutor,
+      dispatchDesktop: async (args) => {
+        count++;
+        const params = nativeDesktopOperationParams(args);
+        assert.equal(params.tool, "list_projects");
+        assert.equal(params.namespace, "codex_app");
+        assert.equal(params.threadId, "relay-thread");
+        return nativeResult({ projects: [project] });
+      },
+    });
+    assert.equal(count, 1);
+    assert.equal(result.operation, "list_projects");
+    assert.deepEqual(result.result.projects, [project]);
+    assert.throws(() => decodeNativeToolResult({ success: false, contentItems: [{ type: "inputText", text: "Request refused" }] }), /Request refused/);
+  });
+
+  it("rejects native self-delivery and unknown envelope fields", async () => {
+    let count = 0;
+    const options = { resolveExecutor: stubExecutor, dispatchDesktop: async () => { count++; return nativeResult({}); } };
+    const result = await handleRelayRequest({ v: 1, operation: "send_message_to_thread", arguments: { threadId: "relay-thread", prompt: "loop" } }, options);
+    assert.equal(result.ok, false);
+    const invalid = await handleRelayRequest({ v: 1, operation: "list_projects", arguments: {}, targetThreadId: "other" }, options);
+    assert.equal(invalid.ok, false);
+    assert.equal(count, 0);
+  });
+
+  it("carries Desktop operations through the companion socket", async () => {
+    const socketPath = tempSocket();
+    const server = new RelaySocketServer({ socketPath, resolveExecutor: stubExecutor, dispatchDesktop: async () => nativeResult({ projects: [project] }) });
+    await server.start();
+    try {
+      const relay = new NativeDesktopRelay({ socketPath });
+      const response = await relay.requestDesktop("list_projects", {});
+      assert.deepEqual(response.result.projects, [project]);
+    } finally { server.stop(); }
+  });
+
+  it("creates in the saved checkout with explicit project assignment and no worktree", async () => {
+    const calls = [];
+    const delivery = new DesktopTaskDelivery({ security: policy(), relay: {
+      requestDesktop: async (operation, args) => {
+        calls.push([operation, args]);
+        return { result: operation === "list_projects" ? { projects: [project] } : { threadId: "new-task", hostId: "local" } };
+      },
+    } });
+    const created = await delivery.create({ cwd: root, prompt: "work", name: "Test" });
+    assert.equal(created.projectId, project.projectId);
+    assert.deepEqual(calls.map(([operation]) => operation), ["list_projects", "create_thread"]);
+    assert.deepEqual(calls[1][1].target, { type: "project", projectId: project.projectId, environment: { type: "local" } });
+    assert.equal(Object.hasOwn(calls[1][1], "model"), false);
+  });
+
+  it("fails closed before creation outside roots or without an exact saved project", async () => {
+    const calls = [];
+    const delivery = new DesktopTaskDelivery({ security: policy(), relay: { requestDesktop: async (op) => { calls.push(op); return { result: { projects: [] } }; } } });
+    await assert.rejects(delivery.create({ cwd: path.dirname(root), prompt: "work" }), /outside/);
+    assert.equal(calls.length, 0);
+    await assert.rejects(delivery.create({ cwd: root, prompt: "work" }), /No saved local/);
+    assert.deepEqual(calls, ["list_projects"]);
+  });
+
+  it("never repeats creation after an uncertain acknowledgement", async () => {
+    let count = 0;
+    const delivery = new DesktopTaskDelivery({ security: policy(), relay: { requestDesktop: async (op) => {
+      if (op === "list_projects") return { result: { projects: [project] } };
+      count++;
+      return { result: { status: "outcome-unknown", clientThreadId: "pending" } };
+    } } });
+    await assert.rejects(delivery.create({ cwd: root, prompt: "work" }), /Do not resend/);
+    assert.equal(count, 1);
+  });
+
+  it("authorizes the existing task before sending, renaming, or opening it", async () => {
+    const calls = [];
+    const delivery = new DesktopTaskDelivery({ security: policy(), relay: { requestDesktop: async (op) => {
+      calls.push(op);
+      return { result: { thread: { id: "outside", hostId: "local", cwd: path.dirname(root) } } };
+    } } });
+    await assert.rejects(delivery.send({ threadId: "outside", prompt: "work", name: "Rename" }), /outside/);
+    assert.deepEqual(calls, ["read_thread"]);
+  });
+
+  it("does not treat a matching task ID as proof that an uncertain follow-up was accepted", async () => {
+    for (const status of ["outcome-unknown", "failed", "rejected"]) {
+      let sends = 0;
+      const delivery = new DesktopTaskDelivery({ security: policy(), relay: { requestDesktop: async (operation) => {
+        if (operation === "read_thread") return { result: { thread: { id: "task", hostId: "local", cwd: root }, turns: [{ id: "old" }] } };
+        sends++;
+        return { result: { threadId: "task", status } };
+      } } });
+      await assert.rejects(delivery.send({ threadId: "task", prompt: "work" }), /Do not resend/);
+      assert.equal(sends, 1);
+    }
+  });
+
+  it("ignores the previous completed turn when waiting for a queued follow-up", async () => {
+    let count = 0;
+    let elapsed = 0;
+    const delivery = new DesktopTaskDelivery({ now: () => elapsed, sleep: async (ms) => { elapsed += ms; }, relay: { requestDesktop: async () => {
+      count++;
+      const id = count === 1 ? "previous" : "new-turn";
+      return { result: { polls: [{ thread: { id: "task", hostId: "local", status: { type: "idle" } }, cursor: `cursor-${count}`, latestTurn: { id, status: "completed" }, latestAssistantMessage: { turnId: id, phase: "final_answer", text: id } }] } };
+    } } });
+    const result = await delivery.wait("task", { previousTurnId: "previous", timeoutMs: 5000 });
+    assert.equal(count, 2);
+    assert.equal(result.turnId, "new-turn");
+    assert.equal(result.text, "new-turn");
+  });
+
+  it("stops observing on timeout without pausing or interrupting the task", async () => {
+    const calls = [];
+    let elapsed = 0;
+    const delivery = new DesktopTaskDelivery({ now: () => elapsed, sleep: async (ms) => { elapsed += ms; }, relay: { requestDesktop: async (op) => {
+      calls.push(op);
+      return { result: { polls: [{ thread: { id: "task", hostId: "local", status: { type: "active" } }, latestTurn: { id: "turn", status: "inProgress" } }] } };
+    } } });
+    const result = await delivery.wait("task", { timeoutMs: 3000 });
+    assert.equal(result.status, "timeout");
+    assert.equal(calls.every((op) => op === "wait_threads"), true);
+  });
+});
 
 /**
  * A companion killed with SIGKILL never runs its cleanup, so the socket file

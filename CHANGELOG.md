@@ -2,6 +2,24 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.13.0] - 2026-09-05
+
+### Added
+
+- Opt-in Desktop task delivery: `delegate_to_codex` creates a task in the exact saved local project and opens it while running. `send_to_codex_thread` continues through Desktop without a second writer. `start_codex_thread` accepts an initial prompt and requires it in Desktop mode.
+- Enable with `codex-native-relay-install --desktop-tasks` or `CODEX_BRIDGE_DESKTOP_TASKS=1`. Desktop mode uses Desktop permissions and preserves bridge workspace/thread authorization. Missing, ambiguous, remote, or parent-only project matches fail before creation; the requested checkout is preserved.
+- Strictly allowlisted native operations and a separate Desktop task socket allow upgrades alongside an older legacy relay owner. Read/open operations use Desktop too; timed-out native tasks point to Desktop's Stop control.
+
+### Fixed
+
+- Distinguish task acceptance, model failure, attention requests, and observation timeout. Follow-up polling ignores the previous completed turn; unconfirmed creation or sending is never automatically retried through another backend.
+- Mark prompt-bearing task creation as potentially destructive in MCP annotations, and preserve the shared Desktop opt-in when bootstrapping a relay executor.
+
+### Verification
+
+- Added project matching, authorization, protocol validation, socket transport, uncertain acknowledgement, attention, timeout, and full MCP creation/opening tests.
+- A real Windows Desktop task appeared under PCC4SH and completed with `cwd=C:\PCC4SH`, `HEAD=74ed553`. A subsequent native message reached that same task and reported an account usage-limit failure; a second successful model response was not claimed.
+
 ## [1.12.5] - 2026-09-05
 
 ### Fixed

@@ -22,8 +22,10 @@ import {
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
+import { DesktopTaskDelivery } from "./thread-delivery.mjs";
+import { desktopTasksConfigured } from "./native-relay.mjs";
 
-const VERSION = "1.12.5";
+const VERSION = "1.13.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -42,6 +44,8 @@ const DEFAULT_RELEASE_AFTER_TURN = process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN
 const TERMINAL_TURN_STATUSES = new Set(["completed", "interrupted", "failed"]);
 const RELEASE_TURN_STATUSES = TERMINAL_TURN_STATUSES;
 const security = new BridgeSecurityPolicy();
+const desktopTasksEnabled = desktopTasksConfigured();
+const desktopTasks = new DesktopTaskDelivery({ security });
 
 const client = new CodexAppServerClient({
   clientInfo: { name: "codex-mcp-bridge", title: "Codex MCP Bridge", version: VERSION },
@@ -104,6 +108,36 @@ function threadNameFor({ cwd, prompt, name }) {
     0,
     200,
   );
+}
+
+async function delegateDesktopTask({ cwd, prompt, name, model, effort, timeoutSec, openInApp, waitForReply = true }) {
+  const workspace = resolveWorkspacePath(cwd);
+  const created = await desktopTasks.create({
+    cwd: workspace.path, prompt, name: threadNameFor({ cwd: workspace.path, prompt, name }),
+    model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT,
+  });
+  const notes = [];
+  if (workspace.note) notes.push(workspace.note);
+  if (openInApp ?? DEFAULT_OPEN_IN_APP) {
+    try {
+      await desktopTasks.open(created.threadId);
+      notes.push("opened in Codex Desktop while the task runs");
+    } catch (err) {
+      notes.push(`task was accepted; opening its page failed: ${err.message}`);
+    }
+  }
+  const lines = [
+    "Delegated through Codex Desktop", `threadId: ${created.threadId}`, `name: ${created.name}`,
+    `cwd: ${created.cwd}`, `projectId: ${created.projectId}`, `project: ${created.projectName}`,
+    "permissions: Codex Desktop settings; no external app-server writer", ...notes,
+  ];
+  if (!waitForReply) return textResult([...lines, "status: accepted; the task is running in Desktop"].join("\n"));
+  try {
+    const result = await desktopTasks.wait(created.threadId, { timeoutMs: (timeoutSec ?? 240) * 1000 });
+    return textResult([...lines, "", formatTurn(result, { desktop: true })].join("\n"), result.status === "failed" || result.status === "systemError");
+  } catch (err) {
+    return textResult([...lines, `Task was accepted; observation failed: ${err.message}`, "Do not resend the prompt. Inspect the existing task."].join("\n"), true);
+  }
 }
 
 async function createCodexThread({ cwd, model, name, prompt }) {
@@ -189,7 +223,7 @@ function formatThreadRow(t) {
   return `- ${t.id}\n    title: ${title}\n    cwd: ${t.cwd ?? "?"}\n    updated: ${updated}  status: ${status}  source: ${t.source ?? "?"}${deepLink}${authorized}`;
 }
 
-function formatTurn(result) {
+function formatTurn(result, { desktop = false } = {}) {
   const lines = [];
   lines.push(`thread: ${result.threadId}`);
   lines.push(`turn:   ${result.turnId ?? "?"}  status: ${result.status}`);
@@ -214,8 +248,9 @@ function formatTurn(result) {
   if (result.status === "timeout") {
     lines.push(
       "",
-      "NOTE: the bridge stopped waiting, but the turn is still running inside Codex.",
-      `Read it later with read_codex_thread, or stop it with interrupt_codex_turn (turnId ${result.turnId}).`,
+      "NOTE: the bridge stopped waiting; it did not pause or cancel the task.",
+      desktop ? "Inspect the task in Codex Desktop; use its Stop button to stop the running turn. Do not resend the prompt." :
+        `Read it later with read_codex_thread, or stop it with interrupt_codex_turn (turnId ${result.turnId}).`,
     );
   }
   if (result.status === "disconnected") {
@@ -234,7 +269,8 @@ const server = new McpServer(
   {
     instructions:
       "Bridge Claude work into Codex. Prefer delegate_to_codex: it creates a named Codex thread at the " +
-      "requested cwd, sends the prompt, releases the bridge writer lock, and opens the exact thread in " +
+      "requested cwd. With Desktop tasks enabled it assigns the exact saved project and starts visibly in " +
+      "Codex Desktop using Desktop permissions. Otherwise it releases the bridge writer lock and opens the exact thread in " +
       "Codex Desktop. Use send_to_codex_thread only when an existing threadId is intentional; use " +
       "list_codex_threads or read_codex_thread to inspect sessions and codex_bridge_status to inspect wiring.",
   },
@@ -266,7 +302,7 @@ server.registerTool(
       openInApp: z
         .boolean()
         .optional()
-        .describe("Open the finished session in Codex Desktop on Windows or macOS"),
+        .describe("Show the task in Codex Desktop; native tasks open immediately while running"),
       releaseAfterTurn: z
         .boolean()
         .optional()
@@ -284,6 +320,7 @@ server.registerTool(
     const shouldRelease = releaseAfterTurn ?? DEFAULT_RELEASE_AFTER_TURN;
     const notes = [];
     try {
+      if (desktopTasksEnabled) return await delegateDesktopTask({ cwd, prompt, name, model, effort, timeoutSec, openInApp });
       const created = await createCodexThread({ cwd, prompt, name, model });
       if (created.workspace.note) notes.push(created.workspace.note);
       if (shouldOpen && !shouldRelease) {
@@ -376,6 +413,26 @@ server.registerTool(
       const shouldOpen = openInApp ?? DEFAULT_OPEN_IN_APP;
       const shouldRelease = releaseAfterTurn ?? DEFAULT_RELEASE_AFTER_TURN;
       try {
+        if (desktopTasksEnabled) {
+          const workspace = cwd ? resolveWorkspacePath(cwd) : null;
+          if (workspace) security.assertCwd(workspace.path);
+          const delivered = await desktopTasks.send({ threadId, prompt, cwd: workspace?.path, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, name });
+          notes.push("sent through Codex Desktop; no external app-server writer", `cwd: ${delivered.cwd}`);
+          if (shouldOpen) {
+            try {
+              await desktopTasks.open(threadId);
+              notes.push("opened in Codex Desktop while the task runs");
+            } catch (err) {
+              notes.push(`task was accepted; opening its page failed: ${err.message}`);
+            }
+          }
+          try {
+            const result = await desktopTasks.wait(threadId, { timeoutMs: (timeoutSec ?? 240) * 1000, previousTurnId: delivered.previousTurnId });
+            return textResult([...notes, formatTurn(result, { desktop: true })].join("\n"), result.status === "failed" || result.status === "systemError");
+          } catch (err) {
+            return textResult([...notes, `threadId: ${threadId}`, `Task was accepted; observation failed: ${err.message}. Do not resend.`].join("\n"), true);
+          }
+        }
         const authorizedThread = await assertThreadAccess(threadId);
         let resolvedCwd = null;
         if (cwd) {
@@ -519,21 +576,27 @@ server.registerTool(
   "start_codex_thread",
   {
     title: "Start a new Codex thread",
-    description: "Create a brand new Codex thread in the shared app-server and return its threadId.",
+    description: "Start a Codex task. In Desktop mode include the initial prompt to create and assign a visible task atomically; use delegate_to_codex to also wait for its reply.",
     inputSchema: {
       cwd: z.string().describe("Absolute working directory for the new Codex session"),
+      prompt: z.string().min(1).optional().describe("Initial task; required with CODEX_BRIDGE_DESKTOP_TASKS=1, starts immediately"),
       model: z.string().optional().describe("Model override, e.g. gpt-5.6-luna"),
       name: z.string().min(1).max(200).optional().describe("Optional title to show for the new Codex session"),
     },
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
   },
-  async ({ cwd, model, name }) => {
+  async ({ cwd, model, name, prompt }) => {
     try {
+      if (desktopTasksEnabled) {
+        if (!prompt?.trim()) throw new Error("Desktop task creation requires the initial prompt. Use delegate_to_codex, or pass prompt to start_codex_thread. No task was created.");
+        return await delegateDesktopTask({ cwd, model, name, prompt, waitForReply: false });
+      }
+      if (prompt) throw new Error("Use delegate_to_codex to send an initial prompt in app-server mode.");
       const created = await createCodexThread({ cwd, model, name });
       return textResult(
         [
@@ -567,6 +630,11 @@ server.registerTool(
   },
   async ({ threadId, limit }) => {
     try {
+      if (desktopTasksEnabled) {
+        await desktopTasks.inspect(threadId);
+        const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10) });
+        return textResult(JSON.stringify(response, null, 2));
+      }
       await assertThreadAccess(threadId);
       const res = await client.call("thread/read", { threadId, includeTurns: true });
       const thread = normalizeThreadCwd(res?.thread ?? res ?? {}, { strict: true });
@@ -610,6 +678,10 @@ server.registerTool(
   },
   async ({ threadId, turnId }) => {
     try {
+      if (desktopTasksEnabled) {
+        await desktopTasks.inspect(threadId);
+        return textResult("This task is owned by Codex Desktop. Use its Stop button; the separate app-server cannot interrupt a Desktop turn.", true);
+      }
       await assertThreadAccess(threadId);
       const res = await client.call("thread/read", { threadId });
       const thread = normalizeThreadCwd(res?.thread ?? res ?? {}, { strict: true });
@@ -645,6 +717,12 @@ server.registerTool(
   },
   async ({ threadId, background }) => {
     try {
+      if (desktopTasksEnabled) {
+        await desktopTasks.inspect(threadId);
+        if (background) await openThreadInCodexApp(threadId, { activate: false });
+        else await desktopTasks.open(threadId);
+        return textResult(`Opened ${codexThreadUrl(threadId)} in Codex Desktop.`);
+      }
       await assertThreadAccess(threadId);
       const res = await client.call("thread/read", { threadId });
       const thread = normalizeThreadCwd(res?.thread ?? res ?? {}, { strict: true });
@@ -726,6 +804,7 @@ server.registerTool(
       `autostart:      ${client.autoStart ? "on" : "off"}   approvals: ${client.approval}`,
       `desktop links:  ${supportsCodexThreadLinks() ? "codex:// available" : "not available on this platform"}`,
       `security:       thread policy ${security.threadPolicy} (${summary.allowAllThreads ? "all threads" : `${summary.authorizedThreads} pre-authorized thread(s)`}), ${summary.allowAllRoots ? "all directories" : `${summary.allowedRoots.length} allowed root(s)`}, sandbox ${security.sandbox}, approvals ${security.approvalPolicy}`,
+      `desktop tasks:  ${desktopTasksEnabled ? "enabled; Desktop permissions, exact saved project, immediate visibility" : "disabled; app-server permissions (enable CODEX_BRIDGE_DESKTOP_TASKS=1 to use Desktop permissions)"}`,
       `live threads:   ${liveThreads ?? "(unknown)"}`,
       `claude desktop config: ${claudeDesktopConfigPath()}`,
     ];

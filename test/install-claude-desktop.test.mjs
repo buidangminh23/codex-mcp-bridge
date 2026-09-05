@@ -38,6 +38,7 @@ function install({ config, env = {}, args = [] }) {
       PATH: process.env.PATH ?? "",
       SystemRoot: process.env.SystemRoot ?? "",
       CLAUDE_DESKTOP_CONFIG: config,
+      CODEX_HOME: sandbox,
       CODEX_EXE: codexStub,
       ...env,
     },

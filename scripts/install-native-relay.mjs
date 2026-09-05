@@ -5,10 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CodexAppServerClient } from "../src/app-server-client.mjs";
-import { bootstrapRelayThread, readRelayConfig, relayConfigPath, relaySocketPath } from "../src/native-relay.mjs";
+import { bootstrapRelayThread, readRelayConfig, relayConfigPath, relaySocketPath, writeRelayConfig } from "../src/native-relay.mjs";
 import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
 
-const VERSION = "1.12.5";
+const VERSION = "1.13.0";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = path.join(root, "src", "native-relay-companion.mjs");
 const serverName = process.env.CODEX_NATIVE_RELAY_NAME ?? "codex-native-relay";
@@ -81,5 +81,9 @@ if (existing) {
 }
 
 console.log(`\nrelay socket: ${relaySocketPath()}`);
+if (process.argv.includes("--desktop-tasks")) {
+  writeRelayConfig({ ...readRelayConfig(), desktopTasks: true });
+  console.log("Desktop task creation enabled: exact saved local projects, immediate visibility, Codex Desktop permissions.");
+}
 console.log("Restart Codex Desktop so it launches the companion, then check with native_relay_status.");
 console.log("remove: node scripts/install-native-relay.mjs --remove");

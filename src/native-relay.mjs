@@ -66,6 +66,16 @@ export function relaySocketPath(env = process.env) {
   return env.CODEX_NATIVE_RELAY_SOCKET ?? (IS_WINDOWS ? WINDOWS_RELAY_SOCKET : path.join(codexHome(env), RELAY_SOCKET_NAME));
 }
 
+export function desktopTaskSocketPath(env = process.env) {
+  return env.CODEX_NATIVE_RELAY_SOCKET ?? `${relaySocketPath(env)}-desktop-tasks`;
+}
+
+export function desktopTasksConfigured(env = process.env) {
+  return env.CODEX_BRIDGE_DESKTOP_TASKS !== undefined
+    ? env.CODEX_BRIDGE_DESKTOP_TASKS === "1"
+    : readRelayConfig(env)?.desktopTasks === true;
+}
+
 export function relayConfigPath(env = process.env) {
   return path.join(codexHome(env), RELAY_CONFIG_NAME);
 }
@@ -139,6 +149,108 @@ export function nativeDispatchParams({ executorThreadId, targetThreadId, message
     tool: "send_message_to_thread",
     turnId: `codex-native-relay-turn-${randomUUID()}`,
   };
+}
+
+const DESKTOP_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+
+function exactObject(value, keys) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).every((key) => keys.includes(key));
+}
+
+function nonempty(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function optionalText(value) {
+  return value === undefined || nonempty(value);
+}
+
+function optionalInteger(value, min, max) {
+  return value === undefined || Number.isSafeInteger(value) && value >= min && value <= max;
+}
+
+export function validateDesktopOperation(operation, args) {
+  let valid = false;
+  const modelSettings = () => optionalText(args.model) &&
+    (args.thinking === undefined || DESKTOP_EFFORTS.has(args.thinking));
+  switch (operation) {
+    case "list_projects":
+      valid = exactObject(args, []);
+      break;
+    case "create_thread":
+      valid = exactObject(args, ["prompt", "target", "model", "thinking", "title"]) &&
+        nonempty(args.prompt) && optionalText(args.title) && modelSettings() &&
+        exactObject(args.target, ["type", "projectId", "environment"]) &&
+        args.target.type === "project" && nonempty(args.target.projectId) &&
+        exactObject(args.target.environment, ["type"]) && args.target.environment.type === "local";
+      break;
+    case "send_message_to_thread":
+      valid = exactObject(args, ["threadId", "prompt", "model", "thinking"]) &&
+        nonempty(args.threadId) && nonempty(args.prompt) && modelSettings();
+      break;
+    case "read_thread":
+      valid = exactObject(args, ["threadId", "hostId", "cursor", "turnLimit", "includeOutputs", "maxOutputCharsPerItem"]) &&
+        nonempty(args.threadId) && (args.hostId === undefined || args.hostId === "local") &&
+        optionalText(args.cursor) && optionalInteger(args.turnLimit, 1, 10) &&
+        (args.includeOutputs === undefined || typeof args.includeOutputs === "boolean") &&
+        optionalInteger(args.maxOutputCharsPerItem, 1, 16000);
+      break;
+    case "wait_threads":
+      valid = exactObject(args, ["targets", "timeoutMs"]) && args.timeoutMs === 0 &&
+        Array.isArray(args.targets) && args.targets.length >= 1 && args.targets.length <= 8 &&
+        args.targets.every((target) => exactObject(target, ["threadId", "hostId", "afterCursor"]) &&
+          nonempty(target.threadId) && (target.hostId === undefined || target.hostId === "local") &&
+          optionalText(target.afterCursor));
+      break;
+    case "navigate_to_codex_page":
+      valid = exactObject(args, ["threadId"]) && nonempty(args.threadId);
+      break;
+    case "set_thread_title":
+      valid = exactObject(args, ["threadId", "title"]) && nonempty(args.threadId) && nonempty(args.title);
+      break;
+  }
+  if (!valid) throw new NativeRelayError(`Unsupported or invalid Desktop operation: ${operation}`, "RELAY_BAD_REQUEST");
+  return args;
+}
+
+export function nativeDesktopOperationParams({ executorThreadId, operation, arguments: args }) {
+  validateDesktopOperation(operation, args);
+  return {
+    arguments: args,
+    callId: `codex-native-relay-${randomUUID()}`,
+    namespace: "codex_app",
+    threadId: executorThreadId,
+    tool: operation,
+    turnId: `codex-native-relay-turn-${randomUUID()}`,
+  };
+}
+
+export function decodeNativeToolResult(result) {
+  if (result?.success !== true || result?.isError === true) {
+    const detail = (result?.contentItems ?? result?.content ?? []).filter((item) => typeof item?.text === "string").map((item) => item.text).join("\n").slice(0, 2000);
+    throw new NativeRelayError(detail || "Codex Desktop did not confirm the requested operation", "NATIVE_DISPATCH_FAILED");
+  }
+  let decoded = result.structuredContent;
+  if (decoded === undefined) {
+    const items = result.contentItems ?? result.content;
+    if (Array.isArray(items)) {
+      const text = items.filter((item) => item?.type === "inputText" || item?.type === "text")
+        .map((item) => item.text).filter((value) => typeof value === "string").join("\n");
+      if (text) {
+        try {
+          decoded = JSON.parse(text);
+        } catch {
+          decoded = { text };
+        }
+      }
+    }
+  }
+  decoded ??= result;
+  if (decoded?.isError === true || decoded?.success === false) {
+    throw new NativeRelayError("Codex Desktop rejected the requested operation", "NATIVE_DISPATCH_FAILED");
+  }
+  return decoded;
 }
 
 const execFileAsync = promisify(execFile);
@@ -389,12 +501,20 @@ export class NativeToolsClient {
   }
 
   async dispatch(args) {
+    return this.#request(nativeDispatchParams(args));
+  }
+
+  async dispatchDesktop(args) {
+    return this.#request(nativeDesktopOperationParams(args));
+  }
+
+  async #request(params) {
     const id = this.nextId++;
     const payload = Buffer.from(JSON.stringify({
       jsonrpc: "2.0",
       id,
       method: this.env.CODEX_NATIVE_RELAY_METHOD ?? NATIVE_DISPATCH_METHOD,
-      params: nativeDispatchParams(args),
+      params,
     }));
     if (payload.length > MAX_FRAME_BYTES) {
       throw new NativeRelayError("Native dispatch exceeds the frame limit", "RELAY_MESSAGE_TOO_LARGE");
@@ -503,6 +623,15 @@ export class NativeDesktopRelay {
 
   async sendMessage(targetThreadId, message, { timeoutMs = this.timeoutMs } = {}) {
     const request = { v: RELAY_PROTOCOL_VERSION, targetThreadId, message };
+    return this.#request(request, timeoutMs);
+  }
+
+  async requestDesktop(operation, args, { timeoutMs = this.timeoutMs } = {}) {
+    validateDesktopOperation(operation, args);
+    return this.#request({ v: RELAY_PROTOCOL_VERSION, operation, arguments: args }, timeoutMs);
+  }
+
+  async #request(request, timeoutMs) {
     const line = `${JSON.stringify(request)}\n`;
     if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES) {
       throw new NativeRelayError(
@@ -512,7 +641,10 @@ export class NativeDesktopRelay {
     }
 
     const response = await this.#roundTrip(line, timeoutMs);
-    if (response?.ok === true && response.v === RELAY_PROTOCOL_VERSION) return response;
+    if (response?.ok === true && response.v === RELAY_PROTOCOL_VERSION) {
+      if (request.operation && response.operation !== request.operation) throw new NativeRelayError("The relay answered a different Desktop operation; do not retry this request", "RELAY_BAD_RESPONSE", { reachedCompanion: true });
+      return response;
+    }
     throw new NativeRelayError(
       response?.error?.message ?? "the Codex Desktop relay refused the message",
       response?.error?.code ?? "NATIVE_DISPATCH_FAILED",
@@ -613,7 +745,7 @@ export async function bootstrapRelayThread(client, { cwd = homeDir(), env = proc
     try {
       await client.call("thread/name/set", { threadId, name });
     } catch {}
-    writeRelayConfig({ relayThreadId: threadId, createdAt: new Date().toISOString() }, env);
+    writeRelayConfig({ ...readRelayConfig(env), relayThreadId: threadId, createdAt: new Date().toISOString() }, env);
   } finally {
     release = await client.releaseThread(threadId);
   }

@@ -48,7 +48,8 @@ describe("bridge workspace and listing integration", () => {
     }, async ({ client, home }) => {
       const result = await client.callTool({ name: "start_codex_thread", arguments: { cwd: "." } });
       assert.equal(result.isError, undefined);
-      assert.equal(requestedCwd, home);
+      assert.equal(path.isAbsolute(requestedCwd), true);
+      assert.equal(fs.realpathSync(requestedCwd), fs.realpathSync(home));
     });
   });
 

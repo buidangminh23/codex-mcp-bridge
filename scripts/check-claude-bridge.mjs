@@ -7,6 +7,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [path.join(root, "src", "claude-bridge.mjs")],
+  env: { ...process.env },
   stderr: "inherit",
 });
 const client = new Client({ name: "claude-bridge-check", version: "1.0.0" });

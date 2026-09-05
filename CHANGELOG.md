@@ -2,6 +2,17 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.12.5] - 2026-09-05
+
+### Fixed
+
+- Preserve the configured environment when the Claude diagnostic starts its MCP child, including sender permission mode and native-relay settings. The MCP SDK's default environment whitelist otherwise drops these settings and can make the diagnostic exercise a different receiver policy than the installed bridge.
+
+### Verification
+
+- The live Codex MCP bridge returned a real Claude Desktop answer through the UUID-correlated transcript path with the expected workspace. The native Codex relay also delivered its marker into the existing Desktop task. No receiver permission settings or Desktop tool restrictions were changed.
+- The live `check:claude` command reported bridge 1.12.5, received the correlated Desktop response, and exited with code 0.
+
 ## [1.12.4] - 2026-09-05
 
 ### Fixed

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import net from "node:net";
@@ -45,7 +46,7 @@ const NATIVE_RELAY_TOOLS = ["native_relay_status"];
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-tools-"));
 
 describe("Claude message receipts", () => {
-  for (const scenario of ["nowait", "timeout", "peer", "desktop", "held", "refused"]) {
+  for (const scenario of ["nowait", "timeout", "peer", "desktop", "held", "refused", "diagnostic"]) {
     it(`reports ${scenario} from the actual MCP transport`, async () => {
       const home = fs.mkdtempSync(path.join(sandboxHome, "receipt-"));
       const registryDir = path.join(home, ".claude", "sessions");
@@ -70,6 +71,7 @@ describe("Claude message receipts", () => {
               const raw = JSON.parse(line);
               if (raw.type === "auth") { assert.equal(raw.token, token); authenticated = true; continue; }
               assert.equal(authenticated, true);
+              if (scenario === "diagnostic") assert.match(raw.message.content, /from-mode="prompting"/);
               count += 1;
               const request = parseFrame(line);
               if (scenario === "desktop") {
@@ -79,10 +81,10 @@ describe("Claude message receipts", () => {
                   { uuid: raw.uuid, isMeta: true, message: raw.message },
                   { uuid: "desktop-answer", parentUuid: raw.uuid, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "desktop verified" }] } },
                 ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-              } else if (["peer", "held", "refused"].includes(scenario)) {
+              } else if (["peer", "held", "refused", "diagnostic"].includes(scenario)) {
                 const owner = fs.readdirSync(registryDir).filter((file) => file.endsWith(".json")).map((file) => JSON.parse(fs.readFileSync(path.join(registryDir, file), "utf8"))).find((entry) => entry.messagingSocketPath === request.fromSocket);
                 const key = JSON.parse(fs.readFileSync(path.join(registryDir, path.basename(peerKeyPath(owner.pid, request.fromSocket))), "utf8"));
-                const frame = scenario === "peer" ? buildFrame({ text: "peer verified", fromSocket: socketPath }) : { type: "control", action: "peer_message_status", orig_msg_id: request.msgId, from: buildFrame({ text: "", fromSocket: socketPath }).from, status: scenario, reason: "Receiver policy" };
+                const frame = ["peer", "diagnostic"].includes(scenario) ? buildFrame({ text: "peer verified", fromSocket: socketPath }) : { type: "control", action: "peer_message_status", orig_msg_id: request.msgId, from: buildFrame({ text: "", fromSocket: socketPath }).from, status: scenario, reason: "Receiver policy" };
                 const reply = net.connect(request.fromSocket, () => reply.end(JSON.stringify({ type: "auth", token: key.peerToken }) + "\n" + JSON.stringify(frame) + "\n"));
                 reply.on("error", (error) => { handlerError = error; });
               }
@@ -91,6 +93,19 @@ describe("Claude message receipts", () => {
         });
       });
       await new Promise((resolve, reject) => { receiver.once("error", reject); receiver.listen(socketPath, resolve); });
+      if (scenario === "diagnostic") {
+        try {
+          const stdout = await new Promise((resolve, reject) => execFile(process.execPath, [path.join(root, "scripts", "check-claude-bridge.mjs")], {
+            env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_TARGET: "receipt-session", CLAUDE_WAIT: "2", CLAUDE_BRIDGE_PERMISSION_MODE: "prompting", CODEX_BRIDGE_AUTOSTART: "0", CODEX_THREAD_ID: "", CODEX_BRIDGE_NATIVE_RELAY: "0", CODEX_APP_SERVER_URL: "ws://127.0.0.1:9" },
+            timeout: 20000,
+            windowsHide: true,
+          }, (error, stdout) => error ? reject(error) : resolve(stdout)));
+          if (handlerError) throw handlerError;
+          assert.match(stdout, /roundtrip passed: reply received/);
+          assert.equal(count, 1);
+        } finally { await new Promise((resolve) => receiver.close(resolve)); }
+        return;
+      }
       const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, CODEX_BRIDGE_AUTOSTART: "0" }, stderr: "ignore" });
       const client = new Client({ name: "receipt-test", version: "1" });
       try {

@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 
 import { IS_WINDOWS, PLATFORM_LABEL, claudeDesktopConfigPath, resolveCodexBin } from "../src/platform.mjs";
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
+import { exitForVersionRequest } from "../src/cli-version.mjs";
+
+exitForVersionRequest(import.meta.url);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();

@@ -14,6 +14,7 @@ function fixture(t, { dispatch, now = Date.now, sleep } = {}) {
   fs.mkdirSync(cwd);
   const calls = [];
   const registered = [];
+  const observedIds = new Set();
   let creates = 0;
   let status = "active";
   let turnStatus = "inProgress";
@@ -28,7 +29,11 @@ function fixture(t, { dispatch, now = Date.now, sleep } = {}) {
     if (override !== undefined) return { result: override };
     if (operation === "list_projects") return { result: { projects: [{ projectId: "project", projectKind: "local", hostId: "local", path: cwd, label: "Existing project" }] } };
     if (operation === "create_thread") return { result: { threadId: `task-${++creates}`, hostId: "local", firstTurn: { status: "accepted" } } };
-    if (operation === "read_thread") return { result: { thread: { id: args.threadId, hostId: "local", cwd, status, title: "Stable task" }, turns: [{ id: "turn", status: turnStatus }] } };
+    if (operation === "read_thread") {
+      observedIds.add(args.threadId);
+      return { result: { thread: { id: args.threadId, hostId: "local", cwd, status, title: "Stable task" }, turns: [{ id: "turn", status: turnStatus }] } };
+    }
+    if (operation === "list_threads") return { result: { pinnedThreads: [], threads: [...observedIds].map((id) => ({ id, kind: "codex", hostId: "local", cwd, projectId: "project" })) } };
     if (operation === "navigate_to_codex_page") return { result: { navigated: true } };
     throw new Error(`Unexpected operation ${operation}`);
   } };
@@ -48,7 +53,7 @@ describe("Desktop creation receipts and deadlines", () => {
     assert.equal(retried.threadId, first.threadId);
     assert.equal(retried.reused, true);
     assert.equal(retried.promptChanged, true);
-    assert.deepEqual(f.calls.map((call) => call.operation), ["list_projects", "create_thread", "read_thread"]);
+    assert.deepEqual(f.calls.map((call) => call.operation), ["list_projects", "create_thread", "read_thread", "list_projects", "list_threads"]);
     assert.deepEqual(f.registered, [first.threadId]);
   });
 
@@ -81,7 +86,7 @@ describe("Desktop creation receipts and deadlines", () => {
     restarted.security = new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: f.cwd, CODEX_BRIDGE_THREAD_POLICY: "owned", CODEX_BRIDGE_ALLOWED_THREADS: created.threadId });
     assert.equal((await restarted.create(args)).threadId, created.threadId);
     assert.equal(restarted.security.ownedThreadIds.size, 0);
-    assert.deepEqual(f.calls.map((call) => call.operation), ["list_projects", "create_thread", "read_thread"]);
+    assert.deepEqual(f.calls.map((call) => call.operation), ["list_projects", "create_thread", "read_thread", "list_projects", "list_threads"]);
   });
 
   it("keeps confirmed creation receipts when the first turn failed, needs attention, or has an unknown outcome", async (t) => {
@@ -97,7 +102,7 @@ describe("Desktop creation receipts and deadlines", () => {
       const reused = await f.createDelivery().create({ ...args, prompt: "Edited brief" });
       assert.equal(reused.threadId, receipt.threadId);
       assert.equal(reused.reused, true);
-      assert.deepEqual(f.calls.map((call) => call.operation), ["list_projects", "create_thread", "read_thread"]);
+      assert.deepEqual(f.calls.map((call) => call.operation), ["list_projects", "create_thread", "read_thread", "list_projects", "list_threads"]);
     }
   });
 
@@ -162,6 +167,147 @@ describe("Desktop creation receipts and deadlines", () => {
     await f.delivery.create(args);
     await assert.rejects(f.delivery.create({ ...args, prompt: "Changed brief" }), /did not confirm the requested local workspace/);
     assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+  });
+
+  it("rejects a reused task moved to another project at the same cwd", async (t) => {
+    for (const projectId of ["different-project", null]) {
+      const f = fixture(t, { dispatch({ operation, cwd }) {
+        if (operation === "list_threads") return { pinnedThreads: [{ id: "task-1", kind: "codex", hostId: "local", cwd, projectId }], threads: [] };
+      } });
+      const args = { cwd: f.cwd, name: "Task", prompt: "Brief" };
+      const first = await f.delivery.create(args);
+      await assert.rejects(f.createDelivery().create(args), (error) => {
+        assert.match(error.message, /project assignment changed/);
+        assert.ok(error.message.includes(first.threadId));
+        return true;
+      });
+      assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+      assert.equal((await f.receipts.read(f.receipts.key(args).key)).threadId, first.threadId);
+    }
+  });
+
+  it("rejects a receipt when its saved project was deleted, repointed, replaced, or duplicated", async (t) => {
+    for (const change of ["deleted", "repointed", "replaced", "duplicated"]) {
+      let changed = false;
+      const f = fixture(t, { dispatch({ operation, cwd }) {
+        if (operation !== "list_projects" || !changed) return;
+        const project = { projectId: "project", projectKind: "local", hostId: "local", path: cwd, label: "Existing project" };
+        if (change === "deleted") return { projects: [] };
+        if (change === "repointed") return { projects: [{ ...project, path: path.dirname(cwd) }] };
+        if (change === "replaced") return { projects: [{ ...project, projectId: "replacement" }] };
+        return { projects: [project, { ...project, projectId: "duplicate" }] };
+      } });
+      const args = { cwd: f.cwd, name: "Task", prompt: "Brief" };
+      const first = await f.delivery.create(args);
+      changed = true;
+      await assert.rejects(f.createDelivery().create(args), (error) => {
+        assert.match(error.message, /saved project could not be verified/);
+        assert.ok(error.message.includes(first.threadId));
+        return true;
+      });
+      assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+      assert.equal(f.calls.some((call) => call.operation === "list_threads"), false);
+    }
+  });
+
+  it("keeps an omitted task ID with explicitly unverified membership and no current project claim", async (t) => {
+    const f = fixture(t, { dispatch({ operation }) {
+      if (operation === "list_threads") return { pinnedThreads: [], threads: [] };
+    } });
+    const args = { cwd: f.cwd, name: "Task", prompt: "Brief" };
+    const first = await f.delivery.create(args);
+    const reused = await f.createDelivery().create({ ...args, prompt: "Changed brief" });
+    assert.equal(reused.threadId, first.threadId);
+    assert.equal(reused.projectAssignmentStatus, "unverified");
+    assert.match(reused.projectAssignmentNote, /absent from.*recent\/pinned/);
+    assert.equal(reused.expectedProjectId, "project");
+    assert.equal(Object.hasOwn(reused, "projectId"), false);
+    assert.equal(Object.hasOwn(reused, "projectName"), false);
+    assert.equal(reused.promptChanged, true);
+    assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+    assert.equal(f.calls.some((call) => call.operation === "send_message_to_thread"), false);
+  });
+
+  it("verifies current membership from a pinned task and the current saved project label", async (t) => {
+    let renamed = false;
+    const f = fixture(t, { dispatch({ operation, cwd }) {
+      if (operation === "list_projects") return { projects: [{ projectId: "project", projectKind: "local", hostId: "local", path: cwd, label: renamed ? "Current project name" : "Previous project name" }] };
+      if (operation === "list_threads") return { pinnedThreads: [{ id: "task-1", kind: "codex", hostId: "local", cwd, projectId: "project" }], threads: [] };
+    } });
+    const args = { cwd: f.cwd, name: "Task", prompt: "Brief" };
+    await f.delivery.create(args);
+    renamed = true;
+    const reused = await f.createDelivery().create(args);
+    assert.equal(reused.projectAssignmentStatus, "verified");
+    assert.equal(reused.projectId, "project");
+    assert.equal(reused.projectName, "Current project name");
+  });
+
+  it("preserves the known task without claiming membership when the native listing is unavailable", async (t) => {
+    for (const issue of ["transport", "invalid", "host"]) {
+      const f = fixture(t, { dispatch({ operation }) {
+        if (operation !== "list_threads") return;
+        if (issue === "transport") throw new Error("Native listing timed out");
+        if (issue === "invalid") return { threads: [] };
+        return { pinnedThreads: [], threads: [], unavailableHosts: [{ hostId: "local" }] };
+      } });
+      const args = { cwd: f.cwd, name: "Task", prompt: "Brief" };
+      const first = await f.delivery.create(args);
+      const reused = await f.createDelivery().create(args);
+      assert.equal(reused.threadId, first.threadId);
+      assert.equal(reused.projectAssignmentStatus, "unverified");
+      assert.equal(Object.hasOwn(reused, "projectId"), false);
+      assert.match(reused.projectAssignmentNote, /could not be confirmed/);
+      assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+    }
+  });
+
+  it("shares the remaining deadline across receipt verification without additional creation", async (t) => {
+    let time = 0;
+    let retry = false;
+    const f = fixture(t, { now: () => time, dispatch({ operation }) {
+      if (!retry) return;
+      if (operation === "read_thread") time += 7;
+      if (operation === "list_projects") time += 5;
+      if (operation === "list_threads") time += 3;
+    } });
+    const args = { cwd: f.cwd, name: "Task", prompt: "Brief" };
+    await f.delivery.create(args);
+    retry = true;
+    const reused = await f.delivery.create({ ...args, deadline: 15 });
+    assert.equal(reused.projectAssignmentStatus, "verified");
+    assert.deepEqual(f.calls.slice(2).map((call) => [call.operation, call.options.timeoutMs]), [["read_thread", 15], ["list_projects", 8], ["list_threads", 3]]);
+    assert.equal(time, 15);
+    assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+  });
+
+  it("does not dispatch membership lookup after its deadline and retains the known ID", async (t) => {
+    let time = 0;
+    let retry = false;
+    const f = fixture(t, { now: () => time, dispatch({ operation }) {
+      if (retry && operation === "list_projects") time = 15;
+    } });
+    const args = { cwd: f.cwd, name: "Task", prompt: "Brief" };
+    const first = await f.delivery.create(args);
+    retry = true;
+    const reused = await f.delivery.create({ ...args, deadline: 15 });
+    assert.equal(reused.threadId, first.threadId);
+    assert.equal(reused.projectAssignmentStatus, "unverified");
+    assert.match(reused.projectAssignmentNote, /deadline has elapsed/);
+    assert.deepEqual(f.calls.slice(2).map((call) => call.operation), ["read_thread", "list_projects"]);
+    assert.equal((await f.receipts.read(f.receipts.key(args).key)).state, "known");
+  });
+
+  it("does not claim verified membership when the task row omits assignment metadata", async (t) => {
+    const f = fixture(t, { dispatch({ operation, cwd }) {
+      if (operation === "list_threads") return { pinnedThreads: [], threads: [{ id: "task-1", kind: "codex", hostId: "local", cwd }] };
+    } });
+    const args = { cwd: f.cwd, name: "Task", prompt: "Brief" };
+    await f.delivery.create(args);
+    const reused = await f.delivery.create(args);
+    assert.equal(reused.projectAssignmentStatus, "unverified");
+    assert.equal(Object.hasOwn(reused, "projectId"), false);
+    assert.match(reused.projectAssignmentNote, /omitted.*metadata/);
   });
 
   it("spends one shared deadline across lookup, creation, opening, and observation", async (t) => {

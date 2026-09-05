@@ -129,7 +129,45 @@ export class DesktopTaskDelivery {
     if (thread?.id !== receipt.threadId || thread.hostId !== "local" || !thread.cwd || path.relative(cwd, realpathSync.native(thread.cwd))) throw new Error(`Existing Desktop task ${receipt.threadId} did not confirm the requested local workspace. No prompt was sent.`);
     this.security.assertCwd(thread.cwd);
     this.security.assertThread(thread.id, thread.cwd);
-    return { threadId: receipt.threadId, name: thread.title ?? receipt.name ?? "(unnamed)", cwd, projectId: receipt.projectId, projectName: receipt.projectName, backend: NATIVE_BACKEND, reused: true, promptChanged: receipt.promptHash !== promptHash };
+    const assignment = await this.receiptProjectAssignment(receipt, cwd, { deadline });
+    return { threadId: receipt.threadId, name: thread.title ?? receipt.name ?? "(unnamed)", cwd, ...assignment, backend: NATIVE_BACKEND, reused: true, promptChanged: receipt.promptHash !== promptHash };
+  }
+
+  async receiptProjectAssignment(receipt, cwd, { deadline }) {
+    let project;
+    try {
+      const listed = await this.request("list_projects", {}, { deadline });
+      if (!Array.isArray(listed?.projects)) throw new Error("Desktop returned no project list");
+      project = matchDesktopProject(listed.projects, cwd);
+      if (receipt.projectId && receipt.projectId !== project.projectId) throw new Error("The saved project identity changed for this directory");
+    } catch (err) {
+      throw new Error(`Existing Desktop task ${receipt.threadId}'s saved project could not be verified: ${err.message}. No prompt was resent and no duplicate task was created. Inspect this existing task and its project settings.`, { cause: err });
+    }
+    const unverified = (reason) => ({
+      expectedProjectId: project.projectId,
+      expectedProjectName: project.label,
+      projectAssignmentStatus: "unverified",
+      projectAssignmentNote: `${reason} The task's current project assignment is unverified. Its workspace and existing ID were retained; no prompt was resent and no duplicate task was created. Inspect this task in Codex Desktop.`,
+    });
+    let snapshot;
+    try {
+      snapshot = await this.request("list_threads", { limit: 50 }, { deadline });
+      if (!Array.isArray(snapshot?.threads) || !Array.isArray(snapshot?.pinnedThreads)) throw new Error("Desktop returned an invalid thread list");
+      if (snapshot.unavailableHosts?.some((host) => host === "local" || host?.hostId === "local")) throw new Error("The local Desktop host is unavailable");
+    } catch (err) {
+      return unverified(`Desktop's recent/pinned listing could not be confirmed: ${err.message}.`);
+    }
+    const observed = [...snapshot.pinnedThreads, ...snapshot.threads].filter((thread) => thread?.id === receipt.threadId && thread.kind === "codex" && thread.hostId === "local");
+    if (observed.length === 0) return unverified("This task is absent from Desktop's recent/pinned listing.");
+    for (const thread of observed) {
+      if (thread.projectId !== undefined && thread.projectId !== project.projectId) throw new Error(`Existing Desktop task ${receipt.threadId}'s project assignment changed. No prompt was resent and no duplicate task was created. Inspect its assignment in Codex Desktop.`);
+      if (thread.cwd) {
+        this.security.assertCwd(thread.cwd);
+        if (path.relative(cwd, realpathSync.native(thread.cwd))) throw new Error(`Existing Desktop task ${receipt.threadId}'s listed workspace changed. No prompt was resent and no duplicate task was created.`);
+      }
+    }
+    if (observed.some((thread) => thread.projectId === undefined || !thread.cwd)) return unverified("Desktop's listing omitted this task's project or workspace metadata.");
+    return { projectId: project.projectId, projectName: project.label, projectAssignmentStatus: "verified" };
   }
 
   async create({ cwd, prompt, name, dedupeName = name, model, effort, deadline = this.now() + DESKTOP_TOOL_BUDGET_MS }) {

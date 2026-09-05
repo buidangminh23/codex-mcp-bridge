@@ -19,10 +19,12 @@ import {
   bootstrapRelayThread,
   nativeDispatchParams,
   nativeRelayStatus,
+  nativeToolsPipeFromCommandLine,
   readRelayConfig,
   relayConfigPath,
   relaySocketPath,
   resolveRelayThreadId,
+  resolveNativeToolsPipePath,
   writeRelayConfig,
 } from "../src/native-relay.mjs";
 import { RelaySocketServer, handleRelayRequest, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
@@ -74,6 +76,10 @@ function tempSocket() {
 
 function tempNamedPipe() {
   return "\\\\.\\pipe\\LOCAL\\codex-native-relay-test-" + process.pid + "-" + Math.random().toString(16).slice(2);
+}
+
+function windowsCommandLine(args) {
+  return args.map((arg) => `"${arg.replace(/(\\*)"/g, (_match, slashes) => `${slashes.repeat(2)}\\"`).replace(/(\\+)$/, "$1$1")}"`).join(" ");
 }
 
 after(() => {
@@ -399,6 +405,28 @@ describe("relay socket round trip", () => {
       assert.equal((await relay.sendMessage("open-thread", "still here")).ok, true);
     } finally {
       live.stop();
+    }
+  });
+
+  it("reports a shared companion listening until its socket owner stops", async () => {
+    const socketPath = tempSocket();
+    const options = { socketPath, dispatch: async () => assert.fail("a status probe must not dispatch a user message"), resolveExecutor: stubExecutor };
+    const owner = new RelaySocketServer(options);
+    const observer = new RelaySocketServer(options);
+    await owner.start();
+    try {
+      assert.equal(await owner.isListening(), true);
+      assert.equal(observer.started, false);
+      assert.equal(await observer.isListening(), true);
+      assert.equal(observer.started, false);
+      const stopped = new Promise((resolve) => owner.server.once("close", resolve));
+      owner.stop();
+      await stopped;
+      assert.equal(await observer.isListening(), false);
+      assert.equal(observer.started, false);
+    } finally {
+      owner.stop();
+      observer.stop();
     }
   });
 
@@ -759,7 +787,9 @@ function nativeFrame(response) {
 
 async function nativePipe(onRequest, socketPath = tempSocket()) {
   const sockets = new Set();
+  let connectionCount = 0;
   const server = net.createServer((socket) => {
+    connectionCount += 1;
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
     socket.on("error", () => {});
@@ -782,6 +812,7 @@ async function nativePipe(onRequest, socketPath = tempSocket()) {
   });
   return {
     socketPath,
+    get connectionCount() { return connectionCount; },
     close: () => {
       for (const socket of sockets) socket.destroy();
       return new Promise((resolve) => server.close(resolve));
@@ -789,7 +820,239 @@ async function nativePipe(onRequest, socketPath = tempSocket()) {
   };
 }
 
+describe("native tools pipe discovery", () => {
+  const windowsExecutable = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.904.1121.0_x64__2p2nqsd0c76g0\app\resources\codex.exe`;
+  const windowsPipe = String.raw`\\.\pipe\codex-app-tools-9d269c5c`;
+  const config = (socketPath) => `mcp_servers.codex_app={command="codex-app-tools",env={CODEX_APP_TOOLS_PIPE_PATH='${socketPath}'}}`;
+  const windowsParent = (...args) => windowsCommandLine([windowsExecutable, "app-server", "--analytics-default-enabled", ...args]);
+
+  it("reads the Windows parent config after command-line and TOML decoding", () => {
+    const basicStringConfig = `mcp_servers.codex_app={"command"="codex-app-tools","env"={"CODEX_APP_TOOLS_PIPE_PATH"=${JSON.stringify(windowsPipe)}}}`;
+    assert.equal(nativeToolsPipeFromCommandLine(windowsParent("-c", basicStringConfig), { platform: "win32" }), windowsPipe);
+  });
+
+  it("supports literal TOML strings and both long config option forms on Windows", () => {
+    for (const args of [["-c", config(windowsPipe)], ["--config", config(windowsPipe)], [`--config=${config(windowsPipe)}`]]) {
+      assert.equal(nativeToolsPipeFromCommandLine(windowsParent(...args), { platform: "win32" }), windowsPipe);
+    }
+  });
+
+  it("finds the Codex app config among unrelated parent settings", () => {
+    const commandLine = windowsParent("-c", 'model="example-model"', "-c", config(windowsPipe), "-c", "features.enable_request_compression=true");
+    assert.equal(nativeToolsPipeFromCommandLine(commandLine, { platform: "win32" }), windowsPipe);
+  });
+
+  it("reads the raw argv text returned by ps on macOS and Linux", () => {
+    const socketPath = "/tmp/codex app/native-tools.sock";
+    const assignment = `mcp_servers.codex_app={command = "codex-app-tools", args = ["serve", "--native"], env = {CODEX_APP_TOOLS_PIPE_PATH = '${socketPath}'}}`;
+    for (const platform of ["darwin", "linux"]) {
+      const commandLine = `/Applications/Codex.app/Contents/Resources/codex app-server --analytics-default-enabled -c ${assignment}`;
+      assert.equal(nativeToolsPipeFromCommandLine(commandLine, { platform }), socketPath);
+    }
+  });
+
+  it("rejects a pipe embedded in another process or a non-app-server invocation", () => {
+    const commands = [
+      ["other.exe", "app-server", "-c", config(windowsPipe)],
+      [`${windowsExecutable}.backup`, "app-server", "-c", config(windowsPipe)],
+      ["powershell.exe", "-Command", windowsParent("-c", config(windowsPipe))],
+      [windowsExecutable, "exec", "app-server", "-c", config(windowsPipe)],
+      [windowsExecutable, "exec", "--prompt", windowsParent("-c", config(windowsPipe))],
+    ];
+    for (const args of commands) {
+      assert.equal(nativeToolsPipeFromCommandLine(windowsCommandLine(args), { platform: "win32" }), null);
+    }
+    assert.equal(nativeToolsPipeFromCommandLine(`/usr/bin/node app-server -c ${config("/tmp/native.sock")}`, { platform: "linux" }), null);
+  });
+
+  it("ignores native pipe text outside the codex_app environment table", () => {
+    const unrelatedAssignments = [
+      config(windowsPipe).replace("mcp_servers.codex_app", "mcp_servers.other"),
+      `instructions=${JSON.stringify(config(windowsPipe))}`,
+      `mcp_servers.codex_app={env={},CODEX_APP_TOOLS_PIPE_PATH='${windowsPipe}'}`,
+      `mcp_servers.codex_app={env={nested={CODEX_APP_TOOLS_PIPE_PATH='${windowsPipe}'}}}`,
+      `mcp_servers.codex_app={env={OTHER=${JSON.stringify(`CODEX_APP_TOOLS_PIPE_PATH='${windowsPipe}'`)}}}`,
+    ];
+    for (const assignment of unrelatedAssignments) {
+      assert.equal(nativeToolsPipeFromCommandLine(windowsParent("-c", assignment), { platform: "win32" }), null);
+    }
+    assert.equal(nativeToolsPipeFromCommandLine(windowsParent("--prompt", config(windowsPipe)), { platform: "win32" }), null);
+  });
+
+  it("rejects malformed and conflicting native pipe configurations", () => {
+    const assignments = [
+      config(windowsPipe).slice(0, -1),
+      `${config(windowsPipe)}garbage`,
+      `mcp_servers.codex_app={env={CODEX_APP_TOOLS_PIPE_PATH=${windowsPipe}}}`,
+      `mcp_servers.codex_app={env={CODEX_APP_TOOLS_PIPE_PATH='${windowsPipe}"}}`,
+      `mcp_servers.codex_app={env={CODEX_APP_TOOLS_PIPE_PATH='${windowsPipe}',CODEX_APP_TOOLS_PIPE_PATH='${windowsPipe}-other'}}`,
+      `mcp_servers.codex_app={env={CODEX_APP_TOOLS_PIPE_PATH='${windowsPipe}'},env={CODEX_APP_TOOLS_PIPE_PATH='${windowsPipe}-other'}}`,
+    ];
+    for (const assignment of assignments) {
+      assert.equal(nativeToolsPipeFromCommandLine(windowsParent("-c", assignment), { platform: "win32" }), null);
+    }
+    assert.equal(nativeToolsPipeFromCommandLine(windowsParent("-c", config(windowsPipe), "-c", config(`${windowsPipe}-other`)), { platform: "win32" }), null);
+  });
+
+  it("rejects remote Windows pipes and endpoints outside the local pipe namespace", () => {
+    for (const socketPath of [String.raw`\\remote-host\pipe\native-tools`, String.raw`C:\Temp\native-tools.sock`, "native-tools", String.raw`\\.\pipe` + "\\"]) {
+      assert.equal(nativeToolsPipeFromCommandLine(windowsParent("-c", config(socketPath)), { platform: "win32" }), null);
+    }
+  });
+
+  it("rejects relative Unix socket paths", () => {
+    for (const socketPath of ["native-tools.sock", "./native-tools.sock", "../native-tools.sock", "~/native-tools.sock", ""]) {
+      assert.equal(nativeToolsPipeFromCommandLine(`/usr/local/bin/codex app-server -c ${config(socketPath)}`, { platform: "linux" }), null);
+    }
+  });
+
+  it("prefers the inherited pipe without probing any process", async () => {
+    const resolved = await resolveNativeToolsPipePath({
+      env: { CODEX_APP_TOOLS_PIPE_PATH: windowsPipe },
+      platform: "win32",
+      parentPid: 1234,
+      readParentCommandLine: async () => assert.fail("the inherited native pipe must not trigger discovery"),
+    });
+    assert.equal(resolved, windowsPipe);
+  });
+
+  it("reads only the requested direct parent when the environment lacks the pipe", async () => {
+    const probed = [];
+    const resolved = await resolveNativeToolsPipePath({
+      env: {},
+      platform: "win32",
+      parentPid: 1234,
+      readParentCommandLine: async (pid) => {
+        probed.push(pid);
+        return windowsParent("-c", config(windowsPipe));
+      },
+    });
+    assert.equal(resolved, windowsPipe);
+    assert.deepEqual(probed, [1234]);
+  });
+
+  it("leaves discovery unavailable when its parent is not Codex or cannot be read", async () => {
+    for (const readParentCommandLine of [
+      async () => windowsCommandLine(["node.exe", "app-server", "-c", config(windowsPipe)]),
+      async () => null,
+      async () => { throw new Error("parent exited"); },
+    ]) {
+      assert.equal(await resolveNativeToolsPipePath({ env: {}, platform: "win32", parentPid: 1234, readParentCommandLine }), null);
+    }
+  });
+});
+
 describe("native tools pipe protocol", () => {
+  it("discovers a native socket and completes a dispatch without an inherited pipe", async () => {
+    const requests = [];
+    let discoveries = 0;
+    const native = await nativePipe((request, socket) => {
+      requests.push(request);
+      socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true } }));
+    });
+    const client = new NativeToolsClient({
+      env: {},
+      resolveSocketPath: async () => {
+        discoveries += 1;
+        return native.socketPath;
+      },
+    });
+    try {
+      assert.deepEqual(await client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "hello" }), { success: true });
+      await client.connect();
+      assert.equal(discoveries, 1);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].params.arguments.threadId, "target");
+      assert.equal(client.pending.size, 0);
+    } finally {
+      client.close();
+      await native.close();
+    }
+  });
+
+  it("uses an explicit or inherited socket without invoking discovery", async () => {
+    const native = await nativePipe(() => assert.fail("connecting must not dispatch a user message"));
+    try {
+      for (const options of [
+        { socketPath: native.socketPath, env: { CODEX_APP_TOOLS_PIPE_PATH: tempSocket() } },
+        { env: { CODEX_APP_TOOLS_PIPE_PATH: native.socketPath } },
+      ]) {
+        const client = new NativeToolsClient({ ...options, resolveSocketPath: async () => assert.fail("configured native sockets must take precedence") });
+        try {
+          await client.connect();
+          assert.equal(client.socketPath, native.socketPath);
+        } finally {
+          client.close();
+        }
+      }
+    } finally {
+      await native.close();
+    }
+  });
+
+  it("can discover the socket after an earlier discovery returned unavailable", async () => {
+    const native = await nativePipe(() => assert.fail("connecting must not dispatch a user message"));
+    let discoveries = 0;
+    const client = new NativeToolsClient({ env: {}, resolveSocketPath: async () => (++discoveries === 1 ? null : native.socketPath) });
+    try {
+      await assert.rejects(() => client.connect(), { code: "NATIVE_PIPE_UNAVAILABLE" });
+      await client.connect();
+      assert.equal(discoveries, 2);
+      assert.equal(client.socketPath, native.socketPath);
+    } finally {
+      client.close();
+      await native.close();
+    }
+  });
+
+  it("cancels pending discovery on close before opening a native connection or dispatching", async () => {
+    for (const operation of ["connect", "dispatch"]) {
+      let requests = 0;
+      let resolveDiscovery;
+      const discovery = new Promise((resolve) => { resolveDiscovery = resolve; });
+      const native = await nativePipe((request, socket) => {
+        requests += 1;
+        socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true } }));
+      });
+      const client = new NativeToolsClient({ env: {}, resolveSocketPath: () => discovery });
+      try {
+        const pending = operation === "connect"
+          ? client.connect()
+          : client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "cancelled" });
+        const rejected = assert.rejects(pending, /closed|cancel/i);
+        client.close();
+        resolveDiscovery(native.socketPath);
+        await rejected;
+        assert.equal(native.connectionCount, 0);
+        assert.equal(requests, 0);
+        assert.equal(client.socket, null);
+        assert.equal(client.pending.size, 0);
+      } finally {
+        client.close();
+        await native.close();
+      }
+    }
+  });
+
+  it("shares one pending discovery and socket across concurrent connection requests", async () => {
+    let discoveries = 0;
+    let resolveDiscovery;
+    const discovery = new Promise((resolve) => { resolveDiscovery = resolve; });
+    const native = await nativePipe((request, socket) => socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true } })));
+    const client = new NativeToolsClient({ env: {}, resolveSocketPath: () => { discoveries += 1; return discovery; } });
+    try {
+      const pending = Promise.all([client.connect(), client.connect(), client.connect()]);
+      resolveDiscovery(native.socketPath);
+      await pending;
+      assert.deepEqual(await client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "connected" }), { success: true });
+      assert.equal(discoveries, 1);
+      assert.equal(native.connectionCount, 1);
+    } finally {
+      client.close();
+      await native.close();
+    }
+  });
+
   it("routes concurrent responses by id with byte framing and fragmented UTF-8", async () => {
     const requests = [];
     const native = await nativePipe((request, socket) => {
@@ -870,15 +1133,19 @@ describe("native tools pipe protocol", () => {
     }
   });
 
-  it("requires the native pipe inherited from Codex Desktop", async () => {
-    const client = new NativeToolsClient({ env: {} });
-    await assert.rejects(() => client.connect(), { code: "NATIVE_PIPE_UNAVAILABLE" });
+  it("reports an unavailable native pipe when neither inheritance nor discovery provides one", async () => {
+    const client = new NativeToolsClient({ env: {}, resolveSocketPath: async () => null });
+    await assert.rejects(() => client.connect(), (err) => {
+      assert.equal(err.code, "NATIVE_PIPE_UNAVAILABLE");
+      assert.match(err.message, /CODEX_APP_TOOLS_PIPE_PATH|Codex Desktop/);
+      return true;
+    });
     assert.equal(client.pending.size, 0);
     client.close();
   });
 
   it("rejects a native payload that exceeds its byte limit before connecting", async () => {
-    const client = new NativeToolsClient({ env: {} });
+    const client = new NativeToolsClient({ env: {}, resolveSocketPath: async () => assert.fail("oversized payloads must be rejected before discovery") });
     await assert.rejects(() => client.dispatch({ executorThreadId: "e", targetThreadId: "t", message: "ế".repeat(MAX_FRAME_BYTES) }), { code: "RELAY_MESSAGE_TOO_LARGE" });
     assert.equal(client.pending.size, 0);
   });

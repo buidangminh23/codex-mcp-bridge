@@ -8,7 +8,7 @@ import { PLATFORM_LABEL } from "./platform.mjs";
 import { PeerEndpoint, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
 import { createThreadDelivery } from "./thread-delivery.mjs";
 
-const VERSION = "1.12.2";
+const VERSION = "1.12.3";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 

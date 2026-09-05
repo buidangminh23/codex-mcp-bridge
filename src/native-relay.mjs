@@ -2,6 +2,8 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir } from "./platform.mjs";
 
@@ -139,14 +141,168 @@ export function nativeDispatchParams({ executorThreadId, targetThreadId, message
   };
 }
 
+const execFileAsync = promisify(execFile);
+
+function splitDesktopCommandLine(commandLine, platform) {
+  const args = [];
+  let value = "";
+  let quote = null;
+  let depth = 0;
+  for (let index = 0; index < commandLine.length; index++) {
+    const char = commandLine[index];
+    if (platform === "win32" && char === "\\") {
+      let end = index;
+      while (commandLine[end] === "\\") end++;
+      const count = end - index;
+      if (commandLine[end] === '"') {
+        value += "\\".repeat(Math.floor(count / 2));
+        if (count % 2) value += '"';
+        else quote = quote ? null : '"';
+        index = end;
+      } else {
+        value += "\\".repeat(count);
+        index = end - 1;
+      }
+      continue;
+    }
+    if (platform !== "win32" && depth > 0) {
+      value += char;
+      if (quote) {
+        if (char === "\\" && quote === '"') value += commandLine[++index] ?? "";
+        else if (char === quote) quote = null;
+      } else if (char === '"' || char === "'") quote = char;
+      else if (char === "{" || char === "[") depth++;
+      else if (char === "}" || char === "]") depth--;
+      continue;
+    }
+    if (char === '"' || (platform !== "win32" && char === "'")) {
+      if (!quote) quote = char;
+      else if (quote === char) quote = null;
+      else value += char;
+    } else if (!quote && /\s/.test(char)) {
+      if (value) args.push(value);
+      value = "";
+    } else {
+      value += char;
+      if (platform !== "win32" && !quote && char === "{") depth++;
+    }
+  }
+  if (quote || depth) return [];
+  if (value) args.push(value);
+  return args;
+}
+
+function inlineTableValues(table) {
+  const text = table.trim();
+  if (!text.startsWith("{") || !text.endsWith("}")) return null;
+  const entries = [];
+  let start = 1;
+  let quote = null;
+  let depth = 0;
+  for (let index = 1; index < text.length - 1; index++) {
+    const char = text[index];
+    if (quote) {
+      if (char === "\\" && quote === '"') index++;
+      else if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") {
+      if (--depth < 0) return null;
+    } else if (char === "," && depth === 0) {
+      entries.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  if (quote || depth) return null;
+  entries.push(text.slice(start, -1));
+  const values = new Map();
+  for (const entry of entries) {
+    if (!entry.trim()) continue;
+    const match = entry.match(/^\s*(?:"([A-Za-z_][A-Za-z0-9_-]*)"|'([A-Za-z_][A-Za-z0-9_-]*)'|([A-Za-z_][A-Za-z0-9_-]*))\s*=\s*([\s\S]+)$/);
+    if (!match) return null;
+    const key = match[1] ?? match[2] ?? match[3];
+    if (values.has(key)) return null;
+    values.set(key, match[4].trim());
+  }
+  return values;
+}
+
+export function nativeToolsPipeFromCommandLine(commandLine, { platform = process.platform } = {}) {
+  if (typeof commandLine !== "string" || /[\r\n\0]/.test(commandLine)) return null;
+  const args = splitDesktopCommandLine(commandLine, platform);
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  if (!/^codex(?:\.exe)?$/i.test(paths.basename(args[0] ?? ""))) return null;
+  const overrides = [];
+  let appServer = false;
+  for (let index = 1; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "-c" || arg === "--config") {
+      overrides.push(args[++index] ?? "");
+    } else if (arg.startsWith("--config=")) overrides.push(arg.slice(9));
+    else if (arg === "app-server") appServer = true;
+    else if (!arg.startsWith("-") && !appServer) return null;
+  }
+  if (!appServer) return null;
+  const candidates = [];
+  for (const override of overrides) {
+    const match = override.match(/^mcp_servers\.codex_app\s*=\s*([\s\S]+)$/);
+    if (!match) continue;
+    const config = inlineTableValues(match[1]);
+    if (!config) return null;
+    const env = inlineTableValues(config.get("env") ?? "{}");
+    if (!env) return null;
+    const raw = env.get("CODEX_APP_TOOLS_PIPE_PATH");
+    if (raw === undefined) continue;
+    let candidate;
+    try {
+      candidate = raw.startsWith('"') ? JSON.parse(raw) : /^'[^']*'$/.test(raw) ? raw.slice(1, -1) : null;
+    } catch {
+      return null;
+    }
+    if (typeof candidate !== "string" || /[\r\n\0]/.test(candidate)) return null;
+    if (platform === "win32" ? !/^\\\\\.\\pipe\\[^\\]/i.test(candidate) : !path.posix.isAbsolute(candidate)) return null;
+    candidates.push(candidate);
+  }
+  return candidates.length && new Set(candidates).size === 1 ? candidates[0] : null;
+}
+
+async function readParentCommandLine(parentPid, platform) {
+  if (!Number.isSafeInteger(parentPid) || parentPid <= 0) return null;
+  const options = { timeout: 5000, maxBuffer: 128 * 1024, windowsHide: true };
+  if (platform === "win32") {
+    const powershell = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const script = `$p=Get-CimInstance Win32_Process -Filter 'ProcessId=${parentPid}'; if ($p.Name -eq 'codex.exe') { $p.CommandLine | ConvertTo-Json -Compress }`;
+    const { stdout } = await execFileAsync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], options);
+    return stdout.trim() ? JSON.parse(stdout.trim()) : null;
+  }
+  const { stdout } = await execFileAsync("/bin/ps", ["-ww", "-p", String(parentPid), "-o", "args="], options);
+  return stdout.trim();
+}
+
+export async function resolveNativeToolsPipePath({
+  env = process.env,
+  parentPid = process.ppid,
+  platform = process.platform,
+  readParentCommandLine: readParent = readParentCommandLine,
+} = {}) {
+  if (env.CODEX_APP_TOOLS_PIPE_PATH) return env.CODEX_APP_TOOLS_PIPE_PATH;
+  try {
+    return nativeToolsPipeFromCommandLine(await readParent(parentPid, platform), { platform });
+  } catch {
+    return null;
+  }
+}
+
 export class NativeToolsClient {
-  constructor({ env = process.env, socketPath = env.CODEX_APP_TOOLS_PIPE_PATH, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  constructor({ env = process.env, socketPath = env.CODEX_APP_TOOLS_PIPE_PATH, timeoutMs = DEFAULT_TIMEOUT_MS, resolveSocketPath = () => resolveNativeToolsPipePath({ env }) } = {}) {
     this.env = env;
     this.socketPath = socketPath;
     this.timeoutMs = timeoutMs;
+    this.resolveSocketPath = resolveSocketPath;
     this.socket = null;
     this.connectingSocket = null;
     this.connecting = null;
+    this.connectionGeneration = 0;
     this.pending = new Map();
     this.nextId = 1;
   }
@@ -154,10 +310,17 @@ export class NativeToolsClient {
   async connect() {
     if (this.connecting) return this.connecting;
     if (this.socket && !this.socket.destroyed) return;
-    if (!this.socketPath) {
-      throw new NativeRelayError("CODEX_APP_TOOLS_PIPE_PATH is missing; launch the companion from Codex Desktop", "NATIVE_PIPE_UNAVAILABLE");
-    }
-    this.connecting = new Promise((resolve, reject) => {
+    const generation = this.connectionGeneration;
+    this.connecting = (async () => {
+      const socketPath = this.socketPath || await this.resolveSocketPath();
+      if (generation !== this.connectionGeneration) {
+        throw new NativeRelayError("Native tools client closed while discovering the Desktop pipe", "NATIVE_PIPE_UNAVAILABLE");
+      }
+      this.socketPath = socketPath;
+      if (!this.socketPath) {
+        throw new NativeRelayError("CODEX_APP_TOOLS_PIPE_PATH is missing from the environment and parent Desktop app-server configuration; launch the companion from Codex Desktop", "NATIVE_PIPE_UNAVAILABLE");
+      }
+      return new Promise((resolve, reject) => {
       const socket = net.connect({ path: this.socketPath });
       this.connectingSocket = socket;
       let buffer = Buffer.alloc(0);
@@ -215,7 +378,8 @@ export class NativeToolsClient {
       });
       socket.on("error", (err) => fail(new NativeRelayError(`Codex Desktop native pipe failed: ${err.message}`, connected ? "NATIVE_DELIVERY_UNCONFIRMED" : "NATIVE_PIPE_UNAVAILABLE")));
       socket.on("close", () => fail(new NativeRelayError("Codex Desktop native tools pipe closed before confirming delivery", connected ? "NATIVE_DELIVERY_UNCONFIRMED" : "NATIVE_PIPE_UNAVAILABLE")));
-    });
+      });
+    })();
     try {
       await this.connecting;
     } finally {
@@ -264,6 +428,7 @@ export class NativeToolsClient {
   }
 
   close() {
+    this.connectionGeneration++;
     const socket = this.socket;
     this.socket = null;
     for (const pending of this.pending.values()) {

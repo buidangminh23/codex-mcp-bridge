@@ -2,6 +2,18 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.12.3] - 2026-09-05
+
+### Fixed
+
+- Discover the native tools pipe from the launching Desktop app-server's `mcp_servers.codex_app.env` override when Desktop does not pass it to custom MCP servers. Explicit pipe settings keep precedence; discovery rejects unrelated processes, ambiguous settings, and remote Windows pipes without scanning other sessions or persisting a restart-specific address.
+- Cancel pending pipe discovery when the client closes, and share discovery between concurrent connection requests so a closed client cannot send a delayed message.
+- Report a reachable shared companion in native relay status when another MCP instance owns the listening endpoint.
+
+### Tests
+
+- Added Windows/POSIX command-line parsing, parent discovery, environment precedence, real mock-pipe delivery, cancellation, concurrent connection, and shared-companion regressions.
+
 ## [1.12.2] - 2026-09-05
 
 ### Fixed

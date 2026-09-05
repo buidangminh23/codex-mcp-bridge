@@ -17,7 +17,7 @@ import {
 } from "./native-relay.mjs";
 import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
 
-const VERSION = "1.12.2";
+const VERSION = "1.12.3";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message) {
@@ -201,6 +201,10 @@ export class RelaySocketServer {
     });
   }
 
+  async isListening() {
+    return this.started || this.#socketIsLive();
+  }
+
   #handleConnection(socket) {
     let buffer = Buffer.alloc(0);
     let handled = false;
@@ -350,6 +354,7 @@ if (invokedDirectly) {
       },
     },
     async () => {
+      const listening = await relay.isListening();
       let executor = "(unconfigured)";
       try {
         const resolved = resolveRelayThreadId();
@@ -364,7 +369,7 @@ if (invokedDirectly) {
             text: [
               `platform:       ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
               `companion:      codex-native-relay ${VERSION}`,
-              `relay socket:   ${relay.started ? relay.socketPath : `${relay.socketPath} (not listening)`}`,
+              `relay socket:   ${relay.started ? relay.socketPath : `${relay.socketPath} (${listening ? "shared companion listening" : "not listening"})`}`,
               `executor:       ${executor}`,
               `dispatch:       ${process.env.CODEX_NATIVE_RELAY_METHOD ?? NATIVE_DISPATCH_METHOD}`,
               `native pipe:    ${nativeTools.socketPath ?? "unavailable (requires Codex Desktop)"}`,

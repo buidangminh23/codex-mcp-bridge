@@ -14,7 +14,9 @@ import {
   findClaudeSession,
   listClaudeSessions,
   parseFrame,
+  peerKeyPath,
   readTranscript,
+  readTranscriptReply,
 } from "../src/peer-protocol.mjs";
 
 /**
@@ -72,13 +74,28 @@ describe("peer frames", () => {
   });
 
   it("falls back to the raw content when the wrapper is absent", () => {
-    const parsed = parseFrame(JSON.stringify({ message: { content: "plain text" }, from: null }));
+    const parsed = parseFrame(JSON.stringify({ type: "user", message: { content: "plain text" }, from: null }));
     assert.equal(parsed.text, "plain text");
     assert.equal(parsed.fromSocket, null);
   });
 
   it("throws on a line that is not JSON", () => {
     assert.throws(() => parseFrame("not json at all"));
+  });
+
+  it("encodes Windows reply addresses and never invents the sender permission class", () => {
+    const fromSocket = "\\\\.\\pipe\\LOCAL\\cc-msg-" + "a".repeat(32);
+    const frame = buildFrame({ text: "hello", fromSocket });
+    assert.match(frame.from, /^uds:%5C%5C/);
+    assert.doesNotMatch(frame.message.content, /from-mode/);
+    assert.equal(parseFrame(JSON.stringify(frame)).fromSocket, fromSocket);
+    assert.match(buildFrame({ text: "x", fromSocket, permissionMode: "prompting" }).message.content, /from-mode="prompting"/);
+    assert.equal(frame.uuid, frame.msg_id);
+  });
+
+  it("does not turn auth or control frames into empty replies", () => {
+    assert.equal(parseFrame('{"type":"auth","token":"secret"}'), null);
+    assert.equal(parseFrame('{"type":"control","action":"peer_message_status","status":"held"}'), null);
   });
 });
 
@@ -159,8 +176,21 @@ describe("session registry", () => {
 });
 
 describe("Windows peer endpoint", { skip: isWindows ? false : "Windows named-pipe regression" }, () => {
+  it("refuses missing authentication before opening a target connection", async () => {
+    const endpoint = new PeerEndpoint();
+    await assert.rejects(endpoint.send(namedPipePath(), "never sent"), /No unique live session/);
+  });
+
+  it("derives the same key for canonical Windows pipe aliases", () => {
+    assert.equal(peerKeyPath(123, "\\\\.\\pipe\\LOCAL\\CC-MSG-abc"), peerKeyPath(123, "//./pipe/local/cc-msg-abc"));
+    assert.throws(() => peerKeyPath(123, "\\\\remote\\pipe\\name"), /non-local/);
+    assert.throws(() => peerKeyPath(123, "\\\\.\\pipe\\LOCAL\\nested\\name"), /non-local/);
+  });
   it("retries while a Claude named pipe is starting", async () => {
     const socketPath = namedPipePath();
+    const token = "a".repeat(32);
+    writeSession("auth-target", { pid: process.pid, messagingSocketPath: socketPath });
+    fs.writeFileSync(peerKeyPath(process.pid, socketPath), JSON.stringify({ peerToken: token }));
     const server = net.createServer();
     const received = new Promise((resolve, reject) => {
       server.on("error", reject);
@@ -168,9 +198,10 @@ describe("Windows peer endpoint", { skip: isWindows ? false : "Windows named-pip
         let buffer = "";
         socket.on("data", (chunk) => {
           buffer += chunk.toString("utf8");
-          const index = buffer.indexOf("\n");
-          if (index < 0) return;
-          resolve(parseFrame(buffer.slice(0, index)));
+          const lines = buffer.split("\n");
+          if (lines.length < 3) return;
+          assert.deepEqual(JSON.parse(lines[0]), { type: "auth", token });
+          resolve(parseFrame(lines[1]));
           socket.destroy();
         });
         socket.on("error", reject);
@@ -189,6 +220,8 @@ describe("Windows peer endpoint", { skip: isWindows ? false : "Windows named-pip
       assert.equal(frame.text, "hello");
     } finally {
       server.close();
+      fs.rmSync(path.join(sessionsDir, "auth-target.json"));
+      fs.rmSync(peerKeyPath(process.pid, socketPath));
     }
   });
 });
@@ -242,7 +275,29 @@ describe("peer endpoint", () => {
     endpoint = new PeerEndpoint({ name: "test-peer", cwd: sandbox });
   });
 
+  it("matches only a completed assistant turn descended from the exact injected UUID", () => {
+    const dir = path.join(projectsDir, "reply-fixture");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "reply.jsonl");
+    const user = { uuid: "request", isMeta: true, message: { role: "user", content: "ping" } };
+    const tool = { uuid: "tool", parentUuid: "request", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "text", text: "working" }] } };
+    const result = { uuid: "result", parentUuid: "tool", message: { role: "user", content: [{ type: "tool_result", content: "done" }] } };
+    const answer = { uuid: "answer", parentUuid: "result", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "correct answer" }] } };
+    const write = (rows) => fs.writeFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    write([user, tool, result]);
+    assert.equal(readTranscriptReply("reply", "unused", "request"), null);
+    write([user, tool, result, answer]);
+    assert.equal(readTranscriptReply("reply", "unused", "request")?.text, "correct answer");
+    assert.equal(readTranscriptReply("reply", "unused", "other-request"), null);
+    write([user, { uuid: "human", parentUuid: "request", message: { role: "user", content: "unrelated question" } }, { ...answer, parentUuid: "human" }]);
+    assert.equal(readTranscriptReply("reply", "unused", "request"), null);
+    write([user, { ...answer, parentUuid: "request", isSidechain: true }]);
+    assert.equal(readTranscriptReply("reply", "unused", "request"), null);
+  });
+
   after(() => endpoint.stop());
+
+  const authLine = () => JSON.stringify({ type: "auth", token: endpoint.peerToken }) + "\n";
 
   function receiveMessage(fromSocket, text) {
     const frame = buildFrame({ text, fromSocket });
@@ -253,7 +308,7 @@ describe("peer endpoint", () => {
         resolve(record);
       });
       const socket = net.connect({ path: endpoint.socketPath }, () => {
-        socket.end(`${JSON.stringify(frame)}\n`);
+        socket.end(`${authLine()}${JSON.stringify(frame)}\n`);
       });
       socket.once("error", (err) => {
         unsubscribe();
@@ -269,16 +324,69 @@ describe("peer endpoint", () => {
     assert.equal(registry.entrypoint, BRIDGE_ENTRYPOINT);
     assert.equal(registry.name, "test-peer");
     assert.equal(registry.messagingSocketPath, endpoint.socketPath);
+    assert.equal(endpoint.keyPath, peerKeyPath(process.pid, endpoint.socketPath));
+    if (isWindows) assert.match(endpoint.socketPath, /^\\\\\.\\pipe\\LOCAL\\cc-msg-[0-9a-f]{32}$/);
     assert.ok(fs.existsSync(endpoint.socketPath));
     if (!isWindows) {
       assert.equal(fs.statSync(endpoint.socketPath).mode & 0o777, 0o600, "the socket mode is the entire access control");
     }
   });
 
+  it("rejects missing and incorrect Windows authentication without delivering a message", { skip: !isWindows }, async () => {
+    const count = endpoint.messageSequence;
+    const frame = JSON.stringify(buildFrame({ text: "rejected", fromSocket: "unauthenticated" })) + "\n";
+    for (const payload of [frame, '{"type":"auth","token":"wrong"}\n' + frame]) {
+      await new Promise((resolve, reject) => {
+        const socket = net.connect(endpoint.socketPath, () => socket.end(payload));
+        socket.on("error", (error) => { if (error.code !== "ECONNRESET") reject(error); });
+        socket.on("close", resolve);
+      });
+    }
+    assert.equal(endpoint.messageSequence, count);
+  });
+
+  it("keeps held receipts separate from replies and matches the original message id", async (t) => {
+    t.mock.method(endpoint, "send", async () => "held-id");
+    const waiting = endpoint.sendAndWait("held-peer", "hello", { timeoutMs: 1500 });
+    await yieldToEvents();
+    await new Promise((resolve, reject) => {
+      const socket = net.connect(endpoint.socketPath, () => socket.end(authLine() + JSON.stringify({ type: "control", action: "peer_message_status", orig_msg_id: "held-id", from: "uds:held-peer", status: "held", reason: "Approval needed" }) + "\n"));
+      socket.on("error", reject);
+      socket.on("close", resolve);
+    });
+    const result = await waiting;
+    assert.equal(result.reply, null);
+    assert.equal(result.delivery.status, "held");
+    assert.equal(endpoint.unconfirmedReplies.get("held-peer"), 1);
+    assert.equal(endpoint.inbox.some((entry) => entry.msgId === "held-id"), false);
+  });
+
+  it("keeps a late Desktop transcript response after timeout and clears pending ownership", async (t) => {
+    const dir = path.join(projectsDir, "late-reply");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "late-session.jsonl");
+    let request;
+    t.mock.method(endpoint, "send", async (target, text, options) => {
+      request = options.msgId;
+      fs.writeFileSync(file, JSON.stringify({ uuid: request, isMeta: true, message: { role: "user", content: text } }) + "\n");
+      return request;
+    });
+    const response = await endpoint.sendAndWait("late-desktop", "hello", { timeoutMs: 20, transcriptSession: { sessionId: "late-session", cwd: "unused" } });
+    assert.equal(response.reply, null);
+    assert.equal(endpoint.unconfirmedReplies.get("late-desktop"), 1);
+    const waiting = endpoint.waitForReply("late-desktop", { timeoutMs: 1500 });
+    fs.appendFileSync(file, JSON.stringify({ uuid: "late-answer", parentUuid: request, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "late verified" }] } }) + "\n");
+    const answer = await waiting;
+    assert.equal(answer?.text, "late verified");
+    assert.equal(answer?.source, "transcript");
+    assert.equal(endpoint.unconfirmedReplies.has("late-desktop"), false);
+    assert.ok(endpoint.drainInbox(100).some((entry) => entry.inReplyTo === request));
+  });
+
   it("preserves multibyte text split between socket chunks", async () => {
     const text = "Chao sếp 🚀";
     const fromSocket = "fragmented-peer";
-    const frame = Buffer.from(`${JSON.stringify(buildFrame({ text, fromSocket }))}\n`);
+    const frame = Buffer.from(`${authLine()}${JSON.stringify(buildFrame({ text, fromSocket }))}\n`);
     const split = frame.indexOf(Buffer.from("ế")) + 1;
     const waiting = endpoint.waitForReply(fromSocket, { timeoutMs: 3000 });
     const socket = new PassThrough();
@@ -299,7 +407,7 @@ describe("peer endpoint", () => {
     await new Promise((resolve, reject) => {
       const client = net.connect({ path: endpoint.socketPath }, () => {
         const frame = buildFrame({ text: "hello from Claude", fromSocket: from });
-        client.write(`${JSON.stringify(frame)}\n`, () => {
+        client.write(`${authLine()}${JSON.stringify(frame)}\n`, () => {
           client.end();
           resolve();
         });
@@ -317,7 +425,7 @@ describe("peer endpoint", () => {
     await new Promise((resolve, reject) => {
       const client = net.connect({ path: endpoint.socketPath }, () => {
         const good = buildFrame({ text: "still working", fromSocket: "/tmp/cc-socks/other.sock" });
-        client.write(`{ broken\n${JSON.stringify(good)}\n`, () => {
+        client.write(`${authLine()}{ broken\n${JSON.stringify(good)}\n`, () => {
           client.end();
           resolve();
         });

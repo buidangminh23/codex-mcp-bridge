@@ -8,7 +8,7 @@ import { PLATFORM_LABEL } from "./platform.mjs";
 import { PeerEndpoint, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
 import { createThreadDelivery } from "./thread-delivery.mjs";
 
-const VERSION = "1.12.3";
+const VERSION = "1.12.4";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 
@@ -91,7 +91,7 @@ const server = new McpServer(
   {
     instructions:
       "Talk to a live Claude Code session from Codex. list_claude_sessions finds the session, " +
-      "send_to_claude_session delivers a message into its chat and waits for the answer. " +
+      "send_to_claude_session sends to its peer transport and waits for a reply to confirm receipt. " +
       "This bridge registers itself as a peer, so Claude sees it in its own agent list and can " +
       "message back; bind_codex_thread relays those messages into a Codex thread.",
   },
@@ -130,8 +130,8 @@ server.registerTool(
   {
     title: "Send a message to a Claude session",
     description:
-      "Deliver a message into a running Claude Code session. It appears in that session's chat exactly like " +
-      "a message from a teammate, and Claude can reply. Set waitSec to 0 to fire and forget. " +
+      "Send a message to a running Claude Code session's peer transport and wait for its reply. " +
+      "A socket write alone does not confirm that Claude received the message. Set waitSec to 0 to send without confirmation. " +
       "A waited send is refused while earlier messages to that session still await replies; " +
       "wait for those replies and read_claude_inbox before trying again.",
     inputSchema: {
@@ -159,17 +159,33 @@ server.registerTool(
       if (!session) return textResult(`No live Claude session matches "${target}".`, true);
 
       const wait = waitSec ?? 180;
-      const { reply } = await peer.sendAndWait(session.socket, message, { timeoutMs: wait * 1000 });
-      const header = `delivered to ${session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"})`;
+      const desktop = session.entrypoint === "claude-desktop";
+      const text = desktop ? `${message}\n\n[Bridge response routing: reply with ordinary text in this conversation. The bridge reads the response associated with this message from the local transcript; no cross-session reply tool is needed.]` : message;
+      const { msgId, reply, delivery } = await peer.sendAndWait(session.socket, text, {
+        timeoutMs: wait * 1000,
+        ...(desktop ? { transcriptSession: session } : {}),
+      });
+      const status = reply ? "reply_received" : delivery?.status ?? (wait === 0 ? "sent_unconfirmed" : "reply_timeout");
+      const receipt = { status, msgId, target: session.name ?? String(session.pid), sessionId: session.sessionId, waitSec: wait, ...(reply ? { source: reply.source ?? "peer" } : {}) };
+      const result = (text, isError = false) => ({ ...textResult(text, isError), structuredContent: { receipt } });
+      const targetLabel = `${session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"})`;
 
-      if (wait === 0) return textResult(`${header}\nnot waiting for a reply.`);
+      if (!reply && delivery && delivery.status !== "delivered") {
+        return result(`Claude inbox reported ${delivery.status} for ${targetLabel}.\n${delivery.reason}\nMessage id: ${msgId}`, true);
+      }
+
+      if (wait === 0) {
+        return result(`Sent to peer transport for ${targetLabel}.\nClaude receipt unconfirmed; not waiting for a reply.\nMessage id: ${msgId}`);
+      }
 
       if (!reply) {
-        return textResult(
-          `${header}\n\nNo reply within ${wait}s. Claude may still be working - check again with read_claude_inbox.`,
+        return result(
+          `Sent to peer transport for ${targetLabel}.\n\nNo reply within ${wait}s; Claude receipt and outcome remain unconfirmed. ` +
+          `Do not automatically retry: the message may still be processed. Check read_claude_inbox for a late reply.\nMessage id: ${msgId}`,
+          true,
         );
       }
-      return textResult(`${header}\n\n--- Claude reply ---\n${reply.text}`);
+      return result(`Reply received from ${targetLabel}.\nMessage id: ${msgId}\n\n--- Claude reply ---\n${reply.text}`);
     } catch (err) {
       return failure(err);
     }
@@ -296,6 +312,7 @@ server.registerTool(
         `bridge:        claude-bridge ${VERSION}`,
         `peer name:     ${peer.name}   (Claude sees this in its agent list)`,
         `peer socket:   ${peer.socketPath}`,
+        `sender mode:   ${peer.permissionMode ?? "unknown (recipient may hold messages for approval)"}`,
         `live sessions: ${sessions.length}`,
         `relay thread:  ${forwarding.threadId ?? "(none - use bind_codex_thread)"}`,
         `delivery:      ${delivery.describe()}`,

@@ -21,7 +21,7 @@ const SOCKET_DIR = "/tmp/cc-socks";
  * directory to create, no mode to chmod and no file to unlink beforehand.
  */
 function peerSocketPath(pid) {
-  return IS_WINDOWS ? `\\\\.\\pipe\\LOCAL\\cc-peer-${pid}` : path.join(SOCKET_DIR, `${pid}.sock`);
+  return IS_WINDOWS ? `\\\\.\\pipe\\LOCAL\\cc-msg-${crypto.randomBytes(16).toString("hex")}` : path.join(SOCKET_DIR, `${pid}.sock`);
 }
 const PEER_PROTOCOL_VERSION = 1;
 const CLAUDE_VERSION_HINT = "2.1.229";
@@ -35,30 +35,76 @@ const projectsDir = () => path.join(homeDir(), ".claude", "projects");
  * listens for peer messages on a local socket or Windows named pipe. Messages are newline-delimited
  * JSON; the wrapper element is what Claude renders in its chat surface.
  */
-export function buildFrame({ text, fromSocket, priority = "next" }) {
+export function buildFrame({ text, fromSocket, priority = "next", permissionMode }) {
+  const msgId = crypto.randomUUID();
+  const from = `uds:${fromSocket.replace(/[^A-Za-z0-9:_/.\-]/gu, (character) => Array.from(Buffer.from(character), (byte) => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`).join(""))}`;
+  const mode = ["bypass", "prompting"].includes(permissionMode) ? ` from-mode="${permissionMode}"` : "";
   return {
     msgV: PEER_PROTOCOL_VERSION,
-    msg_id: crypto.randomUUID(),
+    msg_id: msgId,
+    uuid: msgId,
     type: "user",
     message: {
       role: "user",
-      content: `<cross-session-message from="uds:${fromSocket}" from-mode="bypass">\n${text}\n</cross-session-message>`,
+      content: `<cross-session-message from="${from}"${mode}>\n${text}\n</cross-session-message>`,
     },
     priority,
-    from: `uds:${fromSocket}`,
+    from,
   };
 }
 
 export function parseFrame(line) {
   const frame = JSON.parse(line);
+  if (frame?.type !== "user" || typeof frame.message?.content !== "string") return null;
   const raw = frame?.message?.content ?? "";
   const inner = raw.match(/<cross-session-message[^>]*>\n?([\s\S]*?)\n?<\/cross-session-message>/);
   return {
     msgId: frame.msg_id ?? null,
     from: frame.from ?? null,
-    fromSocket: (frame.from ?? "").replace(/^uds:/, "") || null,
+    fromSocket: decodePeerAddress(frame.from),
     text: (inner ? inner[1] : raw).trim(),
   };
+}
+
+function decodePeerAddress(from) {
+  if (typeof from !== "string" || !from.startsWith("uds:")) return null;
+  try { return decodeURIComponent(from.slice(4)) || null; }
+  catch { return null; }
+}
+
+export function peerKeyPath(pid, socket) {
+  const pipe = /^[\\/]{2}[.?][\\/]pipe[\\/](?:(LOCAL)[\\/])?([^\\/]+)$/i.exec(socket);
+  let canonical;
+  if (pipe && !/[. ]$/.test(pipe[2]) && ![".", ".."].includes(pipe[2])) {
+    canonical = `\\\\.\\pipe\\${pipe[1] ? "local\\" : ""}${pipe[2].replace(/[A-Z]/g, (letter) => letter.toLowerCase())}`;
+  } else if (!IS_WINDOWS && path.isAbsolute(socket)) {
+    canonical = path.resolve(socket);
+  } else {
+    throw new Error("Refusing a non-local or non-canonical peer socket");
+  }
+  return path.join(sessionsDir(), `${pid}.${crypto.createHash("sha256").update(canonical).digest("hex")}.key`);
+}
+
+function readPeerToken(socket) {
+  peerKeyPath(process.pid, socket);
+  const candidates = listClaudeSessions({ includeBridges: true }).filter((entry) => {
+    try { return peerKeyPath(entry.pid, entry.socket) === peerKeyPath(entry.pid, socket); }
+    catch { return false; }
+  });
+  if (candidates.length !== 1) {
+    if (IS_WINDOWS) throw new Error("No unique live session owns the destination inbox; message was not sent");
+    return null;
+  }
+  try {
+    const key = JSON.parse(fs.readFileSync(peerKeyPath(candidates[0].pid, socket), "utf8"));
+    if (typeof key.peerToken !== "string" || !/^[0-9a-f]{32}$/i.test(key.peerToken)) throw new Error("Invalid peer key");
+    const identity = IS_WINDOWS ? key.procStartFt : key.procStart;
+    if (identity && identity !== readProcessStart(candidates[0].pid)) throw new Error("Peer process identity changed");
+    return key.peerToken;
+  } catch {
+    if (IS_WINDOWS) throw new Error("The destination inbox authentication key is missing or invalid; message was not sent");
+    return null;
+  }
 }
 
 /**
@@ -69,7 +115,11 @@ export function parseFrame(line) {
  */
 function readProcessStart(pid) {
   try {
-    return execFileSync(PS_BIN, ["-o", "lstart=", "-p", String(pid)]).toString().trim();
+    if (IS_WINDOWS) {
+      const shell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+      return execFileSync(shell, ["-NoProfile", "-Command", `(Get-Process -Id ${Number(pid)}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`], { timeout: 3000, windowsHide: true }).toString().trim();
+    }
+    return execFileSync(PS_BIN, ["-o", "lstart=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, timeout: 3000 }).toString().trim();
   } catch {
     return "";
   }
@@ -195,6 +245,29 @@ export function readTranscript(sessionId, cwd, limit = 10) {
   return { file, messages: messages.slice(-limit) };
 }
 
+export function readTranscriptReply(sessionId, cwd, msgId) {
+  const file = findTranscriptFile(sessionId, cwd);
+  let lines;
+  try { lines = fs.readFileSync(file, "utf8").split("\n"); }
+  catch { return null; }
+  const descendants = new Set();
+  for (const line of lines) {
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.isSidechain) continue;
+    if (entry.uuid === msgId && entry.message?.role === "user") { descendants.add(msgId); continue; }
+    if (!descendants.has(entry.parentUuid)) continue;
+    const role = entry.message?.role;
+    const content = entry.message?.content;
+    if (role === "user" && !(Array.isArray(content) && content.every((part) => part.type === "tool_result"))) continue;
+    if (typeof entry.uuid === "string") descendants.add(entry.uuid);
+    if (role !== "assistant" || !["end_turn", "stop_sequence"].includes(entry.message.stop_reason)) continue;
+    const text = Array.isArray(content) ? content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") : String(content ?? "");
+    if (text.trim()) return { text: text.trim(), msgId: entry.uuid, source: "transcript", inReplyTo: msgId };
+  }
+  return null;
+}
+
 /**
  * Registers this process as a peer that Claude sessions can see in their agent
  * list and reply to. Without a registered socket, Claude has no address to
@@ -216,6 +289,11 @@ export class PeerEndpoint {
     this.requestQueues = new Map();
     this.unconfirmedReplies = new Map();
     this.started = false;
+    this.peerToken = null;
+    this.permissionMode = process.env.CLAUDE_BRIDGE_PERMISSION_MODE;
+    this.deliveryReceipts = new Map();
+    this.pendingMessages = new Map();
+    this.responsePoll = null;
   }
 
   /**
@@ -250,8 +328,8 @@ export class PeerEndpoint {
     this.#sweepDeadBridges();
     const procStart = readProcessStart(this.pid);
     const peerToken = crypto.randomBytes(16).toString("hex");
-    const keyHash = crypto.createHash("sha256").update(`${peerToken}${procStart}`).digest("hex");
-    this.keyPath = path.join(sessionsDir(), `${this.pid}.${keyHash}.key`);
+    this.peerToken = peerToken;
+    this.keyPath = peerKeyPath(this.pid, this.socketPath);
 
     if (!IS_WINDOWS) fs.mkdirSync(SOCKET_DIR, { recursive: true });
     fs.mkdirSync(sessionsDir(), { recursive: true });
@@ -264,12 +342,13 @@ export class PeerEndpoint {
     });
     if (!IS_WINDOWS) fs.chmodSync(this.socketPath, 0o600);
 
+    const processIdentity = procStart ? (IS_WINDOWS ? { procStartFt: procStart } : { procStart }) : {};
     this.registry = {
       pid: this.pid,
       sessionId: crypto.randomUUID(),
       cwd: this.cwd,
       startedAt: Date.now(),
-      procStart,
+      ...processIdentity,
       version: CLAUDE_VERSION_HINT,
       peerProtocol: PEER_PROTOCOL_VERSION,
       kind: "interactive",
@@ -279,7 +358,7 @@ export class PeerEndpoint {
       nameSource: "derived",
     };
     fs.writeFileSync(this.registryPath, JSON.stringify(this.registry), { mode: 0o600 });
-    fs.writeFileSync(this.keyPath, JSON.stringify({ peerToken, procStart }), { mode: 0o600 });
+    fs.writeFileSync(this.keyPath, JSON.stringify({ peerToken, ...processIdentity }), { mode: 0o600 });
 
     for (const signal of ["SIGINT", "SIGTERM"]) {
       process.on(signal, () => {
@@ -295,35 +374,89 @@ export class PeerEndpoint {
 
   #handleConnection(socket) {
     let buffer = "";
+    let authenticated = false;
+    let firstLine = true;
     socket.setEncoding("utf8");
     socket.on("data", (chunk) => {
       buffer += chunk;
+      if (buffer.length > 1048576) { socket.destroy(); return; }
       let index;
       while ((index = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, index).trim();
         buffer = buffer.slice(index + 1);
-        if (!line) continue;
-        let message;
-        try {
-          message = parseFrame(line);
-        } catch {
-          this.log(`ignored malformed peer frame (${line.slice(0, 80)})`);
+        if (!line) {
+          if (IS_WINDOWS && !authenticated) { socket.destroy(); return; }
           continue;
         }
-        const record = { ...message, receivedAt: Date.now(), sequence: ++this.messageSequence };
-        this.inbox.push(record);
-        this.#removePendingReply(record.fromSocket);
-        this.log(`inbox <- ${record.fromSocket ?? "?"}: ${record.text.slice(0, 120)}`);
-        for (const listener of [...this.listeners]) {
-          try {
-            listener(record);
-          } catch (err) {
-            this.log(`peer listener error: ${err.message}`);
+        let message;
+        try {
+          const frame = JSON.parse(line);
+          if (firstLine && frame?.type === "auth") {
+            firstLine = false;
+            const supplied = typeof frame.token === "string" ? Buffer.from(frame.token) : Buffer.alloc(0);
+            const expected = Buffer.from(this.peerToken ?? "");
+            authenticated = expected.length > 0 && supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+            if (!authenticated) { socket.destroy(); return; }
+            continue;
           }
+          firstLine = false;
+          if (IS_WINDOWS && !authenticated) { socket.destroy(); return; }
+          if (frame?.type === "control" && frame.action === "peer_message_status") {
+            if (typeof frame.orig_msg_id === "string" && typeof frame.from === "string") {
+              const receipt = {
+                status: frame.status_detail === "refused" ? "refused" : frame.status,
+                reason: typeof frame.reason === "string" ? frame.reason : "",
+                fromSocket: decodePeerAddress(frame.from),
+              };
+              const pending = this.pendingMessages.get(frame.orig_msg_id);
+              if (pending?.targetSocket === receipt.fromSocket) {
+                this.deliveryReceipts.set(frame.orig_msg_id, receipt);
+                if (["refused", "denied", "expired", "dropped"].includes(receipt.status)) this.#removePendingReply(receipt.fromSocket, frame.orig_msg_id);
+              }
+            }
+            continue;
+          }
+          message = parseFrame(line);
+        } catch {
+          if (IS_WINDOWS && !authenticated) { socket.destroy(); return; }
+          this.log("ignored malformed peer frame");
+          continue;
         }
+        if (!message) continue;
+        this.#receiveMessage(message);
       }
     });
     socket.on("error", (err) => this.log(`peer socket error: ${err.message}`));
+  }
+
+  #receiveMessage(message) {
+    const record = { ...message, receivedAt: Date.now(), sequence: ++this.messageSequence };
+    this.inbox.push(record);
+    this.#removePendingReply(record.fromSocket, record.inReplyTo);
+    this.log(`inbox <- ${record.fromSocket ?? "?"}: ${record.text.slice(0, 120)}`);
+    for (const listener of [...this.listeners]) {
+      try { listener(record); }
+      catch (err) { this.log(`peer listener error: ${err.message}`); }
+    }
+  }
+
+  #refreshTranscriptReplies() {
+    for (const [msgId, pending] of this.pendingMessages) {
+      if (!pending.transcriptSession) continue;
+      const { sessionId, cwd } = pending.transcriptSession;
+      const file = findTranscriptFile(sessionId, cwd);
+      let stamp;
+      try { const stat = fs.statSync(file); stamp = `${stat.mtimeMs}:${stat.size}`; }
+      catch { continue; }
+      if (stamp === pending.transcriptStamp) continue;
+      pending.transcriptStamp = stamp;
+      const reply = readTranscriptReply(sessionId, cwd, msgId);
+      if (reply) this.#receiveMessage({ ...reply, fromSocket: pending.targetSocket });
+    }
+    if (![...this.pendingMessages.values()].some((entry) => entry.transcriptSession)) {
+      globalThis.clearInterval(this.responsePoll);
+      this.responsePoll = null;
+    }
   }
 
   /**
@@ -347,9 +480,11 @@ export class PeerEndpoint {
     return () => this.listeners.delete(listener);
   }
 
-  async send(targetSocket, text, { priority = "next" } = {}) {
-    const frame = buildFrame({ text, fromSocket: this.socketPath, priority });
-    const line = JSON.stringify(frame) + "\n";
+  async send(targetSocket, text, { priority = "next", msgId } = {}) {
+    const frame = buildFrame({ text, fromSocket: this.socketPath, priority, permissionMode: this.permissionMode });
+    if (msgId) frame.uuid = frame.msg_id = msgId;
+    const token = readPeerToken(targetSocket);
+    const line = (token ? JSON.stringify({ type: "auth", token }) + "\n" : "") + JSON.stringify(frame) + "\n";
     for (let attempt = 1; attempt <= PEER_SEND_ATTEMPTS; attempt += 1) {
       try {
         await new Promise((resolve, reject) => {
@@ -399,7 +534,7 @@ export class PeerEndpoint {
     return frame.msg_id;
   }
 
-  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next" } = {}) {
+  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession } = {}) {
     const previous = this.requestQueues.get(targetSocket) ?? Promise.resolve();
     const pending = previous.catch(() => {}).then(async () => {
       const unconfirmed = this.unconfirmedReplies.get(targetSocket) ?? 0;
@@ -414,16 +549,29 @@ export class PeerEndpoint {
       const since = Date.now();
       const afterSequence = this.messageSequence;
       this.unconfirmedReplies.set(targetSocket, unconfirmed + 1);
-      let msgId;
+      let msgId = crypto.randomUUID();
+      this.pendingMessages.set(msgId, { targetSocket, transcriptSession });
       try {
-        msgId = await this.send(targetSocket, text, { priority });
+        const sentId = await this.send(targetSocket, text, { priority, msgId });
+        if (sentId !== msgId) {
+          const pendingMessage = this.pendingMessages.get(msgId);
+          this.pendingMessages.delete(msgId);
+          msgId = sentId;
+          if (pendingMessage) this.pendingMessages.set(msgId, pendingMessage);
+        }
       } catch (err) {
-        this.#removePendingReply(targetSocket);
+        this.#removePendingReply(targetSocket, msgId);
         throw err;
       }
+      if (transcriptSession && !this.responsePoll && this.pendingMessages.has(msgId)) {
+        this.responsePoll = globalThis.setInterval(() => this.#refreshTranscriptReplies(), 250);
+        this.responsePoll.unref();
+      }
       const reply = timeoutMs > 0
-        ? await this.waitForReply(targetSocket, { timeoutMs, since, afterSequence })
+        ? await this.waitForReply(targetSocket, { timeoutMs, since, afterSequence, msgId })
         : null;
+      const delivery = this.deliveryReceipts.get(msgId);
+      if (delivery?.fromSocket === targetSocket) return { msgId, reply, delivery };
       return { msgId, reply };
     });
     this.requestQueues.set(targetSocket, pending);
@@ -434,7 +582,9 @@ export class PeerEndpoint {
     }
   }
 
-  #removePendingReply(fromSocket) {
+  #removePendingReply(fromSocket, msgId) {
+    const key = msgId ?? [...this.pendingMessages].find(([, entry]) => entry.targetSocket === fromSocket)?.[0];
+    if (key) this.pendingMessages.delete(key);
     const pending = this.unconfirmedReplies.get(fromSocket) ?? 0;
     if (pending > 1) this.unconfirmedReplies.set(fromSocket, pending - 1);
     else this.unconfirmedReplies.delete(fromSocket);
@@ -444,22 +594,27 @@ export class PeerEndpoint {
    * Claude answers with a fresh msg_id rather than an in-reply-to field, so a
    * reply is matched by origin socket and arrival time.
    */
-  waitForReply(fromSocket, { timeoutMs = 120000, since = Date.now(), afterSequence = null } = {}) {
+  waitForReply(fromSocket, { timeoutMs = 120000, since = Date.now(), afterSequence = null, msgId } = {}) {
     const matches = (record) => record.fromSocket === fromSocket
       && (afterSequence === null ? record.receivedAt >= since : record.sequence > afterSequence);
     const existing = this.inbox.find(matches);
     if (existing) return Promise.resolve(existing);
     return new Promise((resolve) => {
-      const timer = globalThis.setTimeout(() => {
+      const finish = (reply) => {
         unsubscribe();
-        resolve(null);
-      }, timeoutMs);
+        globalThis.clearTimeout(timer);
+        globalThis.clearInterval(poll);
+        resolve(reply);
+      };
+      const timer = globalThis.setTimeout(() => finish(null), timeoutMs);
       const unsubscribe = this.onMessage((record) => {
         if (!matches(record)) return;
-        globalThis.clearTimeout(timer);
-        unsubscribe();
-        resolve(record);
+        finish(record);
       });
+      const poll = msgId ? globalThis.setInterval(() => {
+        const receipt = this.deliveryReceipts.get(msgId);
+        if (receipt?.fromSocket === fromSocket && ["held", "refused", "denied", "expired", "dropped"].includes(receipt.status)) { finish(null); return; }
+      }, 250) : null;
     });
   }
 
@@ -470,6 +625,9 @@ export class PeerEndpoint {
   }
 
   stop() {
+    globalThis.clearInterval(this.responsePoll);
+    this.responsePoll = null;
+    this.pendingMessages.clear();
     try {
       this.server?.close();
     } catch {}

@@ -330,7 +330,7 @@ Under `owned`, a thread a human opened is **unreachable rather than merely restr
 | Tool | What it does | Hints |
 |---|---|---|
 | `list_claude_sessions` | Lists Claude Code sessions running on this machine (name, pid, sessionId, cwd, entrypoint). | read-only |
-| `send_to_claude_session` | Delivers a message into a Claude session — it lands **in that session's chat**, exactly like a teammate's message — and waits for the reply. `waitSec: 0` fires and forgets. `target` takes a name, pid or sessionId; **Claude session names drift over time**, so target by `sessionId` when it matters. | destructive |
+| `send_to_claude_session` | Sends to a Claude inbox and waits for a correlated reply. Receipt statuses distinguish `reply_received`, `sent_unconfirmed`, `reply_timeout`, and receiver policy outcomes such as `held` or `refused`. `waitSec: 0` sends without waiting for confirmation. Prefer an exact `sessionId` because session names can change. | destructive |
 | `read_claude_inbox` | Reads **and clears** messages Claude pushed over on its own, including replies that arrived late. | destructive |
 | `read_claude_transcript` | Reads a Claude session's recent conversation without sending anything. | read-only |
 | `bind_codex_thread` | Binds a Codex thread so every message from Claude is relayed into it, **visible in the Codex desktop app**. Pass an empty string to stop. | writes |
@@ -340,25 +340,37 @@ Every tool declares MCP annotation hints (`readOnlyHint`, `destructiveHint`, `id
 
 Waited sends to the same Claude session run in order. If an earlier send timed out or used `waitSec: 0` and its reply has not arrived, a new waited send returns `PEER_REPLY_PENDING` before delivering another message. Wait for the earlier reply and inspect `read_claude_inbox`, or use `waitSec: 0` if another asynchronous message is intended. Different destination sessions remain independent.
 
+Claude Desktop disables the CLI-native `SendMessage` tool. For Desktop targets, the bridge requests an ordinary answer in the destination conversation and reads only a completed assistant turn descended from the injected message UUID. Unrelated human prompts and sidechains are excluded. Late answers remain available through the inbox while the bridge process is running. This does not change Desktop tool permissions or the receiver's inbound policy.
+
+`CLAUDE_BRIDGE_PERMISSION_MODE` optionally declares the **actual sender** permission class (`prompting` or `bypass`). The installer preserves this setting when supplied. Leave it unset when the sender's effective mode is unknown. Never choose a value just to match a recipient: Claude applies its own permission-mode and inbound-policy checks and may hold a message for user approval. The bridge reports that decision and does not retry it automatically.
+
+`npm run check:claude` without `CLAUDE_TARGET` checks discovery only. With a target it requires `reply_received`; a socket write, a held message, or a timeout fails the roundtrip check.
+
 ### How each side sees the other
 
-- **Claude sees Codex:** `claude-bridge` registers itself as a *peer session* under `~/.claude/sessions/`. Claude lists it with `ListAgents` and messages it with `SendMessage` — not hidden, not an invisible background process. The default name is `codex-<pid>`; after `bind_codex_thread` it renames itself to `codex-<first 8 chars of threadId>`, which is what makes several bridges distinguishable (Codex starts **one bridge per session**, so a few peers usually advertise at once).
+- **Claude sees Codex:** `claude-bridge` registers a peer under `~/.claude/sessions/`. CLI sessions can use their permitted peer messaging tools to reply; Desktop replies use the correlated transcript path described above. The default name is `codex-<pid>`; `bind_codex_thread` renames it to `codex-<first 8 chars of threadId>`.
 - **Codex sees Claude:** `list_claude_sessions` reads that same registry, and `read_claude_transcript` shows what a Claude session is working on.
-- **Visible in chat:** a message from Codex appears in the Claude Desktop chat of the target session; a message from Claude is relayed into the bound Codex thread, so it appears in the Codex desktop app.
+- **Visible in chat:** messages accepted by Claude appear in the target conversation. Received replies can be relayed into the bound Codex task. A `held` receipt means the receiver has not released the message to Claude yet.
 
-### Protocol (measured, not documented)
+### Peer protocol
 
-Every Claude Code session writes `~/.claude/sessions/<pid>.json` and listens on `/tmp/cc-socks/<pid>.sock`. Frames are **NDJSON**, one message per line:
+Claude Code advertises local inboxes in `~/.claude/sessions/<pid>.json`. The bridge uses a Unix socket on macOS/Linux and `\\.\pipe\LOCAL\cc-msg-<32 hex characters>` on Windows. Frames are **NDJSON**, one message per line. A Windows connection starts with an authentication line using the destination's peer key; it never uses the separate child-process token:
 
 ```json
-{"msgV":1,"msg_id":"<uuid>","type":"user","message":{"role":"user",
- "content":"<cross-session-message from=\"uds:/tmp/cc-socks/<pid>.sock\" from-mode=\"bypass\">\n...\n</cross-session-message>"},
+{"type":"auth","token":"<destination peer token>"}
+```
+
+The message carries an explicit UUID for transcript correlation:
+
+```json
+{"msgV":1,"msg_id":"<uuid>","uuid":"<uuid>","type":"user","message":{"role":"user",
+ "content":"<cross-session-message from=\"uds:/tmp/cc-socks/<pid>.sock\">\n...\n</cross-session-message>"},
  "priority":"next","from":"uds:/tmp/cc-socks/<pid>.sock"}
 ```
 
-There is no token in the frame — **the socket is mode `0600`, so owning the user account is the entire security boundary**. To receive replies you must register a peer session of your own (registry entry + socket), because Claude answers to the address in `from`.
+Peer key names are `<pid>.<sha256(canonical socket)>.key`. Windows pipe names are normalized for hashing, and reply addresses are percent-encoded on the wire. Authentication and control frames are not user replies. `peer_message_status` receipts are matched to the original message ID and destination. A successful socket write alone is not a delivery acknowledgement.
 
-> ⚠️ This is a **Claude Code internal with no public documentation** (measured on 2.1.229). If the format changes, the Codex → Claude direction breaks; fix it in `src/peer-protocol.mjs`. The Claude → Codex direction goes through the official app-server and is unaffected.
+See [Claude Code cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging) for authentication and inbound-policy behavior. Wire compatibility was checked against installed Claude Code 2.1.260; peer internals can change between releases.
 
 ### Ping-pong guard
 

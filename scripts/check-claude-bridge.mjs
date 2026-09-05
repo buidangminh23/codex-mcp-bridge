@@ -34,7 +34,13 @@ try {
       arguments: { target, message, waitSec },
     });
     console.log("\n--- send_to_claude_session ---\n" + sent.content[0].text);
-    if (sent.isError) throw new Error("Claude message delivery failed");
+    if (sent.isError) throw new Error("Claude message roundtrip failed; receipt or outcome is unconfirmed");
+    if (sent.structuredContent?.receipt?.status !== "reply_received") {
+      throw new Error("Claude message roundtrip unconfirmed: an actual reply is required; use CLAUDE_WAIT greater than 0");
+    }
+    console.log("\nClaude message roundtrip passed: reply received.");
+  } else {
+    console.log("\nDiscovery checks passed. Message roundtrip was not tested; set CLAUDE_TARGET to verify a reply.");
   }
 } finally {
   await client.close();

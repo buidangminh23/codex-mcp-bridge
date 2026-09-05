@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import crypto from "node:crypto";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
@@ -7,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { buildFrame, parseFrame, peerKeyPath } from "../src/peer-protocol.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -40,6 +43,78 @@ const NATIVE_RELAY_TOOLS = ["native_relay_status"];
  * write peer registry entries into the developer's own ~/.claude.
  */
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-tools-"));
+
+describe("Claude message receipts", () => {
+  for (const scenario of ["nowait", "timeout", "peer", "desktop", "held", "refused"]) {
+    it(`reports ${scenario} from the actual MCP transport`, async () => {
+      const home = fs.mkdtempSync(path.join(sandboxHome, "receipt-"));
+      const registryDir = path.join(home, ".claude", "sessions");
+      fs.mkdirSync(registryDir, { recursive: true });
+      const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\cc-msg-${crypto.randomBytes(16).toString("hex")}` : path.join(home, "mock.sock");
+      const token = crypto.randomBytes(16).toString("hex");
+      fs.writeFileSync(path.join(registryDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, name: "receipt-target", sessionId: "receipt-session", cwd: home, messagingSocketPath: socketPath, entrypoint: scenario === "desktop" ? "claude-desktop" : "cli" }));
+      fs.writeFileSync(path.join(registryDir, path.basename(peerKeyPath(process.pid, socketPath))), JSON.stringify({ peerToken: token }));
+      let count = 0;
+      let handlerError;
+      const receiver = net.createServer((socket) => {
+        let buffer = "";
+        let authenticated = false;
+        socket.on("error", (error) => { handlerError = error; });
+        socket.on("data", (data) => {
+          buffer += data.toString();
+          let index;
+          while ((index = buffer.indexOf("\n")) >= 0) {
+            const line = buffer.slice(0, index);
+            buffer = buffer.slice(index + 1);
+            try {
+              const raw = JSON.parse(line);
+              if (raw.type === "auth") { assert.equal(raw.token, token); authenticated = true; continue; }
+              assert.equal(authenticated, true);
+              count += 1;
+              const request = parseFrame(line);
+              if (scenario === "desktop") {
+                const dir = path.join(home, ".claude", "projects", "fixture");
+                fs.mkdirSync(dir, { recursive: true });
+                fs.writeFileSync(path.join(dir, "receipt-session.jsonl"), [
+                  { uuid: raw.uuid, isMeta: true, message: raw.message },
+                  { uuid: "desktop-answer", parentUuid: raw.uuid, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "desktop verified" }] } },
+                ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+              } else if (["peer", "held", "refused"].includes(scenario)) {
+                const owner = fs.readdirSync(registryDir).filter((file) => file.endsWith(".json")).map((file) => JSON.parse(fs.readFileSync(path.join(registryDir, file), "utf8"))).find((entry) => entry.messagingSocketPath === request.fromSocket);
+                const key = JSON.parse(fs.readFileSync(path.join(registryDir, path.basename(peerKeyPath(owner.pid, request.fromSocket))), "utf8"));
+                const frame = scenario === "peer" ? buildFrame({ text: "peer verified", fromSocket: socketPath }) : { type: "control", action: "peer_message_status", orig_msg_id: request.msgId, from: buildFrame({ text: "", fromSocket: socketPath }).from, status: scenario, reason: "Receiver policy" };
+                const reply = net.connect(request.fromSocket, () => reply.end(JSON.stringify({ type: "auth", token: key.peerToken }) + "\n" + JSON.stringify(frame) + "\n"));
+                reply.on("error", (error) => { handlerError = error; });
+              }
+            } catch (error) { handlerError = error; }
+          }
+        });
+      });
+      await new Promise((resolve, reject) => { receiver.once("error", reject); receiver.listen(socketPath, resolve); });
+      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, CODEX_BRIDGE_AUTOSTART: "0" }, stderr: "ignore" });
+      const client = new Client({ name: "receipt-test", version: "1" });
+      try {
+        await client.connect(transport);
+        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", waitSec: scenario === "nowait" ? 0 : 2 } });
+        if (handlerError) throw handlerError;
+        const expected = { nowait: "sent_unconfirmed", timeout: "reply_timeout", peer: "reply_received", desktop: "reply_received", held: "held", refused: "refused" }[scenario];
+        assert.equal(result.structuredContent.receipt.status, expected);
+        assert.equal(Boolean(result.isError), ["timeout", "held", "refused"].includes(scenario));
+        assert.equal(count, 1);
+        if (scenario === "desktop") assert.equal(result.structuredContent.receipt.source, "transcript");
+        if (["nowait", "timeout", "held"].includes(scenario)) {
+          const retry = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Never send this", waitSec: 1 } });
+          assert.equal(retry.isError, true);
+          assert.match(retry.content[0].text, /earlier message/);
+          assert.equal(count, 1);
+        }
+      } finally {
+        await client.close();
+        await new Promise((resolve) => receiver.close(resolve));
+      }
+    });
+  }
+});
 
 async function listTools(entry) {
   const transport = new StdioClientTransport({

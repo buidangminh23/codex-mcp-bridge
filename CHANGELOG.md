@@ -2,6 +2,19 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.12.4] - 2026-09-05
+
+### Fixed
+
+- Authenticate Windows peer connections with the destination peer key, publish keys under the canonical socket hash, use Claude-compatible reply pipe names, and encode reply addresses. Incoming unauthenticated Windows frames are refused.
+- Keep receiver policy receipts separate from replies and correlate them to the original message and destination. Socket writes no longer report confirmed delivery; timeout and held/refused outcomes fail the roundtrip diagnostic without automatic retries.
+- Read ordinary Claude Desktop responses from the local transcript using the injected UUID and assistant ancestry, preserving Desktop's disabled native reply tool. Late correlated responses remain available while the bridge runs.
+- Declare sender permission mode only when explicitly configured, and preserve receiver approval decisions. Status reports unknown sender mode instead of inventing one.
+
+### Tests
+
+- Added authenticated transport, missing/bad auth, canonical key and address, receiver status, MCP outcome, and transcript-correlation regressions. Live Windows testing confirmed authentication and returned an actual `held` receipt; the Desktop assistant roundtrip remains subject to recipient approval.
+
 ## [1.12.3] - 2026-09-05
 
 ### Fixed

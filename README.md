@@ -28,6 +28,8 @@ Desktop calls share a maximum 40-second budget across creation, opening, queuein
 
 Creation receipts persist in `$CODEX_HOME/bridge-task-receipts` (default `~/.codex/bridge-task-receipts`). The same canonical workspace and explicit title reuse the existing task, including after completion or a bridge restart; an edited brief is not resent. Use `send_to_codex_thread` to continue it, or a distinct title for separate work. Without an explicit title, the key uses the exact prompt hash. Receipts store hashes rather than prompt text and never grant thread permissions: `owned` policy still requires authorization after restart. Pending or uncertain receipts and abandoned creation locks fail closed without automatic expiry; inspect the actual task before repairing them.
 
+Reusing a receipt also verifies that the saved project still has the same identity and exact directory, then checks the task's current project membership in Desktop's recent/pinned listing. A moved task or deleted/repointed project is rejected before sending or creating anything. A task omitted from that listing keeps its known ID and reports `project assignment: unverified`; stored receipt metadata is not presented as current membership. If a checkout has moved, edit the existing project's folder in Desktop, then inspect the existing task's workspace. Do not add another project or append the obsolete directory merely to satisfy a match.
+
 The updated companion exposes a separate `-desktop-tasks` endpoint so a previous companion holding the legacy reply socket need not be killed during an upgrade. `codex_bridge_status` verifies the native connection through Desktop's local project list; `native_relay_status` reports both endpoints. Reconnect the companion after upgrading so it accepts the current native operations.
 
 Desktop mode never contacts, starts, or falls back to an external app-server, including during status checks and thread discovery. The Claude Desktop installer records `CODEX_BRIDGE_AUTOSTART=0` in this mode. If Desktop or its companion is unavailable, the bridge reports the failure and leaves existing tasks in Desktop. `stop_codex_app_server` is a no-op in Desktop mode; stop an obsolete external service through its own launcher after confirming it has no active work.
@@ -122,13 +124,40 @@ Installing straight from the repository works the same way and needs no registry
 npm install -g git+https://github.com/buidangminh23/codex-mcp-bridge.git
 ```
 
-Either route puts four commands on your PATH — `codex-mcp-bridge` and `claude-mcp-bridge` are the two servers, `codex-mcp-bridge-install` and `claude-mcp-bridge-install` do the wiring in the steps below. Wherever this README runs `node scripts/install-claude-desktop.mjs`, an installed copy runs `codex-mcp-bridge-install` instead.
+Either route puts the bridge servers, configuration installers, native relay, and `codex-npm-footer-install` on your PATH. Wherever this README runs `node scripts/install-claude-desktop.mjs`, an installed copy runs `codex-mcp-bridge-install` instead. Every packaged command supports `--version` and `-v` without starting a server or changing configuration.
 
 #### Upgrading an install you already have
 
 `npm install -g @minhspark/codex-mcp-bridge@latest`, then restart Claude Desktop or Claude Code — an MCP server only loads its code when the client spawns it. Check `codex_bridge_status` reports the version you expect. The global install path carries no version number, so the entry keeps pointing at the right file. If the existing entry still has `CODEX_BRIDGE_THREAD_POLICY=owned`, pass `CODEX_BRIDGE_THREAD_POLICY=roots` once when re-running the installer to enable human-opened threads.
 
 Re-running `codex-mcp-bridge-install` is **not** required to upgrade, and before 1.11.1 it actively hurt: it replaced the whole entry, discarding `CODEX_BRIDGE_ALLOWED_THREADS`, any hand-added `CODEX_BRIDGE_THREAD_POLICY`, and resetting `CODEX_BRIDGE_ALLOWED_ROOTS` to the install directory. From 1.11.1 it keeps what is already there — an environment variable you pass wins, the existing value is the fallback, and `--reset` gives you the defaults back.
+
+#### Show the final npm installation result
+
+Enable the optional shell integration once after installing the package:
+
+```sh
+codex-npm-footer-install --shell zsh
+```
+
+Use `--shell bash` on Bash or `--shell powershell` in PowerShell 7. A source checkout can run `npm run install:footer -- --shell zsh`. The installer backs up existing profiles, preserves unrelated content, and prints a command to load the integration into the current terminal. New login and interactive Bash/Zsh shells load it automatically; PowerShell uses its current-user all-hosts profile. A terminal started before setup must run the printed reload command or open a new shell. Existing unmanaged `npm` functions are refused for review rather than overwritten. Use `--profile /absolute/path` to select a custom profile or `--remove` to remove the managed loader.
+
+The integration leaves the command unchanged:
+
+```sh
+npm install -g @minhspark/codex-mcp-bridge@latest
+```
+
+| Measured result | Final line |
+| --- | --- |
+| No previous installation | `Successfully installed: @minhspark/codex-mcp-bridge v<version>` |
+| Version changed | `Successfully updated: @minhspark/codex-mcp-bridge v<before> -> v<after>` |
+| Same version after reinstalling | `Already up to date: @minhspark/codex-mcp-bridge v<version>` |
+| npm failed | `Failed to install: ... (exit code <code>). See npm error above.` |
+| Dry run | `Dry run completed: ... (no changes applied).` |
+| Mode or installed metadata cannot be verified | A warning instead of a success claim |
+
+The footer runs after npm finishes and keeps npm's output and exit code. It supports `install`/`i`, explicit global installation, one bridge package, dry-run flags, common install booleans, and a single `--prefix`. Other commands, multiple packages, unknown options, and machine-readable or silent output modes pass through without a footer. Installing the package itself does not alter shell profiles. A successful install confirms files on disk; restart the MCP client separately to load the new bridge code.
 
 **Clone it** — right if you intend to read, test or change the code:
 

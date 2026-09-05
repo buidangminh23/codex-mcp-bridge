@@ -19,8 +19,11 @@ import {
   decodeNativeToolResult,
 } from "./native-relay.mjs";
 import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
+import { exitForVersionRequest } from "./cli-version.mjs";
 
-const VERSION = "1.13.2";
+exitForVersionRequest(import.meta.url);
+
+const VERSION = "1.13.3";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message) {

@@ -24,8 +24,11 @@ import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
 import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "./thread-delivery.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
+import { exitForVersionRequest } from "./cli-version.mjs";
 
-const VERSION = "1.13.2";
+exitForVersionRequest(import.meta.url);
+
+const VERSION = "1.13.3";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -122,17 +125,23 @@ async function delegateDesktopTask({ cwd, prompt, name, model, effort, timeoutSe
   if (openInApp ?? DEFAULT_OPEN_IN_APP) {
     try {
       await desktopTasks.open(created.threadId, { deadline });
-      notes.push("opened in Codex Desktop while the task runs");
+      notes.push(created.reused ? "opened the existing task in Codex Desktop" : "opened in Codex Desktop while the task runs");
     } catch (err) {
-      notes.push(`task was accepted; opening its page failed: ${err.message}`);
+      notes.push(`${created.reused ? "existing task retained" : "task was accepted"}; opening its page failed: ${err.message}`);
     }
   }
   const lines = [
     created.reused ? "Reused the existing Codex Desktop task; the prompt was not resent" : "Delegated through Codex Desktop", `threadId: ${created.threadId}`, `name: ${created.name}`,
-    `cwd: ${created.cwd}`, `projectId: ${created.projectId}`, `project: ${created.projectName}`,
+    `cwd: ${created.cwd}`,
+    ...(created.projectAssignmentStatus === "unverified"
+      ? [`expected projectId: ${created.expectedProjectId}`, `expected project: ${created.expectedProjectName ?? "(unnamed)"}`, "project assignment: unverified", created.projectAssignmentNote]
+      : [`projectId: ${created.projectId}`, `project: ${created.projectName ?? "(unnamed)"}`, ...(created.projectAssignmentStatus === "verified" ? ["project assignment: verified in Desktop's current listing"] : [])]),
     "permissions: Codex Desktop settings; no external app-server writer",
-    ...(created.promptChanged ? ["The edited brief was not sent. Use send_to_codex_thread with this threadId for a continuation, or a distinct title for separate work."] : []), ...notes,
+    ...(created.promptChanged ? [created.projectAssignmentStatus === "unverified"
+      ? "The edited brief was not sent. Inspect this task's project assignment before continuing it."
+      : "The edited brief was not sent. Use send_to_codex_thread with this threadId for a continuation, or a distinct title for separate work."] : []), ...notes,
   ];
+  if (created.projectAssignmentStatus === "unverified") return textResult([...lines, "status: existing task retained; project assignment needs inspection"].join("\n"));
   if (!waitForReply) return textResult([...lines, created.reused ? "status: existing task; read it to check its current progress" : "status: accepted; the task is running in Desktop"].join("\n"));
   try {
     const result = await desktopTasks.wait(created.threadId, { timeoutMs: Math.max(0, deadline - Date.now()) });

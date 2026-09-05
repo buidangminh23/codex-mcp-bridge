@@ -5,6 +5,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PLATFORM_LABEL, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
+import { exitForVersionRequest } from "../src/cli-version.mjs";
+
+exitForVersionRequest(import.meta.url);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const codexBin = resolveCodexBin(process.env.CODEX_EXE);

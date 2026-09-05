@@ -84,6 +84,7 @@ describe("Desktop task MCP integration", () => {
         return { threadId: "shared-receipt-task", hostId: "local", firstTurn: { status: "accepted" } };
       }
       if (operation === "read_thread") return { thread: { id: "shared-receipt-task", hostId: "local", cwd: home, title: "Shared title", status: completed ? "idle" : "active" }, turns: [{ id: "receipt-turn", status: completed ? "completed" : "inProgress" }] };
+      if (operation === "list_threads") return { pinnedThreads: [{ id: "shared-receipt-task", kind: "codex", hostId: "local", cwd: home, projectId: "receipt-project" }], threads: [] };
       throw new Error(`Unexpected operation ${operation}`);
     }, async ({ client, home, env, server }) => {
       const clients = [];
@@ -107,6 +108,7 @@ describe("Desktop task MCP integration", () => {
         const activeRetry = await simultaneous.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Slightly edited private brief" } });
         assert.equal(activeRetry.isError, undefined);
         assert.match(activeRetry.content[0].text, /Reused the existing Codex Desktop task; the prompt was not resent/);
+        assert.match(activeRetry.content[0].text, /^project assignment: verified in Desktop's current listing$/m);
         completed = true;
         await client.close();
         await simultaneous.client.close();
@@ -117,11 +119,48 @@ describe("Desktop task MCP integration", () => {
         assert.equal(retry.isError, undefined);
         assert.match(retry.content[0].text, /Reused the existing Codex Desktop task; the prompt was not resent/);
         assert.match(retry.content[0].text, /threadId: shared-receipt-task/);
-        assert.deepEqual(calls, ["list_projects", "create_thread", "read_thread", "read_thread"]);
+        assert.match(retry.content[0].text, /^projectId: receipt-project$/m);
+        assert.match(retry.content[0].text, /^project assignment: verified in Desktop's current listing$/m);
+        assert.deepEqual(calls, ["list_projects", "create_thread", "read_thread", "list_projects", "list_threads", "read_thread", "list_projects", "list_threads"]);
         assert.equal(server.connections, 0);
       } finally {
         releaseCreate();
         await Promise.all(clients.map((other) => other.close()));
+      }
+    });
+  });
+
+  it("retains an omitted task across MCP restart without claiming verified project assignment or resending the edited brief", async () => {
+    const calls = [];
+    await withDesktopReceiptBridge(async ({ operation }, home) => {
+      calls.push(operation);
+      if (operation === "list_projects") return { projects: [{ projectId: "receipt-project", projectKind: "local", hostId: "local", path: home, label: "Receipt test" }] };
+      if (operation === "create_thread") return { threadId: "omitted-receipt-task", hostId: "local", firstTurn: { status: "accepted" } };
+      if (operation === "read_thread") return { thread: { id: "omitted-receipt-task", hostId: "local", cwd: home, title: "Omitted title", status: "idle" }, turns: [] };
+      if (operation === "list_threads") return { pinnedThreads: [], threads: [] };
+      throw new Error(`Unexpected operation ${operation}`);
+    }, async ({ client, home, env, server }) => {
+      const args = { cwd: home, name: "Omitted title", prompt: "Original private brief", openInApp: false };
+      const accepted = await client.callTool({ name: "start_codex_thread", arguments: args });
+      assert.equal(accepted.isError, undefined);
+      await client.close();
+      const restarted = await additionalBridgeProcess({ home, env });
+      try {
+        const reused = await restarted.client.callTool({ name: "delegate_to_codex", arguments: { ...args, prompt: "Edited private brief" } });
+        assert.equal(reused.isError, undefined);
+        const text = reused.content[0].text;
+        assert.match(text, /Reused the existing Codex Desktop task; the prompt was not resent/);
+        assert.match(text, /^threadId: omitted-receipt-task$/m);
+        assert.match(text, /^expected projectId: receipt-project$/m);
+        assert.match(text, /^project assignment: unverified$/m);
+        assert.match(text, /absent from Desktop's recent\/pinned listing/);
+        assert.match(text, /^status: existing task retained; project assignment needs inspection$/m);
+        assert.doesNotMatch(text, /^projectId:|^project:|project assignment: verified|status: completed/m);
+        assert.deepEqual(calls, ["list_projects", "create_thread", "read_thread", "list_projects", "list_threads"]);
+        assert.deepEqual(creationReceipts(home).map(({ state, threadId }) => ({ state, threadId })), [{ state: "known", threadId: "omitted-receipt-task" }]);
+        assert.equal(server.connections, 0);
+      } finally {
+        await restarted.client.close();
       }
     });
   });
@@ -167,6 +206,7 @@ describe("Desktop task MCP integration", () => {
           return { threadId: "timeout-receipt-task", hostId: "local", firstTurn: { status: "accepted" } };
         }
         if (operation === "read_thread") return { thread: { id: "timeout-receipt-task", hostId: "local", cwd: home, title: "Timeout title", status: "active" }, turns: [{ id: "timeout-turn", status: "inProgress" }] };
+        if (operation === "list_threads") return { pinnedThreads: [], threads: [{ id: "timeout-receipt-task", kind: "codex", hostId: "local", cwd: home, projectId: "receipt-project" }] };
         if (operation === "wait_threads") {
           assert.deepEqual(creationReceipts(home).map(({ state, threadId }) => ({ state, threadId })), [{ state: "known", threadId: "timeout-receipt-task" }]);
           await gate;
@@ -191,7 +231,8 @@ describe("Desktop task MCP integration", () => {
           assert.equal(retry.isError, undefined);
           assert.match(retry.content[0].text, /Reused the existing Codex Desktop task/);
           assert.match(retry.content[0].text, /threadId: timeout-receipt-task/);
-          assert.deepEqual(calls, ["list_projects", "create_thread", "wait_threads", "read_thread"]);
+          assert.match(retry.content[0].text, /^project assignment: verified in Desktop's current listing$/m);
+          assert.deepEqual(calls, ["list_projects", "create_thread", "wait_threads", "read_thread", "list_projects", "list_threads"]);
           assert.equal(server.connections, 0);
         } finally {
           await restarted.client.close();

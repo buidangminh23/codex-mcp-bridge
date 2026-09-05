@@ -7,8 +7,11 @@ import { fileURLToPath } from "node:url";
 import { CodexAppServerClient } from "../src/app-server-client.mjs";
 import { bootstrapRelayThread, readRelayConfig, relayConfigPath, relaySocketPath, writeRelayConfig } from "../src/native-relay.mjs";
 import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
+import { exitForVersionRequest } from "../src/cli-version.mjs";
 
-const VERSION = "1.13.2";
+exitForVersionRequest(import.meta.url);
+
+const VERSION = "1.13.3";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = path.join(root, "src", "native-relay-companion.mjs");
 const serverName = process.env.CODEX_NATIVE_RELAY_NAME ?? "codex-native-relay";

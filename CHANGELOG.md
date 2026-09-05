@@ -2,6 +2,22 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.13.3] - 2026-09-05
+
+### Fixed
+
+- Verify the current saved project's identity, canonical directory, and task membership before reusing a Desktop creation receipt. Project drift is rejected; omitted recent/pinned metadata reports unverified assignment while preserving the task ID without resending or creating a duplicate.
+- Support `--version` and `-v` on every packaged command without starting servers, opening sockets, or mutating client configuration.
+
+### Added
+
+- Opt-in Bash, Zsh, and PowerShell installation footers for `npm install -g @minhspark/codex-mcp-bridge@latest`: first installation, changed version, unchanged version, failure, dry run, and unverifiable metadata are distinguished after npm's final output while preserving its exit code.
+- `codex-npm-footer-install` backs up and updates shell profiles idempotently, refuses unmanaged npm wrappers, supports removal, and explains how to reload an already-open terminal. Package installation does not change profiles automatically.
+
+### Verification
+
+- Regression coverage includes same-workspace project moves, deleted/repointed/replaced projects, incomplete Desktop snapshots, deadlines and authorization, shell argument boundaries, dry-run configuration, failure exit codes, metadata validation, and profile preservation.
+
 ## [1.13.2] - 2026-09-05
 
 ### Fixed

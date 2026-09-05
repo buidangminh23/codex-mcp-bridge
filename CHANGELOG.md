@@ -8,6 +8,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 - Verify the current saved project's identity, canonical directory, and task membership before reusing a Desktop creation receipt. Project drift is rejected; omitted recent/pinned metadata reports unverified assignment while preserving the task ID without resending or creating a duplicate.
 - Support `--version` and `-v` on every packaged command without starting servers, opening sockets, or mutating client configuration.
+- Preserve PowerShell's `$?` and conditional `&&`/`||` behavior as well as `$LASTEXITCODE` by invoking its footer through a script alias.
 
 ### Added
 

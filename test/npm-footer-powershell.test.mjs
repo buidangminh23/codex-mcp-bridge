@@ -58,7 +58,7 @@ if (exitCode === 0 && !dryRun && ["install", "i"].includes(args[0])) {
 process.exit(exitCode);
 `;
 
-function runFooter({ args = ["install", "-g", target], before, env = {}, application = false, prefix = false } = {}) {
+function runFooter({ args = ["install", "-g", target], before, env = {}, application = false, prefix = false, chain = "" } = {}) {
   assert.equal(pwshProbe.status, 0, pwshProbe.stderr || pwshProbe.error?.message);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-pwsh-footer-"));
   try {
@@ -68,6 +68,7 @@ function runFooter({ args = ["install", "-g", target], before, env = {}, applica
     const effectiveRoot = prefix ? path.join(prefixDirectory, "npm-root") : packageRoot;
     const callsPath = path.join(sandbox, "calls.jsonl");
     const runnerPath = path.join(sandbox, "runner.ps1");
+    const resultPath = path.join(sandbox, "result.json");
     fs.mkdirSync(binDirectory);
     fs.writeFileSync(path.join(binDirectory, "fake-npm.mjs"), fakeNpm);
     if (application && process.platform === "win32") {
@@ -83,7 +84,8 @@ function runFooter({ args = ["install", "-g", target], before, env = {}, applica
       fs.writeFileSync(metadataPath, before === "invalid" ? "{" : JSON.stringify({ name: packageName, version: before }));
     }
     const effectiveArgs = args.map((argument) => argument.replaceAll("{PREFIX}", prefixDirectory));
-    fs.writeFileSync(runnerPath, "$resolvedNpm = Get-Command npm -CommandType Application,ExternalScript | Select-Object -First 1\nif (-not $resolvedNpm.Source.StartsWith($env:BRIDGE_FOOTER_BIN)) { throw 'Refusing to invoke a real npm during the fixture test.' }\n. $env:BRIDGE_FOOTER_SCRIPT\n. $env:BRIDGE_FOOTER_SCRIPT\n$npmArguments = @($env:BRIDGE_FOOTER_ARGS | ConvertFrom-Json)\n$global:LASTEXITCODE = 91\nnpm @npmArguments\nexit $LASTEXITCODE\n");
+    const suffix = chain === "and" ? " && Write-Output 'unexpected continuation'" : chain === "or" ? " || Write-Output 'failure handled'" : "";
+    fs.writeFileSync(runnerPath, `$resolvedNpm = Get-Command npm -CommandType Application,ExternalScript | Select-Object -First 1\nif (-not $resolvedNpm.Source.StartsWith($env:BRIDGE_FOOTER_BIN)) { throw 'Refusing to invoke a real npm during the fixture test.' }\n. $env:BRIDGE_FOOTER_SCRIPT\n. $env:BRIDGE_FOOTER_SCRIPT\n$npmArguments = @($env:BRIDGE_FOOTER_ARGS | ConvertFrom-Json)\n$global:LASTEXITCODE = 91\nnpm @npmArguments${suffix}\n$npmSuccess = $?\n$npmExitCode = $LASTEXITCODE\n[System.IO.File]::WriteAllText($env:BRIDGE_FOOTER_RESULT, (@{ success = $npmSuccess; code = $npmExitCode } | ConvertTo-Json -Compress))\nexit $npmExitCode\n`);
     const result = spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-File", runnerPath], {
       encoding: "utf8",
       timeout: 20_000,
@@ -95,6 +97,7 @@ function runFooter({ args = ["install", "-g", target], before, env = {}, applica
         BRIDGE_FOOTER_NODE: process.execPath,
         BRIDGE_FOOTER_ROOT: packageRoot,
         BRIDGE_FOOTER_CALLS: callsPath,
+        BRIDGE_FOOTER_RESULT: resultPath,
         BRIDGE_FOOTER_ARGS: JSON.stringify(effectiveArgs),
         BRIDGE_FOOTER_DRY_RUN: "false",
         BRIDGE_FOOTER_AFTER: "1.13.2",
@@ -106,7 +109,8 @@ function runFooter({ args = ["install", "-g", target], before, env = {}, applica
     });
     assert.ifError(result.error);
     const calls = fs.existsSync(callsPath) ? fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse) : [];
-    return { ...result, calls, effectiveArgs, prefixDirectory };
+    const outcome = fs.existsSync(resultPath) ? JSON.parse(fs.readFileSync(resultPath, "utf8")) : null;
+    return { ...result, calls, effectiveArgs, prefixDirectory, outcome };
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -114,6 +118,7 @@ function runFooter({ args = ["install", "-g", target], before, env = {}, applica
 
 function assertFooter(result, expected, exitCode = 0) {
   assert.equal(result.status, exitCode, result.stderr);
+  assert.deepEqual(result.outcome, { success: exitCode === 0, code: exitCode });
   assert.equal(result.stdout.trim().split(/\r?\n/).at(-1), expected);
   assert.match(result.stdout, /^npm native stdout\r?\n/);
   assert.match(result.stderr, /npm native stderr/);
@@ -122,6 +127,18 @@ function assertFooter(result, expected, exitCode = 0) {
 }
 
 describe("PowerShell npm installation footer", { skip: missingPwsh ? "pwsh is not installed" : false }, () => {
+  it("preserves PowerShell failure status and conditional command behavior", () => {
+    for (const application of [false, true]) {
+      const failed = runFooter({ application, env: { BRIDGE_FOOTER_EXIT: "37" } });
+      assert.deepEqual(failed.outcome, { success: false, code: 37 });
+      const chained = runFooter({ application, chain: "and", env: { BRIDGE_FOOTER_EXIT: "37" } });
+      assert.equal(chained.status, 37);
+      assert.doesNotMatch(chained.stdout, /unexpected continuation/);
+      const fallback = runFooter({ application, chain: "or", env: { BRIDGE_FOOTER_EXIT: "37" } });
+      assert.equal(fallback.status, 37);
+      assert.match(fallback.stdout, /failure handled/);
+    }
+  });
   it("reports a verified first installation after native output", () => {
     assertFooter(runFooter(), `Successfully installed: ${packageName} v1.13.2`);
   });

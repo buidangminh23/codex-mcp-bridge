@@ -20,7 +20,8 @@ export const PLATFORM_LABEL = IS_MACOS
       : process.platform;
 
 const CODEX_DESKTOP_APP_MACOS = "/Applications/ChatGPT.app";
-const CODEX_DESKTOP_BIN_MACOS = `${CODEX_DESKTOP_APP_MACOS}/Contents/Resources/codex`;
+const CODEX_DESKTOP_RESOURCES_MACOS = `${CODEX_DESKTOP_APP_MACOS}/Contents/Resources`;
+const CODEX_DESKTOP_BIN_MACOS = `${CODEX_DESKTOP_RESOURCES_MACOS}/codex`;
 const CODEX_THREAD_URL_PREFIX = "codex://threads/";
 
 /**
@@ -174,6 +175,59 @@ export function resolveCodexBin(explicit) {
     if (isRunnable(candidate)) return candidate;
   }
   return "codex";
+}
+
+/**
+ * Codex Desktop authenticates the code-signing identity of whatever process
+ * connects to its native tools pipe, and closes the connection before reading
+ * a single byte when that identity is not the vendor's - the app records
+ * `dynamic_app_tools_peer_rejected`. A companion launched by the user's own
+ * Node build carries the Node.js Foundation signature rather than OpenAI's,
+ * so the relay still reports itself installed and still creates its socket
+ * while every delivery fails; the symptom surfaces nowhere near the cause.
+ * The runtime therefore has to be the one the app ships, which is also the
+ * one the app hands its own bundled plugin through CODEX_MCP_NODE_PATH.
+ *
+ * The vendor's launcher additionally falls back to a cached runtime under
+ * ~/.cache/codex-runtimes and to a bare PATH lookup. Both are deliberately
+ * absent here: the cached binary measured on a real install is the same
+ * version and within 1.3 KB of the bundled one, yet carries the Node.js
+ * Foundation signature, so copying that list wholesale would reproduce the
+ * rejection this resolves under a different file name. For the same reason
+ * the runtime is never taken from PATH or from a version match.
+ *
+ * Only macOS ships this bundle and only macOS was measured to enforce the
+ * check, so the vendor-owned rungs are gated by platform. Every other
+ * platform keeps the runtime it has always used, and the last rung is an
+ * unconditional real path rather than a bare command name because the caller
+ * writes the result straight into client configuration.
+ */
+export function resolveCodexDesktopNodeBin(
+  explicit,
+  { env = process.env, platform = process.platform, resourcesDir = CODEX_DESKTOP_RESOURCES_MACOS } = {},
+) {
+  const bundledNode = (dir) => path.join(dir, "cua_node", "bin", platform === "win32" ? "node.exe" : "node");
+  const vendorRungs =
+    platform === "darwin"
+      ? [
+          [env.CODEX_MCP_NODE_PATH, "CODEX_MCP_NODE_PATH"],
+          [env.CODEX_BROWSER_USE_NODE_PATH, "CODEX_BROWSER_USE_NODE_PATH"],
+          [
+            env.CODEX_ELECTRON_RESOURCES_PATH && bundledNode(env.CODEX_ELECTRON_RESOURCES_PATH),
+            "CODEX_ELECTRON_RESOURCES_PATH",
+          ],
+          [bundledNode(resourcesDir), "Codex Desktop bundle"],
+        ]
+      : [];
+
+  for (const [candidate, source] of [
+    [explicit, "explicit"],
+    [env.CODEX_NATIVE_RELAY_NODE, "CODEX_NATIVE_RELAY_NODE"],
+    ...vendorRungs,
+  ]) {
+    if (candidate && isRunnable(candidate)) return { path: candidate, source };
+  }
+  return { path: process.execPath, source: "process.execPath" };
 }
 
 /**

@@ -13,6 +13,7 @@ import {
   isWritableDir,
   launchAgentPath,
   resolveCodexBin,
+  resolveCodexDesktopNodeBin,
   resolveWorkspacePath,
   spawnEnv,
 } from "../src/platform.mjs";
@@ -346,5 +347,118 @@ describe("workspace resolution", () => {
     const workspace = resolveWorkspacePath(other);
     assert.equal(workspace.path, other);
     assert.equal(workspace.remapped, false);
+  });
+});
+
+describe("resolveCodexDesktopNodeBin", () => {
+  const runtimeDir = path.join(sandbox, "runtimes");
+  const nodeName = IS_WINDOWS ? "node.exe" : "node";
+
+  const stub = (name) => {
+    const target = path.join(runtimeDir, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(target, 0o755);
+    return target;
+  };
+
+  const bundle = (label) => {
+    const resourcesDir = path.join(runtimeDir, label, "Contents", "Resources");
+    const target = path.join(resourcesDir, "cua_node", "bin", nodeName);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(target, 0o755);
+    return { resourcesDir, target };
+  };
+
+  it("prefers the explicit runtime over every discovered one", () => {
+    const explicit = stub("explicit-node");
+    const { resourcesDir } = bundle("explicit-case");
+    const runtime = resolveCodexDesktopNodeBin(explicit, {
+      env: { CODEX_NATIVE_RELAY_NODE: stub("env-node") },
+      platform: "darwin",
+      resourcesDir,
+    });
+    assert.equal(runtime.path, explicit);
+    assert.equal(runtime.source, "explicit");
+  });
+
+  it("honours CODEX_NATIVE_RELAY_NODE on every platform", () => {
+    const override = stub("override-node");
+    for (const platform of ["darwin", "win32", "linux"]) {
+      const runtime = resolveCodexDesktopNodeBin(undefined, {
+        env: { CODEX_NATIVE_RELAY_NODE: override },
+        platform,
+        resourcesDir: path.join(runtimeDir, "absent"),
+      });
+      assert.equal(runtime.path, override, platform);
+      assert.equal(runtime.source, "CODEX_NATIVE_RELAY_NODE", platform);
+    }
+  });
+
+  it("falls back to the Codex Desktop bundle on macOS", () => {
+    const { resourcesDir, target } = bundle("bundle-case");
+    const runtime = resolveCodexDesktopNodeBin(undefined, { env: {}, platform: "darwin", resourcesDir });
+    assert.equal(runtime.path, target);
+    assert.equal(runtime.source, "Codex Desktop bundle");
+  });
+
+  it("prefers the runtime the app itself declares over the default bundle path", () => {
+    const declared = stub("declared-node");
+    const { resourcesDir } = bundle("declared-case");
+    const runtime = resolveCodexDesktopNodeBin(undefined, {
+      env: { CODEX_MCP_NODE_PATH: declared },
+      platform: "darwin",
+      resourcesDir,
+    });
+    assert.equal(runtime.path, declared);
+    assert.equal(runtime.source, "CODEX_MCP_NODE_PATH");
+  });
+
+  it("resolves the bundle relative to CODEX_ELECTRON_RESOURCES_PATH before the default location", () => {
+    const relocated = bundle("relocated-case");
+    const fallback = bundle("default-case");
+    const runtime = resolveCodexDesktopNodeBin(undefined, {
+      env: { CODEX_ELECTRON_RESOURCES_PATH: relocated.resourcesDir },
+      platform: "darwin",
+      resourcesDir: fallback.resourcesDir,
+    });
+    assert.equal(runtime.path, relocated.target);
+    assert.equal(runtime.source, "CODEX_ELECTRON_RESOURCES_PATH");
+  });
+
+  /**
+   * The vendor rungs exist because macOS rejects a foreign code-signing
+   * identity on its native tools pipe. No other platform was measured to do
+   * that, and Windows already runs the relay under the user's own Node, so
+   * this asserts the patch cannot quietly move a working install onto a
+   * binary nobody has tested there.
+   */
+  it("ignores the vendor runtimes off macOS even when the app variables are set", () => {
+    const declared = stub("windows-declared-node");
+    const { resourcesDir } = bundle("off-macos-case");
+    for (const platform of ["win32", "linux"]) {
+      const runtime = resolveCodexDesktopNodeBin(undefined, {
+        env: {
+          CODEX_MCP_NODE_PATH: declared,
+          CODEX_BROWSER_USE_NODE_PATH: declared,
+          CODEX_ELECTRON_RESOURCES_PATH: resourcesDir,
+        },
+        platform,
+        resourcesDir,
+      });
+      assert.equal(runtime.path, process.execPath, platform);
+      assert.equal(runtime.source, "process.execPath", platform);
+    }
+  });
+
+  it("skips candidates that do not exist and reports the running runtime last", () => {
+    const runtime = resolveCodexDesktopNodeBin(path.join(runtimeDir, "missing-explicit"), {
+      env: { CODEX_NATIVE_RELAY_NODE: path.join(runtimeDir, "missing-env") },
+      platform: "darwin",
+      resourcesDir: path.join(runtimeDir, "missing-bundle"),
+    });
+    assert.equal(runtime.path, process.execPath);
+    assert.equal(runtime.source, "process.execPath");
   });
 });

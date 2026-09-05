@@ -6,7 +6,16 @@ import { fileURLToPath } from "node:url";
 
 import { CodexAppServerClient } from "../src/app-server-client.mjs";
 import { bootstrapRelayThread, readRelayConfig, relayConfigPath, relaySocketPath, writeRelayConfig } from "../src/native-relay.mjs";
-import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
+import {
+  IS_MACOS,
+  IS_WINDOWS,
+  PLATFORM_LABEL,
+  hasCodexDesktopApp,
+  homeDir,
+  resolveCodexBin,
+  resolveCodexDesktopNodeBin,
+  spawnEnv,
+} from "../src/platform.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 
 exitForVersionRequest(import.meta.url);
@@ -56,9 +65,32 @@ try {
 } catch {
   // not registered yet
 }
-run(["mcp", "add", serverName, "--", process.execPath, entry]);
+/**
+ * Registering under whichever Node happens to run this installer is what made
+ * the companion unreachable on macOS: Codex Desktop rejects a peer whose
+ * code-signing identity is not the vendor's, so the relay reported itself
+ * installed while every delivery failed. Resolve a runtime the app trusts
+ * instead, and print it - a mismatch has to be visible here rather than
+ * inferred later from a delivery that never confirms.
+ */
+const runtime = resolveCodexDesktopNodeBin();
+
+run(["mcp", "add", serverName, "--", runtime.path, entry]);
 
 console.log(`platform: ${PLATFORM_LABEL}`);
+console.log(`relay runtime: ${runtime.path} (${runtime.source})`);
+if (runtime.source === "process.execPath" && hasCodexDesktopApp()) {
+  console.log(
+    "\nNOTE: no Codex Desktop runtime was found, so the companion is registered under this Node.",
+  );
+  console.log(
+    "Codex Desktop rejects peers whose code-signing identity is not its own (untrusted-code-signing-identity),",
+  );
+  console.log(
+    "so delivery can fail while the relay still reports itself installed. Set CODEX_NATIVE_RELAY_NODE to the",
+  );
+  console.log("runtime shipped inside Codex Desktop if that happens.");
+}
 console.log(`registered MCP server "${serverName}" with Codex:`);
 console.log(run(["mcp", "get", serverName]));
 

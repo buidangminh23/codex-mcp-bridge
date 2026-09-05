@@ -40,6 +40,126 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
 }
 
 describe("Desktop task MCP integration", () => {
+  it("uses only Desktop for status, filtered listing, read, and open even when legacy autostart is requested", async () => {
+    const calls = [];
+    let relay;
+    const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
+    const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-diagnostics-${randomUUID()}` : path.join(socketRoot, "d.sock");
+    try {
+      await withBridge(() => { throw new Error("Desktop diagnostics must not contact an external app-server"); }, async ({ client, home, server }) => {
+        const status = await client.callTool({ name: "codex_bridge_status", arguments: {} });
+        assert.equal(status.isError, undefined);
+        assert.match(status.content[0].text, /native relay:   available; verified/);
+        assert.match(status.content[0].text, /autostart:      off/);
+        assert.doesNotMatch(status.content[0].text, /Start one with/);
+        const listed = await client.callTool({ name: "list_codex_threads", arguments: { cwd: home, searchTerm: "TARGET", limit: 5 } });
+        assert.equal(listed.isError, undefined);
+        assert.match(listed.content[0].text, /1 Codex thread\(s\) via Codex Desktop/);
+        assert.match(listed.content[0].text, /title: Target task/);
+        assert.match(listed.content[0].text, /updated: 2026-09-05/);
+        assert.doesNotMatch(listed.content[0].text, /hidden-remote|hidden-chat|hidden-outside|misleading-summary/);
+        const loaded = await client.callTool({ name: "list_codex_threads", arguments: { loadedOnly: true } });
+        assert.equal(loaded.isError, true);
+        assert.match(loaded.content[0].text, /does not expose a loaded-only/);
+        const read = await client.callTool({ name: "read_codex_thread", arguments: { threadId: "target" } });
+        assert.equal(read.isError, undefined);
+        const opened = await client.callTool({ name: "open_codex_thread", arguments: { threadId: "target" } });
+        assert.equal(opened.isError, undefined);
+        const stopped = await client.callTool({ name: "stop_codex_app_server", arguments: {} });
+        assert.equal(stopped.isError, undefined);
+        assert.match(stopped.content[0].text, /left unchanged/);
+        assert.deepEqual(calls, ["list_projects", "list_threads", "read_thread", "read_thread", "read_thread", "navigate_to_codex_page"]);
+        assert.equal(server.connections, 0);
+      }, async (home) => {
+        relay = new RelaySocketServer({ socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation }) => {
+          calls.push(operation);
+          const target = { id: "target", kind: "codex", hostId: "local", cwd: home, title: "Target task", summary: "misleading-summary", status: "active", updatedAt: 1788597586 };
+          let result;
+          if (operation === "list_projects") result = { projects: [{ projectId: "project-id", projectKind: "local", hostId: "local", path: home }] };
+          else if (operation === "list_threads") result = { pinnedThreads: [target], threads: [target, { ...target, id: "hidden-remote", hostId: "remote" }, { ...target, id: "hidden-chat", kind: "chatgpt" }, { ...target, id: "hidden-outside", cwd: root }] };
+          else if (operation === "read_thread") result = { thread: target, turns: [] };
+          else if (operation === "navigate_to_codex_page") result = { navigated: true };
+          else throw new Error(`Unexpected operation ${operation}`);
+          return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
+        } });
+        await relay.start();
+        return { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: socketPath, CODEX_BRIDGE_AUTOSTART: "1", CODEX_APP_SERVER_URL: "invalid-unused-legacy-endpoint" };
+      });
+    } finally {
+      relay?.stop();
+      fs.rmSync(socketRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails clearly when the Desktop relay is absent without falling back for any diagnostic or task operation", async () => {
+    await withBridge(() => { throw new Error("Missing native relay must not trigger a legacy request"); }, async ({ client, home, server }) => {
+      for (const [name, args] of [
+        ["codex_bridge_status", {}], ["list_codex_threads", {}],
+        ["read_codex_thread", { threadId: "task" }], ["open_codex_thread", { threadId: "task" }],
+        ["interrupt_codex_turn", { threadId: "task", turnId: "turn" }],
+        ["send_to_codex_thread", { threadId: "task", prompt: "Do not send externally" }],
+        ["delegate_to_codex", { cwd: home, prompt: "Do not create externally" }],
+        ["start_codex_thread", { cwd: home, prompt: "Do not create externally" }],
+      ]) {
+        const result = await client.callTool({ name, arguments: args });
+        assert.equal(result.isError, true, name);
+        assert.match(result.content[0].text, /Desktop-only mode will not start or use an external app-server/, name);
+        assert.doesNotMatch(result.content[0].text, /Start one with/, name);
+      }
+      assert.equal(server.connections, 0);
+    }, (home) => ({ CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-missing-${randomUUID()}` : path.join(home, "absent.sock"), CODEX_BRIDGE_AUTOSTART: "1", CODEX_APP_SERVER_URL: "invalid-unused-legacy-endpoint" }));
+  });
+
+  it("serializes overlapping Desktop sends to one thread while another thread can finish", async () => {
+    const sends = [];
+    const turns = new Map();
+    let release;
+    let observed;
+    const firstWaiting = new Promise((resolve) => { observed = resolve; });
+    const gate = new Promise((resolve) => { release = resolve; });
+    let relay;
+    const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
+    const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-concurrency-${randomUUID()}` : path.join(socketRoot, "d.sock");
+    try {
+      await withBridge(() => { throw new Error("Desktop sends must not reach the app-server"); }, async ({ client, server }) => {
+        const send = (threadId) => client.callTool({ name: "send_to_codex_thread", arguments: { threadId, prompt: "Task", openInApp: false } });
+        const first = send("same");
+        await firstWaiting;
+        const second = send("same");
+        const other = await send("other");
+        assert.equal(other.isError, undefined);
+        assert.deepEqual(sends, ["same:1", "other:1"]);
+        release();
+        const results = await Promise.all([first, second]);
+        assert.ok(results.every((result) => !result.isError));
+        assert.deepEqual(sends, ["same:1", "other:1", "same:2"]);
+        assert.equal(server.connections, 0);
+      }, async (home) => {
+        relay = new RelaySocketServer({ socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
+          const threadId = args.threadId ?? args.targets?.[0]?.threadId;
+          let result;
+          if (operation === "read_thread") result = { thread: { id: threadId, hostId: "local", cwd: home }, turns: [{ id: `${threadId}:${turns.get(threadId) ?? 0}` }] };
+          else if (operation === "send_message_to_thread") {
+            turns.set(threadId, (turns.get(threadId) ?? 0) + 1);
+            sends.push(`${threadId}:${turns.get(threadId)}`);
+            result = { threadId, status: "accepted" };
+          } else if (operation === "wait_threads") {
+            const turnId = `${threadId}:${turns.get(threadId)}`;
+            if (turnId === "same:1") { observed(); await gate; }
+            result = { polls: [{ thread: { id: threadId, hostId: "local", status: { type: "idle" } }, latestTurn: { id: turnId, status: "completed" }, latestAssistantMessage: { turnId, phase: "final_answer", text: "COMPLETE" } }] };
+          } else throw new Error(`Unexpected operation ${operation}`);
+          return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
+        } });
+        await relay.start();
+        return { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: socketPath, CODEX_BRIDGE_AUTOSTART: "1", CODEX_APP_SERVER_URL: "invalid-unused-legacy-endpoint" };
+      });
+    } finally {
+      release();
+      relay?.stop();
+      fs.rmSync(socketRoot, { recursive: true, force: true });
+    }
+  });
+
   it("creates, assigns, opens, and waits without sending anything to a second app-server", async () => {
     const calls = [];
     let relay;
@@ -198,6 +318,7 @@ describe("check command exit status", () => {
     const result = await runCheck({
       PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "",
       CODEX_APP_SERVER_URL: "ws://127.0.0.1:1", CODEX_BRIDGE_AUTOSTART: "0",
+      CODEX_BRIDGE_DESKTOP_TASKS: "0",
     });
     assert.notEqual(result.code, 0);
     assert.match(result.output, /No Codex app-server reachable/);

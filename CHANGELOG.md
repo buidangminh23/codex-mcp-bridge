@@ -2,6 +2,19 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.13.1] - 2026-09-05
+
+### Fixed
+
+- Make Desktop task mode independent of the external app-server for status, thread discovery, diagnostics, and fallback delivery. A missing native relay reports an actionable failure without starting another process or taking a task's writer lock.
+- Verify native connectivity through Desktop projects and list its authorized local recent/pinned Codex tasks. Explain the snapshot coverage and reject unsupported `loadedOnly` queries instead of returning external-server state.
+- Persist external autostart off when installing Claude Desktop in Desktop task mode, while preserving explicit legacy mode and existing permission settings. Reconnect the native companion after upgrading to enable the new allowlisted thread-list operation.
+
+### Verification
+
+- Windows suite: 300 passed, 0 failed, 8 platform-specific skips. Added absent-relay, zero-external-connection, native-list authorization, and overlapping-send regressions.
+- Live Windows checks returned bridge 1.13.1, eight native local projects, recent Desktop tasks, and an existing task's history while port 8791 remained stopped.
+
 ## [1.13.0] - 2026-09-05
 
 ### Added

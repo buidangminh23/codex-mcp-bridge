@@ -24,7 +24,11 @@ Call `delegate_to_codex` with `cwd`, `prompt`, and optionally `name`. The bridge
 
 `start_codex_thread` requires `prompt` in Desktop mode and returns after acceptance. Use `delegate_to_codex` to also wait for the reply. `send_to_codex_thread` continues the existing Desktop task without attaching another writer; its cwd cannot be changed. On timeout, the task continues. Inspect it in Desktop and use its Stop button to interrupt it. Quota failures and approval/input requests remain visible; delivery does not bypass them. An uncertain creation or send is never automatically repeated through another backend.
 
-The updated companion exposes a separate `-desktop-tasks` endpoint so a previous companion holding the legacy reply socket need not be killed during an upgrade. `codex_bridge_status` reports the selected mode; `native_relay_status` reports both endpoints.
+The updated companion exposes a separate `-desktop-tasks` endpoint so a previous companion holding the legacy reply socket need not be killed during an upgrade. `codex_bridge_status` verifies the native connection through Desktop's local project list; `native_relay_status` reports both endpoints. Reconnect the companion after upgrading so it accepts the current native operations.
+
+Desktop mode never contacts, starts, or falls back to an external app-server, including during status checks and thread discovery. The Claude Desktop installer records `CODEX_BRIDGE_AUTOSTART=0` in this mode. If Desktop or its companion is unavailable, the bridge reports the failure and leaves existing tasks in Desktop. `stop_codex_app_server` is a no-op in Desktop mode; stop an obsolete external service through its own launcher after confirming it has no active work.
+
+`list_codex_threads` lists authorized local Codex tasks from Desktop's latest 50 non-pinned tasks and all pinned tasks, then applies workspace/title filters and the requested result limit. This snapshot does not cover the complete archive. Desktop does not expose the external server's `loadedOnly` state; requesting it returns an explanation without contacting that server.
 
 ## Architecture
 
@@ -46,7 +50,7 @@ both bridges ───────┤ named pipe / unix socket                  
                      └────────────────────────────────────────────────────────────────────┘
 ```
 
-- The app-server is a **singleton per port**. The bridge probes `http://127.0.0.1:8791/readyz`; if nothing answers it spawns a detached `codex app-server --listen ws://127.0.0.1:8791`, which keeps running after the bridge exits.
+- In app-server mode, the app-server is a **singleton per port**. The bridge probes `http://127.0.0.1:8791/readyz`; with autostart enabled, if nothing answers it spawns a detached `codex app-server --listen ws://127.0.0.1:8791`, which keeps running after the bridge exits. Desktop mode does not use this path.
 - Every client pointed at the same URL shares **one app-server**, so `thread/resume` with a `threadId` rejoins the running thread instead of opening a new session.
 - The bridge keeps exactly one WebSocket, calls `initialize` once, and routes notifications by `threadId`, so parallel threads never bleed into each other.
 - In app-server mode, `delegate_to_codex` starts the thread at the supplied `cwd`, names it, sends the prompt, and unsubscribes that thread after a terminal turn. It opens `codex://threads/<id>` only after unload is confirmed; other threads on the shared app-server keep running. Desktop mode instead creates and assigns the task through the app immediately.
@@ -314,7 +318,7 @@ On macOS and Linux the `codex` launcher is a Node script with a `#!/usr/bin/env 
 |---|---|---|
 | `delegate_to_codex` | Creates a named Codex thread at the requested project `cwd`, sends Claude's prompt, returns the reply, releases the bridge writer lock, and opens the exact session in Codex Desktop when enabled. | destructive |
 | `send_to_codex_thread` | Sends a prompt as a user turn into `threadId`, waits for `turn/completed`, returns Codex's reply plus an activity trail (commands run, files changed). | destructive |
-| `list_codex_threads` | Lists threads (id, title, cwd, last update, status) so you can pick the **exact** `threadId`. `loadedOnly: true` shows only threads live inside the app-server. Windows and macOS rows carry a `codex://threads/<id>` deep link. | read-only |
+| `list_codex_threads` | Lists threads (id, title, cwd, last update, status) so you can pick the **exact** `threadId`. Desktop mode uses recent/pinned authorized local tasks; app-server mode supports `loadedOnly: true`. Windows and macOS rows carry a `codex://threads/<id>` deep link. | read-only |
 | `start_codex_thread` | Opens a new Codex thread at a permitted `cwd`, optionally names it, and returns its `threadId`; the bridge applies its configured safe sandbox and approval policy. | writes |
 | `read_codex_thread` | Reads the recent conversation without sending anything. | read-only |
 | `interrupt_codex_turn` | Stops a turn that is still running. | destructive |
@@ -520,7 +524,7 @@ The bridge reads these from the environment its MCP client hands it — there is
 |---|---|---|
 | `CODEX_APP_SERVER_URL` | `ws://127.0.0.1:8791` | Shared **loopback-only** app-server endpoint. Non-loopback endpoints are rejected because this bridge does not implement remote WebSocket authentication. |
 | `CODEX_BIN` | auto-detected | Path to `codex` used for autostart. |
-| `CODEX_BRIDGE_AUTOSTART` | `1` | `0` = never spawn an app-server; one must already be running. |
+| `CODEX_BRIDGE_AUTOSTART` | `1` in app-server mode | `0` = never spawn an external app-server. Always off in Desktop mode, which does not need one. |
 | `CODEX_BRIDGE_THREAD_POLICY` | `owned` in the direct server; installer writes `roots` for new v1.11.2 entries | What authorizes a thread: `owned` (created by this bridge, or listed in `CODEX_BRIDGE_ALLOWED_THREADS`) or `roots` (working inside `CODEX_BRIDGE_ALLOWED_ROOTS`). Existing config values are preserved on upgrade. |
 | `CODEX_BRIDGE_ALLOWED_THREADS` | empty | Exact comma-separated thread IDs permitted for read/send/interrupt/open/list; `*` explicitly permits every thread ID. Under `roots`, the workspace check still runs. |
 | `CODEX_BRIDGE_ALLOWED_ROOTS` | `*` in the v1.11.2 installer | Absolute project directories permitted for `cwd`, separated by `:` (`;` on Windows); `*` means every usable workspace. |

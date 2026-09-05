@@ -50,6 +50,7 @@ cfg.mcpServers = cfg.mcpServers ?? {};
  */
 const previousEnv = (reset ? {} : cfg.mcpServers["codex-bridge"]?.env) ?? {};
 const settled = (name, fallback) => process.env[name] ?? previousEnv[name] ?? fallback;
+const desktopMode = settled("CODEX_BRIDGE_DESKTOP_TASKS", desktopTasksConfigured() ? "1" : "0");
 
 const kept = Object.keys(previousEnv).filter(
   (name) => process.env[name] === undefined && name !== "CODEX_BIN",
@@ -86,7 +87,8 @@ cfg.mcpServers["codex-bridge"] = {
     CODEX_BRIDGE_SANDBOX: settled("CODEX_BRIDGE_SANDBOX", "workspace-write"),
     CODEX_BRIDGE_OPEN_IN_APP: settled("CODEX_BRIDGE_OPEN_IN_APP", IS_WINDOWS ? "1" : "0"),
     CODEX_BRIDGE_RELEASE_AFTER_TURN: settled("CODEX_BRIDGE_RELEASE_AFTER_TURN", IS_WINDOWS ? "1" : "0"),
-    CODEX_BRIDGE_DESKTOP_TASKS: settled("CODEX_BRIDGE_DESKTOP_TASKS", desktopTasksConfigured() ? "1" : "0"),
+    CODEX_BRIDGE_DESKTOP_TASKS: desktopMode,
+    CODEX_BRIDGE_AUTOSTART: desktopMode === "1" ? "0" : settled("CODEX_BRIDGE_AUTOSTART", "1"),
     ...(process.env.CODEX_BRIDGE_ALLOWED_THREADS !== undefined
       ? { CODEX_BRIDGE_ALLOWED_THREADS: process.env.CODEX_BRIDGE_ALLOWED_THREADS }
       : {}),

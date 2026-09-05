@@ -1,4 +1,4 @@
-import { NativeDesktopRelay, desktopTaskSocketPath } from "./native-relay.mjs";
+import { NativeDesktopRelay, desktopTaskSocketPath, desktopTasksConfigured } from "./native-relay.mjs";
 import { runTurn } from "./turn.mjs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
@@ -45,11 +45,59 @@ export class DesktopTaskDelivery {
     this.security = security;
     this.sleep = sleep;
     this.now = now;
+    this.threadOperations = new Map();
   }
 
   async request(operation, args) {
-    const response = await this.relay.requestDesktop(operation, args);
-    return response.result;
+    try {
+      const response = await this.relay.requestDesktop(operation, args);
+      return response.result;
+    } catch (err) {
+      throw new Error(`Codex Desktop operation ${operation} failed: ${err.message}. Desktop-only mode will not start or use an external app-server. Open Codex Desktop and reconnect its native relay, then inspect the existing task before retrying a send.`, { cause: err });
+    }
+  }
+
+  async withThread(threadId, operation) {
+    const previous = this.threadOperations.get(threadId) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(operation);
+    this.threadOperations.set(threadId, current);
+    try {
+      return await current;
+    } finally {
+      if (this.threadOperations.get(threadId) === current) this.threadOperations.delete(threadId);
+    }
+  }
+
+  async status() {
+    try {
+      const response = await this.request("list_projects", {});
+      if (!Array.isArray(response?.projects)) throw new Error("Desktop returned no project list");
+      return { available: true, socketPath: this.relay.socketPath, localProjects: response.projects.filter((project) => project.projectKind === "local" && project.hostId === "local").length };
+    } catch (err) {
+      return { available: false, socketPath: this.relay.socketPath, reason: err.message };
+    }
+  }
+
+  async list({ limit = 15, cwd, searchTerm, loadedOnly = false } = {}) {
+    if (loadedOnly) throw new Error("Codex Desktop does not expose a loaded-only thread list. Omit loadedOnly to list its recent and pinned local tasks; no external app-server was contacted.");
+    if (cwd) this.security.assertCwd(cwd);
+    const response = await this.request("list_threads", { limit: 50 });
+    if (!Array.isArray(response?.threads) || !Array.isArray(response?.pinnedThreads)) throw new Error("Codex Desktop returned an invalid thread list");
+    if (response.unavailableHosts?.some((host) => host === "local" || host?.hostId === "local")) throw new Error("The local Codex Desktop host is unavailable; its thread list could not be confirmed");
+    const seen = new Set();
+    const rows = [...response.pinnedThreads, ...response.threads].filter((thread) => {
+      if (thread.kind !== "codex" || thread.hostId !== "local" || !thread.id || !thread.cwd || seen.has(thread.id)) return false;
+      seen.add(thread.id);
+      if (!this.security.isThreadAuthorized(thread.id, thread.cwd)) return false;
+      try {
+        this.security.assertCwd(thread.cwd);
+        if (cwd && path.relative(realpathSync.native(cwd), realpathSync.native(thread.cwd))) return false;
+      } catch {
+        return false;
+      }
+      return !searchTerm || String(thread.title ?? "").toLowerCase().includes(searchTerm.toLowerCase());
+    }).slice(0, limit);
+    return { rows, coverage: "Codex Desktop's latest 50 non-pinned tasks and all pinned tasks; local Codex workspaces only" };
   }
 
   async create({ cwd, prompt, name, model, effort }) {
@@ -144,6 +192,7 @@ export function createThreadDelivery({
   relay = new NativeDesktopRelay(),
   log = () => {},
   timeoutMs = 240000,
+  desktopOnly = desktopTasksConfigured(),
   releaseAfterTurn =
     process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN !== undefined
       ? process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN === "1"
@@ -168,6 +217,7 @@ export function createThreadDelivery({
         return { backend: NATIVE_BACKEND, threadId, ack };
       } catch (err) {
         if (err.reachedCompanion || err.code !== "RELAY_UNREACHABLE") throw err;
+        if (desktopOnly) throw new Error(`Codex Desktop relay is unavailable: ${err.message}. Desktop-only mode will not start or use an external app-server.`);
         log(`native relay unreachable (${err.message}); falling back to the app-server path`);
       }
     } else if (status.reason !== reportedUnavailable) {
@@ -175,6 +225,7 @@ export function createThreadDelivery({
       log(`native relay not in use: ${status.reason}`);
     }
 
+    if (desktopOnly) throw new Error(`Codex Desktop relay is unavailable: ${status.reason ?? "no native acknowledgement"}. Desktop-only mode will not start or use an external app-server.`);
     if (!codex) throw new Error("No Codex app-server client is configured to deliver this message");
     const send = async () => {
       await codex.ensureThreadAttached(threadId);
@@ -200,7 +251,7 @@ export function createThreadDelivery({
     const status = relay.status();
     return status.enabled
       ? `${NATIVE_BACKEND} via ${status.socketPath}`
-      : `${APP_SERVER_BACKEND} (${status.reason})`;
+      : desktopOnly ? `${NATIVE_BACKEND} unavailable (${status.reason}); external app-server disabled` : `${APP_SERVER_BACKEND} (${status.reason})`;
   }
 
   return { deliver, describe };

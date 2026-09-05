@@ -55,6 +55,24 @@ function configWith(entry) {
 }
 
 describe("claude desktop installer", () => {
+  it("disables legacy autostart in Desktop mode while preserving permission settings", () => {
+    const config = configWith({ mcpServers: { "codex-bridge": { env: {
+      CODEX_BRIDGE_AUTOSTART: "1", CODEX_BRIDGE_APPROVAL: "deny", CODEX_BRIDGE_SANDBOX: "read-only", CODEX_BRIDGE_ALLOWED_THREADS: "preserved",
+    } } } });
+    const env = install({ config, env: { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_AUTOSTART: "1" } }).mcpServers["codex-bridge"].env;
+    assert.equal(env.CODEX_BRIDGE_AUTOSTART, "0");
+    assert.equal(env.CODEX_BRIDGE_APPROVAL, "deny");
+    assert.equal(env.CODEX_BRIDGE_SANDBOX, "read-only");
+    assert.equal(env.CODEX_BRIDGE_ALLOWED_THREADS, "preserved");
+  });
+
+  it("keeps autostart available with an explicit Desktop opt-out", () => {
+    const env = install({ config: configWith(null), env: { CODEX_BRIDGE_DESKTOP_TASKS: "0" } }).mcpServers["codex-bridge"].env;
+    assert.equal(env.CODEX_BRIDGE_AUTOSTART, "1");
+    const disabled = install({ config: configWith(null), env: { CODEX_BRIDGE_DESKTOP_TASKS: "0", CODEX_BRIDGE_AUTOSTART: "0" } }).mcpServers["codex-bridge"].env;
+    assert.equal(disabled.CODEX_BRIDGE_AUTOSTART, "0");
+  });
+
   it("persists an explicit auto-approval acknowledgement on a fresh install", () => {
     const cfg = install({ config: configWith(null), env: {
       CODEX_BRIDGE_APPROVAL: "approve", CODEX_BRIDGE_AUTO_APPROVE_ACK: "1",

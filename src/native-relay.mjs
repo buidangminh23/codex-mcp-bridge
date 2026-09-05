@@ -178,6 +178,9 @@ export function validateDesktopOperation(operation, args) {
     case "list_projects":
       valid = exactObject(args, []);
       break;
+    case "list_threads":
+      valid = exactObject(args, ["limit"]) && optionalInteger(args.limit, 1, 50);
+      break;
     case "create_thread":
       valid = exactObject(args, ["prompt", "target", "model", "thinking", "title"]) &&
         nonempty(args.prompt) && optionalText(args.title) && modelSettings() &&

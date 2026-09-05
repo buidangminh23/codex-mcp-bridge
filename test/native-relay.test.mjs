@@ -66,6 +66,26 @@ describe("Desktop project task delivery", () => {
     }
   });
 
+  it("serializes the same Desktop thread and releases its queue after failure without blocking other threads", async () => {
+    const delivery = new DesktopTaskDelivery({});
+    const events = [];
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const first = delivery.withThread("same", async () => {
+      events.push("first");
+      await gate;
+      throw new Error("first failed");
+    });
+    const failure = assert.rejects(first, /first failed/);
+    const second = delivery.withThread("same", async () => { events.push("second"); });
+    await delivery.withThread("other", async () => { events.push("other"); });
+    assert.deepEqual(events, ["first", "other"]);
+    release();
+    await Promise.all([failure, second]);
+    assert.deepEqual(events, ["first", "other", "second"]);
+    assert.equal(delivery.threadOperations.size, 0);
+  });
+
   it("uses an exact canonical saved local project rather than its parent or a remote namesake", () => {
     const options = { canonicalize: (value) => value === "C:\\alias" ? "C:\\PCC4SH" : value, paths: path.win32 };
     const exact = { ...project, path: "C:\\PCC4SH" };
@@ -78,6 +98,7 @@ describe("Desktop project task delivery", () => {
   it("rejects arbitrary proxy operations, remote targets, unsupported worktrees, and extra arguments", async () => {
     const requests = [
       ["delete_project", {}], ["list_projects", { injected: true }],
+      ["list_threads", { limit: 51 }], ["list_threads", { cwd: root }],
       ["create_thread", { prompt: "work", target: { type: "projectless" } }],
       ["create_thread", { prompt: "work", target: { type: "project", projectId: "p", environment: { type: "worktree" } } }],
       ["send_message_to_thread", { threadId: "t", prompt: "work", hostId: "remote" }],
@@ -794,7 +815,7 @@ describe("thread delivery backend", () => {
       status: () => ({ enabled: false, socketPath: "/relay.sock", reason: "no companion socket" }),
       sendMessage: async () => assert.fail("an unavailable relay must not be called"),
     };
-    const delivery = createThreadDelivery({ codex, relay, timeoutMs: 50 });
+    const delivery = createThreadDelivery({ codex, relay, timeoutMs: 50, desktopOnly: false });
     const result = await delivery.deliver("lonely-thread", "hello");
     assert.equal(result.backend, APP_SERVER_BACKEND);
     assert.deepEqual(attached, ["lonely-thread"]);
@@ -831,7 +852,7 @@ describe("thread delivery backend", () => {
       status: () => ({ enabled: false, socketPath: "/relay.sock", reason: "no companion socket" }),
       sendMessage: async () => assert.fail("an unavailable relay must not be called"),
     };
-    const delivery = createThreadDelivery({ codex, relay, timeoutMs: 100, releaseAfterTurn: true });
+    const delivery = createThreadDelivery({ codex, relay, timeoutMs: 100, releaseAfterTurn: true, desktopOnly: false });
     const result = await delivery.deliver("fallback-thread", "hello");
     assert.equal(result.turn.status, "completed");
     assert.deepEqual(released, ["fallback-thread"]);
@@ -851,7 +872,7 @@ describe("thread delivery backend", () => {
         throw new NativeRelayError("socket vanished", "RELAY_UNREACHABLE");
       },
     };
-    const fellBack = await createThreadDelivery({ codex, relay: unreachable, timeoutMs: 50 }).deliver("t", "hello");
+    const fellBack = await createThreadDelivery({ codex, relay: unreachable, timeoutMs: 50, desktopOnly: false }).deliver("t", "hello");
     assert.equal(fellBack.backend, APP_SERVER_BACKEND);
     assert.deepEqual(attached, ["t"]);
 
@@ -880,6 +901,19 @@ describe("thread delivery backend", () => {
     };
     const delivery = createThreadDelivery({ codex: { ensureThreadAttached: () => assert.fail("must not bypass validation") }, relay });
     await assert.rejects(() => delivery.deliver("t", "x"), { code: "RELAY_MESSAGE_TOO_LARGE" });
+  });
+
+  it("blocks all external fallback in Desktop-only mode when the relay is absent or unreachable", async () => {
+    const codex = { ensureThreadAttached: () => assert.fail("Desktop-only mode must never attach through another server") };
+    for (const enabled of [false, true]) {
+      const relay = {
+        status: () => ({ enabled, reason: "no companion", socketPath: "/absent.sock" }),
+        sendMessage: async () => { throw new NativeRelayError("no companion", "RELAY_UNREACHABLE"); },
+      };
+      const delivery = createThreadDelivery({ codex, relay, desktopOnly: true });
+      await assert.rejects(delivery.deliver("task", "work"), /Desktop-only mode will not start or use an external app-server/);
+      if (!enabled) assert.match(delivery.describe(), /external app-server disabled/);
+    }
   });
 });
 

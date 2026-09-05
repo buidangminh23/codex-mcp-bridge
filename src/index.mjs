@@ -25,7 +25,7 @@ import { BridgeSecurityPolicy } from "./security-policy.mjs";
 import { DesktopTaskDelivery } from "./thread-delivery.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 
-const VERSION = "1.13.0";
+const VERSION = "1.13.1";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -47,7 +47,7 @@ const security = new BridgeSecurityPolicy();
 const desktopTasksEnabled = desktopTasksConfigured();
 const desktopTasks = new DesktopTaskDelivery({ security });
 
-const client = new CodexAppServerClient({
+const client = desktopTasksEnabled ? null : new CodexAppServerClient({
   clientInfo: { name: "codex-mcp-bridge", title: "Codex MCP Bridge", version: VERSION },
   log,
 });
@@ -212,9 +212,9 @@ async function finishDesktopHandoff({ threadId, result, openInApp, releaseAfterT
 }
 
 function formatThreadRow(t) {
-  const title = t.name || (t.preview ?? "").replace(/\s+/g, " ").slice(0, 70) || "(no title)";
+  const title = t.title || t.name || (t.preview ?? "").replace(/\s+/g, " ").slice(0, 70) || "(no title)";
   const updated = t.updatedAt ? new Date(t.updatedAt * 1000).toISOString().replace("T", " ").slice(0, 16) : "?";
-  const status = t.status?.type ?? "?";
+  const status = typeof t.status === "string" ? t.status : t.status?.type ?? "?";
   const deepLink = supportsCodexThreadLinks() ? `\n    open: ${codexThreadUrl(t.id)}` : "";
   const authorized = security.isThreadAuthorized(t.id, t.cwd)
     ? ""
@@ -408,7 +408,7 @@ server.registerTool(
     },
   },
   async ({ threadId, prompt, timeoutSec, cwd, model, effort, name, openInApp, releaseAfterTurn }) => {
-    return client.withThread(threadId, async () => {
+    return (desktopTasksEnabled ? desktopTasks : client).withThread(threadId, async () => {
       const notes = [];
       const shouldOpen = openInApp ?? DEFAULT_OPEN_IN_APP;
       const shouldRelease = releaseAfterTurn ?? DEFAULT_RELEASE_AFTER_TURN;
@@ -513,6 +513,11 @@ server.registerTool(
   },
   async ({ limit, cwd, searchTerm, loadedOnly }) => {
     try {
+      if (desktopTasksEnabled) {
+        const workspace = cwd ? resolveWorkspacePath(cwd) : null;
+        const { rows, coverage } = await desktopTasks.list({ limit, cwd: workspace?.path, searchTerm, loadedOnly });
+        return textResult(`${rows.length} Codex thread(s) via Codex Desktop:\n${coverage}\n\n${rows.length ? rows.map(formatThreadRow).join("\n") : "No matching authorized local Codex tasks in this snapshot."}`);
+      }
       const params = { limit: limit ?? 15 };
       if (cwd) {
         const workspace = resolveWorkspacePath(cwd);
@@ -754,6 +759,7 @@ server.registerTool(
   },
   async () => {
     try {
+      if (desktopTasksEnabled) return textResult("Desktop-only mode does not manage an external app-server. Codex Desktop and its running tasks were left unchanged.");
       const result = await client.stopServer();
       if (result.stillListening) {
         return textResult("The app-server is still listening after the stop request; its thread writer locks are not confirmed released.", true);
@@ -784,6 +790,22 @@ server.registerTool(
   },
   async () => {
     const summary = security.summary();
+    if (desktopTasksEnabled) {
+      const native = await desktopTasks.status();
+      return textResult([
+        `platform:       ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
+        `bridge version: ${VERSION}`,
+        `node:           ${process.version} at ${process.execPath}`,
+        "desktop tasks:  enabled; Desktop permissions, exact saved project, immediate visibility",
+        `native relay:   ${native.available ? "available; verified through Codex Desktop" : "unavailable"}`,
+        `native endpoint: ${native.socketPath}`,
+        ...(native.available ? [`local projects: ${native.localProjects}`] : [`reason: ${native.reason}`]),
+        "app-server:     disabled in Desktop-only mode; no external endpoint is contacted",
+        "autostart:      off; external app-server fallback is disabled",
+        `security:       thread policy ${security.threadPolicy}, ${summary.allowAllRoots ? "all directories" : `${summary.allowedRoots.length} allowed root(s)`}; task permissions belong to Codex Desktop`,
+        `claude desktop config: ${claudeDesktopConfigPath()}`,
+      ].join("\n"), !native.available);
+    }
     const up = await client.isServerUp();
     let liveThreads = null;
     if (up) {
@@ -836,4 +858,4 @@ server.registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-log(`ready on ${PLATFORM_LABEL} (app-server endpoint: ${client.url}, codex: ${client.codexBin})`);
+log(desktopTasksEnabled ? `ready on ${PLATFORM_LABEL} (Codex Desktop only; external app-server disabled)` : `ready on ${PLATFORM_LABEL} (app-server endpoint: ${client.url}, codex: ${client.codexBin})`);

@@ -212,6 +212,9 @@ export class PeerEndpoint {
     this.server = null;
     this.inbox = [];
     this.listeners = new Set();
+    this.messageSequence = 0;
+    this.requestQueues = new Map();
+    this.unconfirmedReplies = new Map();
     this.started = false;
   }
 
@@ -292,8 +295,9 @@ export class PeerEndpoint {
 
   #handleConnection(socket) {
     let buffer = "";
+    socket.setEncoding("utf8");
     socket.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
+      buffer += chunk;
       let index;
       while ((index = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, index).trim();
@@ -306,8 +310,9 @@ export class PeerEndpoint {
           this.log(`ignored malformed peer frame (${line.slice(0, 80)})`);
           continue;
         }
-        const record = { ...message, receivedAt: Date.now() };
+        const record = { ...message, receivedAt: Date.now(), sequence: ++this.messageSequence };
         this.inbox.push(record);
+        this.#removePendingReply(record.fromSocket);
         this.log(`inbox <- ${record.fromSocket ?? "?"}: ${record.text.slice(0, 120)}`);
         for (const listener of [...this.listeners]) {
           try {
@@ -394,12 +399,55 @@ export class PeerEndpoint {
     return frame.msg_id;
   }
 
+  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next" } = {}) {
+    const previous = this.requestQueues.get(targetSocket) ?? Promise.resolve();
+    const pending = previous.catch(() => {}).then(async () => {
+      const unconfirmed = this.unconfirmedReplies.get(targetSocket) ?? 0;
+      if (timeoutMs > 0 && unconfirmed > 0) {
+        const error = new Error(
+          `${unconfirmed} earlier message(s) to ${targetSocket} still await a reply; this message was not sent. `
+          + "Wait for Claude's outstanding replies and check read_claude_inbox, or set waitSec to 0 to send without matching a reply.",
+        );
+        error.code = "PEER_REPLY_PENDING";
+        throw error;
+      }
+      const since = Date.now();
+      const afterSequence = this.messageSequence;
+      this.unconfirmedReplies.set(targetSocket, unconfirmed + 1);
+      let msgId;
+      try {
+        msgId = await this.send(targetSocket, text, { priority });
+      } catch (err) {
+        this.#removePendingReply(targetSocket);
+        throw err;
+      }
+      const reply = timeoutMs > 0
+        ? await this.waitForReply(targetSocket, { timeoutMs, since, afterSequence })
+        : null;
+      return { msgId, reply };
+    });
+    this.requestQueues.set(targetSocket, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.requestQueues.get(targetSocket) === pending) this.requestQueues.delete(targetSocket);
+    }
+  }
+
+  #removePendingReply(fromSocket) {
+    const pending = this.unconfirmedReplies.get(fromSocket) ?? 0;
+    if (pending > 1) this.unconfirmedReplies.set(fromSocket, pending - 1);
+    else this.unconfirmedReplies.delete(fromSocket);
+  }
+
   /**
    * Claude answers with a fresh msg_id rather than an in-reply-to field, so a
    * reply is matched by origin socket and arrival time.
    */
-  waitForReply(fromSocket, { timeoutMs = 120000, since = Date.now() } = {}) {
-    const existing = this.inbox.find((m) => m.fromSocket === fromSocket && m.receivedAt >= since);
+  waitForReply(fromSocket, { timeoutMs = 120000, since = Date.now(), afterSequence = null } = {}) {
+    const matches = (record) => record.fromSocket === fromSocket
+      && (afterSequence === null ? record.receivedAt >= since : record.sequence > afterSequence);
+    const existing = this.inbox.find(matches);
     if (existing) return Promise.resolve(existing);
     return new Promise((resolve) => {
       const timer = globalThis.setTimeout(() => {
@@ -407,7 +455,7 @@ export class PeerEndpoint {
         resolve(null);
       }, timeoutMs);
       const unsubscribe = this.onMessage((record) => {
-        if (record.fromSocket !== fromSocket) return;
+        if (!matches(record)) return;
         globalThis.clearTimeout(timer);
         unsubscribe();
         resolve(record);

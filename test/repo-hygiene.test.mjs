@@ -52,7 +52,7 @@ describe("repository hygiene", { skip: notAGitCheckout }, () => {
    */
   it("reports the same version as package.json from every entry point", () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-    const entries = tracked.filter((file) => /^src\/.+\.mjs$/.test(file));
+    const entries = tracked.filter((file) => /^(src|scripts)\/.+\.mjs$/.test(file));
     const declaring = entries.filter((file) =>
       /^const VERSION = "[^"]+";$/m.test(fs.readFileSync(path.join(root, file), "utf8")),
     );

@@ -8,17 +8,7 @@ import { CodexAppServerClient } from "../src/app-server-client.mjs";
 import { bootstrapRelayThread, readRelayConfig, relayConfigPath, relaySocketPath } from "../src/native-relay.mjs";
 import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
 
-/**
- * Installs the Codex Desktop native relay: registers the companion as an MCP
- * server so Codex Desktop launches it, and bootstraps the executor thread the
- * native dispatch needs.
- *
- * The bootstrap is the one step that has to take a writer lock, and it takes it
- * on a thread that belongs to nobody: a dedicated relay thread, created through
- * an ordinary app-server which is then stopped so the lock is released. After
- * this runs, no part of the relay ever attaches a thread again.
- */
-
+const VERSION = "1.12.2";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = path.join(root, "src", "native-relay-companion.mjs");
 const serverName = process.env.CODEX_NATIVE_RELAY_NAME ?? "codex-native-relay";
@@ -76,22 +66,17 @@ if (existing) {
   console.log(`\nskipped the relay thread bootstrap; set CODEX_RELAY_ID or rerun without --no-bootstrap.`);
 } else {
   const client = new CodexAppServerClient({
-    clientInfo: { name: "native-relay-install", title: "Native Relay Install", version: "1.12.1" },
+    clientInfo: { name: "native-relay-install", title: "Native Relay Install", version: VERSION },
     log: (msg) => console.log(`  ${msg}`),
   });
   console.log("\nbootstrapping the relay executor thread...");
   try {
-    const { threadId, configPath } = await bootstrapRelayThread(client, { cwd: homeDir() });
+    const { threadId, configPath, release } = await bootstrapRelayThread(client, { cwd: homeDir() });
     console.log(`relay thread: ${threadId}`);
     console.log(`written to:   ${configPath}`);
+    console.log(release.released ? "released the bootstrap thread" : `bootstrap thread release pending: ${release.reason ?? release.status}`);
   } finally {
-    /**
-     * The bootstrap thread must not stay locked by this app-server: leaving it
-     * held would reintroduce, for the relay's own thread, exactly the writer
-     * conflict the relay exists to remove.
-     */
-    const stopped = await client.stopServer();
-    console.log(stopped.stopped ? "released the bootstrap app-server" : `app-server not stopped: ${stopped.reason}`);
+    await client.close();
   }
 }
 

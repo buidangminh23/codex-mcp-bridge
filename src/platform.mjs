@@ -188,6 +188,7 @@ export function resolveCodexBin(explicit) {
  */
 export function isWritableDir(target) {
   try {
+    if (!statSync(target).isDirectory()) return false;
     accessSync(target, constants.W_OK);
     return true;
   } catch {
@@ -293,7 +294,7 @@ export function resolveWorkspacePath(input) {
   const writable = ordered.find((candidate) => existsSync(candidate) && isWritableDir(candidate));
   if (writable) {
     return {
-      path: writable,
+      path: path.resolve(writable),
       remapped: writable !== original,
       writable: true,
       note:
@@ -305,10 +306,16 @@ export function resolveWorkspacePath(input) {
     };
   }
 
-  const existing = ordered.find((candidate) => existsSync(candidate));
+  const existing = ordered.find((candidate) => {
+    try {
+      return statSync(candidate).isDirectory();
+    } catch {
+      return false;
+    }
+  });
   if (existing) {
     return {
-      path: existing,
+      path: path.resolve(existing),
       remapped: existing !== original,
       writable: false,
       note: `cwd ${existing} exists but is not writable on ${PLATFORM_LABEL}; Codex will fail on any file edit.`,

@@ -147,6 +147,61 @@ describe("runTurn", () => {
     assert.ok(Date.now() - startedAt >= 100);
   });
 
+  it("returns on deadline even when turn/start never acknowledges", async () => {
+    const client = stubClient({ onRequest: () => new Promise(() => {}) });
+    const result = await runTurn(client, { threadId: "t1", input: [], timeoutMs: 30 });
+    assert.equal(result.status, "timeout");
+    assert.equal(result.turnId, null);
+    assert.equal(client.threadListeners.size, 0);
+    assert.equal(client.disconnectListeners.size, 0);
+  });
+
+  it("returns promptly on disconnect while turn/start is still pending", async () => {
+    let rejectStart;
+    const client = stubClient({ onRequest: () => new Promise((_, reject) => { rejectStart = reject; }) });
+    const turn = runTurn(client, { threadId: "t1", input: [], timeoutMs: 10000 });
+    client.drop();
+    assert.equal((await turn).status, "disconnected");
+    rejectStart(new Error("late connection error"));
+    await new Promise((resolve) => globalThis.setImmediate(resolve));
+    assert.equal(client.threadListeners.size, 0);
+  });
+
+  it("stops waiting if the thread closes before turn/start acknowledges", async () => {
+    const client = stubClient({ onRequest: () => new Promise(() => {}) });
+    const turn = runTurn(client, { threadId: "t1", input: [], timeoutMs: 10000 });
+    client.emit("t1", "thread/closed", { threadId: "t1" });
+    assert.equal((await turn).status, "disconnected");
+    assert.equal(client.threadListeners.size, 0);
+  });
+
+  it("rejects malformed turn/start responses instead of waiting for an unknown turn", async () => {
+    const client = stubClient({ onRequest: () => ({ turn: {} }) });
+    await assert.rejects(runTurn(client, { threadId: "t1", input: [] }), /did not return a turn id/);
+    assert.equal(client.threadListeners.size, 0);
+    assert.equal(client.disconnectListeners.size, 0);
+  });
+
+  it("handles an already terminal turn returned directly by turn/start", async () => {
+    const client = stubClient({ onRequest: () => ({ turn: { id: "turn-1", status: "completed" } }) });
+    const result = await runTurn(client, { threadId: "t1", input: [] });
+    assert.equal(result.status, "completed");
+    assert.equal(result.turnId, "turn-1");
+  });
+
+  it("preserves the authorized thread and input when turn overrides are supplied", async () => {
+    let received;
+    const client = stubClient({ onRequest: (_, params) => {
+      received = params;
+      return { turn: { id: "turn-1", status: "completed" } };
+    } });
+    const input = [{ type: "text", text: "authorized" }];
+    await runTurn(client, { threadId: "t1", input, turnOverrides: { threadId: "other", input: [], model: "test" } });
+    assert.equal(received.threadId, "t1");
+    assert.deepEqual(received.input, input);
+    assert.equal(received.model, "test");
+  });
+
   it("ends promptly when the connection drops mid-turn", async () => {
     const client = stubClient();
     const startedAt = Date.now();

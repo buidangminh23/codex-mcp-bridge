@@ -72,6 +72,7 @@ cfg.mcpServers["codex-bridge"] = {
     CODEX_APP_SERVER_URL: settled("CODEX_APP_SERVER_URL", "ws://127.0.0.1:8791"),
     CODEX_BRIDGE_ALLOWED_ROOTS: settled("CODEX_BRIDGE_ALLOWED_ROOTS", defaultRoots),
     CODEX_BRIDGE_APPROVAL: settled("CODEX_BRIDGE_APPROVAL", "deny"),
+    CODEX_BRIDGE_AUTO_APPROVE_ACK: settled("CODEX_BRIDGE_AUTO_APPROVE_ACK", "0"),
     CODEX_BRIDGE_APPROVAL_POLICY: settled("CODEX_BRIDGE_APPROVAL_POLICY", "on-request"),
     /**
      * Written out even at its default so it is visible in the file. Left

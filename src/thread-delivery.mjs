@@ -17,7 +17,7 @@ import { runTurn } from "./turn.mjs";
  */
 export const NATIVE_BACKEND = "codex-desktop-native";
 export const APP_SERVER_BACKEND = "app-server";
-const RELEASE_STATUSES = new Set(["completed", "interrupted", "failed", "disconnected"]);
+const RELEASE_STATUSES = new Set(["completed", "interrupted", "failed"]);
 
 export function createThreadDelivery({
   codex,
@@ -47,7 +47,7 @@ export function createThreadDelivery({
         reportedUnavailable = null;
         return { backend: NATIVE_BACKEND, threadId, ack };
       } catch (err) {
-        if (err.reachedCompanion) throw err;
+        if (err.reachedCompanion || err.code !== "RELAY_UNREACHABLE") throw err;
         log(`native relay unreachable (${err.message}); falling back to the app-server path`);
       }
     } else if (status.reason !== reportedUnavailable) {
@@ -56,22 +56,24 @@ export function createThreadDelivery({
     }
 
     if (!codex) throw new Error("No Codex app-server client is configured to deliver this message");
-    await codex.ensureThreadAttached(threadId);
-    const turn = await runTurn(codex, {
-      threadId,
-      input: [{ type: "text", text }],
-      timeoutMs,
-    });
-    if (releaseAfterTurn && RELEASE_STATUSES.has(turn.status) && typeof codex.stopServer === "function") {
-      try {
-        const released = await codex.stopServer();
-        if (released?.stillListening) log("app-server release requested but it is still listening");
-        if (released?.stopped === false) log("app-server release skipped: " + (released.reason ?? "unknown reason"));
-      } catch (err) {
-        log("app-server release failed: " + err.message);
+    const send = async () => {
+      await codex.ensureThreadAttached(threadId);
+      const turn = await runTurn(codex, {
+        threadId,
+        input: [{ type: "text", text }],
+        timeoutMs,
+      });
+      if (releaseAfterTurn && RELEASE_STATUSES.has(turn.status) && typeof codex.releaseThread === "function") {
+        try {
+          const released = await codex.releaseThread(threadId);
+          if (!released?.released) log("thread release pending: " + (released.reason ?? released.status ?? "awaiting unload"));
+        } catch (err) {
+          log("thread release failed: " + err.message);
+        }
       }
-    }
-    return { backend: APP_SERVER_BACKEND, threadId, turn };
+      return { backend: APP_SERVER_BACKEND, threadId, turn };
+    };
+    return codex.withThread ? codex.withThread(threadId, send) : send();
   }
 
   function describe() {

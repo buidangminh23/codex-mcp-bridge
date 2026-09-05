@@ -8,7 +8,7 @@ import { PLATFORM_LABEL } from "./platform.mjs";
 import { PeerEndpoint, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
 import { createThreadDelivery } from "./thread-delivery.mjs";
 
-const VERSION = "1.12.1";
+const VERSION = "1.12.2";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 
@@ -131,7 +131,9 @@ server.registerTool(
     title: "Send a message to a Claude session",
     description:
       "Deliver a message into a running Claude Code session. It appears in that session's chat exactly like " +
-      "a message from a teammate, and Claude can reply. Set waitSec to 0 to fire and forget.",
+      "a message from a teammate, and Claude can reply. Set waitSec to 0 to fire and forget. " +
+      "A waited send is refused while earlier messages to that session still await replies; " +
+      "wait for those replies and read_claude_inbox before trying again.",
     inputSchema: {
       target: z.string().describe("Session name, pid or sessionId from list_claude_sessions"),
       message: z.string().describe("The message text to deliver"),
@@ -156,14 +158,12 @@ server.registerTool(
       const session = findClaudeSession(target);
       if (!session) return textResult(`No live Claude session matches "${target}".`, true);
 
-      const since = Date.now();
-      await peer.send(session.socket, message);
+      const wait = waitSec ?? 180;
+      const { reply } = await peer.sendAndWait(session.socket, message, { timeoutMs: wait * 1000 });
       const header = `delivered to ${session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"})`;
 
-      const wait = waitSec ?? 180;
       if (wait === 0) return textResult(`${header}\nnot waiting for a reply.`);
 
-      const reply = await peer.waitForReply(session.socket, { timeoutMs: wait * 1000, since });
       if (!reply) {
         return textResult(
           `${header}\n\nNo reply within ${wait}s. Claude may still be working - check again with read_claude_inbox.`,

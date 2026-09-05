@@ -2,6 +2,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import path from "node:path";
+import { realpathSync } from "node:fs";
 
 import { CodexAppServerClient, writerLockWarning } from "./app-server-client.mjs";
 import {
@@ -21,7 +23,7 @@ import {
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
 
-const VERSION = "1.12.1";
+const VERSION = "1.12.2";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -38,7 +40,7 @@ const DEFAULT_RELEASE_AFTER_TURN = process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN
   ? process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN === "1"
   : IS_WINDOWS;
 const TERMINAL_TURN_STATUSES = new Set(["completed", "interrupted", "failed"]);
-const RELEASE_TURN_STATUSES = new Set([...TERMINAL_TURN_STATUSES, "disconnected"]);
+const RELEASE_TURN_STATUSES = TERMINAL_TURN_STATUSES;
 const security = new BridgeSecurityPolicy();
 
 const client = new CodexAppServerClient({
@@ -115,6 +117,15 @@ async function createCodexThread({ cwd, model, name, prompt }) {
   });
   const thread = res?.thread ?? {};
   if (!thread.id) throw new Error("Codex app-server created no thread id");
+  try {
+    security.assertCwd(thread.cwd);
+    if (!path.isAbsolute(thread.cwd) || path.relative(realpathSync(workspace.path), realpathSync(thread.cwd))) {
+      throw new Error("Codex app-server created the thread in a different workspace than requested");
+    }
+  } catch (err) {
+    await client.releaseThread(thread.id).catch(() => {});
+    throw err;
+  }
   const threadName = name || prompt ? threadNameFor({ cwd: thread.cwd ?? workspace.path, prompt, name }) : null;
   if (threadName) {
     await client.call("thread/name/set", { threadId: thread.id, name: threadName });
@@ -138,26 +149,18 @@ async function finishDesktopHandoff({ threadId, result, openInApp, releaseAfterT
 
   if (releaseAfterTurn && releasable) {
     try {
-      const released = await client.stopServer();
-      if (released.stopped) {
-        if (released.stillListening) {
-          canOpenAfterRelease = false;
-          notes.push(
-            `stop requested for app-server${released.pids?.length ? ` (pid ${released.pids.join(", ")})` : ""}, but it is still listening`,
-          );
-          notes.push("WARNING: the app-server is still listening, so the desktop thread was not opened to avoid another lock");
-        } else {
-          notes.push(
-            `released app-server${released.pids?.length ? ` (pid ${released.pids.join(", ")})` : ""}; Codex Desktop can write this thread`,
-          );
-        }
+      const released = await client.releaseThread(threadId);
+      if (released.released) {
+        notes.push(`released thread ${threadId}; other app-server threads remain active`);
       } else {
         canOpenAfterRelease = false;
-        notes.push(`could not release app-server: ${released.reason}`);
+        notes.push(released.unsubscribed
+          ? `unsubscribed from thread ${threadId}; desktop opening is deferred until the server unloads it`
+          : `could not release thread: ${released.reason ?? released.status}`);
       }
     } catch (err) {
       canOpenAfterRelease = false;
-      notes.push(`could not release app-server: ${err.message}`);
+      notes.push(`could not release thread: ${err.message}`);
     }
   }
 
@@ -267,7 +270,7 @@ server.registerTool(
       releaseAfterTurn: z
         .boolean()
         .optional()
-        .describe("Stop the bridge app-server after a terminal turn so Codex Desktop owns the writer lock"),
+        .describe("Unsubscribe this thread after a terminal turn; open Desktop only after its unload is confirmed"),
     },
     annotations: {
       readOnlyHint: false,
@@ -358,7 +361,7 @@ server.registerTool(
       releaseAfterTurn: z
         .boolean()
         .optional()
-        .describe("Stop the bridge app-server after a terminal turn so Codex Desktop owns the writer lock"),
+        .describe("Unsubscribe this thread after a terminal turn; open Desktop only after its unload is confirmed"),
     },
     annotations: {
       readOnlyHint: false,
@@ -368,64 +371,66 @@ server.registerTool(
     },
   },
   async ({ threadId, prompt, timeoutSec, cwd, model, effort, name, openInApp, releaseAfterTurn }) => {
-    const notes = [];
-    const shouldOpen = openInApp ?? DEFAULT_OPEN_IN_APP;
-    const shouldRelease = releaseAfterTurn ?? DEFAULT_RELEASE_AFTER_TURN;
-    try {
-      const authorizedThread = await assertThreadAccess(threadId);
-      let resolvedCwd = null;
-      if (cwd) {
-        const workspace = resolveWorkspacePath(cwd);
-        security.assertCwd(workspace.path);
-        resolvedCwd = workspace.path;
-        if (workspace.note) notes.push(workspace.note);
-      } else if (authorizedThread?.cwd) {
-        const workspace = resolveWorkspacePath(authorizedThread.cwd);
-        resolvedCwd = workspace.path;
-        if (workspace.note) notes.push(workspace.note);
-      }
-      const attached = await client.ensureThreadAttached(threadId, resolvedCwd ? { cwd: resolvedCwd } : {});
-      const attachedThread = normalizeThreadCwd(attached.thread ?? authorizedThread, { strict: true });
-      security.assertCwd(attachedThread?.cwd);
-      if (name) {
-        await client.call("thread/name/set", { threadId, name: name.trim().slice(0, 200) });
-        notes.push(`session name: ${name.trim().slice(0, 200)}`);
-      }
-      /**
-       * Opening the thread in the app comes after both gates. It ran first
-       * once, which meant a thread this bridge was about to refuse still got
-       * raised on screen - a refusal that leaked which threads exist.
-       */
-      if (shouldOpen && !shouldRelease) {
-        try {
-          notes.push(`opened in Codex app: ${await openThreadInCodexApp(threadId)}`);
-        } catch (err) {
-          notes.push(`could not open the thread in the Codex app: ${err.message}`);
+    return client.withThread(threadId, async () => {
+      const notes = [];
+      const shouldOpen = openInApp ?? DEFAULT_OPEN_IN_APP;
+      const shouldRelease = releaseAfterTurn ?? DEFAULT_RELEASE_AFTER_TURN;
+      try {
+        const authorizedThread = await assertThreadAccess(threadId);
+        let resolvedCwd = null;
+        if (cwd) {
+          const workspace = resolveWorkspacePath(cwd);
+          security.assertCwd(workspace.path);
+          resolvedCwd = workspace.path;
+          if (workspace.note) notes.push(workspace.note);
+        } else if (authorizedThread?.cwd) {
+          const workspace = resolveWorkspacePath(authorizedThread.cwd);
+          resolvedCwd = workspace.path;
+          if (workspace.note) notes.push(workspace.note);
         }
+        const attached = await client.ensureThreadAttached(threadId, resolvedCwd ? { cwd: resolvedCwd } : {});
+        const attachedThread = normalizeThreadCwd(attached.thread ?? authorizedThread, { strict: true });
+        security.assertCwd(attachedThread?.cwd);
+        if (name) {
+          await client.call("thread/name/set", { threadId, name: name.trim().slice(0, 200) });
+          notes.push(`session name: ${name.trim().slice(0, 200)}`);
+        }
+        /**
+         * Opening the thread in the app comes after both gates. It ran first
+         * once, which meant a thread this bridge was about to refuse still got
+         * raised on screen - a refusal that leaked which threads exist.
+         */
+        if (shouldOpen && !shouldRelease) {
+          try {
+            notes.push(`opened in Codex app: ${await openThreadInCodexApp(threadId)}`);
+          } catch (err) {
+            notes.push(`could not open the thread in the Codex app: ${err.message}`);
+          }
+        }
+        const result = await runTurn(client, {
+          threadId,
+          input: [{ type: "text", text: prompt }],
+          timeoutMs: (timeoutSec ?? 240) * 1000,
+          turnOverrides: {
+            ...(resolvedCwd ? { cwd: resolvedCwd } : {}),
+            ...(model ?? DEFAULT_MODEL ? { model: model ?? DEFAULT_MODEL } : {}),
+            ...(effort ?? DEFAULT_EFFORT ? { effort: effort ?? DEFAULT_EFFORT } : {}),
+          },
+        });
+        const body = formatTurn(result);
+        const failed = result.status === "failed" || result.status === "disconnected";
+        notes.push(...(await finishDesktopHandoff({
+          threadId,
+          result,
+          openInApp: shouldOpen,
+          releaseAfterTurn: shouldRelease,
+        })));
+        const held = shouldOpen && !shouldRelease && client.holdsThread(threadId) ? writerLockWarning(threadId) : "";
+        return textResult(`${notes.length ? `${notes.join("\n")}\n` : ""}${body}${held}`, failed);
+      } catch (err) {
+        return failure(err);
       }
-      const result = await runTurn(client, {
-        threadId,
-        input: [{ type: "text", text: prompt }],
-        timeoutMs: (timeoutSec ?? 240) * 1000,
-        turnOverrides: {
-          ...(resolvedCwd ? { cwd: resolvedCwd } : {}),
-          ...(model ?? DEFAULT_MODEL ? { model: model ?? DEFAULT_MODEL } : {}),
-          ...(effort ?? DEFAULT_EFFORT ? { effort: effort ?? DEFAULT_EFFORT } : {}),
-        },
-      });
-      const body = formatTurn(result);
-      const failed = result.status === "failed" || result.status === "disconnected";
-      notes.push(...(await finishDesktopHandoff({
-        threadId,
-        result,
-        openInApp: shouldOpen,
-        releaseAfterTurn: shouldRelease,
-      })));
-      const held = shouldOpen && !shouldRelease && client.holdsThread(threadId) ? writerLockWarning(threadId) : "";
-      return textResult(`${notes.length ? `${notes.join("\n")}\n` : ""}${body}${held}`, failed);
-    } catch (err) {
-      return failure(err);
-    }
+    });
   },
 );
 
@@ -459,16 +464,40 @@ server.registerTool(
       }
       if (searchTerm) params.searchTerm = searchTerm;
       const method = loadedOnly ? "thread/loaded/list" : "thread/list";
-      const res = await client.call(method, loadedOnly ? { limit: limit ?? 15 } : params);
-      const rows = security.filterThreads(
-        (res?.data ?? res?.threads ?? []).flatMap((thread) => {
+      const rows = [];
+      const seenIds = new Set();
+      const seenCursors = new Set();
+      let cursor;
+      do {
+        const res = await client.call(method, loadedOnly ? { limit: params.limit, ...(cursor ? { cursor } : {}) } : params);
+        let threads = res?.data ?? res?.threads ?? [];
+        if (loadedOnly) {
+          threads = await Promise.all(threads.map(async (threadId) => {
+            if (seenIds.has(threadId)) return null;
+            seenIds.add(threadId);
+            try {
+              const read = await client.call("thread/read", { threadId });
+              return read?.thread ?? null;
+            } catch {
+              return null;
+            }
+          }));
+        }
+        rows.push(...security.filterThreads(threads.flatMap((thread) => {
           try {
-            return [normalizeThreadCwd(thread, { strict: true })];
+            const normalized = normalizeThreadCwd(thread, { strict: true });
+            if (loadedOnly && params.cwd && (!normalized?.cwd || path.relative(params.cwd.paths[0], normalized.cwd))) return [];
+            if (loadedOnly && searchTerm && !String(normalized?.name ?? normalized?.preview ?? "").toLowerCase().includes(searchTerm.toLowerCase())) return [];
+            return [normalized];
           } catch {
             return [];
           }
-        }),
-      );
+        })));
+        cursor = res?.nextCursor;
+        if (!loadedOnly || !cursor || seenCursors.has(cursor)) break;
+        seenCursors.add(cursor);
+      } while (rows.length < params.limit);
+      rows.splice(params.limit);
       if (!rows.length) {
         return textResult(
           security.summary().allowedRoots.length
@@ -648,6 +677,9 @@ server.registerTool(
   async () => {
     try {
       const result = await client.stopServer();
+      if (result.stillListening) {
+        return textResult("The app-server is still listening after the stop request; its thread writer locks are not confirmed released.", true);
+      }
       return textResult(
         result.stopped
           ? `Stopped the shared app-server (pid ${result.pids.join(", ")}). Its thread writer locks are released, so the Codex desktop app now owns ~/.codex and every thread it was holding.`

@@ -34,10 +34,16 @@ const transport = new StdioClientTransport({
 });
 const client = new Client({ name: "bridge-check", version: "1.0.0" });
 
-await client.connect(transport);
-const tools = await client.listTools();
-console.log("tools:", tools.tools.map((t) => t.name).join(", "));
-const listed = await client.callTool({ name: "list_codex_threads", arguments: { limit: 3 } });
-console.log(listed.content[0].text.slice(0, 600));
-await client.close();
-process.exit(0);
+try {
+  await client.connect(transport);
+  const tools = await client.listTools();
+  console.log("tools:", tools.tools.map((t) => t.name).join(", "));
+  const listed = await client.callTool({ name: "list_codex_threads", arguments: { limit: 3 } });
+  console.log(listed.content[0].text.slice(0, 600));
+  if (listed.isError) process.exitCode = 1;
+} catch (err) {
+  console.error(err.message);
+  process.exitCode = 1;
+} finally {
+  await client.close();
+}

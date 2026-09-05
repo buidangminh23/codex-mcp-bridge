@@ -19,6 +19,7 @@ const entries = [
   path.join("src", "index.mjs"),
   path.join("src", "claude-bridge.mjs"),
   path.join("src", "native-relay-companion.mjs"),
+  path.join("scripts", "install-native-relay.mjs"),
 ];
 const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 

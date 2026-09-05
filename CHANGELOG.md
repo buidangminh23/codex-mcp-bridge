@@ -2,6 +2,23 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.12.2] - 2026-09-05
+
+### Fixed
+
+- **Use the native protocol measured by Seb in [#23](https://github.com/buidangminh23/codex-mcp-bridge/issues/23#issuecomment-5547163688).** The companion uses the native pipe inherited from Codex Desktop, separately from MCP stdio. Dispatch is `tools/call` with distinct executor and destination thread IDs, fresh call/turn IDs, and a UInt32LE length prefix. A response must explicitly report `success: true`. The companion recovers when a configured native pipe appears after startup.
+- **Do not kill other delegations when one finishes.** Automatic handoff unsubscribes only the completed thread. It confirms unload before opening Desktop, reports pending idle unload honestly, and fails safely on servers without `thread/unsubscribe`. Explicit shared-server shutdown remains a separate destructive tool.
+- **Keep RPC and turn state consistent across failures.** Failed sends settle their pending promise, concurrent calls wait for initialization, and disconnects clean up listeners and requests. Same-thread transactions are serialized while other threads remain independent; timed-out or disconnected turns require state reconciliation before another turn starts.
+- **Prevent duplicate or misattributed messages.** A native request with an unconfirmed outcome is never retried through another backend, and invalid messages cannot bypass validation through fallback. Claude requests are queued per destination; unresolved earlier replies block new waited sends instead of assigning a late reply to the wrong request. Fire-and-forget and late responses remain accessible through the inbox.
+- **Preserve Unicode across fragmented pipe traffic.** Both relay protocols and Claude peer messages retain complete UTF-8 characters when stream chunks split a character.
+- **Validate the workspace actually used.** Relative input becomes absolute, regular files are refused as directories, and a created thread must report the requested workspace within allowed roots. A path map cannot disguise an unexpected server-created cwd.
+- **List loaded threads correctly.** The bridge reads the IDs returned by `thread/loaded/list`, applies workspace/title filters, and follows pagination to find matching threads.
+- **Keep diagnostics and installer settings truthful.** The Desktop installer honors both enabling and revoking `CODEX_BRIDGE_AUTO_APPROVE_ACK`. Check commands fail on MCP tool errors, and the live continuity smoke test requires two completed turns to preserve a unique codeword.
+
+### Tests
+
+- Added regressions for connection and turn lifecycle, authorization, concurrent handoffs, late replies, fragmented/malformed native frames, missing/late native pipes, fallback boundaries, configuration preservation, and diagnostic exit status. Native wire tests run a real MCP child against isolated mock pipes without sending messages to user sessions.
+
 ## [1.12.1] - 2026-09-05
 
 ### Fixed

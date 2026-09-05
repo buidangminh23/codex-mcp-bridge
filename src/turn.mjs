@@ -54,10 +54,16 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
   });
 
   const process = (msg) => {
+    if (settled) return;
     const params = msg.params ?? {};
     if (turnId && params.turnId && params.turnId !== turnId) return;
 
     switch (msg.method) {
+      case "thread/closed": {
+        settled = true;
+        resolveDone({ status: "disconnected", error: { message: "The thread closed before its turn completed" } });
+        return;
+      }
       case "item/completed": {
         const summary = summarizeItem(params.item);
         if (!summary) return;
@@ -90,7 +96,7 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
   };
 
   const unsubscribe = client.subscribe(threadId, (msg) => {
-    if (!turnId) {
+    if (!turnId && msg.method !== "thread/closed") {
       buffered.push(msg);
       return;
     }
@@ -113,15 +119,27 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
   });
 
   try {
-    const started = await client.request(
-      "turn/start",
-      { threadId, input, ...turnOverrides },
-      { timeoutMs: Math.min(timeoutMs, 60000) },
-    );
-    turnId = started?.turn?.id ?? null;
-    for (const msg of buffered.splice(0)) process(msg);
-
-    const outcome = await done;
+    const start = await Promise.race([
+      client.request(
+        "turn/start",
+        { ...turnOverrides, threadId, input },
+        { timeoutMs: Math.min(timeoutMs, 60000) },
+      ).then((started) => ({ started }), (error) => ({ error })),
+      done.then((outcome) => ({ outcome })),
+    ]);
+    if (start.error) throw start.error;
+    let outcome = start.outcome;
+    if (!outcome) {
+      turnId = start.started?.turn?.id ?? null;
+      if (typeof turnId !== "string" || !turnId.trim()) {
+        throw new Error("Codex app-server did not return a turn id for turn/start");
+      }
+      for (const msg of buffered.splice(0)) process(msg);
+      if (TERMINAL_STATUSES.has(start.started?.turn?.status)) {
+        process({ method: "turn/completed", params: { turn: start.started.turn } });
+      }
+      outcome = await done;
+    }
     return {
       threadId,
       turnId,

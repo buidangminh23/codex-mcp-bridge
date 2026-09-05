@@ -153,6 +153,17 @@ describe("platform facts", () => {
 });
 
 describe("workspace resolution", () => {
+  it("returns an absolute path for a relative workspace", () => {
+    assert.equal(resolveWorkspacePath(".").path, process.cwd());
+  });
+
+  it("refuses a regular file as a workspace", () => {
+    const file = path.join(sandbox, "workspace-file");
+    fs.writeFileSync(file, "text");
+    assert.equal(isWritableDir(file), false);
+    assert.throws(() => resolveWorkspacePath(file), /No usable working directory/);
+  });
+
   it("accepts a directory that exists and is writable", () => {
     const workspace = resolveWorkspacePath(sandbox);
     assert.equal(workspace.path, sandbox);

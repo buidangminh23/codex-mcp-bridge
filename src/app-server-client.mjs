@@ -60,10 +60,11 @@ function httpBase(wsUrl) {
 export function writerLockWarning(threadId) {
   return [
     "",
-    `NOTE: this bridge still holds the writer lock on thread ${threadId}, because its app-server has the`,
-    "thread loaded. Until that app-server stops, the Codex app will refuse to write to it and show",
-    '"open in another application". Release it with stop_codex_app_server when the hand-off is done;',
-    "the bridge starts a new app-server the next time it needs one.",
+    `NOTE: the app-server may still hold the writer lock on thread ${threadId}. The Codex app may`,
+    'report "open in another application" until the thread unloads.',
+    "Automatic release unsubscribes only this connection; the server's idle unload delay and other",
+    "subscribers can keep the writer lock alive. stop_codex_app_server stops the shared server and",
+    "interrupts every active turn, so use it only when all work on that server can stop.",
   ].join("\n");
 }
 
@@ -98,7 +99,12 @@ export class CodexAppServerClient {
     this.threadListeners = new Map();
     this.disconnectListeners = new Set();
     this.attachedThreads = new Set();
+    this.unsubscribedThreads = new Set();
     this.threadCwds = new Map();
+    this.threadOperations = new Map();
+    this.attachingThreads = new Map();
+    this.activeTurns = new Map();
+    this.connectionEpoch = 0;
   }
 
   async isServerUp() {
@@ -139,11 +145,11 @@ export class CodexAppServerClient {
    * delegations.
    */
   async stopServer() {
+    this.close();
     if (!(await this.isServerUp())) return { stopped: false, reason: "no app-server was listening" };
     const port = appServerPort(this.url);
     const pids = listeningPids(port);
     if (!pids.length) return { stopped: false, reason: `nothing is listening on port ${port}` };
-    this.ws?.close();
     for (const pid of pids) {
       try {
         if (process.platform === "win32") {
@@ -158,9 +164,6 @@ export class CodexAppServerClient {
         this.log(`could not stop pid ${pid}: ${err.message}`);
       }
     }
-    this.ws = null;
-    this.attachedThreads.clear();
-    this.threadCwds.clear();
     for (let attempt = 0; attempt < 20; attempt += 1) {
       if (!(await this.isServerUp())) return { stopped: true, pids };
       await delay(100);
@@ -175,33 +178,67 @@ export class CodexAppServerClient {
    * first call instead of a failed tool call the user has to repeat by hand.
    */
   async connect() {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     if (this.connecting) return this.connecting;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (this.ws) this.#disconnect(this.ws);
 
-    this.connecting = (async () => {
+    const epoch = this.connectionEpoch;
+    const connecting = (async () => {
       let lastError = null;
       for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt += 1) {
         try {
-          await this.#openConnection();
+          this.#assertConnectionEpoch(epoch);
+          await this.#openConnection(epoch);
           return;
         } catch (err) {
           lastError = err;
+          this.#assertConnectionEpoch(epoch);
           this.log(`connect attempt ${attempt}/${CONNECT_ATTEMPTS} failed: ${err.message}`);
           if (attempt < CONNECT_ATTEMPTS) await delay(CONNECT_RETRY_DELAY_MS);
         }
       }
       throw lastError;
     })();
+    this.connecting = connecting;
 
     try {
-      await this.connecting;
+      await connecting;
     } finally {
-      this.connecting = null;
+      if (this.connecting === connecting) this.connecting = null;
     }
   }
 
-  async #openConnection() {
+  #assertConnectionEpoch(epoch) {
+    if (epoch !== this.connectionEpoch) {
+      throw new AppServerError("App-server connection attempt was cancelled", "CONNECTION_CLOSED");
+    }
+  }
+
+  #disconnect(ws, error = new AppServerError("Connection to Codex app-server closed", "CONNECTION_CLOSED")) {
+    if (!ws || this.ws !== ws) return;
+    this.log("app-server connection closed");
+    this.ws = null;
+    this.attachedThreads.clear();
+    this.unsubscribedThreads.clear();
+    this.threadCwds.clear();
+    this.attachingThreads.clear();
+    for (const active of this.activeTurns.values()) active.needsReconcile = true;
+    const pending = [...this.pending.values()];
+    this.pending.clear();
+    for (const entry of pending) entry.reject(error);
+    this.#notifyDisconnect();
+  }
+
+  close() {
+    this.connectionEpoch += 1;
+    const ws = this.ws;
+    this.#disconnect(ws);
+    ws?.close();
+  }
+
+  async #openConnection(epoch) {
     if (!(await this.isServerUp())) {
+      this.#assertConnectionEpoch(epoch);
       if (!this.autoStart) {
         throw new AppServerError(
           `No Codex app-server reachable at ${this.url}. Start one with: codex app-server --listen ${this.url}`,
@@ -213,48 +250,55 @@ export class CodexAppServerClient {
       }
     }
 
+    this.#assertConnectionEpoch(epoch);
     const ws = new WebSocket(this.url);
-    await new Promise((resolve, reject) => {
-      const timer = globalThis.setTimeout(
-        () => reject(new AppServerError(`Timed out connecting to ${this.url}`)),
-        15000,
-      );
-      ws.onopen = () => {
-        globalThis.clearTimeout(timer);
-        resolve();
-      };
-      ws.onerror = (event) => {
-        globalThis.clearTimeout(timer);
-        reject(new AppServerError(`WebSocket error against ${this.url}: ${event?.message ?? "unknown"}`));
-      };
-      ws.onclose = () => {
-        globalThis.clearTimeout(timer);
-        reject(new AppServerError(`Connection to ${this.url} closed during the handshake`));
-      };
-    });
+    this.ws = ws;
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = globalThis.setTimeout(
+          () => reject(new AppServerError(`Timed out connecting to ${this.url}`)),
+          15000,
+        );
+        ws.onopen = () => {
+          globalThis.clearTimeout(timer);
+          resolve();
+        };
+        ws.onerror = (event) => {
+          globalThis.clearTimeout(timer);
+          reject(new AppServerError(`WebSocket error against ${this.url}: ${event?.message ?? "unknown"}`));
+        };
+        ws.onclose = () => {
+          globalThis.clearTimeout(timer);
+          reject(new AppServerError(`Connection to ${this.url} closed during the handshake`));
+        };
+      });
+    } catch (err) {
+      this.#disconnect(ws, err);
+      ws.close();
+      throw err;
+    }
 
-    ws.onmessage = (event) => this.#handleMessage(event.data);
-    ws.onclose = () => {
-      if (this.ws !== ws) return;
-      this.log("app-server connection closed");
-      this.ws = null;
-      this.attachedThreads.clear();
-      this.threadCwds.clear();
-      for (const [, entry] of this.pending) {
-        entry.reject(new AppServerError("Connection to Codex app-server closed"));
-      }
-      this.pending.clear();
-      this.#notifyDisconnect();
+    ws.onmessage = (event) => {
+      if (this.ws === ws) this.#handleMessage(event.data);
     };
+    ws.onclose = () => this.#disconnect(ws);
     ws.onerror = (event) => this.log(`websocket error: ${event?.message ?? "unknown"}`);
 
-    this.ws = ws;
-    const init = await this.request("initialize", {
-      clientInfo: this.clientInfo,
-      capabilities: { experimentalApi: true },
-    });
-    this.#send({ jsonrpc: "2.0", method: "initialized", params: {} });
-    this.log(`connected to app-server (codexHome=${init?.codexHome ?? "?"})`);
+    try {
+      this.#assertConnectionEpoch(epoch);
+      this.ws = ws;
+      const init = await this.request("initialize", {
+        clientInfo: this.clientInfo,
+        capabilities: { experimentalApi: true },
+      });
+      this.#assertConnectionEpoch(epoch);
+      this.#send({ jsonrpc: "2.0", method: "initialized", params: {} });
+      this.log(`connected to app-server (codexHome=${init?.codexHome ?? "?"})`);
+    } catch (err) {
+      this.#disconnect(ws, err);
+      ws.close();
+      throw err;
+    }
   }
 
   #send(payload) {
@@ -272,6 +316,7 @@ export class CodexAppServerClient {
       this.log(`ignored non-JSON frame (${String(raw).slice(0, 80)})`);
       return;
     }
+    if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
 
     if (msg.id !== undefined && msg.method === undefined) {
       const entry = this.pending.get(msg.id);
@@ -296,6 +341,24 @@ export class CodexAppServerClient {
   #dispatchNotification(msg) {
     const threadId = msg.params?.threadId;
     if (!threadId) return;
+    if (msg.method === "thread/closed") {
+      this.attachedThreads.delete(threadId);
+      this.unsubscribedThreads.delete(threadId);
+      this.threadCwds.delete(threadId);
+      this.activeTurns.delete(threadId);
+    }
+    const active = this.activeTurns.get(threadId);
+    if (active && msg.method === "turn/started" && msg.params?.turn?.id && !active.turnId) {
+      active.turnId = msg.params.turn.id;
+    }
+    if (active && msg.method === "turn/completed" && msg.params?.turn?.id &&
+        ["completed", "interrupted", "failed"].includes(msg.params.turn.status)) {
+      const completedId = msg.params.turn.id;
+      if (!active.turnId) active.completedIds.add(completedId);
+      if (active.turnId === completedId || (!active.turnId && !active.awaitingStartResponse && !active.needsReconcile)) {
+        this.activeTurns.delete(threadId);
+      }
+    }
     const listeners = this.threadListeners.get(threadId);
     if (!listeners) return;
     for (const listener of [...listeners]) {
@@ -377,11 +440,20 @@ export class CodexAppServerClient {
   }
 
   async request(method, params, { timeoutMs = 60000 } = {}) {
+    const threadId = method === "turn/start" ? params?.threadId : null;
+    let active = null;
+    if (threadId) {
+      if (this.activeTurns.has(threadId)) {
+        throw new AppServerError(`Thread ${threadId} already has a running or unconfirmed turn`, "THREAD_BUSY");
+      }
+      active = { turnId: null, completedIds: new Set(), awaitingStartResponse: true };
+      this.activeTurns.set(threadId, active);
+    }
     const id = ++this.nextId;
     const promise = new Promise((resolve, reject) => {
       const timer = globalThis.setTimeout(() => {
         this.pending.delete(id);
-        reject(new AppServerError(`Request ${method} timed out after ${timeoutMs}ms`));
+        reject(new AppServerError(`Request ${method} timed out after ${timeoutMs}ms`, "REQUEST_TIMEOUT"));
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (value) => {
@@ -393,9 +465,30 @@ export class CodexAppServerClient {
           reject(err);
         },
       });
+      try {
+        this.#send({ jsonrpc: "2.0", id, method, params: params ?? {} });
+      } catch (err) {
+        const entry = this.pending.get(id);
+        this.pending.delete(id);
+        entry.reject(err);
+      }
     });
-    this.#send({ jsonrpc: "2.0", id, method, params: params ?? {} });
-    return promise;
+    try {
+      const result = await promise;
+      if (active && this.activeTurns.get(threadId) === active) {
+        active.turnId = result?.turn?.id ?? null;
+        active.awaitingStartResponse = false;
+        if (active.completedIds.has(active.turnId) || ["completed", "interrupted", "failed"].includes(result?.turn?.status)) {
+          this.activeTurns.delete(threadId);
+        }
+      }
+      return result;
+    } catch (err) {
+      if (active && !["REQUEST_TIMEOUT", "CONNECTION_CLOSED"].includes(err.code) && this.activeTurns.get(threadId) === active) {
+        this.activeTurns.delete(threadId);
+      }
+      throw err;
+    }
   }
 
   async call(method, params, opts) {
@@ -437,23 +530,136 @@ export class CodexAppServerClient {
 
   async ensureThreadAttached(threadId, resumeParams = {}) {
     await this.connect();
-    if (this.attachedThreads.has(threadId)) return { resumed: false, thread: this.threadCwds.get(threadId) };
-    const result = await this.request("thread/resume", { threadId, ...resumeParams });
-    this.attachedThreads.add(threadId);
-    if (result?.thread?.cwd) this.threadCwds.set(threadId, result.thread);
-    return { resumed: true, thread: result?.thread };
+    if (this.attachedThreads.has(threadId)) {
+      if (this.activeTurns.get(threadId)?.needsReconcile) await this.#reconcileThreadTurn(threadId);
+      return { resumed: false, thread: this.threadCwds.get(threadId) };
+    }
+    if (this.attachingThreads.has(threadId)) return this.attachingThreads.get(threadId);
+    const ws = this.ws;
+    const attaching = (async () => {
+      const result = await this.request("thread/resume", { ...resumeParams, threadId });
+      if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) {
+        throw new AppServerError("Connection closed while attaching the thread", "CONNECTION_CLOSED");
+      }
+      this.markAttached(threadId, result?.thread);
+      await this.#reconcileThreadTurn(threadId, result?.thread);
+      return { resumed: true, thread: result?.thread };
+    })();
+    this.attachingThreads.set(threadId, attaching);
+    try {
+      return await attaching;
+    } finally {
+      if (this.attachingThreads.get(threadId) === attaching) this.attachingThreads.delete(threadId);
+    }
   }
 
-  /**
-   * The app-server takes the per-thread writer lock when it loads a thread and
-   * keeps it until it exits, so a thread this bridge has attached cannot be
-   * written to from anywhere else - the desktop app included.
-   */
+  async #reconcileThreadTurn(threadId, thread = null) {
+    const inspect = (snapshot) => {
+      if (!snapshot || (snapshot.id && snapshot.id !== threadId)) return false;
+      const status = typeof snapshot.status === "string" ? snapshot.status : snapshot.status?.type;
+      const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
+      const running = turns.find((turn) => turn?.status === "inProgress");
+      const active = this.activeTurns.get(threadId);
+      if (running || status === "active") {
+        this.activeTurns.set(threadId, {
+          turnId: running?.id ?? null,
+          completedIds: new Set(),
+          awaitingStartResponse: false,
+          needsReconcile: false,
+        });
+        return true;
+      }
+      if (status === "idle" || status === "notLoaded" || (active?.turnId && turns.some((turn) =>
+        turn?.id === active.turnId && ["completed", "interrupted", "failed"].includes(turn.status)))) {
+        this.activeTurns.delete(threadId);
+        return true;
+      }
+      return false;
+    };
+    if (inspect(thread) || !this.activeTurns.has(threadId)) return;
+    const active = this.activeTurns.get(threadId);
+    active.needsReconcile = true;
+    const ws = this.ws;
+    const result = await this.request("thread/read", { threadId, includeTurns: true });
+    if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) {
+      throw new AppServerError("Connection closed while reconciling the thread", "CONNECTION_CLOSED");
+    }
+    if (!inspect(result?.thread)) {
+      throw new AppServerError(
+        `Cannot confirm whether thread ${threadId} still has its previous turn running; refusing to start another turn`,
+        "THREAD_STATE_UNCONFIRMED",
+      );
+    }
+  }
+
+  async withThread(threadId, action) {
+    const previous = this.threadOperations.get(threadId);
+    const operation = (previous ? previous.catch(() => {}) : Promise.resolve()).then(action);
+    this.threadOperations.set(threadId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.threadOperations.get(threadId) === operation) this.threadOperations.delete(threadId);
+    }
+  }
+
+  async releaseThread(threadId, { timeoutMs = 1000 } = {}) {
+    const outcome = (status, unsubscribed, released, reason) => ({
+      threadId, status, unsubscribed, released, ...(reason ? { reason } : {}),
+    });
+    if (this.activeTurns.has(threadId) || this.threadListeners.get(threadId)?.size || this.attachingThreads.has(threadId)) {
+      return outcome("busy", false, false, "The thread has an active or unconfirmed turn or operation.");
+    }
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.connecting) {
+      return outcome("disconnected", false, false, "No initialized connection is available to release this thread.");
+    }
+    let closed = false;
+    let disconnected = false;
+    let finishWait;
+    let timer;
+    const changed = new Promise((resolve) => { finishWait = resolve; });
+    const unsubscribe = this.subscribe(threadId, (msg) => {
+      if (msg.method !== "thread/closed") return;
+      closed = true;
+      finishWait();
+    });
+    const unsubscribeDisconnect = this.subscribeDisconnect(() => {
+      disconnected = true;
+      finishWait();
+    });
+    try {
+      const result = await this.request("thread/unsubscribe", { threadId }, { timeoutMs: 5000 });
+      if (!["unsubscribed", "notSubscribed", "notLoaded"].includes(result?.status)) {
+        return outcome("invalidResponse", false, false, "The server did not confirm thread unsubscription.");
+      }
+      this.attachedThreads.delete(threadId);
+      this.threadCwds.delete(threadId);
+      if (result.status === "notLoaded" || closed) {
+        this.unsubscribedThreads.delete(threadId);
+        return outcome(result.status, true, true);
+      }
+      if (!disconnected) this.unsubscribedThreads.add(threadId);
+      const waitMs = Number.isFinite(timeoutMs) ? Math.max(0, Math.min(timeoutMs, 5000)) : 1000;
+      timer = globalThis.setTimeout(finishWait, waitMs);
+      await changed;
+      return outcome(result.status, true, closed, closed ? null : disconnected
+        ? "Subscription removed; the connection closed before thread unload was confirmed."
+        : "Subscription removed; thread unload is pending the server's idle delay or other subscribers.");
+    } catch (err) {
+      return outcome(err.code === -32601 ? "unsupported" : "failed", false, false, err.message);
+    } finally {
+      globalThis.clearTimeout(timer);
+      unsubscribe();
+      unsubscribeDisconnect();
+    }
+  }
+
   holdsThread(threadId) {
-    return this.attachedThreads.has(threadId);
+    return this.attachedThreads.has(threadId) || this.unsubscribedThreads.has(threadId);
   }
 
   markAttached(threadId, thread = null) {
+    this.unsubscribedThreads.delete(threadId);
     this.attachedThreads.add(threadId);
     if (thread?.cwd) this.threadCwds.set(threadId, thread);
   }

@@ -6,32 +6,18 @@ import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
 
 import {
   MAX_FRAME_BYTES,
   NATIVE_DISPATCH_METHOD,
+  NativeToolsClient,
   RELAY_PROTOCOL_VERSION,
-  nativeDispatchParams,
   relaySocketPath,
   resolveRelayThreadId,
 } from "./native-relay.mjs";
 import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
 
-/**
- * The companion half of the Codex Desktop native relay.
- *
- * Codex Desktop launches this as one of its own MCP servers, so the connection
- * it answers on belongs to the app's real app-server - the one already holding
- * the writer lock of every thread the human has open. Asking that app-server to
- * deliver a message is therefore not a second writer, and the thread stays open
- * and owned by Codex Desktop throughout.
- *
- * Everything else is deliberately small: a private socket, one accepted shape
- * (`{ targetThreadId, message }`), one dispatch, one acknowledgement.
- */
-
-const VERSION = "1.12.1";
+const VERSION = "1.12.2";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message) {
@@ -56,6 +42,11 @@ export async function handleRelayRequest(
   payload,
   { dispatch, resolveExecutor = resolveRelayThreadId, env = process.env } = {},
 ) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
+      Object.keys(payload).some((key) => !["v", "targetThreadId", "message"].includes(key)) ||
+      (payload.v !== undefined && payload.v !== RELAY_PROTOCOL_VERSION)) {
+    return errorResponse("RELAY_BAD_REQUEST", "expected a relay request with targetThreadId and message");
+  }
   const targetThreadId = typeof payload?.targetThreadId === "string" ? payload.targetThreadId.trim() : "";
   const message = typeof payload?.message === "string" ? payload.message : "";
 
@@ -84,6 +75,10 @@ export async function handleRelayRequest(
 
   try {
     const result = await dispatch({ executorThreadId, targetThreadId, message });
+    if (result?.success !== true || result?.isError === true) {
+      const detail = typeof result?.error === "string" ? result.error : result?.error?.message;
+      return errorResponse("NATIVE_DISPATCH_FAILED", detail ?? "Codex Desktop did not confirm successful native dispatch");
+    }
     return { ok: true, v: RELAY_PROTOCOL_VERSION, targetThreadId, executorThreadId, result: result ?? null };
   } catch (err) {
     return errorResponse(errorCode(err), err?.message ?? String(err));
@@ -113,6 +108,8 @@ export class RelaySocketServer {
     this.log = logFn;
     this.server = null;
     this.started = false;
+    this.connections = new Set();
+    this.processHandlers = new Map();
   }
 
   async start() {
@@ -139,12 +136,16 @@ export class RelaySocketServer {
     this.started = true;
 
     for (const signal of ["SIGINT", "SIGTERM"]) {
-      process.on(signal, () => {
+      const handler = () => {
         this.stop();
         process.exit(0);
-      });
+      };
+      this.processHandlers.set(signal, handler);
+      process.on(signal, handler);
     }
-    process.on("exit", () => this.stop());
+    const onExit = () => this.stop();
+    this.processHandlers.set("exit", onExit);
+    process.on("exit", onExit);
 
     this.log(`relay socket listening on ${this.socketPath}`);
     return this.socketPath;
@@ -201,22 +202,25 @@ export class RelaySocketServer {
   }
 
   #handleConnection(socket) {
-    let buffer = "";
+    let buffer = Buffer.alloc(0);
+    let handled = false;
+    this.connections.add(socket);
+    socket.on("close", () => this.connections.delete(socket));
+    socket.setTimeout(30000, () => socket.destroy());
     socket.on("error", (err) => this.log(`relay socket error: ${err.message}`));
     socket.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
-      if (Buffer.byteLength(buffer, "utf8") > MAX_FRAME_BYTES) {
+      if (handled) return;
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length > MAX_FRAME_BYTES) {
+        handled = true;
         this.#reply(socket, errorResponse("RELAY_MESSAGE_TOO_LARGE", `a relay frame may not exceed ${MAX_FRAME_BYTES} bytes`));
-        socket.destroy();
         return;
       }
-      let index;
-      while ((index = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, index).trim();
-        buffer = buffer.slice(index + 1);
-        if (!line) continue;
-        void this.#handleLine(socket, line);
-      }
+      const index = buffer.indexOf(10);
+      if (index < 0) return;
+      handled = true;
+      void this.#handleLine(socket, buffer.subarray(0, index).toString("utf8"));
+      buffer = Buffer.alloc(0);
     });
   }
 
@@ -239,10 +243,14 @@ export class RelaySocketServer {
 
   #reply(socket, response) {
     if (socket.destroyed) return;
-    socket.write(`${JSON.stringify(response)}\n`);
+    socket.end(`${JSON.stringify(response)}\n`);
   }
 
   stop() {
+    for (const [event, handler] of this.processHandlers) process.off(event, handler);
+    this.processHandlers.clear();
+    for (const socket of this.connections) socket.destroy();
+    this.connections.clear();
     try {
       this.server?.close();
     } catch {}
@@ -251,6 +259,58 @@ export class RelaySocketServer {
     } catch {}
     this.started = false;
   }
+}
+
+export function startRelayWhenAvailable({ nativeTools, relay, log: logFn = () => {}, retryDelayMs = 250, maxRetryDelayMs = 30000 }) {
+  let stopped = false;
+  let timer = null;
+  let delayMs = retryDelayMs;
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  const attempt = async () => {
+    if (stopped) return;
+    try {
+      await nativeTools.connect();
+      if (stopped) {
+        nativeTools.close();
+        return;
+      }
+      await relay.start();
+      if (stopped) {
+        relay.stop();
+        nativeTools.close();
+        return;
+      }
+      resolveReady(true);
+    } catch (err) {
+      if (stopped) return;
+      nativeTools.close();
+      if (!nativeTools.socketPath) {
+        logFn(`native relay unavailable (${err.message})`);
+        resolveReady(false);
+        return;
+      }
+      logFn(`native relay unavailable (${err.message}); retrying in ${delayMs}ms`);
+      timer = globalThis.setTimeout(() => {
+        timer = null;
+        void attempt();
+      }, delayMs);
+      timer.unref();
+      delayMs = Math.min(delayMs * 2, maxRetryDelayMs);
+    }
+  };
+  void attempt();
+  return {
+    ready,
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      globalThis.clearTimeout(timer);
+      nativeTools.close();
+      relay.stop();
+      resolveReady(false);
+    },
+  };
 }
 
 /**
@@ -271,20 +331,8 @@ if (invokedDirectly) {
     },
   );
 
-  /**
-   * The dispatch goes back over the very connection Codex Desktop opened to
-   * launch this process, which is what keeps the app the single writer. Sent as
-   * a plain JSON-RPC request rather than through a typed helper because the
-   * method is an internal of the app, not part of the MCP specification.
-   */
-  const dispatch = ({ executorThreadId, targetThreadId, message }) =>
-    mcp.server.request(
-      {
-        method: process.env.CODEX_NATIVE_RELAY_METHOD ?? NATIVE_DISPATCH_METHOD,
-        params: nativeDispatchParams({ executorThreadId, targetThreadId, message }),
-      },
-      z.any(),
-    );
+  const nativeTools = new NativeToolsClient();
+  const dispatch = (args) => nativeTools.dispatch(args);
 
   const relay = new RelaySocketServer({ socketPath: relaySocketPath(), dispatch, log });
 
@@ -319,6 +367,7 @@ if (invokedDirectly) {
               `relay socket:   ${relay.started ? relay.socketPath : `${relay.socketPath} (not listening)`}`,
               `executor:       ${executor}`,
               `dispatch:       ${process.env.CODEX_NATIVE_RELAY_METHOD ?? NATIVE_DISPATCH_METHOD}`,
+              `native pipe:    ${nativeTools.socketPath ?? "unavailable (requires Codex Desktop)"}`,
             ].join("\n"),
           },
         ],
@@ -326,18 +375,8 @@ if (invokedDirectly) {
     },
   );
 
-  /**
-   * Never let the socket take the MCP server down. Codex Desktop waits on the
-   * `initialize` handshake, so a process that dies before answering reads as a
-   * hang rather than an error - the same failure mode `claude-bridge` already
-   * guards its peer endpoint against.
-   */
-  try {
-    await relay.start();
-  } catch (err) {
-    log(`relay socket unavailable (${err.message}) - claude-bridge will fall back to the app-server path`);
-  }
-
+  const startup = startRelayWhenAvailable({ nativeTools, relay, log });
+  mcp.server.onclose = () => startup.stop();
   await mcp.connect(new StdioServerTransport());
   log(`ready on ${PLATFORM_LABEL} (${relay.started ? relay.socketPath : "socket down"})`);
 }

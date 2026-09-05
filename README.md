@@ -33,7 +33,7 @@ claude-bridge ───────┤ named pipe / unix socket                 
 - The app-server is a **singleton per port**. The bridge probes `http://127.0.0.1:8791/readyz`; if nothing answers it spawns a detached `codex app-server --listen ws://127.0.0.1:8791`, which keeps running after the bridge exits.
 - Every client pointed at the same URL shares **one app-server**, so `thread/resume` with a `threadId` rejoins the running thread instead of opening a new session.
 - The bridge keeps exactly one WebSocket, calls `initialize` once, and routes notifications by `threadId`, so parallel threads never bleed into each other.
-- `delegate_to_codex` is the one-call Claude → Codex hand-off: it starts the thread at the supplied `cwd`, names it, sends the prompt, stops the bridge app-server after a terminal turn, and opens `codex://threads/<id>` in Codex Desktop when enabled.
+- `delegate_to_codex` starts the thread at the supplied `cwd`, names it, sends the prompt, and unsubscribes that thread after a terminal turn. It opens `codex://threads/<id>` only after unload is confirmed; other threads on the shared app-server keep running.
 - The **native relay** (Windows/macOS, optional) is the third line: a thread the human is watching in Codex Desktop belongs to the app, and a second app-server cannot write to it. Instead of taking the thread away, `claude-bridge` hands the message to a companion the app itself launched, and the app delivers it. See [Codex Desktop native relay](#codex-desktop-native-relay).
 
 ## Requirements
@@ -235,7 +235,7 @@ Optional, and only worth installing if you keep the bound thread **open in Codex
 node scripts/install-native-relay.mjs
 ```
 
-This registers the companion with Codex (`codex mcp add codex-native-relay -- <node> src/native-relay-companion.mjs`) and bootstraps the executor thread the native dispatch needs, writing its id to `~/.codex/native-relay.json`. The bootstrap starts a throwaway app-server, creates one thread, and stops the app-server again so nothing is left holding a lock.
+This registers the companion with Codex (`codex mcp add codex-native-relay -- <node> src/native-relay-companion.mjs`) and bootstraps the executor thread the native dispatch needs, writing its id to `~/.codex/native-relay.json`. The bootstrap creates one thread, unsubscribes it, and closes its connection. It leaves other clients and threads running; an idle server may retain the executor until its configured unload delay expires.
 
 ```bash
 codex mcp get codex-native-relay
@@ -308,6 +308,10 @@ On macOS and Linux the `codex` launcher is a Node script with a `#!/usr/bin/env 
 
 `delegate_to_codex` accepts `cwd`, `prompt`, an optional `name`, `timeoutSec` (default 240), `model`, `effort`, `openInApp`, and `releaseAfterTurn`. `send_to_codex_thread` accepts the same hand-off controls plus an existing `threadId`. On Windows, the installer defaults `openInApp` and `releaseAfterTurn` to `1`; explicit tool arguments override them. A timeout does **not** cancel the turn: the bridge returns what it collected plus the `turnId`; keep reading with `read_codex_thread` or stop it with `interrupt_codex_turn`.
 
+`releaseAfterTurn` uses `thread/unsubscribe`, never an automatic process stop. The server may keep a thread loaded during its idle grace period or while another client subscribes. The bridge reports that state and defers Desktop opening rather than claiming the writer lock is released. Older servers without `thread/unsubscribe` return an explicit release failure. `stop_codex_app_server` remains a separate, destructive operation that affects every client on that endpoint.
+
+Concurrent sends to the same Codex thread are serialized; different threads can run in parallel. After a timeout or disconnect, the bridge checks unresolved turn state before allowing another turn. `loadedOnly` resolves the server's thread IDs and searches subsequent pages before applying workspace and title filters.
+
 For the normal Claude → Codex workflow, Claude should call `delegate_to_codex` with the exact project directory in `cwd`. The response always includes the Codex `threadId`, visible session `name`, exact `cwd`, rollout path, and the desktop deep link or the reason it could not be opened. The bridge sets the protocol-supported `thread/name/set` before the first turn, so the session is not an unnamed entry in Recents.
 
 Thread operations are checked before the bridge attaches, and `CODEX_BRIDGE_THREAD_POLICY` decides what counts as permission:
@@ -333,6 +337,8 @@ Under `owned`, a thread a human opened is **unreachable rather than merely restr
 | `claude_bridge_status` | Reports the peer endpoint, how many Claude sessions are live, the relay thread and the inbox depth. | writes |
 
 Every tool declares MCP annotation hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), because a client decides whether a call needs a human in the loop from those hints and a missing one reads as "unknown". Two are worth naming: `read_claude_inbox` empties the inbox as it reads it, so it is **not** read-only despite the name, and `claude_bridge_status` registers the peer endpoint on first call, so it writes too.
+
+Waited sends to the same Claude session run in order. If an earlier send timed out or used `waitSec: 0` and its reply has not arrived, a new waited send returns `PEER_REPLY_PENDING` before delivering another message. Wait for the earlier reply and inspect `read_claude_inbox`, or use `waitSec: 0` if another asynchronous message is intended. Different destination sessions remain independent.
 
 ### How each side sees the other
 
@@ -416,14 +422,20 @@ Resolution order is `CODEX_RELAY_ID` → that file → an error naming both. Nev
 | `CODEX_BRIDGE_NATIVE_RELAY` is not `0` | switched off by hand |
 | the Windows named pipe or macOS unix socket exists | the companion is not installed, or Codex Desktop is not running |
 
-A companion that cannot be reached falls back to the app-server path, because an absent relay says nothing about the target thread. A companion that **answered with a refusal** does not: Codex has already been asked, and a second app-server would only contend for the `~/.codex` state and then fail on the very writer lock this backend exists to avoid.
+A companion that cannot be reached before sending falls back to the app-server path. Once a request has been written, a refusal, timeout, or lost acknowledgement does not trigger another delivery: the first attempt may already have succeeded. Invalid or oversized messages are also refused rather than passed to another backend.
+
+Codex Desktop supplies `CODEX_APP_TOOLS_PIPE_PATH` to its companion. The companion keeps that native connection separate from MCP stdio. Without the inherited native pipe it does not advertise a working relay endpoint; if a configured pipe is late during startup, it retries in the background.
 
 > ⚠️ `codex_app.send_message_to_thread` and the native tools pipe are **Codex Desktop internals with no public documentation**, on the same footing as the Claude peer protocol above. That is why the relay is Windows/macOS, feature-detected, optional and fallback-safe. If Codex changes it, the two places to fix are `NATIVE_DISPATCH_METHOD` and `nativeDispatchParams()` in `src/native-relay.mjs`; `CODEX_NATIVE_RELAY_METHOD` overrides the method name without a release. The request the companion sends is:
 >
 > ```json
-> {"jsonrpc":"2.0","id":1,"method":"codex_app.send_message_to_thread",
->  "params":{"executorThreadId":"<relay thread>","threadId":"<destination>","message":"..."}}
+> {"jsonrpc":"2.0","id":1,"method":"tools/call",
+>  "params":{"arguments":{"threadId":"<destination>","prompt":"..."},
+>    "callId":"<unique call id>","namespace":"codex_app","threadId":"<relay thread>",
+>    "tool":"send_message_to_thread","turnId":"<unique turn id>"}}
 > ```
+
+The native pipe uses a 4-byte UInt32LE payload length followed by UTF-8 JSON-RPC, and delivery requires `response.result.success === true`. `callId` and `turnId` are fresh for each dispatch. The local bridge-to-companion protocol remains NDJSON. Both transports preserve Unicode across arbitrary stream chunk boundaries. This wire format follows [Seb's measured prototype in issue #23](https://github.com/buidangminh23/codex-mcp-bridge/issues/23#issuecomment-5547163688).
 
 **Security.** On macOS/Linux the relay socket is mode `0600` inside `~/.codex`; Windows uses the Claude-compatible local named-pipe namespace. Anything able to open the relay can put text into a Codex thread, so the endpoint is feature-detected and the companion accepts exactly one shape, `{ targetThreadId, message }`, caps a frame at 128 KiB, and refuses a destination that is its own executor thread — otherwise a mistaken bind would deliver into the invisible relay thread and report success.
 
@@ -436,6 +448,8 @@ A companion that cannot be reached falls back to the app-server path, because an
 - `codex app-server daemon start` uses the `unix://` transport with a control socket at `~/.codex/app-server-control/app-server-control.sock`. The bridge does **not** use that path (different framing, no public API) — it always talks over `ws://`.
 
 ## Troubleshooting
+
+**A turn fails with "model requires a newer version of Codex" after upgrading Desktop.** An app-server already listening at `CODEX_APP_SERVER_URL` keeps running its original executable. Resolving a newer `CODEX_EXE` does not replace that process. Check the listening process and its executable version, then restart that server with the current Codex binary when its active work has finished. An isolated server on another local port can verify the upgrade without interrupting shared work.
 
 **`readyz` never returns 200 after restarting the app-server.** The log says `failed to initialize sqlite state runtime under ~/.codex`. Cause: an older app-server is still alive and holding the sqlite state of `~/.codex` — only **one** process may hold it. Hard kills (`pkill -9`) or repeated `launchctl kickstart -k` leave zombies that `pkill -f "app-server --listen ws://…"` misses, because the process name is the vendored binary path.
 
@@ -454,7 +468,7 @@ python3 -c "import json;[print(v['properties']['method'].get('const') or v['prop
 
 **The bridge disappears from Claude after sending into a busy thread.** Fixed in 1.6.0. A rejected `turn/start` — which is exactly what a thread locked by the desktop app produces — also rejected an internal promise nothing was awaiting. Node treats that as an unhandled rejection and, by default, exits the process, so the MCP server died while the tool handler was still formatting a tidy error message for a client that no longer had a server. Pinned by a test that runs the failure in a real child process and asserts it exits 0.
 
-**The Codex app says a thread is "open in another application".** That is the per-thread writer lock, and the other application is usually this bridge: the shared app-server takes the lock when it loads a thread and keeps it until it exits, so the desktop app cannot write to the same thread. `delegate_to_codex` releases the bridge server before opening the final desktop link when `releaseAfterTurn` is enabled. For an existing thread, pass `releaseAfterTurn: true` or call `stop_codex_app_server` once the hand-off is done — the bridge starts a new app-server the next time it needs one. A thread held by a *different* Codex window is the app's own lock; close it there. If what you want is for Codex Desktop to **keep** the thread while Claude messages into it, that is what the [native relay](#codex-desktop-native-relay) is for — it never asks for the lock.
+**The Codex app says a thread is "open in another application".** The app-server holds a writer lock while the thread is loaded. With `releaseAfterTurn: true`, the bridge unsubscribes after completion; unload can still wait for the server's idle delay or another subscriber. Open the thread after it unloads. Use `stop_codex_app_server` only when all work on that shared server may be stopped. A thread held by a different Codex window must be released there. To keep a thread open in Codex Desktop while Claude messages into it, use the [native relay](#codex-desktop-native-relay), which never takes a second writer lock.
 
 **`claude_bridge_status` says the delivery backend is `app-server` on Windows or macOS with the relay installed.** The `delivery:` line carries the reason: *"no companion socket at …"* means Codex Desktop has not launched the companion, so restart the app after `install-native-relay.mjs` and check `codex mcp get codex-native-relay`; *"disabled by CODEX_BRIDGE_NATIVE_RELAY=0"* means it was switched off in the MCP server's `env`; *"unavailable on Linux"* means the native relay is not supported there. A relay that is reachable but has no executor thread fails at send time instead, with `RELAY_THREAD_UNCONFIGURED` naming both `CODEX_RELAY_ID` and the file to bootstrap.
 
@@ -492,12 +506,12 @@ The bridge reads these from the environment its MCP client hands it — there is
 | `CODEX_BRIDGE_MODEL` | from `~/.codex/config.toml` | Default model for threads and turns the bridge creates, e.g. `gpt-5.6-luna`. |
 | `CODEX_BRIDGE_EFFORT` | from `~/.codex/config.toml` | Default reasoning effort: `minimal` · `low` · `medium` · `high` · `xhigh` · `ultra`. |
 | `CODEX_BRIDGE_OPEN_IN_APP` | `1` on Windows, `0` elsewhere | Open delegated or sent threads through the `codex://threads/<id>` desktop link. |
-| `CODEX_BRIDGE_RELEASE_AFTER_TURN` | `1` on Windows, `0` elsewhere | Stop the shared bridge app-server after a terminal turn so Codex Desktop can write the handed-off thread. |
+| `CODEX_BRIDGE_RELEASE_AFTER_TURN` | `1` on Windows, `0` elsewhere | Unsubscribe the completed thread without stopping other work; defer Desktop opening until unload is confirmed. |
 | `CODEX_BRIDGE_NATIVE_RELAY` | `auto` | Delivery backend for relayed Claude messages. `auto` uses the Codex Desktop native relay on Windows/macOS when its companion endpoint exists; `0` never does; `1` attempts it on any platform. |
 | `CODEX_RELAY_ID` | from `~/.codex/native-relay.json` | Executor thread for `codex_app.send_message_to_thread`. Not the destination — see [Codex Desktop native relay](#codex-desktop-native-relay). |
 | `CODEX_HOME` | `~/.codex` | Where `native-relay.json` lives; POSIX relay sockets also live here, while Windows uses a named pipe. |
 | `CODEX_NATIVE_RELAY_SOCKET` | Windows named pipe or `$CODEX_HOME/native-relay.sock` on macOS | Override the companion endpoint on both halves of the relay. |
-| `CODEX_NATIVE_RELAY_METHOD` | `codex_app.send_message_to_thread` | The undocumented Codex Desktop method the companion dispatches through; override it if Codex renames it. |
+| `CODEX_NATIVE_RELAY_METHOD` | `tools/call` | The undocumented Codex Desktop JSON-RPC method the companion dispatches through; override only for a verified protocol change. |
 | `CODEX_NATIVE_RELAY_NAME` | `codex-native-relay` | The MCP server name `scripts/install-native-relay.mjs` registers with Codex. |
 | `CLAUDE_BRIDGE_PEER_NAME` | `codex-<pid>` | The name Claude shows for this bridge in its agent list. |
 | `CLAUDE_BRIDGE_CWD` | the process cwd | The working directory the peer advertises. |
@@ -539,6 +553,8 @@ Runs the whole suite with `node --test`. It needs no Codex install, no login and
 | `test/tool-contract.test.mjs` | all three servers boot over stdio and every tool declares a title, a description, per-parameter descriptions and complete annotation hints |
 | `test/server-requests.test.mjs` | all 10 app-server requests get a reply in the shape their schema declares — the regression test for "the turn pauses itself" |
 | `test/reconnect.test.mjs` | reconnect after a dropped socket, no leaked pending requests or listeners, an interrupted turn ending promptly, a refused first handshake being retried |
+| `test/app-server-lifecycle.test.mjs` | concurrent initialization, failed sends, per-thread serialization and unsubscribe, and reconciliation of turns after reconnect |
+| `test/bridge-integration.test.mjs` | real MCP children against isolated app-servers: workspace authorization, loaded-thread pagination, diagnostic exit status, and concurrent handoffs |
 | `test/turn.test.mjs` | the turn state machine: buffered notifications, terminal statuses, timeout, disconnect, retryable vs fatal errors, and that a failed `turn/start` cannot kill the process |
 | `test/peer-protocol.test.mjs` | frame round-trips, the session registry, transcript scanning, and a live peer endpoint over a real unix socket |
 | `test/platform.test.mjs` | binary resolution, the PATH handed to child processes, per-OS config paths and cwd remapping |

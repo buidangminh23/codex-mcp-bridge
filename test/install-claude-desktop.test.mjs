@@ -54,6 +54,21 @@ function configWith(entry) {
 }
 
 describe("claude desktop installer", () => {
+  it("persists an explicit auto-approval acknowledgement on a fresh install", () => {
+    const cfg = install({ config: configWith(null), env: {
+      CODEX_BRIDGE_APPROVAL: "approve", CODEX_BRIDGE_AUTO_APPROVE_ACK: "1",
+    } });
+    assert.equal(cfg.mcpServers["codex-bridge"].env.CODEX_BRIDGE_AUTO_APPROVE_ACK, "1");
+  });
+
+  it("lets the operator revoke an existing auto-approval acknowledgement", () => {
+    const config = configWith({ mcpServers: { "codex-bridge": { env: {
+      CODEX_BRIDGE_APPROVAL: "approve", CODEX_BRIDGE_AUTO_APPROVE_ACK: "1",
+    } } } });
+    const cfg = install({ config, env: { CODEX_BRIDGE_AUTO_APPROVE_ACK: "0" } });
+    assert.equal(cfg.mcpServers["codex-bridge"].env.CODEX_BRIDGE_AUTO_APPROVE_ACK, "0");
+  });
+
   it("writes the thread policy explicitly on a fresh install", () => {
     const cfg = install({ config: configWith(null) });
     const env = cfg.mcpServers["codex-bridge"].env;

@@ -70,6 +70,10 @@ function tempSocket() {
   return path.join(dir, "s.sock");
 }
 
+function tempNamedPipe() {
+  return "\\\\.\\pipe\\LOCAL\\codex-native-relay-test-" + process.pid + "-" + Math.random().toString(16).slice(2);
+}
+
 after(() => {
   for (const dir of temps) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -124,7 +128,11 @@ describe("relay executor thread resolution", () => {
 
 describe("native relay availability", () => {
   it("stays off where the Codex Desktop native pipe does not exist", () => {
-    const status = nativeRelayStatus({ CODEX_HOME: tempHome(), CODEX_BRIDGE_NATIVE_RELAY: "auto" });
+    const status = nativeRelayStatus({
+      CODEX_HOME: tempHome(),
+      CODEX_NATIVE_RELAY_SOCKET: IS_WINDOWS ? tempNamedPipe() : undefined,
+      CODEX_BRIDGE_NATIVE_RELAY: "auto",
+    });
     assert.equal(status.enabled, false);
     assert.ok(status.reason, "an unavailable backend must say why");
   });
@@ -145,7 +153,10 @@ describe("native relay availability", () => {
 
   it("resolves the socket under the Codex home by default", () => {
     const home = tempHome();
-    assert.equal(relaySocketPath({ CODEX_HOME: home }), path.join(home, "native-relay.sock"));
+    assert.equal(
+      relaySocketPath({ CODEX_HOME: home }),
+      IS_WINDOWS ? "\\\\.\\pipe\\LOCAL\\codex-native-relay" : path.join(home, "native-relay.sock"),
+    );
   });
 });
 
@@ -412,6 +423,33 @@ describe("relay socket round trip", { skip: IS_WINDOWS ? "unix sockets are not t
   });
 });
 
+describe("Windows named-pipe relay", { skip: IS_WINDOWS ? false : "Windows named-pipe regression" }, () => {
+  it("carries a message through the Windows relay pipe", async () => {
+    const socketPath = tempNamedPipe();
+    const seen = [];
+    const server = new RelaySocketServer({
+      socketPath,
+      dispatch: async (args) => (seen.push(args), { delivered: true }),
+      resolveExecutor: stubExecutor,
+    });
+    await server.start();
+    try {
+      const relay = new NativeDesktopRelay({
+        socketPath,
+        env: { CODEX_RELAY_ID: "relay-thread", CODEX_BRIDGE_NATIVE_RELAY: "1" },
+      });
+      assert.equal(relay.available, true);
+      const ack = await relay.sendMessage("open-thread", "hello from Claude");
+      assert.equal(ack.ok, true);
+      assert.deepEqual(seen, [
+        { executorThreadId: "relay-thread", targetThreadId: "open-thread", message: "hello from Claude" },
+      ]);
+    } finally {
+      server.stop();
+    }
+  });
+});
+
 describe("thread delivery backend", () => {
   const workingRelay = (calls) => ({
     status: () => ({ enabled: true, socketPath: "/relay.sock", reason: null }),
@@ -447,6 +485,41 @@ describe("thread delivery backend", () => {
     assert.equal(result.backend, APP_SERVER_BACKEND);
     assert.deepEqual(attached, ["lonely-thread"]);
     assert.match(delivery.describe(), /app-server/);
+  });
+
+  it("releases the fallback app-server after a terminal turn", async () => {
+    let listener;
+    let stopped = 0;
+    const codex = {
+      ensureThreadAttached: async () => {},
+      subscribe: (_threadId, callback) => {
+        listener = callback;
+        return () => {};
+      },
+      subscribeDisconnect: () => () => {},
+      request: async (method) => {
+        if (method === "turn/start") {
+          globalThis.setTimeout(
+            () => listener({ method: "turn/completed", params: { turn: { id: "turn-1", status: "completed" } } }),
+            0,
+          );
+          return { turn: { id: "turn-1" } };
+        }
+        return {};
+      },
+      stopServer: async () => {
+        stopped += 1;
+        return { stopped: true };
+      },
+    };
+    const relay = {
+      status: () => ({ enabled: false, socketPath: "/relay.sock", reason: "no companion socket" }),
+      sendMessage: async () => assert.fail("an unavailable relay must not be called"),
+    };
+    const delivery = createThreadDelivery({ codex, relay, timeoutMs: 100, releaseAfterTurn: true });
+    const result = await delivery.deliver("fallback-thread", "hello");
+    assert.equal(result.turn.status, "completed");
+    assert.equal(stopped, 1);
   });
 
   it("falls back when the companion is gone, and only then", async () => {

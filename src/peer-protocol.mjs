@@ -32,7 +32,7 @@ const projectsDir = () => path.join(homeDir(), ".claude", "projects");
 
 /**
  * A Claude Code session advertises itself in ~/.claude/sessions/<pid>.json and
- * listens for peer messages on a unix socket. Messages are newline-delimited
+ * listens for peer messages on a local socket or Windows named pipe. Messages are newline-delimited
  * JSON; the wrapper element is what Claude renders in its chat surface.
  */
 export function buildFrame({ text, fromSocket, priority = "next" }) {
@@ -84,6 +84,30 @@ function isProcessAlive(pid) {
   }
 }
 
+const SESSION_READ_ATTEMPTS = 3;
+const PEER_SEND_ATTEMPTS = 3;
+const PEER_CONNECT_TIMEOUT_MS = 2000;
+const PEER_RETRY_DELAY_MS = 75;
+const RETRYABLE_PEER_ERRORS = new Set(["ECONNREFUSED", "ECONNRESET", "ENOENT", "EPIPE", "ENOTFOUND", "ETIMEDOUT"]);
+
+function readSessionEntry(file) {
+  for (let attempt = 0; attempt < SESSION_READ_ATTEMPTS; attempt += 1) {
+    try {
+      const first = fs.readFileSync(file, "utf8");
+      const second = fs.readFileSync(file, "utf8");
+      if (first !== second) continue;
+      return JSON.parse(second);
+    } catch {}
+  }
+  return null;
+}
+
+function hasMessagingEndpoint(entry) {
+  const socket = entry?.messagingSocketPath;
+  if (IS_WINDOWS && typeof socket === "string" && socket.toLowerCase().startsWith("\\\\.\\pipe\\")) return true;
+  return Boolean(socket) && fs.existsSync(socket);
+}
+
 export const BRIDGE_ENTRYPOINT = "codex-bridge";
 
 export function listClaudeSessions({ includeDead = false, includeBridges = false } = {}) {
@@ -92,15 +116,11 @@ export function listClaudeSessions({ includeDead = false, includeBridges = false
   const rows = [];
   for (const file of fs.readdirSync(dir)) {
     if (!file.endsWith(".json")) continue;
-    let entry;
-    try {
-      entry = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
-    } catch {
-      continue;
-    }
+    const entry = readSessionEntry(path.join(dir, file));
+    if (!entry) continue;
     if (!entry?.pid || !entry?.messagingSocketPath) continue;
     if (entry.entrypoint === BRIDGE_ENTRYPOINT && !includeBridges) continue;
-    const alive = isProcessAlive(entry.pid) && fs.existsSync(entry.messagingSocketPath);
+    const alive = isProcessAlive(entry.pid) && hasMessagingEndpoint(entry);
     if (!alive && !includeDead) continue;
     rows.push({
       pid: entry.pid,
@@ -206,12 +226,8 @@ export class PeerEndpoint {
     for (const file of fs.readdirSync(dir)) {
       if (!file.endsWith(".json")) continue;
       const registry = path.join(dir, file);
-      let entry;
-      try {
-        entry = JSON.parse(fs.readFileSync(registry, "utf8"));
-      } catch {
-        continue;
-      }
+      const entry = readSessionEntry(registry);
+      if (!entry) continue;
       if (entry?.entrypoint !== BRIDGE_ENTRYPOINT) continue;
       if (!entry.pid || entry.pid === this.pid || isProcessAlive(entry.pid)) continue;
       for (const stale of [registry, entry.messagingSocketPath, ...fs.readdirSync(dir)
@@ -328,15 +344,53 @@ export class PeerEndpoint {
 
   async send(targetSocket, text, { priority = "next" } = {}) {
     const frame = buildFrame({ text, fromSocket: this.socketPath, priority });
-    await new Promise((resolve, reject) => {
-      const client = net.connect({ path: targetSocket }, () => {
-        client.write(`${JSON.stringify(frame)}\n`, () => {
-          client.end();
-          resolve();
+    const line = JSON.stringify(frame) + "\n";
+    for (let attempt = 1; attempt <= PEER_SEND_ATTEMPTS; attempt += 1) {
+      try {
+        await new Promise((resolve, reject) => {
+          const client = net.connect({ path: targetSocket });
+          let connected = false;
+          let writeStarted = false;
+          let settled = false;
+          const timer = globalThis.setTimeout(() => {
+            const error = new Error("timed out connecting to " + targetSocket);
+            error.code = "ETIMEDOUT";
+            finish(error);
+            client.destroy();
+          }, PEER_CONNECT_TIMEOUT_MS);
+          const finish = (error) => {
+            if (settled) return;
+            settled = true;
+            globalThis.clearTimeout(timer);
+            if (error) {
+              reject({ error, retryable: !connected && !writeStarted });
+            } else {
+              resolve();
+            }
+          };
+          client.once("connect", () => {
+            connected = true;
+            writeStarted = true;
+            client.write(line, (error) => {
+              if (error) {
+                finish(error);
+                return;
+              }
+              client.end();
+              finish();
+            });
+          });
+          client.once("error", finish);
         });
-      });
-      client.on("error", reject);
-    });
+        return frame.msg_id;
+      } catch (failure) {
+        const error = failure?.error ?? failure;
+        if (!failure?.retryable || attempt === PEER_SEND_ATTEMPTS || !RETRYABLE_PEER_ERRORS.has(error?.code)) {
+          throw error;
+        }
+        await new Promise((resolve) => globalThis.setTimeout(resolve, PEER_RETRY_DELAY_MS));
+      }
+    }
     return frame.msg_id;
   }
 

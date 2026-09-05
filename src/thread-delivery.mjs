@@ -17,12 +17,17 @@ import { runTurn } from "./turn.mjs";
  */
 export const NATIVE_BACKEND = "codex-desktop-native";
 export const APP_SERVER_BACKEND = "app-server";
+const RELEASE_STATUSES = new Set(["completed", "interrupted", "failed", "disconnected"]);
 
 export function createThreadDelivery({
   codex,
   relay = new NativeDesktopRelay(),
   log = () => {},
   timeoutMs = 240000,
+  releaseAfterTurn =
+    process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN !== undefined
+      ? process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN === "1"
+      : process.platform === "win32",
 } = {}) {
   let reportedUnavailable = null;
 
@@ -57,6 +62,15 @@ export function createThreadDelivery({
       input: [{ type: "text", text }],
       timeoutMs,
     });
+    if (releaseAfterTurn && RELEASE_STATUSES.has(turn.status) && typeof codex.stopServer === "function") {
+      try {
+        const released = await codex.stopServer();
+        if (released?.stillListening) log("app-server release requested but it is still listening");
+        if (released?.stopped === false) log("app-server release skipped: " + (released.reason ?? "unknown reason"));
+      } catch (err) {
+        log("app-server release failed: " + err.message);
+      }
+    }
     return { backend: APP_SERVER_BACKEND, threadId, turn };
   }
 

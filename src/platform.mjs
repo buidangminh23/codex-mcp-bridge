@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,7 +94,26 @@ function isRunnable(candidate) {
 function windowsCodexCandidates() {
   const roaming = process.env.APPDATA;
   const local = process.env.LOCALAPPDATA;
+  const versionedRoot = local && path.join(local, "OpenAI", "Codex", "bin");
+  let versioned = [];
+  if (versionedRoot) {
+    try {
+      versioned = readdirSync(versionedRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => path.join(versionedRoot, entry.name, "codex.exe"))
+        .filter((candidate) => isRunnable(candidate))
+        .sort((left, right) => {
+          try {
+            return statSync(path.dirname(right)).mtimeMs - statSync(path.dirname(left)).mtimeMs;
+          } catch {
+            return 0;
+          }
+        });
+    } catch {}
+  }
   return [
+    process.env.CODEX_CLI_PATH,
+    ...versioned,
     local && path.join(local, "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
     roaming && path.join(roaming, "npm", "codex.cmd"),
     process.env.ProgramFiles && path.join(process.env.ProgramFiles, "nodejs", "codex.cmd"),

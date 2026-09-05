@@ -16,7 +16,7 @@ import {
   relaySocketPath,
   resolveRelayThreadId,
 } from "./native-relay.mjs";
-import { PLATFORM_LABEL } from "./platform.mjs";
+import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
 
 /**
  * The companion half of the Codex Desktop native relay.
@@ -31,7 +31,7 @@ import { PLATFORM_LABEL } from "./platform.mjs";
  * (`{ targetThreadId, message }`), one dispatch, one acknowledgement.
  */
 
-const VERSION = "1.12.0";
+const VERSION = "1.12.1";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message) {
@@ -91,20 +91,19 @@ export async function handleRelayRequest(
 }
 
 /**
- * Listens on a private unix socket and answers one NDJSON line per request.
- *
- * The socket is mode 0600 inside the Codex home directory, which is the same
- * boundary the Claude peer protocol already relies on: owning the user account
- * is what grants access, and nothing weaker does. Named separately here because
- * this socket can put text into a Codex thread, so the file mode is the
- * security control rather than a detail of the transport.
+ * Listens on a private local socket or Windows named pipe and answers one NDJSON line per request.
+*
+ * POSIX sockets are mode 0600 inside the Codex home directory. Windows uses the
+ * Claude-compatible local named-pipe namespace instead of a filesystem mode.
  */
 export class RelaySocketServer {
   constructor({
     socketPath,
     dispatch,
     resolveExecutor = resolveRelayThreadId,
-    restrictSocket = (target) => fs.chmodSync(target, 0o600),
+    restrictSocket = (target) => {
+      if (!IS_WINDOWS) fs.chmodSync(target, 0o600);
+    },
     log: logFn = () => {},
   } = {}) {
     this.socketPath = socketPath;
@@ -118,7 +117,7 @@ export class RelaySocketServer {
 
   async start() {
     if (this.started) return this.socketPath;
-    fs.mkdirSync(path.dirname(this.socketPath), { recursive: true });
+    if (!IS_WINDOWS) fs.mkdirSync(path.dirname(this.socketPath), { recursive: true });
 
     this.server = net.createServer((socket) => this.#handleConnection(socket));
     await this.#listen({ replaceStale: true });
@@ -171,6 +170,13 @@ export class RelaySocketServer {
       });
     } catch (err) {
       if (err.code !== "EADDRINUSE" || !replaceStale) throw err;
+      if (IS_WINDOWS) {
+        if (await this.#socketIsLive()) {
+          throw new Error(`another native relay companion already owns ${this.socketPath}`);
+        }
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+        return this.#listen({ replaceStale: false });
+      }
       if (await this.#socketIsLive()) {
         throw new Error(`another native relay companion already owns ${this.socketPath}`);
       }
@@ -241,7 +247,7 @@ export class RelaySocketServer {
       this.server?.close();
     } catch {}
     try {
-      if (this.started) fs.rmSync(this.socketPath, { force: true });
+      if (this.started && !IS_WINDOWS) fs.rmSync(this.socketPath, { force: true });
     } catch {}
     this.started = false;
   }

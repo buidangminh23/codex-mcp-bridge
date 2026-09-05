@@ -124,6 +124,32 @@ describe("platform facts", () => {
     const missing = path.join(sandbox, "definitely-not-here");
     assert.notEqual(resolveCodexBin(missing), missing);
   });
+
+  it(
+    "finds the versioned Codex Desktop binary on Windows",
+    { skip: IS_WINDOWS ? false : "Windows Codex Desktop path regression" },
+    () => {
+      const binary = path.join(sandbox, "AppData", "Local", "OpenAI", "Codex", "bin", "version-1", "codex.exe");
+      fs.mkdirSync(path.dirname(binary), { recursive: true });
+      fs.writeFileSync(binary, "");
+      const previous = {
+        LOCALAPPDATA: process.env.LOCALAPPDATA,
+        CODEX_BIN: process.env.CODEX_BIN,
+        CODEX_CLI_PATH: process.env.CODEX_CLI_PATH,
+      };
+      process.env.LOCALAPPDATA = path.join(sandbox, "AppData", "Local");
+      delete process.env.CODEX_BIN;
+      delete process.env.CODEX_CLI_PATH;
+      try {
+        assert.equal(resolveCodexBin(), binary);
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    },
+  );
 });
 
 describe("workspace resolution", () => {

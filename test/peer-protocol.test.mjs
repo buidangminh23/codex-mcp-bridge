@@ -27,6 +27,10 @@ const projectsDir = path.join(sandbox, ".claude", "projects");
 
 const isWindows = process.platform === "win32";
 
+function namedPipePath() {
+  return "\\\\.\\pipe\\LOCAL\\cc-peer-test-" + process.pid + "-" + Math.random().toString(16).slice(2);
+}
+
 function writeSession(name, entry) {
   fs.mkdirSync(sessionsDir, { recursive: true });
   fs.writeFileSync(path.join(sessionsDir, `${name}.json`), JSON.stringify(entry));
@@ -104,6 +108,21 @@ describe("session registry", () => {
     assert.equal(listClaudeSessions({ includeDead: true }).length, 2);
   });
 
+  it(
+    "keeps a live Windows named-pipe session visible while the pipe is starting",
+    { skip: isWindows ? false : "Windows named-pipe regression" },
+    () => {
+      writeSession("pipe-starting", {
+        pid: process.pid,
+        sessionId: "session-pipe-starting",
+        name: "pipe-starting",
+        startedAt: 0,
+        messagingSocketPath: "\\\\.\\pipe\\LOCAL\\cc-msg-not-created-yet",
+      });
+      assert.equal(listClaudeSessions().find((s) => s.sessionId === "session-pipe-starting")?.alive, true);
+    },
+  );
+
   /**
    * Codex starts one bridge per session and each registers a peer, so without
    * this filter the bridge would list its own siblings as Claude sessions and
@@ -134,6 +153,41 @@ describe("session registry", () => {
     assert.equal(findClaudeSession("live-one")?.sessionId, "session-live");
     assert.equal(findClaudeSession("LIVE-")?.sessionId, "session-live");
     assert.equal(findClaudeSession("nothing-like-this"), null);
+  });
+});
+
+describe("Windows peer endpoint", { skip: isWindows ? false : "Windows named-pipe regression" }, () => {
+  it("retries while a Claude named pipe is starting", async () => {
+    const socketPath = namedPipePath();
+    const server = net.createServer();
+    const received = new Promise((resolve, reject) => {
+      server.on("error", reject);
+      server.on("connection", (socket) => {
+        let buffer = "";
+        socket.on("data", (chunk) => {
+          buffer += chunk.toString("utf8");
+          const index = buffer.indexOf("\n");
+          if (index < 0) return;
+          resolve(parseFrame(buffer.slice(0, index)));
+          socket.destroy();
+        });
+        socket.on("error", reject);
+      });
+    });
+    const listening = new Promise((resolve, reject) => {
+      globalThis.setTimeout(() => {
+        server.once("error", reject);
+        server.listen(socketPath, resolve);
+      }, 40);
+    });
+    const endpoint = new PeerEndpoint({ name: "sender", cwd: sandbox });
+    try {
+      await Promise.all([endpoint.send(socketPath, "hello"), listening]);
+      const frame = await received;
+      assert.equal(frame.text, "hello");
+    } finally {
+      server.close();
+    }
   });
 });
 

@@ -2,6 +2,23 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.12.1] - 2026-09-05
+
+### Fixed
+
+- **Windows no longer loses the Codex Desktop native relay to a Unix-only transport.** The Claude peer endpoint
+  and the Codex Desktop companion now use local named pipes on Windows, while macOS and Linux keep their Unix
+  sockets. The same platform-aware endpoint detection is used by status checks and cleanup, so a live Windows
+  companion is not mistaken for a missing session or deleted as a stale file.
+- **Live Claude sessions no longer disappear intermittently while their registry file is being rewritten.** Session
+  metadata is read twice and retried until stable, and peer delivery retries the short startup window before the
+  named pipe is listening. A session that is alive but still bringing up its Windows pipe remains visible and
+  deliverable.
+- **A disconnected hand-off now releases the bridge app-server when release-after-turn is enabled.** This prevents
+  a dropped turn from leaving a writer lock behind and blocking Codex Desktop on the next open.
+- **Windows resolves the versioned Codex Desktop binary before older install locations.** The bridge and installers
+  therefore use the current desktop executable instead of silently attaching to an obsolete copy.
+
 ## [1.12.0] - 2026-09-04
 
 ### Added

@@ -21,7 +21,7 @@ import {
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
 
-const VERSION = "1.12.0";
+const VERSION = "1.12.1";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -38,6 +38,7 @@ const DEFAULT_RELEASE_AFTER_TURN = process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN
   ? process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN === "1"
   : IS_WINDOWS;
 const TERMINAL_TURN_STATUSES = new Set(["completed", "interrupted", "failed"]);
+const RELEASE_TURN_STATUSES = new Set([...TERMINAL_TURN_STATUSES, "disconnected"]);
 const security = new BridgeSecurityPolicy();
 
 const client = new CodexAppServerClient({
@@ -133,8 +134,9 @@ async function finishDesktopHandoff({ threadId, result, openInApp, releaseAfterT
   const notes = [];
   let canOpenAfterRelease = true;
   const terminal = TERMINAL_TURN_STATUSES.has(result.status);
+  const releasable = RELEASE_TURN_STATUSES.has(result.status);
 
-  if (releaseAfterTurn && terminal) {
+  if (releaseAfterTurn && releasable) {
     try {
       const released = await client.stopServer();
       if (released.stopped) {

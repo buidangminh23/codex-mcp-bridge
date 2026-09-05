@@ -2,7 +2,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 
-import { IS_MACOS, PLATFORM_LABEL, homeDir } from "./platform.mjs";
+import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir } from "./platform.mjs";
 
 /**
  * The Codex Desktop app owns the per-thread writer lock of every thread it has
@@ -43,6 +43,7 @@ export const MAX_FRAME_BYTES = 128 * 1024;
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const RELAY_SOCKET_NAME = "native-relay.sock";
+const WINDOWS_RELAY_SOCKET = "\\\\.\\pipe\\LOCAL\\codex-native-relay";
 const RELAY_CONFIG_NAME = "native-relay.json";
 
 export class NativeRelayError extends Error {
@@ -66,7 +67,7 @@ export function codexHome(env = process.env) {
 }
 
 export function relaySocketPath(env = process.env) {
-  return env.CODEX_NATIVE_RELAY_SOCKET ?? path.join(codexHome(env), RELAY_SOCKET_NAME);
+  return env.CODEX_NATIVE_RELAY_SOCKET ?? (IS_WINDOWS ? WINDOWS_RELAY_SOCKET : path.join(codexHome(env), RELAY_SOCKET_NAME));
 }
 
 export function relayConfigPath(env = process.env) {
@@ -79,6 +80,13 @@ function isSocketFile(target) {
   } catch {
     return false;
   }
+}
+
+function isRelayEndpoint(target) {
+  if (IS_WINDOWS) {
+    return typeof target === "string" && target.toLowerCase().startsWith("\\\\.\\pipe\\") && fs.existsSync(target);
+  }
+  return isSocketFile(target);
 }
 
 export function readRelayConfig(env = process.env) {
@@ -145,15 +153,15 @@ export function nativeRelayStatus(env = process.env) {
     return { enabled: false, mode, socketPath, reason: "disabled by CODEX_BRIDGE_NATIVE_RELAY=0" };
   }
   const forced = mode === "1" || mode === "on";
-  if (!IS_MACOS && !forced) {
+  if (!IS_MACOS && !IS_WINDOWS && !forced) {
     return {
       enabled: false,
       mode,
       socketPath,
-      reason: `the Codex Desktop native relay is macOS-only (this is ${PLATFORM_LABEL})`,
+      reason: `the Codex Desktop native relay is unavailable on ${PLATFORM_LABEL}`,
     };
   }
-  if (!isSocketFile(socketPath)) {
+  if (!isRelayEndpoint(socketPath)) {
     return {
       enabled: false,
       mode,

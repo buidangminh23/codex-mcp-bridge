@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { CodexAppServerClient } from "../src/app-server-client.mjs";
 import { bootstrapRelayThread, readRelayConfig, relayConfigPath, relaySocketPath } from "../src/native-relay.mjs";
-import { IS_MACOS, PLATFORM_LABEL, homeDir, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
+import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
 
 /**
  * Installs the Codex Desktop native relay: registers the companion as an MCP
@@ -39,7 +39,7 @@ if (remove) {
   } catch (err) {
     console.log(`${serverName} was not registered (${err.message.trim().split("\n").at(-1)})`);
   }
-  for (const leftover of [relaySocketPath(), relayConfigPath()]) {
+  for (const leftover of [relayConfigPath(), ...(IS_WINDOWS ? [] : [relaySocketPath()])]) {
     if (fs.existsSync(leftover)) {
       fs.rmSync(leftover, { force: true });
       console.log(`removed ${leftover}`);
@@ -49,12 +49,12 @@ if (remove) {
 }
 
 /**
- * Not a hard failure: the companion is harmless on any platform - it simply
- * never gets a native tools connection to dispatch through - and refusing to
- * register it would make the install order depend on which machine runs it.
+ * Not a hard failure on an unsupported platform: the companion is harmless and
+ * refusing to register it would make the install order depend on which machine
+ * runs it.
  */
-if (!IS_MACOS) {
-  console.log(`note: the native relay only delivers on macOS; this is ${PLATFORM_LABEL}.`);
+if (!IS_MACOS && !IS_WINDOWS) {
+  console.log(`note: the native relay is unavailable on ${PLATFORM_LABEL}.`);
   console.log("claude-bridge will keep using the app-server path here.");
 }
 
@@ -76,7 +76,7 @@ if (existing) {
   console.log(`\nskipped the relay thread bootstrap; set CODEX_RELAY_ID or rerun without --no-bootstrap.`);
 } else {
   const client = new CodexAppServerClient({
-    clientInfo: { name: "native-relay-install", title: "Native Relay Install", version: "1.11.3" },
+    clientInfo: { name: "native-relay-install", title: "Native Relay Install", version: "1.12.1" },
     log: (msg) => console.log(`  ${msg}`),
   });
   console.log("\nbootstrapping the relay executor thread...");

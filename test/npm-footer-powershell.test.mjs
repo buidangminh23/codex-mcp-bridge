@@ -7,8 +7,9 @@ import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
 const footerPath = fileURLToPath(new URL("../scripts/npm-footer.ps1", import.meta.url));
-const pwshProbe = spawnSync("pwsh", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], { encoding: "utf8" });
+const pwshProbe = spawnSync("pwsh", ["-NoProfile", "-Command", "(Get-Process -Id $PID).Path"], { encoding: "utf8" });
 const missingPwsh = pwshProbe.error?.code === "ENOENT";
+const pwshExecutable = pwshProbe.stdout?.trim() || "pwsh";
 const packageName = "@minhspark/codex-mcp-bridge";
 const target = `${packageName}@latest`;
 
@@ -85,13 +86,13 @@ function runFooter({ args = ["install", "-g", target], before, env = {}, applica
     }
     const effectiveArgs = args.map((argument) => argument.replaceAll("{PREFIX}", prefixDirectory));
     const suffix = chain === "and" ? " && Write-Output 'unexpected continuation'" : chain === "or" ? " || Write-Output 'failure handled'" : "";
-    fs.writeFileSync(runnerPath, `$resolvedNpm = Get-Command npm -CommandType Application,ExternalScript | Select-Object -First 1\nif (-not $resolvedNpm.Source.StartsWith($env:BRIDGE_FOOTER_BIN)) { throw 'Refusing to invoke a real npm during the fixture test.' }\n. $env:BRIDGE_FOOTER_SCRIPT\n. $env:BRIDGE_FOOTER_SCRIPT\n$npmArguments = @($env:BRIDGE_FOOTER_ARGS | ConvertFrom-Json)\n$global:LASTEXITCODE = 91\nnpm @npmArguments${suffix}\n$npmSuccess = $?\n$npmExitCode = $LASTEXITCODE\n[System.IO.File]::WriteAllText($env:BRIDGE_FOOTER_RESULT, (@{ success = $npmSuccess; code = $npmExitCode } | ConvertTo-Json -Compress))\nexit $npmExitCode\n`);
-    const result = spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-File", runnerPath], {
+    fs.writeFileSync(runnerPath, `$resolvedNpm = Get-Command npm -CommandType Application,ExternalScript | Select-Object -First 1\nif ((Split-Path -Parent $resolvedNpm.Source) -ne $env:BRIDGE_FOOTER_BIN) { throw "Refusing to invoke npm outside the fixture: $($resolvedNpm.Source); expected directory: $env:BRIDGE_FOOTER_BIN" }\n. $env:BRIDGE_FOOTER_SCRIPT\n. $env:BRIDGE_FOOTER_SCRIPT\n$npmArguments = @($env:BRIDGE_FOOTER_ARGS | ConvertFrom-Json)\n$global:LASTEXITCODE = 91\nnpm @npmArguments${suffix}\n$npmSuccess = $?\n$npmExitCode = $LASTEXITCODE\n[System.IO.File]::WriteAllText($env:BRIDGE_FOOTER_RESULT, (@{ success = $npmSuccess; code = $npmExitCode } | ConvertTo-Json -Compress))\nexit $npmExitCode\n`);
+    const result = spawnSync(pwshExecutable, ["-NoProfile", "-NonInteractive", "-File", runnerPath], {
       encoding: "utf8",
       timeout: 20_000,
       env: {
-        ...process.env,
-        PATH: [binDirectory, path.dirname(process.execPath), process.env.PATH].join(path.delimiter),
+        ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "PATH")),
+        PATH: process.platform === "win32" ? binDirectory : [binDirectory, path.dirname(process.execPath), process.env.PATH].join(path.delimiter),
         BRIDGE_FOOTER_SCRIPT: footerPath,
         BRIDGE_FOOTER_BIN: binDirectory,
         BRIDGE_FOOTER_NODE: process.execPath,

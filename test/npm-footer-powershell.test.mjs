@@ -61,7 +61,7 @@ process.exit(exitCode);
 
 function runFooter({ args = ["install", "-g", target], before, env = {}, application = false, prefix = false, chain = "" } = {}) {
   assert.equal(pwshProbe.status, 0, pwshProbe.stderr || pwshProbe.error?.message);
-  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-pwsh-footer-"));
+  const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-pwsh-footer-")));
   try {
     const binDirectory = path.join(sandbox, "bin");
     const packageRoot = path.join(sandbox, "npm-root");

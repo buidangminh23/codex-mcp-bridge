@@ -352,7 +352,6 @@ describe("workspace resolution", () => {
 
 describe("resolveCodexDesktopNodeBin", () => {
   const runtimeDir = path.join(sandbox, "runtimes");
-  const nodeName = IS_WINDOWS ? "node.exe" : "node";
 
   const stub = (name) => {
     const target = path.join(runtimeDir, name);
@@ -362,12 +361,23 @@ describe("resolveCodexDesktopNodeBin", () => {
     return target;
   };
 
-  const bundle = (label) => {
+  /**
+   * The resolver names the binary from the platform it is told about, not the
+   * one running the suite, so a bundle written for the host would miss on
+   * every cross-platform case. Writing both names keeps each assertion about
+   * the rung that was chosen rather than about the runner's file extension.
+   */
+  const bundle = (label, platform = "darwin") => {
     const resourcesDir = path.join(runtimeDir, label, "Contents", "Resources");
-    const target = path.join(resourcesDir, "cua_node", "bin", nodeName);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, "#!/bin/sh\nexit 0\n");
-    fs.chmodSync(target, 0o755);
+    const binDir = path.join(resourcesDir, "cua_node", "bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    let target = "";
+    for (const name of ["node", "node.exe"]) {
+      const candidate = path.join(binDir, name);
+      fs.writeFileSync(candidate, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(candidate, 0o755);
+      if (name === (platform === "win32" ? "node.exe" : "node")) target = candidate;
+    }
     return { resourcesDir, target };
   };
 
@@ -436,7 +446,7 @@ describe("resolveCodexDesktopNodeBin", () => {
    */
   it("ignores the vendor runtimes off macOS even when the app variables are set", () => {
     const declared = stub("windows-declared-node");
-    const { resourcesDir } = bundle("off-macos-case");
+    const { resourcesDir } = bundle("off-macos-case", "win32");
     for (const platform of ["win32", "linux"]) {
       const runtime = resolveCodexDesktopNodeBin(undefined, {
         env: {

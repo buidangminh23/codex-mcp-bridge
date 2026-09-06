@@ -538,6 +538,59 @@ describe("peer endpoint", () => {
     assert.equal(result.reply.text, "fast answer");
   });
 
+  it("keeps sender permissions and reply destinations local to concurrent requests", async (t) => {
+    await endpoint.start();
+    const originalMode = endpoint.permissionMode;
+    t.after(() => { endpoint.permissionMode = originalMode; });
+    const sent = [];
+    t.mock.method(endpoint, "send", async (socket, text, options) => {
+      sent.push({ socket, mode: options.permissionMode });
+      return options.msgId;
+    });
+    const first = endpoint.sendAndWait("caller-first", "first", { timeoutMs: 1000, permissionMode: "bypass", replyThreadId: "task-first" });
+    const second = endpoint.sendAndWait("caller-second", "second", { timeoutMs: 1000, permissionMode: "prompting", replyThreadId: "task-second" });
+    await yieldToEvents();
+    endpoint.permissionMode = "prompting";
+    await receiveMessage("caller-second", "second reply");
+    await receiveMessage("caller-first", "first reply");
+    const results = await Promise.all([first, second]);
+    assert.deepEqual(sent, [{ socket: "caller-first", mode: "bypass" }, { socket: "caller-second", mode: "prompting" }]);
+    assert.equal(results[0].reply.replyThreadId, "task-first");
+    assert.equal(results[1].reply.replyThreadId, "task-second");
+    assert.equal(endpoint.readDelivery(results[0].msgId).replyThreadId, "task-first");
+    assert.equal(endpoint.readDelivery(results[0].msgId).senderMode, "bypass");
+  });
+
+  it("revalidates sender evidence after connecting and never writes a stale request", async () => {
+    const destination = isWindows ? namedPipePath() : path.join(sandbox, "stale-sender.sock");
+    let bytes = 0;
+    let closed;
+    const disconnected = new Promise((resolve) => { closed = resolve; });
+    const receiver = net.createServer((socket) => {
+      socket.on("data", (data) => { bytes += data.length; });
+      socket.on("close", closed);
+    });
+    await new Promise((resolve) => receiver.listen(destination, resolve));
+    writeSession("stale-sender", { pid: process.pid, messagingSocketPath: destination, cwd: sandbox });
+    fs.writeFileSync(peerKeyPath(process.pid, destination), JSON.stringify({ peerToken: "c".repeat(32) }));
+    let checks = 0;
+    try {
+      await assert.rejects(endpoint.sendAndWait(destination, "never write", {
+        timeoutMs: 0,
+        beforeSend: () => {
+          if (++checks === 3) throw new Error("Sender turn ended");
+        },
+      }), /Sender turn ended/);
+      await disconnected;
+      assert.equal(bytes, 0);
+      assert.equal(endpoint.unconfirmedReplies.has(destination), false);
+    } finally {
+      await new Promise((resolve) => receiver.close(resolve));
+      fs.rmSync(path.join(sessionsDir, "stale-sender.json"));
+      fs.rmSync(peerKeyPath(process.pid, destination));
+    }
+  });
+
   it("continues a peer queue after sending fails", async (t) => {
     t.mock.method(endpoint, "send", async (targetSocket, text) => {
       if (text === "fail") throw new Error("send failed");

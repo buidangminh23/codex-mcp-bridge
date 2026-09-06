@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Verify each Desktop sender from Codex-provided MCP task/turn identity and its active rollout permission settings, instead of relying on a shared environment declaration. Missing, stale, unsupported, or reviewed contexts stop before message bytes are sent; diagnostic sandbox labels never grant permissions.
+- Match Claude sessions to exact native Desktop task IDs and titles, require the intended task ID and cwd, and revalidate process and task identity at dispatch. Discovery can filter by exact project and never falls back to a different project.
+- Preserve the original sender task and permission class per request, including concurrent and early replies. Revalidate sender evidence after connecting and before writing. Held receipts explicitly leave the approval UI unverified instead of implying a button exists.
+
 ## [1.13.4] - 2026-09-06
 
 ### Fixed

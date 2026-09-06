@@ -383,7 +383,7 @@ Under `owned`, a thread a human opened is **unreachable rather than merely restr
 | `read_claude_delivery` | Inspects the latest recipient receipt or correlated reply by original message ID without resending or clearing the inbox. Receipts belong to this MCP process; an unknown ID after reconnect never proves non-delivery. | read-only |
 | `read_claude_inbox` | Reads **and clears** messages Claude pushed over on its own, including replies that arrived late. | destructive |
 | `read_claude_transcript` | Reads a Claude session's recent conversation without sending anything. | read-only |
-| `bind_codex_thread` | Binds a Codex thread so every message from Claude is relayed into it, **visible in the Codex desktop app**. Pass an empty string to stop. | writes |
+| `bind_codex_thread` | Sets the peer label and legacy reply destination. Desktop replies always return to their verified original sending task; binding neither authorizes nor redirects them. An empty string disables legacy forwarding. | writes |
 | `claude_bridge_status` | Reports the peer endpoint, how many Claude sessions are live, the relay thread and the inbox depth. | writes |
 
 Every tool declares MCP annotation hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), because a client decides whether a call needs a human in the loop from those hints and a missing one reads as "unknown". Two are worth naming: `read_claude_inbox` empties the inbox as it reads it, so it is **not** read-only despite the name, and `claude_bridge_status` registers the peer endpoint on first call, so it writes too.
@@ -392,23 +392,31 @@ Desktop task mode (`CODEX_BRIDGE_DESKTOP_TASKS=1` or the shared setting written 
 
 `claude_bridge_status` reports the destination policy, eligible session count, and excluded non-Desktop count. Send receipts include the destination's `entrypoint`, `cwd`, and `sessionId`. A correlated reply confirms receipt in that session; it does not independently prove that its conversation is visible in the Desktop UI. Desktop sends require `expectedCwd`, an absolute independently verified project directory. The bridge resolves both paths and refuses a missing, nonexistent, parent, or different directory before sending; it rechecks the destination after queueing. Reconnect the bridge's MCP connection after upgrading to load the enforcement code.
 
+Desktop session discovery includes the native task title and task ID, matched through Claude Desktop's local session metadata. Use `list_claude_sessions({expectedCwd})` for the intended project; an empty result is not permission to substitute a different project. Sending additionally requires `expectedTaskId` from the intended task, alongside `target` and `expectedCwd`. The bridge verifies the exact CLI session ID, unique native task ID, canonical cwd, archive state, optional bridge ID, and live process start identity. It repeats these checks at dispatch. Missing, stale, ambiguous, or unreadable metadata blocks the send rather than guessing from a generated name such as `pcc4sh-19`.
+
+A `held` receipt confirms only that the recipient has withheld a message. It does not prove an approval button is available in Claude Desktop. Inspect that exact task before directing the user to approve; when the UI offers no approval route, preserve the receipt and report the boundary. A preflight failure is distinct: it returns `sent: false` and no message ID, so nothing was submitted to the recipient.
+
 Sends to the same Claude session run in order. An outstanding message blocks all further sends to that session, including `waitSec: 0`; changing wait time must not bypass a held or uncertain delivery. Use `read_claude_delivery` with the original message ID to observe `held`, `expired`, `refused`, or a late reply. A transport error after writing began also retains pending ownership. Different destination sessions remain independent. A process restart loses in-memory receipts: retain the original ID and inspect the existing recipient conversation before any resend; never treat an unknown ID as permission to retry.
 
 Both bridge status tools report the loaded source fingerprint and process identity. Source or Desktop-routing configuration changes make the running process stale and block new sends until reconnect, while Claude inbox/receipt reads remain available. This guard applies only after the version containing it has loaded; upgrading files cannot retrofit the guard into an older process already running.
 
-Claude's [inbound permission controls](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages) remain authoritative. A missing sender permission class can cause a bypassing recipient to hold the message. Do not change `CLAUDE_BRIDGE_PERMISSION_MODE` or recipient settings merely to bypass a hold/refusal. Configure a sender class only when it truthfully represents every session using that MCP entry. If the Desktop UI does not expose the pending approval, report that boundary and keep the original receipt rather than creating a CLI session.
+Claude's [inbound permission controls](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages) remain authoritative. A missing sender permission class can cause a bypassing recipient to hold the message. Do not change `CLAUDE_BRIDGE_PERMISSION_MODE` or recipient settings merely to bypass a hold/refusal. Legacy CLI configuration must truthfully represent every session using that MCP entry; Desktop sends derive their class from the verified calling turn. If the Desktop UI does not expose the pending approval, report that boundary and keep the original receipt rather than creating a CLI session.
 
 Claude Desktop disables the CLI-native `SendMessage` tool. For Desktop targets, the bridge requests an ordinary answer in the destination conversation and reads only a completed assistant turn descended from the injected message UUID. Unrelated human prompts and sidechains are excluded. Late answers remain available through the inbox while the bridge process is running. This does not change Desktop tool permissions or the receiver's inbound policy.
 
-`CLAUDE_BRIDGE_PERMISSION_MODE` optionally declares the **actual sender** permission class (`prompting` or `bypass`). The installer preserves this setting when supplied. Leave it unset when the sender's effective mode is unknown. Never choose a value just to match a recipient: Claude applies its own permission-mode and inbound-policy checks and may hold a message for user approval. The bridge reports that decision and does not retry it automatically.
+In Desktop-only mode, the sender is resolved separately for every MCP call. Codex supplies `x-codex-turn-metadata` with the calling task and turn IDs; the bridge matches them to one active, local Codex Desktop rollout and reads its effective permission profile and approval settings. The diagnostic `sandbox_mode` label is never used to authorize a send. Missing host metadata, a completed or superseded turn, enabled automatic review, or an unsupported permission profile blocks sending before any message bytes are written. Status reports the reason. Do not supply fabricated MCP metadata or use another process to make a blocked send succeed.
 
-`npm run check:claude` without `CLAUDE_TARGET` checks discovery only. With a target it requires `reply_received`; a socket write, a held message, or a timeout fails the roundtrip check.
+Only an explicitly disabled permission profile with a matching full-access sandbox, user approval reviewer, disabled host review flags, and `approval_policy: never` maps to `bypass`. The same verified profile with a known prompting approval policy maps to `prompting`. Other profiles remain unsupported and fail closed. The context is checked again before each connection attempt and immediately before writing, so queued messages cannot inherit another turn's permissions.
+
+`CLAUDE_BRIDGE_PERMISSION_MODE` remains a legacy CLI setting and is ignored for Desktop sends. A manually bound relay task is not proof of the sender's identity. Correlated Desktop replies retain the original sending task ID even if the relay binding later changes.
+
+`npm run check:claude` without `CLAUDE_TARGET` checks discovery only. A standalone diagnostic has no host-supplied calling-turn identity and therefore cannot send in Desktop-only mode. Run the MCP tools in the existing Codex Desktop task for a real Desktop test. In legacy mode, a diagnostic with a target requires `reply_received`; a socket write, a held message, or a timeout fails the roundtrip check.
 
 ### How each side sees the other
 
 - **Claude sees Codex:** `claude-bridge` registers a peer under `~/.claude/sessions/`. CLI sessions can use their permitted peer messaging tools to reply; Desktop replies use the correlated transcript path described above. The default name is `codex-<pid>`; `bind_codex_thread` renames it to `codex-<first 8 chars of threadId>`.
 - **Codex sees Claude:** `list_claude_sessions` reads that same registry, and `read_claude_transcript` shows what a Claude session is working on.
-- **Visible in chat:** messages accepted by Claude appear in the target conversation. Received replies can be relayed into the bound Codex task. A `held` receipt means the receiver has not released the message to Claude yet.
+- **Visible in chat:** messages accepted by Claude appear in the target conversation. Correlated Desktop replies return to their verified sending task; legacy replies use the bound Codex task. A `held` receipt means the receiver has not released the message to Claude yet.
 
 ### Peer protocol
 
@@ -457,7 +465,7 @@ This is how a human watches Codex work in real time instead of reading the rollo
 
 ### Codex Desktop native relay
 
-`bind_codex_thread` relays every message Claude sends into a Codex thread. That works — until the thread is one **you are watching in Codex Desktop**, which is the case it was built for. Codex takes a per-thread writer lock when the app loads a thread and holds it for as long as the thread is open, so the app-server path, which has to `thread/resume` before it can send, is refused:
+Returning a Claude response requires delivery into a Codex task: the verified sender in Desktop-only mode, or the bound task in legacy mode. Codex takes a per-thread writer lock when the app loads a thread and holds it for as long as the thread is open, so the external app-server path, which has to `thread/resume` before it can send, is refused:
 
 ```
 thread <id> already has an active writer

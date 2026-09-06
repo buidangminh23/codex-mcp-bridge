@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import net from "node:net";
@@ -56,6 +56,28 @@ describe("Claude message receipts", () => {
       const token = crypto.randomBytes(16).toString("hex");
       fs.writeFileSync(path.join(registryDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, name: "receipt-target", sessionId: "receipt-session", cwd: home, messagingSocketPath: socketPath, entrypoint: scenario === "desktop" ? "claude-desktop" : "cli" }));
       fs.writeFileSync(path.join(registryDir, path.basename(peerKeyPath(process.pid, socketPath))), JSON.stringify({ peerToken: token }));
+      const desktopTaskId = "local_11111111-1111-4111-8111-111111111111";
+      const callerId = "22222222-2222-4222-8222-222222222222";
+      const turnId = "33333333-3333-4333-8333-333333333333";
+      const meta = { "x-codex-turn-metadata": { thread_id: callerId, turn_id: turnId, thread_source: "user", auto_review_enabled: false, node_repl_auto_review_required: false } };
+      if (scenario === "desktop") {
+        const registryFile = path.join(registryDir, `${process.pid}.json`);
+        const identity = process.platform === "win32"
+          ? { procStartFt: execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]).toString().trim() }
+          : { procStart: execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).toString().trim() };
+        fs.writeFileSync(registryFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(registryFile)), ...identity }));
+        const configRoot = process.platform === "darwin" ? path.join(home, "Library", "Application Support") : process.platform === "win32" ? path.join(home, "AppData", "Roaming") : path.join(home, ".config");
+        const tasks = path.join(configRoot, "Claude", "claude-code-sessions", "44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555");
+        fs.mkdirSync(tasks, { recursive: true });
+        fs.writeFileSync(path.join(tasks, desktopTaskId + ".json"), JSON.stringify({ sessionId: desktopTaskId, cliSessionId: "receipt-session", title: "Receipt test", cwd: home, isArchived: false }));
+        const rollouts = path.join(home, ".codex", "sessions", "2026", "09", "06");
+        fs.mkdirSync(rollouts, { recursive: true });
+        fs.writeFileSync(path.join(rollouts, `rollout-fixture-${callerId}.jsonl`), [
+          { type: "session_meta", payload: { id: callerId, originator: "Codex Desktop", source: "vscode", cwd: home } },
+          { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+          { type: "turn_context", payload: { turn_id: turnId, cwd: home, approval_policy: "never", approvals_reviewer: "user", permission_profile: { type: "disabled" }, sandbox_policy: { type: "danger-full-access" } } },
+        ].map(JSON.stringify).join("\n") + "\n");
+      }
       let count = 0;
       let received;
       const receipt = new Promise((resolve) => { received = resolve; });
@@ -75,6 +97,7 @@ describe("Claude message receipts", () => {
               if (raw.type === "auth") { assert.equal(raw.token, token); authenticated = true; continue; }
               assert.equal(authenticated, true);
               if (scenario === "diagnostic") assert.match(raw.message.content, /from-mode="prompting"/);
+              if (scenario === "desktop") assert.match(raw.message.content, /from-mode="bypass"/);
               count += 1;
               received();
               const request = parseFrame(line);
@@ -110,19 +133,40 @@ describe("Claude message receipts", () => {
         } finally { await new Promise((resolve) => receiver.close(resolve)); }
         return;
       }
-      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_DESKTOP_TASKS: scenario === "desktop" ? "1" : "0" }, stderr: "ignore" });
+      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"), CODEX_BRIDGE_AUTOSTART: "0", CLAUDE_BRIDGE_PERMISSION_MODE: "bypass", CODEX_BRIDGE_DESKTOP_TASKS: scenario === "desktop" ? "1" : "0" }, stderr: "ignore" });
       const client = new Client({ name: "receipt-test", version: "1" });
       try {
         await client.connect(transport);
         if (scenario === "desktop") {
+          const listing = await client.callTool({ name: "list_claude_sessions", arguments: { expectedCwd: home } });
+          assert.equal(listing.structuredContent.sessions[0].desktop.title, "Receipt test");
+          assert.equal(listing.structuredContent.sessions[0].desktop.taskId, desktopTaskId);
+          const wrongProject = await client.callTool({ name: "list_claude_sessions", arguments: { expectedCwd: path.dirname(home) } });
+          assert.match(wrongProject.content[0].text, /No live Claude Desktop session/);
           for (const expectedCwd of [undefined, path.dirname(home), "relative", path.join(home, "missing")]) {
             const refused = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Wrong workspace", expectedCwd, waitSec: 0 } });
             assert.equal(refused.isError, true);
             assert.match(refused.content[0].text, /expectedCwd|no longer exists/);
             assert.equal(count, 0);
           }
+          for (const expectedTaskId of [undefined, "local_99999999-9999-4999-8999-999999999999"]) {
+            const refused = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Wrong task", expectedCwd: home, expectedTaskId, waitSec: 0 }, _meta: meta });
+            assert.equal(refused.structuredContent.preflight.code, "CLAUDE_DESKTOP_TASK_MISMATCH");
+            assert.equal(refused.structuredContent.preflight.sent, false);
+            assert.equal(count, 0);
+          }
+          await client.callTool({ name: "bind_codex_thread", arguments: { threadId: callerId } });
+          for (const _meta of [undefined, { "x-codex-turn-metadata": { ...meta["x-codex-turn-metadata"], turn_id: "66666666-6666-4666-8666-666666666666" } }]) {
+            const refused = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Unknown sender", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: 0 }, _meta });
+            assert.equal(refused.structuredContent.preflight.code, "CODEX_SENDER_CONTEXT_UNVERIFIED");
+            assert.equal(refused.structuredContent.preflight.sent, false);
+            assert.equal(count, 0);
+          }
+          const status = await client.callTool({ name: "claude_bridge_status", arguments: {}, _meta: meta });
+          assert.equal(status.structuredContent.sender.mode, "bypass");
+          assert.equal(status.structuredContent.sender.threadId, callerId);
         }
-        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", expectedCwd: home, waitSec: scenario === "nowait" ? 0 : 2 } });
+        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: scenario === "nowait" ? 0 : 2 }, ...(scenario === "desktop" ? { _meta: meta } : {}) });
         let receiptTimer;
         try {
           await Promise.race([receipt, new Promise((_, reject) => {
@@ -138,6 +182,10 @@ describe("Claude message receipts", () => {
           assert.equal(result.structuredContent.receipt.source, "transcript");
           assert.equal(result.structuredContent.receipt.entrypoint, "claude-desktop");
           assert.equal(result.structuredContent.receipt.cwd, home);
+          assert.equal(result.structuredContent.receipt.title, "Receipt test");
+          assert.equal(result.structuredContent.receipt.senderMode, "bypass");
+          assert.equal(result.structuredContent.receipt.senderThreadId, callerId);
+          assert.equal(result.structuredContent.receipt.senderTurnId, turnId);
         }
         if (["nowait", "timeout", "held"].includes(scenario)) {
           for (const waitSec of [1, 0]) {

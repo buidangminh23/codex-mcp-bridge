@@ -4,13 +4,21 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.13.4] - 2026-09-06
+
 ### Fixed
 
+- Latch queued Desktop delivery deadlines when they expire, so a timed-out prompt cannot dispatch later or release the lock owned by an active send.
 - Require and revalidate the exact intended workspace for Claude Desktop sends, expose pending recipient receipts through `read_claude_delivery`, and block no-wait retries of held or uncertain messages. Preserve pending ownership after an uncertain socket write.
 - Detect source and Desktop-policy changes in loaded bridge processes and refuse new sends until reconnect. Diagnostics identify their separate MCP process instead of implying the Desktop connection was refreshed.
 - Preserve the Codex MCP registration environment on upgrade, pin Desktop routing explicitly, disable its external autostart, and refuse to reset custom access or transport settings. Prefer existing Desktop tasks in MCP instructions.
 - Enforce Desktop task mode for Claude destinations as well as Codex delivery. Exclude non-Desktop sessions from discovery, refuse CLI or unknown entrypoints before connecting, and require a unique exact target. Status reports eligible and excluded sessions; receipts identify the actual entrypoint, workspace, and session. Legacy CLI mode remains available when Desktop task mode is disabled.
 - Register the native relay companion under a runtime Codex Desktop trusts instead of whichever Node happens to run the installer. The app authenticates the code-signing identity of any process connecting to its native tools pipe and closes the connection before reading a byte when that identity is not its own, so a companion started by a user-installed Node still created its socket and still reported itself installed while every delivery failed as `NATIVE_DELIVERY_UNCONFIRMED` — the refusal is only visible in the app's own log as `dynamic_app_tools_peer_rejected`. On macOS the installer now resolves the runtime the app ships, honours the variables the app declares for its own bundled plugin, and prints the runtime and its source; `CODEX_NATIVE_RELAY_NODE` overrides it. Windows and Linux keep the runtime running the installer, since neither was measured to enforce the check.
+
+### Upgrade notes
+
+- Reconnect the MCP connections in both Desktop clients after upgrading. Reinstall an existing native relay companion with the updated installer to apply runtime selection. Updating package files alone does not replace running processes or add the stale-runtime guard to an older process.
+- In Desktop task mode, provide the independently verified absolute `expectedCwd` when sending to Claude. A held receipt still requires the recipient's approval; inspect its `msgId` with `read_claude_delivery` instead of resending. Receipt history is in memory and is not restored after a bridge restart.
 
 ## [1.13.3] - 2026-09-05
 

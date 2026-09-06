@@ -66,6 +66,7 @@ describe("Claude message receipts", () => {
           ? { procStartFt: execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]).toString().trim() }
           : { procStart: execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).toString().trim() };
         fs.writeFileSync(registryFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(registryFile)), ...identity }));
+        assert.ok(Object.values(identity)[0], "The fixture must capture the actual process start identity");
         const configRoot = process.platform === "darwin" ? path.join(home, "Library", "Application Support") : process.platform === "win32" ? path.join(home, "AppData", "Roaming") : path.join(home, ".config");
         const tasks = path.join(configRoot, "Claude", "claude-code-sessions", "44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555");
         fs.mkdirSync(tasks, { recursive: true });
@@ -158,7 +159,7 @@ describe("Claude message receipts", () => {
           await client.callTool({ name: "bind_codex_thread", arguments: { threadId: callerId } });
           for (const _meta of [undefined, { "x-codex-turn-metadata": { ...meta["x-codex-turn-metadata"], turn_id: "66666666-6666-4666-8666-666666666666" } }]) {
             const refused = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Unknown sender", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: 0 }, _meta });
-            assert.equal(refused.structuredContent.preflight.code, "CODEX_SENDER_CONTEXT_UNVERIFIED");
+            assert.equal(refused.structuredContent?.preflight?.code, "CODEX_SENDER_CONTEXT_UNVERIFIED", refused.content?.[0]?.text);
             assert.equal(refused.structuredContent.preflight.sent, false);
             assert.equal(count, 0);
           }

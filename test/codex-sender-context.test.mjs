@@ -29,7 +29,7 @@ function fixture() {
 
 it("verifies only the exact active Desktop caller's effective disabled permissions", () => {
   const f = fixture();
-  assert.deepEqual(f.read(), { status: "verified", threadId, turnId, mode: "bypass", cwd: fs.realpathSync(f.home), source: f.file, reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" });
+  assert.deepEqual(f.read(), { status: "verified", threadId, turnId, mode: "bypass", cwd: fs.realpathSync.native(f.home), source: f.file, reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" });
 });
 
 it("does not infer calling identity from global environment or manual relay binding", () => {

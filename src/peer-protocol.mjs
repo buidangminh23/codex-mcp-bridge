@@ -117,7 +117,7 @@ function readProcessStart(pid) {
   try {
     if (IS_WINDOWS) {
       const shell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      return execFileSync(shell, ["-NoProfile", "-Command", `(Get-Process -Id ${Number(pid)}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`], { timeout: 3000, windowsHide: true }).toString().trim();
+      return execFileSync(shell, ["-NoProfile", "-NonInteractive", "-Command", `[System.Diagnostics.Process]::GetProcessById(${Number(pid)}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`], { timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
     }
     return execFileSync(PS_BIN, ["-o", "lstart=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, timeout: 3000 }).toString().trim();
   } catch {

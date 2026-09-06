@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.13.9] - 2026-09-07
+
+### Fixed
+
+- Restore reply correlation for queued messages from Claude Code 2.1.229 and 2.1.237, where `source_uuid` is unrelated to the peer message ID. Version 1.13.8 incorrectly rejected that valid legacy format. Use the matching peer `origin.msg_id` as the authoritative identifier while retaining duplicate-root, non-peer, command-boundary, and malformed-record guards. Regression coverage reproduces both legacy builds and rejects correlation through the unrelated source UUID.
+
 ## [1.13.8] - 2026-09-07
 
 ### Fixed

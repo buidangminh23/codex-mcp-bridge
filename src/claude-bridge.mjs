@@ -18,7 +18,7 @@ import { ReplyForwarder } from "./reply-forwarder.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.13.7";
+const VERSION = "1.13.8";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 

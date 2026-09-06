@@ -4,6 +4,13 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.13.8] - 2026-09-07
+
+### Fixed
+
+- Reject contradictory message IDs, non-peer origins, duplicate matching roots, and reply branches that cross another queued command. Preserve both measured Desktop transcript formats while preventing another command's answer from completing the wrong pending request.
+- Ignore malformed transcript records and text blocks without crashing the reply watcher. Empty or malformed user input no longer counts as a tool-result continuation.
+
 ### Changed
 
 - Document that an absorbed message is identified by `source_uuid` on Claude Code 2.1.260 and later and by `origin.msg_id` on earlier builds, which 1.13.7 already matches.

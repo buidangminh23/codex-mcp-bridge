@@ -293,10 +293,15 @@ export function readTranscript(sessionId, cwd, limit = 10) {
  * turn's closing text. Both were measured on Claude Code 2.1.260-2.1.263.
  */
 function injectedMessageRoot(entry, msgId) {
-  const role = entry?.message?.role;
-  if (role === "user" && (entry.uuid === msgId || entry.origin?.msg_id === msgId)) return "idle";
-  const attachment = entry?.type === "attachment" ? entry.attachment : null;
-  if (attachment?.type === "queued_command" && (attachment.source_uuid === msgId || attachment.origin?.msg_id === msgId)) return "absorbed";
+  if (typeof entry.uuid !== "string" || !entry.uuid.trim()) return null;
+  const matchesOrigin = (origin) => origin?.kind === "peer" && origin.msg_id === msgId;
+  if (entry.message?.role === "user") {
+    if (entry.origin !== undefined && !matchesOrigin(entry.origin)) return null;
+    if (entry.uuid === msgId || matchesOrigin(entry.origin)) return "idle";
+  }
+  const attachment = entry.type === "attachment" ? entry.attachment : null;
+  if (attachment?.type === "queued_command" && matchesOrigin(attachment.origin)
+    && (attachment.source_uuid === undefined || attachment.source_uuid === msgId)) return "absorbed";
   return null;
 }
 
@@ -305,21 +310,30 @@ export function readTranscriptReply(sessionId, cwd, msgId) {
   let lines;
   try { lines = fs.readFileSync(file, "utf8").split("\n"); }
   catch { return null; }
-  const descendants = new Set();
-  let absorbed = false;
+  const entries = [];
+  const roots = [];
   for (const line of lines) {
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
-    if (entry.isSidechain) continue;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || entry.isSidechain) continue;
+    entries.push(entry);
     const root = injectedMessageRoot(entry, msgId);
-    if (root) { absorbed = root === "absorbed"; if (typeof entry.uuid === "string") descendants.add(entry.uuid); continue; }
+    if (root) roots.push({ entry, absorbed: root === "absorbed" });
+  }
+  if (roots.length !== 1) return null;
+  const { entry: root, absorbed } = roots[0];
+  const descendants = new Set();
+  for (const entry of entries) {
+    if (entry === root) { descendants.add(entry.uuid); continue; }
     if (!descendants.has(entry.parentUuid)) continue;
+    if (entry.type === "attachment" && entry.attachment?.type === "queued_command") continue;
     const role = entry.message?.role;
     const content = entry.message?.content;
-    if (role === "user" && !(Array.isArray(content) && content.every((part) => part.type === "tool_result"))) continue;
-    if (typeof entry.uuid === "string") descendants.add(entry.uuid);
+    if (role === "user" && !(Array.isArray(content) && content.length > 0 && content.every((part) => part?.type === "tool_result"))) continue;
+    if (typeof entry.uuid !== "string" || !entry.uuid.trim()) continue;
+    descendants.add(entry.uuid);
     if (role !== "assistant" || !["end_turn", "stop_sequence"].includes(entry.message.stop_reason)) continue;
-    const text = Array.isArray(content) ? content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") : String(content ?? "");
+    const text = Array.isArray(content) ? content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n") : typeof content === "string" ? content : "";
     if (text.trim()) return { text: text.trim(), msgId: entry.uuid, source: "transcript", inReplyTo: msgId, absorbed };
   }
   return null;

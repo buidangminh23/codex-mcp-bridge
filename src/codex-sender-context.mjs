@@ -100,9 +100,11 @@ function readState(file, maxBytes) {
  * Claude's inbound parity gate groups sessions by one question: does a human
  * still prompt the sender? Codex answers it with approval_policy. Its two host
  * review flags describe automated review instead - node_repl_auto_review_required
- * is a model catalog requirement (Codex refuses such a model without auto
- * review) and auto_review_enabled names a Guardian reviewer - so they are
- * required as evidence and reported, but never move a sender between classes.
+ * is a per-model catalog attribute (Codex Desktop derives it from
+ * autoReview.requiredOnModels; the live gpt-6-astra task carried it with a
+ * user reviewer and auto review disabled) and auto_review_enabled names a
+ * Guardian reviewer - so they are required as evidence and reported, but
+ * never move a sender between classes.
  * Downgrading them held every send from such a model behind an approval
  * dialog that Claude Desktop does not render.
  */

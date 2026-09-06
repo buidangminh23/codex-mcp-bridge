@@ -313,6 +313,40 @@ describe("peer endpoint", () => {
     assert.equal(readTranscriptReply("reply", "unused", "request"), null);
   });
 
+  /**
+   * A message that arrives while the recipient is mid-turn is absorbed into
+   * that turn: Claude Code records it as a queued_command attachment under a
+   * fresh uuid whose source_uuid is the injected message id, and the turn's
+   * closing text is the reply. Measured on Claude Code 2.1.260 in Claude
+   * Desktop on 2026-09-06; an idle recipient instead records a user entry
+   * whose uuid is the message id, which the test above covers.
+   */
+  it("matches a reply to a message absorbed mid-turn through its queued_command attachment", () => {
+    const dir = path.join(projectsDir, "busy-fixture");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "busy.jsonl");
+    const prompt = { uuid: "prompt", message: { role: "user", content: "keep working" } };
+    const tool = { uuid: "tool", parentUuid: "prompt", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use" }] } };
+    const result = { uuid: "result", parentUuid: "tool", message: { role: "user", content: [{ type: "tool_result", content: "done" }] } };
+    const absorbed = { uuid: "absorbed", parentUuid: "result", type: "attachment", attachment: { type: "queued_command", source_uuid: "request", commandMode: "prompt", origin: { kind: "peer", msg_id: "request", fromMode: "bypass" }, isMeta: true } };
+    const reminder = { uuid: "reminder", parentUuid: "absorbed", type: "attachment", attachment: { type: "silent_turn_reminder", text: "say something" } };
+    const thinking = { uuid: "thinking", parentUuid: "reminder", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "thinking", thinking: "" }] } };
+    const answer = { uuid: "answer", parentUuid: "thinking", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "absorbed answer" }] } };
+    const write = (rows) => fs.writeFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    write([prompt, tool, result, absorbed, reminder, thinking]);
+    assert.equal(readTranscriptReply("busy", "unused", "request"), null);
+    write([prompt, tool, result, absorbed, reminder, thinking, answer]);
+    assert.deepEqual(readTranscriptReply("busy", "unused", "request"), { text: "absorbed answer", msgId: "answer", source: "transcript", inReplyTo: "request", absorbed: true });
+    assert.equal(readTranscriptReply("busy", "unused", "other"), null);
+    write([prompt, tool, result, { ...absorbed, attachment: { type: "silent_turn_reminder", source_uuid: "request", origin: { kind: "peer", msg_id: "request" } } }, { ...answer, parentUuid: "absorbed" }]);
+    assert.equal(readTranscriptReply("busy", "unused", "request"), null, "only a queued_command attachment records an injected message");
+    write([prompt, tool, result, { ...absorbed, attachment: { type: "queued_command", origin: { kind: "peer", msg_id: "request" } } }, { ...answer, parentUuid: "absorbed" }]);
+    assert.equal(readTranscriptReply("busy", "unused", "request")?.absorbed, true, "older Claude Code records only origin.msg_id");
+    const idle = { uuid: "fresh", isMeta: true, origin: { kind: "peer", msg_id: "request" }, message: { role: "user", content: "ping" } };
+    write([idle, { ...answer, parentUuid: "fresh" }]);
+    assert.deepEqual(readTranscriptReply("busy", "unused", "request"), { text: "absorbed answer", msgId: "answer", source: "transcript", inReplyTo: "request", absorbed: false });
+  });
+
   after(() => endpoint.stop());
 
   const authLine = () => JSON.stringify({ type: "auth", token: endpoint.peerToken }) + "\n";

@@ -284,17 +284,35 @@ export function readTranscript(sessionId, cwd, limit = 10) {
   return { file, messages: messages.slice(-limit) };
 }
 
+/**
+ * Claude Code records an injected peer message in one of two shapes. An idle
+ * recipient starts a new turn with a user entry whose uuid is the message id
+ * (origin.msg_id names it as well). A busy recipient absorbs the message into
+ * the running turn instead: the entry is a queued_command attachment under a
+ * fresh uuid whose source_uuid is the message id, and the reply is that
+ * turn's closing text. Both were measured on Claude Code 2.1.260-2.1.263.
+ */
+function injectedMessageRoot(entry, msgId) {
+  const role = entry?.message?.role;
+  if (role === "user" && (entry.uuid === msgId || entry.origin?.msg_id === msgId)) return "idle";
+  const attachment = entry?.type === "attachment" ? entry.attachment : null;
+  if (attachment?.type === "queued_command" && (attachment.source_uuid === msgId || attachment.origin?.msg_id === msgId)) return "absorbed";
+  return null;
+}
+
 export function readTranscriptReply(sessionId, cwd, msgId) {
   const file = findTranscriptFile(sessionId, cwd);
   let lines;
   try { lines = fs.readFileSync(file, "utf8").split("\n"); }
   catch { return null; }
   const descendants = new Set();
+  let absorbed = false;
   for (const line of lines) {
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
     if (entry.isSidechain) continue;
-    if (entry.uuid === msgId && entry.message?.role === "user") { descendants.add(msgId); continue; }
+    const root = injectedMessageRoot(entry, msgId);
+    if (root) { absorbed = root === "absorbed"; if (typeof entry.uuid === "string") descendants.add(entry.uuid); continue; }
     if (!descendants.has(entry.parentUuid)) continue;
     const role = entry.message?.role;
     const content = entry.message?.content;
@@ -302,7 +320,7 @@ export function readTranscriptReply(sessionId, cwd, msgId) {
     if (typeof entry.uuid === "string") descendants.add(entry.uuid);
     if (role !== "assistant" || !["end_turn", "stop_sequence"].includes(entry.message.stop_reason)) continue;
     const text = Array.isArray(content) ? content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") : String(content ?? "");
-    if (text.trim()) return { text: text.trim(), msgId: entry.uuid, source: "transcript", inReplyTo: msgId };
+    if (text.trim()) return { text: text.trim(), msgId: entry.uuid, source: "transcript", inReplyTo: msgId, absorbed };
   }
   return null;
 }
@@ -594,7 +612,7 @@ export class PeerEndpoint {
     return frame.msg_id;
   }
 
-  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend, permissionMode = this.permissionMode, replyThreadId, senderReview } = {}) {
+  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend, permissionMode = this.permissionMode, replyThreadId, senderReview, senderApprovalPolicy, recipient } = {}) {
     const previous = this.requestQueues.get(targetSocket) ?? Promise.resolve();
     const pending = previous.catch(() => {}).then(async () => {
       await beforeSend?.();
@@ -612,7 +630,7 @@ export class PeerEndpoint {
       this.unconfirmedReplies.set(targetSocket, unconfirmed + 1);
       let msgId = crypto.randomUUID();
       this.pendingMessages.set(msgId, { targetSocket, transcriptSession });
-      this.sentMessages.set(msgId, { targetSocket, transcriptSession, sentAt: since, replyThreadId, permissionMode, ...(senderReview ? { senderReview: { ...senderReview } } : {}) });
+      this.sentMessages.set(msgId, { targetSocket, transcriptSession, sentAt: since, replyThreadId, permissionMode, senderApprovalPolicy, ...(senderReview ? { senderReview: { ...senderReview } } : {}), ...(recipient ? { recipient: { ...recipient } } : {}) });
       if (transcriptSession && !this.responsePoll) {
         this.responsePoll = globalThis.setInterval(() => this.#refreshTranscriptReplies(), 250);
         this.responsePoll.unref();
@@ -715,10 +733,12 @@ export class PeerEndpoint {
       taskId: session?.desktop?.taskId ?? null,
       title: session?.desktop?.title ?? null,
       senderMode: sent.permissionMode ?? null,
+      ...(sent.senderApprovalPolicy !== undefined ? { senderApprovalPolicy: sent.senderApprovalPolicy ?? null } : {}),
       ...(sent.senderReview ? { senderReview: { ...sent.senderReview } } : {}),
+      ...(sent.recipient ? { recipientPermissionMode: sent.recipient.permissionMode ?? null, recipientPermissionClass: sent.recipient.permissionClass ?? null, recipientInboundPolicy: sent.recipient.inboundPolicy ?? null } : {}),
       replyThreadId: sent.replyThreadId ?? null,
       pending: this.pendingMessages.has(msgId),
-      ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer", ...(sent.reply.forwardingError ? { forwardingError: { ...sent.reply.forwardingError } } : {}) } : {}),
+      ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer", ...(sent.reply.absorbed ? { replyAbsorbed: true } : {}), ...(sent.reply.forwardingError ? { forwardingError: { ...sent.reply.forwardingError } } : {}) } : {}),
     };
   }
 

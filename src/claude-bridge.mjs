@@ -12,10 +12,11 @@ import { desktopTasksConfigured } from "./native-relay.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
 import { readClaudeDesktopContext } from "./claude-desktop-context.mjs";
 import { readCodexSenderContext } from "./codex-sender-context.mjs";
+import { ReplyForwarder } from "./reply-forwarder.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.13.4";
+const VERSION = "1.13.5";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 
@@ -46,9 +47,23 @@ const delivery = createThreadDelivery({ codex, log, desktopOnly });
 
 const forwarding = {
   threadId: process.env.CODEX_THREAD_ID ?? null,
-  lastAt: 0,
-  count: 0,
 };
+
+const replyForwarder = new ReplyForwarder({
+  minIntervalMs: FORWARD_MIN_INTERVAL_MS,
+  maxPerSession: FORWARD_MAX_PER_SESSION,
+  beforeForward: () => {
+    if (desktopTasksConfigured() !== desktopOnly) {
+      throw Object.assign(new Error("Bridge routing changed; the reply was not forwarded. Inspect the original receipt before reconnecting."), { code: "REPLY_ROUTING_CHANGED" });
+    }
+  },
+  deliver: (threadId, record) => delivery.deliver(threadId, `[message from Claude session ${record.fromSocket ?? "?"}]\n\n${record.text}`),
+});
+
+function readReceipt(msgId) {
+  const receipt = peer.readDelivery(msgId);
+  return receipt ? { ...receipt, forwarding: replyForwarder.read(msgId) ?? receipt.forwardingError ?? null } : null;
+}
 
 const textResult = (text, isError = false) => ({
   content: [{ type: "text", text }],
@@ -57,7 +72,7 @@ const textResult = (text, isError = false) => ({
 
 const failure = (err) => ({
   ...textResult(`Claude bridge error: ${err?.message ?? String(err)}${err?.msgId ? `\nMessage id: ${err.msgId}; inspect read_claude_delivery before any resend.` : ""}`, true),
-  ...(err?.msgId ? { structuredContent: { receipt: peer.readDelivery(err.msgId) } }
+  ...(err?.msgId ? { structuredContent: { receipt: readReceipt(err.msgId) } }
     : err?.preflight ? { structuredContent: { preflight: err.preflight } } : {}),
 });
 
@@ -97,29 +112,14 @@ function assertSender(meta) {
   return sender;
 }
 
-async function forwardToCodexThread(record) {
+function forwardToCodexThread(record) {
   const threadId = record.replyThreadId ?? (desktopOnly ? null : forwarding.threadId);
   if (!threadId) return;
-  const now = Date.now();
-  if (now - forwarding.lastAt < FORWARD_MIN_INTERVAL_MS) {
-    log(`forward skipped (rate limit): ${record.text.slice(0, 60)}`);
-    return;
-  }
-  if (forwarding.count >= FORWARD_MAX_PER_SESSION) {
-    log("forward skipped (per-session cap reached)");
-    return;
-  }
-  forwarding.lastAt = now;
-  forwarding.count += 1;
   try {
-    runtime.assertCurrent();
-    const { backend } = await delivery.deliver(
-      threadId,
-      `[message from Claude session ${record.fromSocket ?? "?"}]\n\n${record.text}`,
-    );
-    log(`forwarded a Claude message into thread ${threadId} via ${backend}`);
+    replyForwarder.enqueue(record, threadId);
   } catch (err) {
-    log(`forward failed: ${err.message}`);
+    record.forwardingError = { status: "failed", reasonCode: err.code ?? "REPLY_QUEUE_FAILED", reason: err.message };
+    log(`reply queue failed: ${err.message}`);
   }
 }
 
@@ -228,7 +228,7 @@ server.registerTool(
       const text = desktop ? `${message}\n\n[Bridge response routing: reply with ordinary text in this conversation. The bridge reads the response associated with this message from the local transcript; no cross-session reply tool is needed.]` : message;
       const { msgId, reply, delivery } = await peer.sendAndWait(session.socket, text, {
         timeoutMs: wait * 1000,
-        ...(sender ? { permissionMode: sender.mode, replyThreadId: sender.threadId } : {}),
+        ...(sender ? { permissionMode: sender.mode, replyThreadId: sender.threadId, senderReview: sender.review } : {}),
         beforeSend: () => {
           runtime.assertCurrent();
           const current = findClaudeSession(session.sessionId ?? String(session.pid), { desktopOnly });
@@ -240,7 +240,7 @@ server.registerTool(
             assertClaudeSessionProcess(current);
             assertDesktopTask(withDesktopContext(current), expectedTaskId);
             const active = assertSender(extra?._meta);
-            if (active.threadId !== sender.threadId || active.turnId !== sender.turnId || active.cwd !== sender.cwd || active.mode !== sender.mode) {
+            if (active.threadId !== sender.threadId || active.turnId !== sender.turnId || active.cwd !== sender.cwd || active.mode !== sender.mode || active.approvalPolicy !== sender.approvalPolicy || JSON.stringify(active.review) !== JSON.stringify(sender.review)) {
               throw preflightFailure("CODEX_SENDER_CONTEXT_CHANGED", "The sender's active turn or permissions changed while this message was queued.");
             }
           }
@@ -250,8 +250,8 @@ server.registerTool(
       const status = reply ? "reply_received" : delivery?.status ?? (wait === 0 ? "sent_unconfirmed" : "reply_timeout");
       const receipt = { status, msgId, target: session.name ?? String(session.pid), sessionId: session.sessionId, cwd: session.cwd, entrypoint: session.entrypoint, waitSec: wait,
         ...(desktop ? { taskId: session.desktop.taskId, title: session.desktop.title, approvalUi: "unverified" } : {}),
-        ...(sender ? { senderMode: sender.mode, senderThreadId: sender.threadId, senderTurnId: sender.turnId } : {}),
-        ...(reply ? { source: reply.source ?? "peer" } : {}) };
+        ...(sender ? { senderMode: sender.mode, senderThreadId: sender.threadId, senderTurnId: sender.turnId, senderReview: sender.review } : {}),
+        ...(reply ? { source: reply.source ?? "peer", forwarding: replyForwarder.read(msgId) ?? reply.forwardingError ?? null } : {}) };
       const result = (text, isError = false) => ({ ...textResult(text, isError), structuredContent: { receipt } });
       const targetLabel = `${session.desktop?.title ?? session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"}, via ${session.entrypoint ?? "unknown"}, cwd ${session.cwd ?? "?"})`;
 
@@ -286,7 +286,7 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   async ({ msgId }) => {
-    const receipt = peer.readDelivery(msgId);
+    const receipt = readReceipt(msgId);
     if (!receipt) return textResult("This MCP process has no receipt for that message ID. It may belong to a previous process; do not infer failure or resend. Inspect the original Claude Desktop session.", true);
     return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { receipt } };
   },
@@ -297,8 +297,8 @@ server.registerTool(
   {
     title: "Read messages Claude sent to this bridge",
     description:
-      "Read and clear messages Claude sessions pushed to this bridge on their own (replies that arrived late, " +
-      "or messages Claude started).",
+      "Read and consume the oldest requested page of Claude messages, preserving unread messages. " +
+      "Includes late replies and their Codex forwarding status.",
     inputSchema: {
       limit: z.number().int().min(1).max(100).optional().describe("How many messages to return (default 20)"),
     },
@@ -314,14 +314,16 @@ server.registerTool(
       await peer.start();
       const messages = peer.drainInbox(limit ?? 20);
       if (!messages.length) return textResult("Inbox is empty.");
-      return textResult(
+      const result = textResult(
         messages
           .map((m) => {
             const at = new Date(m.receivedAt).toISOString().replace("T", " ").slice(0, 19);
-            return `[${at}] from ${m.fromSocket ?? "?"}\n${m.text}`;
+            const state = replyForwarder.read(m.inReplyTo ?? m.msgId) ?? m.forwardingError;
+            return `[${at}] from ${m.fromSocket ?? "?"}${state ? `\nCodex forwarding: ${state.status}${state.reason ? ` (${state.reason})` : ""}` : ""}\n${m.text}`;
           })
           .join("\n\n"),
       );
+      return { ...result, structuredContent: { messages: messages.map((record) => ({ ...record, forwarding: replyForwarder.read(record.inReplyTo ?? record.msgId) ?? record.forwardingError ?? null })), remaining: peer.inbox.length } };
     } catch (err) {
       return failure(err);
     }
@@ -377,7 +379,6 @@ server.registerTool(
   async ({ threadId }) => {
     const trimmed = threadId.trim();
     forwarding.threadId = trimmed || null;
-    forwarding.count = 0;
     const name = trimmed ? `codex-${trimmed.slice(0, 8)}` : defaultPeerName;
     peer.rename(name);
     if (desktopOnly) return textResult(`Claude sees this bridge as "${name}". Desktop replies remain routed to each verified original sending task; this binding does not authorize or redirect them.\ndelivery: ${delivery.describe()}`);
@@ -417,6 +418,7 @@ server.registerTool(
         `peer socket:   ${peer.socketPath}`,
         `sender mode:   ${sender?.mode ?? (desktopOnly ? "unverified - Desktop sends blocked" : peer.permissionMode ?? "unknown")}`,
         ...(sender ? [`sender context: ${sender.status} (${sender.source ?? "unavailable"})`, `sender task: ${sender.threadId ?? "unknown"}`, `sender turn: ${sender.turnId ?? "unknown"}`, ...(sender.reason ? [`sender detail: ${sender.reason}`] : [])] : []),
+        ...(sender?.review ? [`sender auto review: ${sender.review.autoReview}`, `sender Node REPL review: ${sender.review.nodeReplReview}`] : []),
         `session policy: ${desktopOnly ? "desktop-only" : "all Claude Code entrypoints"}`,
         `live sessions: ${eligible.length}`,
         `excluded:      ${sessions.length - eligible.length} non-Desktop session(s)`,
@@ -424,11 +426,12 @@ server.registerTool(
         `delivery:      ${delivery.describe()}`,
         `inbox:         ${peer.inbox.length} pending message(s)`,
         `outstanding:   ${peer.pendingMessages.size} message(s) awaiting receipt or reply`,
+        `reply forwarding: ${JSON.stringify(replyForwarder.status())}`,
         ...[...peer.pendingMessages.keys()].map((id) => `pending message: ${id} (${peer.readDelivery(id)?.status ?? "sent_unconfirmed"})`),
       ];
       const state = runtime.status();
       lines.push(`runtime pid:   ${state.pid}`, `loaded source: ${state.revision}`, `disk source:   ${state.diskRevision ?? "unreadable"}`, `runtime state: ${state.current ? "current" : `STALE - ${state.reason}; reconnect this MCP server in the existing task`}`);
-      return { ...textResult(lines.join("\n"), !state.current), structuredContent: { runtime: state, ...(sender ? { sender } : {}) } };
+      return { ...textResult(lines.join("\n"), !state.current), structuredContent: { runtime: state, replyForwarding: replyForwarder.status(), ...(sender ? { sender } : {}) } };
     } catch (err) {
       return failure(err);
     }

@@ -4,11 +4,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.13.5] - 2026-09-06
+
 ### Fixed
 
-- Verify each Desktop sender from Codex-provided MCP task/turn identity and its active rollout permission settings, instead of relying on a shared environment declaration. Missing, stale, unsupported, or reviewed contexts stop before message bytes are sent; diagnostic sandbox labels never grant permissions.
+- Verify each Desktop sender from Codex-provided MCP task/turn identity and its active rollout permission settings, instead of relying on a shared environment declaration. Explicitly enabled host review uses the prompting sender class; missing, invalid, stale, or unsupported contexts stop before message bytes are sent. Diagnostic sandbox labels never grant permissions, and review never grants bypass permissions.
 - Match Claude sessions to exact native Desktop task IDs and titles, require the intended task ID and cwd, and revalidate process and task identity at dispatch. Discovery can filter by exact project and never falls back to a different project.
 - Preserve the original sender task and permission class per request, including concurrent and early replies. Revalidate sender evidence after connecting and before writing. Held receipts explicitly leave the approval UI unverified instead of implying a button exists.
+- Queue burst replies instead of dropping them under the forwarding rate limit. Preserve the original destination and expose forwarding outcomes, uncertainty, and session-limit blocks through receipts and inbox reads without automatic retries or fallback routing.
+- Keep unread inbox pages and require the exact correlated Desktop transcript reply before completing a request. Unrelated socket notifications no longer cancel the original response watcher.
+- Expose each host review flag and preserve its value in delivery receipts. Already accepted replies can finish after a source update while the configured delivery route remains unchanged.
 
 ## [1.13.4] - 2026-09-06
 

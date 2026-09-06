@@ -473,7 +473,9 @@ export class PeerEndpoint {
     const record = { ...message, receivedAt: Date.now(), sequence: ++this.messageSequence };
     this.inbox.push(record);
     const key = record.inReplyTo ?? [...this.pendingMessages].find(([, entry]) => entry.targetSocket === record.fromSocket)?.[0];
-    if (key && this.pendingMessages.get(key)?.targetSocket === record.fromSocket) {
+    const pending = this.pendingMessages.get(key);
+    const correlated = pending && (!pending.transcriptSession || (record.source === "transcript" && record.inReplyTo === key));
+    if (key && correlated && pending.targetSocket === record.fromSocket) {
       const sent = this.sentMessages.get(key);
       if (sent) {
         record.inReplyTo = key;
@@ -592,7 +594,7 @@ export class PeerEndpoint {
     return frame.msg_id;
   }
 
-  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend, permissionMode = this.permissionMode, replyThreadId } = {}) {
+  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend, permissionMode = this.permissionMode, replyThreadId, senderReview } = {}) {
     const previous = this.requestQueues.get(targetSocket) ?? Promise.resolve();
     const pending = previous.catch(() => {}).then(async () => {
       await beforeSend?.();
@@ -610,7 +612,7 @@ export class PeerEndpoint {
       this.unconfirmedReplies.set(targetSocket, unconfirmed + 1);
       let msgId = crypto.randomUUID();
       this.pendingMessages.set(msgId, { targetSocket, transcriptSession });
-      this.sentMessages.set(msgId, { targetSocket, transcriptSession, sentAt: since, replyThreadId, permissionMode });
+      this.sentMessages.set(msgId, { targetSocket, transcriptSession, sentAt: since, replyThreadId, permissionMode, ...(senderReview ? { senderReview: { ...senderReview } } : {}) });
       if (transcriptSession && !this.responsePoll) {
         this.responsePoll = globalThis.setInterval(() => this.#refreshTranscriptReplies(), 250);
         this.responsePoll.unref();
@@ -666,7 +668,9 @@ export class PeerEndpoint {
    * reply is matched by origin socket and arrival time.
    */
   waitForReply(fromSocket, { timeoutMs = 120000, since = Date.now(), afterSequence = null, msgId } = {}) {
+    const expectsTranscript = Boolean(msgId && this.sentMessages.get(msgId)?.transcriptSession);
     const matches = (record) => record.fromSocket === fromSocket
+      && (!expectsTranscript || (record.source === "transcript" && record.inReplyTo === msgId))
       && (!record.inReplyTo || !msgId || record.inReplyTo === msgId)
       && (afterSequence === null ? record.receivedAt >= since : record.sequence > afterSequence);
     const existing = this.inbox.find(matches);
@@ -691,9 +695,8 @@ export class PeerEndpoint {
   }
 
   drainInbox(limit = 20) {
-    const messages = this.inbox.slice(-limit);
-    this.inbox = [];
-    return messages;
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Inbox limit must be a positive integer");
+    return this.inbox.splice(0, limit);
   }
 
   readDelivery(msgId) {
@@ -712,9 +715,10 @@ export class PeerEndpoint {
       taskId: session?.desktop?.taskId ?? null,
       title: session?.desktop?.title ?? null,
       senderMode: sent.permissionMode ?? null,
+      ...(sent.senderReview ? { senderReview: { ...sent.senderReview } } : {}),
       replyThreadId: sent.replyThreadId ?? null,
       pending: this.pendingMessages.has(msgId),
-      ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer" } : {}),
+      ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer", ...(sent.reply.forwardingError ? { forwardingError: { ...sent.reply.forwardingError } } : {}) } : {}),
     };
   }
 

@@ -96,6 +96,16 @@ function readState(file, maxBytes) {
   }
 }
 
+/**
+ * Claude's inbound parity gate groups sessions by one question: does a human
+ * still prompt the sender? Codex answers it with approval_policy. Its two host
+ * review flags describe automated review instead - node_repl_auto_review_required
+ * is a model catalog requirement (Codex refuses such a model without auto
+ * review) and auto_review_enabled names a Guardian reviewer - so they are
+ * required as evidence and reported, but never move a sender between classes.
+ * Downgrading them held every send from such a model behind an approval
+ * dialog that Claude Desktop does not render.
+ */
 function permissionClass(context, metadata) {
   for (const field of ["auto_review_enabled", "node_repl_auto_review_required"]) {
     if (!Object.hasOwn(metadata, field) || typeof metadata[field] !== "boolean") throw new Error(`The caller's ${field} review evidence is ${reviewFlag(metadata, field)}; the host must supply an explicit boolean`);
@@ -103,8 +113,9 @@ function permissionClass(context, metadata) {
   if (context.approvals_reviewer !== "user") throw new Error("The caller's effective approval reviewer is unverified");
   if (!exactObject(context.permission_profile, ["type"]) || context.permission_profile.type !== "disabled") throw new Error("The caller's permission profile is restricted or unsupported; no permission class was inferred");
   if (!exactObject(context.sandbox_policy, ["type"]) || context.sandbox_policy.type !== "danger-full-access") throw new Error("The caller's effective sandbox policy does not match its disabled permission profile");
-  if (!["never", "on-request", "on-failure", "untrusted"].includes(context.approval_policy)) throw new Error("The caller's effective approval policy is unsupported");
-  return context.approval_policy === "never" && !metadata.auto_review_enabled && !metadata.node_repl_auto_review_required ? "bypass" : "prompting";
+  if (context.approval_policy === "never") return "bypass";
+  if (["on-request", "on-failure", "untrusted"].includes(context.approval_policy)) return "prompting";
+  throw new Error("The caller's effective approval policy is unsupported");
 }
 
 export function readCodexSenderContext(meta, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {

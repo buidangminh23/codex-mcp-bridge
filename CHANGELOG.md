@@ -4,6 +4,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.13.6] - 2026-09-06
+
+### Fixed
+
+- Classify a Desktop sender by its human approval policy alone. `node_repl_auto_review_required` is a Codex model-catalog requirement (`gpt-6-astra` cannot run without auto review) and `auto_review_enabled` names an automated Guardian reviewer; neither adds a human prompt, so a verified full-access `approval_policy: never` sender is `bypass` whichever review flags the host sets. Since 1.13.5 such senders were downgraded to `prompting`, and a bypassing Claude Desktop recipient held every message behind a `peer_inbound_approval` dialog that Claude Desktop does not declare it can render, so nothing sent from that model could ever be delivered. Review flags remain required booleans and are still reported in status and receipts.
+- Report the verified sender's approval policy in `claude_bridge_status`, and state in held receipts that Claude Desktop exposes no peer approval dialog.
+
+### Upgrade notes
+
+- Reconnect the `claude-bridge` MCP in the Codex Desktop task after upgrading. A bridge process started before this version keeps the old classification until it is restarted; its status reports stale source and refuses new sends once the files change.
+
 ## [1.13.5] - 2026-09-06
 
 ### Fixed

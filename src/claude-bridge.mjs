@@ -5,10 +5,11 @@ import { z } from "zod";
 
 import { CodexAppServerClient } from "./app-server-client.mjs";
 import { PLATFORM_LABEL } from "./platform.mjs";
-import { PeerEndpoint, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
+import { PeerEndpoint, assertClaudeSessionCwd, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
 import { createThreadDelivery } from "./thread-delivery.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
+import { createRuntimeState } from "./runtime-state.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -20,6 +21,7 @@ const log = (msg) => process.stderr.write(`[claude-bridge] ${msg}\n`);
 
 const defaultPeerName = process.env.CLAUDE_BRIDGE_PEER_NAME ?? `codex-${process.pid}`;
 const desktopOnly = desktopTasksConfigured();
+const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
 
 const peer = new PeerEndpoint({
   name: defaultPeerName,
@@ -51,7 +53,10 @@ const textResult = (text, isError = false) => ({
   ...(isError ? { isError: true } : {}),
 });
 
-const failure = (err) => textResult(`Claude bridge error: ${err?.message ?? String(err)}`, true);
+const failure = (err) => ({
+  ...textResult(`Claude bridge error: ${err?.message ?? String(err)}${err?.msgId ? `\nMessage id: ${err.msgId}; inspect read_claude_delivery before any resend.` : ""}`, true),
+  ...(err?.msgId ? { structuredContent: { receipt: peer.readDelivery(err.msgId) } } : {}),
+});
 
 const missingDesktopSession = "No live Claude Desktop session with an exact matching ID or name and a messaging endpoint. Open or reconnect an existing Code session in Claude Desktop for the intended project. CLI sessions are excluded; do not launch a replacement CLI session.";
 
@@ -79,6 +84,7 @@ async function forwardToCodexThread(record) {
   forwarding.lastAt = now;
   forwarding.count += 1;
   try {
+    runtime.assertCurrent();
     const { backend } = await delivery.deliver(
       forwarding.threadId,
       `[message from Claude session ${record.fromSocket ?? "?"}]\n\n${record.text}`,
@@ -142,12 +148,13 @@ server.registerTool(
     description:
       "Send a message to a running Claude Code session's peer transport and wait for its reply. " +
       "A socket write alone does not confirm that Claude received the message. Set waitSec to 0 to send without confirmation. " +
-      "A waited send is refused while earlier messages to that session still await replies; " +
+      "Every send is refused while earlier messages to that session still await replies, including waitSec 0; " +
       "wait for those replies and read_claude_inbox before trying again. Desktop-only mode refuses CLI or unknown " +
-      "entrypoints, partial names, and ambiguous targets before sending. It never creates a replacement session.",
+      "entrypoints, partial names, ambiguous targets, and a missing or mismatched expectedCwd before sending. It never creates a replacement session.",
     inputSchema: {
       target: z.string().describe("Session name, pid or sessionId from list_claude_sessions"),
       message: z.string().describe("The message text to deliver"),
+      expectedCwd: z.string().optional().describe("Exact absolute project directory independently verified by the caller; required in Desktop-only mode"),
       waitSec: z
         .number()
         .int()
@@ -163,10 +170,12 @@ server.registerTool(
       openWorldHint: true,
     },
   },
-  async ({ target, message, waitSec }) => {
+  async ({ target, message, waitSec, expectedCwd }) => {
     try {
+      runtime.assertCurrent();
       const session = findClaudeSession(target, { desktopOnly });
       if (!session) return textResult(desktopOnly ? missingDesktopSession : `No live Claude session matches "${target}".`, true);
+      if (desktopOnly || expectedCwd !== undefined) assertClaudeSessionCwd(session, expectedCwd);
       await peer.start();
 
       const wait = waitSec ?? 180;
@@ -174,6 +183,14 @@ server.registerTool(
       const text = desktop ? `${message}\n\n[Bridge response routing: reply with ordinary text in this conversation. The bridge reads the response associated with this message from the local transcript; no cross-session reply tool is needed.]` : message;
       const { msgId, reply, delivery } = await peer.sendAndWait(session.socket, text, {
         timeoutMs: wait * 1000,
+        beforeSend: () => {
+          runtime.assertCurrent();
+          const current = findClaudeSession(session.sessionId ?? String(session.pid), { desktopOnly });
+          if (!current || current.pid !== session.pid || current.socket !== session.socket) {
+            throw new Error("The Claude destination changed while this message was queued. No message was sent; inspect the existing Desktop session.");
+          }
+          if (desktopOnly || expectedCwd !== undefined) assertClaudeSessionCwd(current, expectedCwd);
+        },
         ...(desktop ? { transcriptSession: session } : {}),
       });
       const status = reply ? "reply_received" : delivery?.status ?? (wait === 0 ? "sent_unconfirmed" : "reply_timeout");
@@ -182,7 +199,7 @@ server.registerTool(
       const targetLabel = `${session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"}, via ${session.entrypoint ?? "unknown"}, cwd ${session.cwd ?? "?"})`;
 
       if (!reply && delivery && delivery.status !== "delivered") {
-        return result(`Claude inbox reported ${delivery.status} for ${targetLabel}.\n${delivery.reason}\nMessage id: ${msgId}`, true);
+        return result(`Claude inbox reported ${delivery.status} for ${targetLabel}.\n${delivery.reason}\nMessage id: ${msgId}\nInspect read_claude_delivery with this message ID. Do not resend, change the sender permission class, or alter recipient permissions to bypass this receipt.`, true);
       }
 
       if (wait === 0) {
@@ -200,6 +217,21 @@ server.registerTool(
     } catch (err) {
       return failure(err);
     }
+  },
+);
+
+server.registerTool(
+  "read_claude_delivery",
+  {
+    title: "Inspect a Claude message receipt without resending",
+    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
+    inputSchema: { msgId: z.string().describe("The original message ID returned by send_to_claude_session") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ msgId }) => {
+    const receipt = peer.readDelivery(msgId);
+    if (!receipt) return textResult("This MCP process has no receipt for that message ID. It may belong to a previous process; do not infer failure or resend. Inspect the original Claude Desktop session.", true);
+    return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { receipt } };
   },
 );
 
@@ -331,8 +363,12 @@ server.registerTool(
         `relay thread:  ${forwarding.threadId ?? "(none - use bind_codex_thread)"}`,
         `delivery:      ${delivery.describe()}`,
         `inbox:         ${peer.inbox.length} pending message(s)`,
+        `outstanding:   ${peer.pendingMessages.size} message(s) awaiting receipt or reply`,
+        ...[...peer.pendingMessages.keys()].map((id) => `pending message: ${id} (${peer.readDelivery(id)?.status ?? "sent_unconfirmed"})`),
       ];
-      return textResult(lines.join("\n"));
+      const state = runtime.status();
+      lines.push(`runtime pid:   ${state.pid}`, `loaded source: ${state.revision}`, `disk source:   ${state.diskRevision ?? "unreadable"}`, `runtime state: ${state.current ? "current" : `STALE - ${state.reason}; reconnect this MCP server in the existing task`}`);
+      return { ...textResult(lines.join("\n"), !state.current), structuredContent: { runtime: state } };
     } catch (err) {
       return failure(err);
     }

@@ -124,7 +124,7 @@ describe("thread authorization policy", () => {
 describe("every thread tool is gated on the workspace", () => {
   const source = fs.readFileSync(path.join(root, "src", "index.mjs"), "utf8");
   const tools = source
-    .split("server.registerTool(")
+    .split(/(?:server\.)?registerTool\(/)
     .slice(1)
     .map((block) => ({ name: block.match(/^\s*"([^"]+)"/)?.[1] ?? "(unnamed)", body: block }))
     .filter((tool) => /threadId: z\.string\(\)/.test(tool.body));

@@ -12,6 +12,7 @@ const transport = new StdioClientTransport({
 });
 const client = new Client({ name: "claude-bridge-check", version: "1.0.0" });
 try {
+  console.log("This diagnostic starts a separate MCP process; it does not reload or verify an existing Desktop task's MCP connection.");
   await client.connect(transport);
 
   const tools = await client.listTools();
@@ -32,7 +33,7 @@ try {
     console.log(`\nsending to "${target}" (waiting ${waitSec}s)...`);
     const sent = await client.callTool({
       name: "send_to_claude_session",
-      arguments: { target, message, waitSec },
+      arguments: { target, message, waitSec, expectedCwd: process.env.CLAUDE_EXPECTED_CWD },
     });
     console.log("\n--- send_to_claude_session ---\n" + sent.content[0].text);
     if (sent.isError) throw new Error("Claude message roundtrip failed; receipt or outcome is unconfirmed");

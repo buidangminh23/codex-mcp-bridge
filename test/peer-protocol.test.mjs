@@ -377,6 +377,29 @@ describe("peer endpoint", () => {
     assert.equal(result.delivery.status, "held");
     assert.equal(endpoint.unconfirmedReplies.get("held-peer"), 1);
     assert.equal(endpoint.inbox.some((entry) => entry.msgId === "held-id"), false);
+    assert.equal(endpoint.readDelivery("held-id").status, "held");
+    await assert.rejects(endpoint.sendAndWait("held-peer", "retry", { timeoutMs: 0 }), /earlier message/);
+    assert.equal(endpoint.send.mock.callCount(), 1);
+    await new Promise((resolve, reject) => {
+      const socket = net.connect(endpoint.socketPath, () => socket.end(authLine() + JSON.stringify({ type: "control", action: "peer_message_status", orig_msg_id: "held-id", from: "uds:held-peer", status: "expired", reason: "Recipient approval expired" }) + "\n"));
+      socket.on("error", reject);
+      socket.on("close", resolve);
+    });
+    assert.equal(endpoint.readDelivery("held-id").status, "expired");
+    assert.equal(endpoint.readDelivery("held-id").pending, false);
+  });
+
+  it("preserves pending ownership when a transport error cannot prove non-delivery", async (t) => {
+    t.mock.method(endpoint, "send", async () => { throw Object.assign(new Error("write completion unknown"), { deliveryUncertain: true }); });
+    let msgId;
+    await assert.rejects(endpoint.sendAndWait("uncertain-peer", "first", { timeoutMs: 0 }), (error) => {
+      msgId = error.msgId;
+      return error.deliveryUncertain;
+    });
+    assert.equal(endpoint.readDelivery(msgId).status, "sent_unconfirmed");
+    assert.equal(endpoint.readDelivery(msgId).pending, true);
+    await assert.rejects(endpoint.sendAndWait("uncertain-peer", "retry", { timeoutMs: 0 }), /earlier message/);
+    assert.equal(endpoint.send.mock.callCount(), 1);
   });
 
   it("keeps a late Desktop transcript response after timeout and clears pending ownership", async (t) => {
@@ -540,7 +563,7 @@ describe("peer endpoint", () => {
     const expired = endpoint.sendAndWait("timeout-peer", "expire", { timeoutMs: 20 });
     const next = endpoint.sendAndWait("timeout-peer", "next", { timeoutMs: 1000 });
     const refused = assert.rejects(next, (err) => err.code === "PEER_REPLY_PENDING"
-      && /not sent/.test(err.message) && /read_claude_inbox/.test(err.message) && /waitSec to 0/.test(err.message));
+      && /not sent/.test(err.message) && /read_claude_delivery/.test(err.message) && /must not be used to bypass/.test(err.message));
     await yieldToEvents();
     assert.deepEqual(sent, ["expire"]);
     assert.equal((await expired).reply, null);
@@ -574,47 +597,25 @@ describe("peer endpoint", () => {
     assert.equal(endpoint.unconfirmedReplies.has("no-wait-peer"), false);
   });
 
-  it("waits for every outstanding no-wait reply before accepting a waited send", async (t) => {
+  it("refuses no-wait messages until the outstanding reply arrives", async (t) => {
     const sent = [];
     t.mock.method(endpoint, "send", async (targetSocket, text) => {
       sent.push(text);
       return text;
     });
     await endpoint.sendAndWait("many-no-wait-peer", "first", { timeoutMs: 0 });
-    await endpoint.sendAndWait("many-no-wait-peer", "second", { timeoutMs: 0 });
-    assert.equal(endpoint.unconfirmedReplies.get("many-no-wait-peer"), 2);
-    await receiveMessage("many-no-wait-peer", "first answer");
+    for (const timeoutMs of [0, 1000]) {
+      await assert.rejects(endpoint.sendAndWait("many-no-wait-peer", "refused", { timeoutMs }),
+        (err) => err.code === "PEER_REPLY_PENDING");
+    }
     assert.equal(endpoint.unconfirmedReplies.get("many-no-wait-peer"), 1);
-    await assert.rejects(
-      endpoint.sendAndWait("many-no-wait-peer", "refused", { timeoutMs: 1000 }),
-      (err) => err.code === "PEER_REPLY_PENDING",
-    );
-    assert.deepEqual(sent, ["first", "second"]);
-    await receiveMessage("many-no-wait-peer", "second answer");
-    const waited = endpoint.sendAndWait("many-no-wait-peer", "third", { timeoutMs: 1000 });
+    assert.deepEqual(sent, ["first"]);
+    await receiveMessage("many-no-wait-peer", "first answer");
+    const waited = endpoint.sendAndWait("many-no-wait-peer", "second", { timeoutMs: 1000 });
     await yieldToEvents();
-    await receiveMessage("many-no-wait-peer", "third answer");
-    assert.equal((await waited).reply.text, "third answer");
-    assert.deepEqual(sent, ["first", "second", "third"]);
-  });
-
-  it("preserves earlier outstanding ownership when a later no-wait send fails", async (t) => {
-    t.mock.method(endpoint, "send", async (targetSocket, text) => {
-      if (text === "fail") throw new Error("no-wait send failed");
-      return text;
-    });
-    await endpoint.sendAndWait("failed-no-wait-peer", "first", { timeoutMs: 0 });
-    await assert.rejects(
-      endpoint.sendAndWait("failed-no-wait-peer", "fail", { timeoutMs: 0 }),
-      /no-wait send failed/,
-    );
-    assert.equal(endpoint.unconfirmedReplies.get("failed-no-wait-peer"), 1);
-    await assert.rejects(
-      endpoint.sendAndWait("failed-no-wait-peer", "waited", { timeoutMs: 1000 }),
-      (err) => err.code === "PEER_REPLY_PENDING",
-    );
-    await receiveMessage("failed-no-wait-peer", "first answer");
-    assert.equal(endpoint.unconfirmedReplies.has("failed-no-wait-peer"), false);
+    await receiveMessage("many-no-wait-peer", "second answer");
+    assert.equal((await waited).reply.text, "second answer");
+    assert.deepEqual(sent, ["first", "second"]);
   });
 
   it("clears ownership when a no-wait reply arrives before sending finishes", async (t) => {

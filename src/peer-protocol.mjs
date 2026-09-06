@@ -187,7 +187,7 @@ export function listClaudeSessions({ includeDead = false, includeBridges = false
   return rows.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
 }
 
-export function findClaudeSession(target, { desktopOnly = false } = {}) {
+export function findClaudeSession(target, { desktopOnly = false, expectedCwd } = {}) {
   const sessions = listClaudeSessions();
   const needle = String(target).trim();
   if (desktopOnly) {
@@ -199,6 +199,7 @@ export function findClaudeSession(target, { desktopOnly = false } = {}) {
     if (session.entrypoint !== "claude-desktop") {
       throw new Error(`Desktop-only mode refuses Claude session ${session.sessionId ?? session.pid} with entrypoint ${session.entrypoint ?? "unknown"}. Open or reconnect an existing Code session in Claude Desktop for the intended project. Do not launch a replacement CLI session. No message was sent.`);
     }
+    if (expectedCwd !== undefined) assertClaudeSessionCwd(session, expectedCwd);
     return session;
   }
   return (
@@ -208,6 +209,24 @@ export function findClaudeSession(target, { desktopOnly = false } = {}) {
     sessions.find((s) => (s.name ?? "").toLowerCase().includes(needle.toLowerCase())) ??
     null
   );
+}
+
+export function assertClaudeSessionCwd(session, expectedCwd) {
+  if (typeof expectedCwd !== "string" || !path.isAbsolute(expectedCwd) || !session.cwd || !path.isAbsolute(session.cwd)) {
+    throw new Error("Desktop delivery requires an explicit absolute expectedCwd and an absolute session cwd. No message was sent.");
+  }
+  let expected;
+  let actual;
+  try {
+    expected = fs.realpathSync.native(expectedCwd);
+    actual = fs.realpathSync.native(session.cwd);
+  } catch {
+    throw new Error("The intended project directory or the Claude session cwd no longer exists. No message was sent.");
+  }
+  const normalize = (value) => IS_WINDOWS ? value.toLowerCase() : value;
+  if (normalize(expected) !== normalize(actual)) {
+    throw new Error(`Claude session cwd ${actual} does not match expectedCwd ${expected}. No message was sent.`);
+  }
 }
 
 /**
@@ -303,6 +322,7 @@ export class PeerEndpoint {
     this.peerToken = null;
     this.permissionMode = process.env.CLAUDE_BRIDGE_PERMISSION_MODE;
     this.deliveryReceipts = new Map();
+    this.sentMessages = new Map();
     this.pendingMessages = new Map();
     this.responsePoll = null;
   }
@@ -443,7 +463,12 @@ export class PeerEndpoint {
   #receiveMessage(message) {
     const record = { ...message, receivedAt: Date.now(), sequence: ++this.messageSequence };
     this.inbox.push(record);
-    this.#removePendingReply(record.fromSocket, record.inReplyTo);
+    const key = record.inReplyTo ?? [...this.pendingMessages].find(([, entry]) => entry.targetSocket === record.fromSocket)?.[0];
+    if (key && this.pendingMessages.get(key)?.targetSocket === record.fromSocket) {
+      const sent = this.sentMessages.get(key);
+      if (sent) sent.reply = record;
+      this.#removePendingReply(record.fromSocket, key);
+    }
     this.log(`inbox <- ${record.fromSocket ?? "?"}: ${record.text.slice(0, 120)}`);
     for (const listener of [...this.listeners]) {
       try { listener(record); }
@@ -514,6 +539,7 @@ export class PeerEndpoint {
             settled = true;
             globalThis.clearTimeout(timer);
             if (error) {
+              if (connected || writeStarted) error.deliveryUncertain = true;
               reject({ error, retryable: !connected && !writeStarted });
             } else {
               resolve();
@@ -545,14 +571,15 @@ export class PeerEndpoint {
     return frame.msg_id;
   }
 
-  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession } = {}) {
+  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend } = {}) {
     const previous = this.requestQueues.get(targetSocket) ?? Promise.resolve();
     const pending = previous.catch(() => {}).then(async () => {
+      beforeSend?.();
       const unconfirmed = this.unconfirmedReplies.get(targetSocket) ?? 0;
-      if (timeoutMs > 0 && unconfirmed > 0) {
+      if (unconfirmed > 0) {
         const error = new Error(
           `${unconfirmed} earlier message(s) to ${targetSocket} still await a reply; this message was not sent. `
-          + "Wait for Claude's outstanding replies and check read_claude_inbox, or set waitSec to 0 to send without matching a reply.",
+          + "Inspect read_claude_delivery and wait for Claude's outstanding replies. Changing waitSec or starting another bridge must not be used to bypass a pending message.",
         );
         error.code = "PEER_REPLY_PENDING";
         throw error;
@@ -562,21 +589,30 @@ export class PeerEndpoint {
       this.unconfirmedReplies.set(targetSocket, unconfirmed + 1);
       let msgId = crypto.randomUUID();
       this.pendingMessages.set(msgId, { targetSocket, transcriptSession });
+      this.sentMessages.set(msgId, { targetSocket, transcriptSession, sentAt: since });
+      if (transcriptSession && !this.responsePoll) {
+        this.responsePoll = globalThis.setInterval(() => this.#refreshTranscriptReplies(), 250);
+        this.responsePoll.unref();
+      }
       try {
         const sentId = await this.send(targetSocket, text, { priority, msgId });
         if (sentId !== msgId) {
           const pendingMessage = this.pendingMessages.get(msgId);
           this.pendingMessages.delete(msgId);
+          this.sentMessages.set(sentId, this.sentMessages.get(msgId));
+          this.sentMessages.delete(msgId);
           msgId = sentId;
           if (pendingMessage) this.pendingMessages.set(msgId, pendingMessage);
         }
       } catch (err) {
-        this.#removePendingReply(targetSocket, msgId);
+        const sent = this.sentMessages.get(msgId);
+        if (sent) sent.error = err.message;
+        if (!err.deliveryUncertain) {
+          this.#removePendingReply(targetSocket, msgId);
+          if (sent) sent.failed = true;
+        }
+        err.msgId = msgId;
         throw err;
-      }
-      if (transcriptSession && !this.responsePoll && this.pendingMessages.has(msgId)) {
-        this.responsePoll = globalThis.setInterval(() => this.#refreshTranscriptReplies(), 250);
-        this.responsePoll.unref();
       }
       const reply = timeoutMs > 0
         ? await this.waitForReply(targetSocket, { timeoutMs, since, afterSequence, msgId })
@@ -595,7 +631,8 @@ export class PeerEndpoint {
 
   #removePendingReply(fromSocket, msgId) {
     const key = msgId ?? [...this.pendingMessages].find(([, entry]) => entry.targetSocket === fromSocket)?.[0];
-    if (key) this.pendingMessages.delete(key);
+    if (!key || this.pendingMessages.get(key)?.targetSocket !== fromSocket) return;
+    this.pendingMessages.delete(key);
     const pending = this.unconfirmedReplies.get(fromSocket) ?? 0;
     if (pending > 1) this.unconfirmedReplies.set(fromSocket, pending - 1);
     else this.unconfirmedReplies.delete(fromSocket);
@@ -607,6 +644,7 @@ export class PeerEndpoint {
    */
   waitForReply(fromSocket, { timeoutMs = 120000, since = Date.now(), afterSequence = null, msgId } = {}) {
     const matches = (record) => record.fromSocket === fromSocket
+      && (!record.inReplyTo || !msgId || record.inReplyTo === msgId)
       && (afterSequence === null ? record.receivedAt >= since : record.sequence > afterSequence);
     const existing = this.inbox.find(matches);
     if (existing) return Promise.resolve(existing);
@@ -633,6 +671,24 @@ export class PeerEndpoint {
     const messages = this.inbox.slice(-limit);
     this.inbox = [];
     return messages;
+  }
+
+  readDelivery(msgId) {
+    const sent = this.sentMessages.get(msgId);
+    if (!sent) return null;
+    const delivery = this.deliveryReceipts.get(msgId);
+    const session = sent.transcriptSession;
+    return {
+      msgId,
+      status: sent.reply ? "reply_received" : sent.failed ? "send_failed" : delivery?.status ?? "sent_unconfirmed",
+      reason: delivery?.reason ?? sent.error ?? null,
+      sentAt: sent.sentAt,
+      sessionId: session?.sessionId ?? null,
+      cwd: session?.cwd ?? null,
+      entrypoint: session?.entrypoint ?? null,
+      pending: this.pendingMessages.has(msgId),
+      ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer" } : {}),
+    };
   }
 
   stop() {

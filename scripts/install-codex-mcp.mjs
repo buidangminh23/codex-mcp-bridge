@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 import { PLATFORM_LABEL, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
+import { desktopTasksConfigured } from "../src/native-relay.mjs";
+import { codexMcpRegistration } from "../src/codex-mcp-registration.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -29,22 +31,17 @@ if (remove) {
   process.exit(0);
 }
 
-try {
-  run(["mcp", "remove", serverName]);
-} catch {
-  // not registered yet
-}
-
-const args = ["mcp", "add", serverName];
-const peerName = process.env.CLAUDE_BRIDGE_PEER_NAME;
-if (peerName) args.push("--env", `CLAUDE_BRIDGE_PEER_NAME=${peerName}`);
-if (permissionMode) args.push("--env", `CLAUDE_BRIDGE_PERMISSION_MODE=${permissionMode}`);
-args.push("--", process.execPath, entry);
-
-run(args);
+const servers = JSON.parse(run(["mcp", "list", "--json"]));
+if (!Array.isArray(servers)) throw new Error("Codex returned an invalid MCP inventory; existing configuration was not changed");
+const existing = servers.some((server) => server.name === serverName)
+  ? JSON.parse(run(["mcp", "get", serverName, "--json"])) : null;
+const registration = codexMcpRegistration({ name: serverName, existing, node: process.execPath, entry, env: process.env, desktopOnly: desktopTasksConfigured() });
+run(registration.args);
 
 console.log(`platform: ${PLATFORM_LABEL}`);
 console.log(`registered MCP server "${serverName}" with Codex:`);
-console.log(run(["mcp", "get", serverName]));
-console.log("\nRestart the Codex app (or start a new Codex session) to load the bridge.");
+console.log(`command: ${process.execPath} ${entry}`);
+console.log(`environment keys: ${registration.environmentKeys.join(", ")}`);
+console.log("\nReconnect the MCP server in the existing Codex Desktop task, or restart the app and reopen that same task. Do not create a replacement task.");
+console.log("Verify claude_bridge_status from that task: runtime state must be current and the session policy must match this installation. A separate diagnostic process does not verify the app's loaded MCP process.");
 console.log(`remove: node scripts/install-codex-mcp.mjs --remove`);

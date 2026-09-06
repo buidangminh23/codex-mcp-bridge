@@ -117,7 +117,7 @@ function readProcessStart(pid) {
   try {
     if (IS_WINDOWS) {
       const shell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      return execFileSync(shell, ["-NoProfile", "-Command", `(Get-Process -Id ${Number(pid)}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`], { timeout: 3000, windowsHide: true }).toString().trim();
+      return execFileSync(shell, ["-NoProfile", "-NonInteractive", "-Command", `[System.Diagnostics.Process]::GetProcessById(${Number(pid)}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`], { timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
     }
     return execFileSync(PS_BIN, ["-o", "lstart=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, timeout: 3000 }).toString().trim();
   } catch {
@@ -176,10 +176,12 @@ export function listClaudeSessions({ includeDead = false, includeBridges = false
       pid: entry.pid,
       name: entry.name ?? null,
       sessionId: entry.sessionId ?? null,
+      bridgeSessionId: entry.bridgeSessionId ?? null,
       cwd: entry.cwd ?? null,
       kind: entry.kind ?? null,
       entrypoint: entry.entrypoint ?? null,
       startedAt: entry.startedAt ?? null,
+      processStart: (IS_WINDOWS ? entry.procStartFt : entry.procStart) ?? null,
       socket: entry.messagingSocketPath,
       alive,
     });
@@ -226,6 +228,13 @@ export function assertClaudeSessionCwd(session, expectedCwd) {
   const normalize = (value) => IS_WINDOWS ? value.toLowerCase() : value;
   if (normalize(expected) !== normalize(actual)) {
     throw new Error(`Claude session cwd ${actual} does not match expectedCwd ${expected}. No message was sent.`);
+  }
+}
+
+export function assertClaudeSessionProcess(session) {
+  if (!session.alive || typeof session.processStart !== "string" || !session.processStart ||
+      readProcessStart(session.pid) !== session.processStart) {
+    throw new Error("The live Claude process identity is missing or changed. No message was sent; reopen the existing Desktop task and inspect its session again.");
   }
 }
 
@@ -466,7 +475,11 @@ export class PeerEndpoint {
     const key = record.inReplyTo ?? [...this.pendingMessages].find(([, entry]) => entry.targetSocket === record.fromSocket)?.[0];
     if (key && this.pendingMessages.get(key)?.targetSocket === record.fromSocket) {
       const sent = this.sentMessages.get(key);
-      if (sent) sent.reply = record;
+      if (sent) {
+        record.inReplyTo = key;
+        record.replyThreadId = sent.replyThreadId ?? null;
+        sent.reply = record;
+      }
       this.#removePendingReply(record.fromSocket, key);
     }
     this.log(`inbox <- ${record.fromSocket ?? "?"}: ${record.text.slice(0, 120)}`);
@@ -516,12 +529,13 @@ export class PeerEndpoint {
     return () => this.listeners.delete(listener);
   }
 
-  async send(targetSocket, text, { priority = "next", msgId } = {}) {
-    const frame = buildFrame({ text, fromSocket: this.socketPath, priority, permissionMode: this.permissionMode });
+  async send(targetSocket, text, { priority = "next", msgId, permissionMode = this.permissionMode, beforeSend } = {}) {
+    const frame = buildFrame({ text, fromSocket: this.socketPath, priority, permissionMode });
     if (msgId) frame.uuid = frame.msg_id = msgId;
     const token = readPeerToken(targetSocket);
     const line = (token ? JSON.stringify({ type: "auth", token }) + "\n" : "") + JSON.stringify(frame) + "\n";
     for (let attempt = 1; attempt <= PEER_SEND_ATTEMPTS; attempt += 1) {
+      await beforeSend?.();
       try {
         await new Promise((resolve, reject) => {
           const client = net.connect({ path: targetSocket });
@@ -539,23 +553,30 @@ export class PeerEndpoint {
             settled = true;
             globalThis.clearTimeout(timer);
             if (error) {
-              if (connected || writeStarted) error.deliveryUncertain = true;
+              if (writeStarted) error.deliveryUncertain = true;
               reject({ error, retryable: !connected && !writeStarted });
             } else {
               resolve();
             }
           };
-          client.once("connect", () => {
+          client.once("connect", async () => {
             connected = true;
-            writeStarted = true;
-            client.write(line, (error) => {
-              if (error) {
-                finish(error);
-                return;
-              }
-              client.end();
-              finish();
-            });
+            try {
+              await beforeSend?.();
+              if (settled) return;
+              writeStarted = true;
+              client.write(line, (error) => {
+                if (error) {
+                  finish(error);
+                  return;
+                }
+                client.end();
+                finish();
+              });
+            } catch (error) {
+              finish(error);
+              client.destroy();
+            }
           });
           client.once("error", finish);
         });
@@ -571,10 +592,10 @@ export class PeerEndpoint {
     return frame.msg_id;
   }
 
-  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend } = {}) {
+  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend, permissionMode = this.permissionMode, replyThreadId } = {}) {
     const previous = this.requestQueues.get(targetSocket) ?? Promise.resolve();
     const pending = previous.catch(() => {}).then(async () => {
-      beforeSend?.();
+      await beforeSend?.();
       const unconfirmed = this.unconfirmedReplies.get(targetSocket) ?? 0;
       if (unconfirmed > 0) {
         const error = new Error(
@@ -589,15 +610,17 @@ export class PeerEndpoint {
       this.unconfirmedReplies.set(targetSocket, unconfirmed + 1);
       let msgId = crypto.randomUUID();
       this.pendingMessages.set(msgId, { targetSocket, transcriptSession });
-      this.sentMessages.set(msgId, { targetSocket, transcriptSession, sentAt: since });
+      this.sentMessages.set(msgId, { targetSocket, transcriptSession, sentAt: since, replyThreadId, permissionMode });
       if (transcriptSession && !this.responsePoll) {
         this.responsePoll = globalThis.setInterval(() => this.#refreshTranscriptReplies(), 250);
         this.responsePoll.unref();
       }
       try {
-        const sentId = await this.send(targetSocket, text, { priority, msgId });
+        const sentId = await this.send(targetSocket, text, { priority, msgId, permissionMode, beforeSend });
         if (sentId !== msgId) {
           const pendingMessage = this.pendingMessages.get(msgId);
+          const earlyReply = this.sentMessages.get(msgId)?.reply;
+          if (earlyReply?.inReplyTo === msgId) earlyReply.inReplyTo = sentId;
           this.pendingMessages.delete(msgId);
           this.sentMessages.set(sentId, this.sentMessages.get(msgId));
           this.sentMessages.delete(msgId);
@@ -686,6 +709,10 @@ export class PeerEndpoint {
       sessionId: session?.sessionId ?? null,
       cwd: session?.cwd ?? null,
       entrypoint: session?.entrypoint ?? null,
+      taskId: session?.desktop?.taskId ?? null,
+      title: session?.desktop?.title ?? null,
+      senderMode: sent.permissionMode ?? null,
+      replyThreadId: sent.replyThreadId ?? null,
       pending: this.pendingMessages.has(msgId),
       ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer" } : {}),
     };

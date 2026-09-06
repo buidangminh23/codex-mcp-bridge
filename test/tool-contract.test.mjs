@@ -30,6 +30,7 @@ const CLAUDE_TOOLS = [
   "list_claude_sessions",
   "send_to_claude_session",
   "read_claude_inbox",
+  "read_claude_delivery",
   "read_claude_transcript",
   "bind_codex_thread",
   "claude_bridge_status",
@@ -113,7 +114,15 @@ describe("Claude message receipts", () => {
       const client = new Client({ name: "receipt-test", version: "1" });
       try {
         await client.connect(transport);
-        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", waitSec: scenario === "nowait" ? 0 : 2 } });
+        if (scenario === "desktop") {
+          for (const expectedCwd of [undefined, path.dirname(home), "relative", path.join(home, "missing")]) {
+            const refused = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Wrong workspace", expectedCwd, waitSec: 0 } });
+            assert.equal(refused.isError, true);
+            assert.match(refused.content[0].text, /expectedCwd|no longer exists/);
+            assert.equal(count, 0);
+          }
+        }
+        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", expectedCwd: home, waitSec: scenario === "nowait" ? 0 : 2 } });
         let receiptTimer;
         try {
           await Promise.race([receipt, new Promise((_, reject) => {
@@ -131,9 +140,15 @@ describe("Claude message receipts", () => {
           assert.equal(result.structuredContent.receipt.cwd, home);
         }
         if (["nowait", "timeout", "held"].includes(scenario)) {
-          const retry = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Never send this", waitSec: 1 } });
-          assert.equal(retry.isError, true);
-          assert.match(retry.content[0].text, /earlier message/);
+          for (const waitSec of [1, 0]) {
+            const retry = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Never send this", waitSec } });
+            assert.equal(retry.isError, true);
+            assert.match(retry.content[0].text, /earlier message/);
+            assert.equal(count, 1);
+          }
+          const inspected = await client.callTool({ name: "read_claude_delivery", arguments: { msgId: result.structuredContent.receipt.msgId } });
+          assert.equal(inspected.structuredContent.receipt.status, scenario === "held" ? "held" : "sent_unconfirmed");
+          assert.equal(inspected.structuredContent.receipt.pending, true);
           assert.equal(count, 1);
         }
       } finally {
@@ -207,6 +222,42 @@ async function listTools(entry) {
     await client.close();
   }
 }
+
+describe("Loaded MCP runtime freshness", () => {
+  for (const entry of ["claude-bridge.mjs", "index.mjs"]) {
+    it(`blocks sends from ${entry} after a source update until reconnect`, async () => {
+      const directory = fs.mkdtempSync(path.join(sandboxHome, "runtime-"));
+      fs.cpSync(path.join(root, "src"), path.join(directory, "src"), { recursive: true });
+      fs.copyFileSync(path.join(root, "package.json"), path.join(directory, "package.json"));
+      fs.symlinkSync(path.join(root, "node_modules"), path.join(directory, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+      const client = new Client({ name: "runtime-test", version: "1" });
+      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(directory, "src", entry)], env: {
+        PATH: process.env.PATH ?? "", HOME: directory, USERPROFILE: directory, CODEX_HOME: path.join(directory, ".codex"), CODEX_BRIDGE_AUTOSTART: "0", CODEX_APP_SERVER_URL: "ws://127.0.0.1:9", CODEX_BRIDGE_DESKTOP_TASKS: "0",
+      }, stderr: "ignore" });
+      try {
+        await client.connect(transport);
+        const statusName = entry === "index.mjs" ? "codex_bridge_status" : "claude_bridge_status";
+        const original = await client.callTool({ name: statusName, arguments: {} });
+        assert.equal(original.structuredContent.runtime.current, true);
+        fs.appendFileSync(path.join(directory, "src", "peer-protocol.mjs"), "\n");
+        const stale = await client.callTool({ name: statusName, arguments: {} });
+        assert.equal(stale.isError, true);
+        assert.equal(stale.structuredContent.runtime.current, false);
+        const sent = await client.callTool(entry === "index.mjs"
+          ? { name: "send_to_codex_thread", arguments: { threadId: "existing-task", prompt: "Must not send" } }
+          : { name: "send_to_claude_session", arguments: { target: "existing-session", message: "Must not send", waitSec: 0 } });
+        assert.equal(sent.isError, true);
+        assert.match(sent.content[0].text, /source changed.*No message was sent/s);
+        if (entry === "claude-bridge.mjs") {
+          const inbox = await client.callTool({ name: "read_claude_inbox", arguments: {} });
+          assert.match(inbox.content[0].text, /Inbox is empty/);
+        }
+      } finally {
+        await client.close();
+      }
+    });
+  }
+});
 
 after(() => {
   fs.rmSync(sandboxHome, { recursive: true, force: true });
@@ -307,7 +358,7 @@ describe("claude-bridge tool contract", async () => {
 
   it("marks the tools that only read as read-only", () => {
     const readOnly = tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name);
-    assert.deepEqual(readOnly.sort(), ["list_claude_sessions", "read_claude_transcript"]);
+    assert.deepEqual(readOnly.sort(), ["list_claude_sessions", "read_claude_delivery", "read_claude_transcript"]);
   });
 });
 

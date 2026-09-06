@@ -25,6 +25,7 @@ import { BridgeSecurityPolicy } from "./security-policy.mjs";
 import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "./thread-delivery.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
+import { createRuntimeState } from "./runtime-state.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -48,6 +49,7 @@ const TERMINAL_TURN_STATUSES = new Set(["completed", "interrupted", "failed"]);
 const RELEASE_TURN_STATUSES = TERMINAL_TURN_STATUSES;
 const security = new BridgeSecurityPolicy();
 const desktopTasksEnabled = desktopTasksConfigured();
+const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
 const desktopTasks = new DesktopTaskDelivery({ security });
 
 const client = desktopTasksEnabled ? null : new CodexAppServerClient({
@@ -279,7 +281,8 @@ const server = new McpServer(
   { name: "codex-bridge", version: VERSION },
   {
     instructions:
-      "Bridge Claude work into Codex. Prefer delegate_to_codex: it creates a named Codex thread at the " +
+      "Bridge Claude work into Codex. Prefer an existing task: inspect its exact threadId and project, then use send_to_codex_thread. " +
+      "Only use delegate_to_codex or start_codex_thread when the user explicitly requests a new task at the " +
       "requested cwd. With Desktop tasks enabled it assigns the exact saved project and starts visibly in " +
       "Codex Desktop using Desktop permissions. Otherwise it releases the bridge writer lock and opens the exact thread in " +
       "Codex Desktop. Use send_to_codex_thread only when an existing threadId is intentional; use " +
@@ -287,7 +290,26 @@ const server = new McpServer(
   },
 );
 
-server.registerTool(
+function registerTool(name, definition, handler) {
+  server.registerTool(name, definition, async (...args) => {
+    try {
+      if (!definition.annotations?.readOnlyHint) runtime.assertCurrent();
+      if (name === "codex_bridge_status") {
+        const state = runtime.status();
+        if (!state.current) return { ...failure(new Error(`${state.reason}; reconnect this MCP server in the existing task.`)), structuredContent: { runtime: state } };
+        const result = await handler(...args);
+        result.content.push({ type: "text", text: `runtime pid: ${state.pid}\nloaded source: ${state.revision}\nruntime state: current` });
+        result.structuredContent = { ...result.structuredContent, runtime: state };
+        return result;
+      }
+      return await handler(...args);
+    } catch (err) {
+      return failure(err);
+    }
+  });
+}
+
+registerTool(
   "delegate_to_codex",
   {
     title: "Delegate work to a new Codex session",
@@ -378,7 +400,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "send_to_codex_thread",
   {
     title: "Send a prompt to a Codex thread",
@@ -503,7 +525,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "list_codex_threads",
   {
     title: "List Codex threads",
@@ -589,7 +611,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "start_codex_thread",
   {
     title: "Start a new Codex thread",
@@ -631,7 +653,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "read_codex_thread",
   {
     title: "Read a Codex thread",
@@ -678,7 +700,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "interrupt_codex_turn",
   {
     title: "Interrupt a Codex turn",
@@ -712,7 +734,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "open_codex_thread",
   {
     title: "Open a Codex thread in the desktop app",
@@ -755,7 +777,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "stop_codex_app_server",
   {
     title: "Stop the shared Codex app-server",
@@ -789,7 +811,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "codex_bridge_status",
   {
     title: "Check the Codex bridge environment",

@@ -258,7 +258,7 @@ claude mcp remove codex-bridge --scope user
 node scripts/install-codex-mcp.mjs
 ```
 
-This runs `codex mcp add claude-bridge -- <node> src/claude-bridge.mjs`, writing to `~/.codex/config.toml`. The equivalent by hand:
+The installer updates the named entry through `codex mcp add`, preserves existing environment settings, pins the configured Desktop policy, and disables external autostart in Desktop mode. It refuses to reset custom access, timeout, or transport settings. It never infers the sender permission class from the recipient. The basic registration by hand is:
 
 ```bash
 codex mcp add claude-bridge --env CLAUDE_BRIDGE_PEER_NAME=codex-desktop -- "$(command -v node)" "$PWD/src/claude-bridge.mjs"
@@ -272,11 +272,7 @@ codex mcp get claude-bridge
 node scripts/install-codex-mcp.mjs --remove
 ```
 
-Restart the Codex app (or open a new Codex session) to load it. If a shared app-server is already running under launchd, reload its config with:
-
-```bash
-launchctl kickstart -k gui/$UID/com.codex-mcp-bridge.app-server
-```
+Reconnect the MCP server in the existing Codex Desktop task, or restart the app and reopen that same task. Verify `claude_bridge_status` **from that task**: `runtime state` must be `current` and `session policy` must match the intended mode. Do not create a replacement task. `npm run check:claude` starts a separate diagnostic process and cannot prove that the app's existing MCP connection reloaded.
 
 `CLAUDE_BRIDGE_PEER_NAME` sets the name Claude shows for this bridge in its agent list.
 
@@ -384,6 +380,7 @@ Under `owned`, a thread a human opened is **unreachable rather than merely restr
 |---|---|---|
 | `list_claude_sessions` | Lists Claude Code sessions running on this machine (name, pid, sessionId, cwd, entrypoint). | read-only |
 | `send_to_claude_session` | Sends to a Claude inbox and waits for a correlated reply. Receipt statuses distinguish `reply_received`, `sent_unconfirmed`, `reply_timeout`, and receiver policy outcomes such as `held` or `refused`. `waitSec: 0` sends without waiting for confirmation. Prefer an exact `sessionId` because session names can change. | destructive |
+| `read_claude_delivery` | Inspects the latest recipient receipt or correlated reply by original message ID without resending or clearing the inbox. Receipts belong to this MCP process; an unknown ID after reconnect never proves non-delivery. | read-only |
 | `read_claude_inbox` | Reads **and clears** messages Claude pushed over on its own, including replies that arrived late. | destructive |
 | `read_claude_transcript` | Reads a Claude session's recent conversation without sending anything. | read-only |
 | `bind_codex_thread` | Binds a Codex thread so every message from Claude is relayed into it, **visible in the Codex desktop app**. Pass an empty string to stop. | writes |
@@ -393,9 +390,13 @@ Every tool declares MCP annotation hints (`readOnlyHint`, `destructiveHint`, `id
 
 Desktop task mode (`CODEX_BRIDGE_DESKTOP_TASKS=1` or the shared setting written by `codex-native-relay-install --desktop-tasks`) applies in both directions. `list_claude_sessions` only offers sessions advertised by Claude Desktop (`entrypoint: claude-desktop`), and sending refuses CLI or unknown entrypoints before connecting. Targets must match a unique exact session ID, PID, or name; partial names are not accepted. Open or reconnect an existing Code session in Claude Desktop at the intended project when none is available. Do not launch a replacement CLI session: CLI and Desktop have separate conversation histories. Legacy mode still supports CLI sessions.
 
-`claude_bridge_status` reports the destination policy, eligible session count, and excluded non-Desktop count. Send receipts include the destination's `entrypoint`, `cwd`, and `sessionId`. A correlated reply confirms receipt in that session; it does not independently prove that its conversation is visible in the Desktop UI. Restart the bridge's MCP connection after upgrading to load the enforcement code.
+`claude_bridge_status` reports the destination policy, eligible session count, and excluded non-Desktop count. Send receipts include the destination's `entrypoint`, `cwd`, and `sessionId`. A correlated reply confirms receipt in that session; it does not independently prove that its conversation is visible in the Desktop UI. Desktop sends require `expectedCwd`, an absolute independently verified project directory. The bridge resolves both paths and refuses a missing, nonexistent, parent, or different directory before sending; it rechecks the destination after queueing. Reconnect the bridge's MCP connection after upgrading to load the enforcement code.
 
-Waited sends to the same Claude session run in order. If an earlier send timed out or used `waitSec: 0` and its reply has not arrived, a new waited send returns `PEER_REPLY_PENDING` before delivering another message. Wait for the earlier reply and inspect `read_claude_inbox`, or use `waitSec: 0` if another asynchronous message is intended. Different destination sessions remain independent.
+Sends to the same Claude session run in order. An outstanding message blocks all further sends to that session, including `waitSec: 0`; changing wait time must not bypass a held or uncertain delivery. Use `read_claude_delivery` with the original message ID to observe `held`, `expired`, `refused`, or a late reply. A transport error after writing began also retains pending ownership. Different destination sessions remain independent. A process restart loses in-memory receipts: retain the original ID and inspect the existing recipient conversation before any resend; never treat an unknown ID as permission to retry.
+
+Both bridge status tools report the loaded source fingerprint and process identity. Source or Desktop-routing configuration changes make the running process stale and block new sends until reconnect, while Claude inbox/receipt reads remain available. This guard applies only after the version containing it has loaded; upgrading files cannot retrofit the guard into an older process already running.
+
+Claude's [inbound permission controls](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages) remain authoritative. A missing sender permission class can cause a bypassing recipient to hold the message. Do not change `CLAUDE_BRIDGE_PERMISSION_MODE` or recipient settings merely to bypass a hold/refusal. Configure a sender class only when it truthfully represents every session using that MCP entry. If the Desktop UI does not expose the pending approval, report that boundary and keep the original receipt rather than creating a CLI session.
 
 Claude Desktop disables the CLI-native `SendMessage` tool. For Desktop targets, the bridge requests an ordinary answer in the destination conversation and reads only a completed assistant turn descended from the injected message UUID. Unrelated human prompts and sidechains are excluded. Late answers remain available through the inbox while the bridge process is running. This does not change Desktop tool permissions or the receiver's inbound policy.
 
@@ -648,7 +649,7 @@ The Codex → Claude direction has its own live check:
 
 ```bash
 npm run check:claude                                    # list the Claude sessions Codex can see
-CLAUDE_TARGET=<sessionId> CLAUDE_WAIT=150 npm run check:claude   # deliver a message and wait for the answer
+CLAUDE_TARGET=<sessionId> CLAUDE_EXPECTED_CWD=/absolute/project CLAUDE_WAIT=150 npm run check:claude   # deliver a message and wait for the answer
 ```
 
 A reply coming back proves both directions work.

@@ -336,13 +336,15 @@ describe("peer endpoint", () => {
     write([prompt, tool, result, absorbed, reminder, thinking]);
     assert.equal(readTranscriptReply("busy", "unused", "request"), null);
     write([prompt, tool, result, absorbed, reminder, thinking, answer]);
-    assert.deepEqual(readTranscriptReply("busy", "unused", "request"), { text: "absorbed answer", msgId: "answer", source: "transcript", inReplyTo: "request" });
+    assert.deepEqual(readTranscriptReply("busy", "unused", "request"), { text: "absorbed answer", msgId: "answer", source: "transcript", inReplyTo: "request", absorbed: true });
     assert.equal(readTranscriptReply("busy", "unused", "other"), null);
-    write([prompt, tool, result, { ...absorbed, attachment: { type: "silent_turn_reminder", text: "not a message" } }, answer]);
-    assert.equal(readTranscriptReply("busy", "unused", "request"), null);
+    write([prompt, tool, result, { ...absorbed, attachment: { type: "silent_turn_reminder", source_uuid: "request", origin: { kind: "peer", msg_id: "request" } } }, { ...answer, parentUuid: "absorbed" }]);
+    assert.equal(readTranscriptReply("busy", "unused", "request"), null, "only a queued_command attachment records an injected message");
+    write([prompt, tool, result, { ...absorbed, attachment: { type: "queued_command", origin: { kind: "peer", msg_id: "request" } } }, { ...answer, parentUuid: "absorbed" }]);
+    assert.equal(readTranscriptReply("busy", "unused", "request")?.absorbed, true, "older Claude Code records only origin.msg_id");
     const idle = { uuid: "fresh", isMeta: true, origin: { kind: "peer", msg_id: "request" }, message: { role: "user", content: "ping" } };
     write([idle, { ...answer, parentUuid: "fresh" }]);
-    assert.equal(readTranscriptReply("busy", "unused", "request")?.text, "absorbed answer");
+    assert.deepEqual(readTranscriptReply("busy", "unused", "request"), { text: "absorbed answer", msgId: "answer", source: "transcript", inReplyTo: "request", absorbed: false });
   });
 
   after(() => endpoint.stop());

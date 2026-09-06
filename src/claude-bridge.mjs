@@ -12,6 +12,7 @@ import { desktopTasksConfigured } from "./native-relay.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
 import { readClaudeDesktopContext } from "./claude-desktop-context.mjs";
 import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
+import { assertRecipientClass, preflightFailure } from "./recipient-preflight.mjs";
 import { readCodexSenderContext } from "./codex-sender-context.mjs";
 import { ReplyForwarder } from "./reply-forwarder.mjs";
 
@@ -58,7 +59,7 @@ const replyForwarder = new ReplyForwarder({
       throw Object.assign(new Error("Bridge routing changed; the reply was not forwarded. Inspect the original receipt before reconnecting."), { code: "REPLY_ROUTING_CHANGED" });
     }
   },
-  deliver: (threadId, record) => delivery.deliver(threadId, `[message from Claude session ${record.fromSocket ?? "?"}]\n\n${record.text}`),
+  deliver: (threadId, record) => delivery.deliver(threadId, `[message from Claude session ${record.fromSocket ?? "?"}]\n${record.absorbed ? "[This reply is the closing text of a turn that absorbed the message while it was running; it may not address the message.]\n" : ""}\n${record.text}`),
 });
 
 function readReceipt(msgId) {
@@ -86,12 +87,6 @@ function formatSessionRow(s) {
   return `- ${s.name ?? "(unnamed)"}  [pid ${s.pid}]\n    session: ${s.sessionId ?? "?"}\n    cwd: ${s.cwd ?? "?"}\n    started: ${started}  kind: ${s.kind ?? "?"}  via: ${s.entrypoint ?? "?"}${task}`;
 }
 
-function preflightFailure(code, reason) {
-  const error = new Error(`${reason} No message was sent.`);
-  error.preflight = { status: "blocked", code, reason, sent: false };
-  return error;
-}
-
 function withDesktopContext(session) {
   return session.entrypoint === "claude-desktop"
     ? { ...session, desktop: readClaudeDesktopContext(session), inbound: readClaudeInboundPolicy(session.cwd) } : session;
@@ -104,25 +99,6 @@ function assertDesktopTask(session, expectedTaskId) {
   if (expectedTaskId !== session.desktop.taskId) {
     throw preflightFailure("CLAUDE_DESKTOP_TASK_MISMATCH", "Provide expectedTaskId from the intended task in list_claude_sessions, after checking its title and cwd. A generated peer name is not a Desktop task title.");
   }
-}
-
-/**
- * Claude's inbound gate holds any message whose attested sender class differs
- * from the recipient's, and Claude Desktop cannot show the approval dialog,
- * so a predictable mismatch is refused here with both classes named instead
- * of expiring silently in the app. The recipient's mode comes from Desktop
- * task metadata; an unknown mode leaves the decision to Claude.
- */
-function assertRecipientClass(session, sender) {
-  if (!sender) return;
-  const inbound = session.inbound ?? { value: null, source: null };
-  if (inbound.value === "refuse" || inbound.value === "hold") {
-    throw preflightFailure("CLAUDE_RECIPIENT_INBOUND_POLICY", `The recipient session's ${inbound.source} settings set crossSessionInbound to ${inbound.value}, so Claude would ${inbound.value === "refuse" ? "drop this message without delivering it" : "hold this message, and Claude Desktop declares no peer approval dialog, so it would expire unapproved"}. Report this to the user: only they can change that setting. Do not edit recipient settings.`);
-  }
-  if (inbound.value === "accept") return;
-  const recipient = session.desktop?.permissionClass ?? null;
-  if (!recipient || recipient === sender.mode) return;
-  throw preflightFailure("CLAUDE_RECIPIENT_CLASS_MISMATCH", `The Claude Desktop task "${session.desktop.title}" runs in ${session.desktop.permissionMode} (${recipient} class) while this sender attests ${sender.mode}. With no explicit crossSessionInbound setting, Claude holds a cross-session message whose sender class differs from the recipient's, and Claude Desktop declares no peer approval dialog, so the message would expire unapproved. Report this to the user: they can run that task in the ${sender.mode} class, change this Codex task's approval policy so its class matches, or set crossSessionInbound to accept in the recipient session's own settings. Do not change the attested sender class or recipient settings yourself.`);
 }
 
 function assertSender(meta) {
@@ -278,7 +254,7 @@ server.registerTool(
       const receipt = { status, msgId, target: session.name ?? String(session.pid), sessionId: session.sessionId, cwd: session.cwd, entrypoint: session.entrypoint, waitSec: wait,
         ...(desktop ? { taskId: session.desktop.taskId, title: session.desktop.title, approvalUi: "unverified", recipientPermissionMode: session.desktop.permissionMode ?? null, recipientPermissionClass: session.desktop.permissionClass ?? null, recipientInboundPolicy: session.inbound?.value ?? null } : {}),
         ...(sender ? { senderMode: sender.mode, senderApprovalPolicy: sender.approvalPolicy, senderThreadId: sender.threadId, senderTurnId: sender.turnId, senderReview: sender.review } : {}),
-        ...(reply ? { source: reply.source ?? "peer", forwarding: replyForwarder.read(msgId) ?? reply.forwardingError ?? null } : {}) };
+        ...(reply ? { source: reply.source ?? "peer", ...(reply.absorbed ? { replyAbsorbed: true } : {}), forwarding: replyForwarder.read(msgId) ?? reply.forwardingError ?? null } : {}) };
       const result = (text, isError = false) => ({ ...textResult(text, isError), structuredContent: { receipt } });
       const targetLabel = `${session.desktop?.title ?? session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"}, via ${session.entrypoint ?? "unknown"}, cwd ${session.cwd ?? "?"})`;
 
@@ -298,7 +274,8 @@ server.registerTool(
           true,
         );
       }
-      return result(`Reply received from ${targetLabel}.\nMessage id: ${msgId}\n\n--- Claude reply ---\n${reply.text}`);
+      const absorbedNote = reply.absorbed ? "\nThe recipient was mid-turn when this message arrived; the reply is the closing text of a turn that absorbed the message and may not address it." : "";
+      return result(`Reply received from ${targetLabel}.\nMessage id: ${msgId}${absorbedNote}\n\n--- Claude reply ---\n${reply.text}`);
     } catch (err) {
       return failure(err);
     }

@@ -294,9 +294,10 @@ export function readTranscript(sessionId, cwd, limit = 10) {
  */
 function injectedMessageRoot(entry, msgId) {
   const role = entry?.message?.role;
-  if (role === "user" && (entry.uuid === msgId || entry.origin?.msg_id === msgId)) return true;
+  if (role === "user" && (entry.uuid === msgId || entry.origin?.msg_id === msgId)) return "idle";
   const attachment = entry?.type === "attachment" ? entry.attachment : null;
-  return attachment?.type === "queued_command" && (attachment.source_uuid === msgId || attachment.origin?.msg_id === msgId);
+  if (attachment?.type === "queued_command" && (attachment.source_uuid === msgId || attachment.origin?.msg_id === msgId)) return "absorbed";
+  return null;
 }
 
 export function readTranscriptReply(sessionId, cwd, msgId) {
@@ -305,11 +306,13 @@ export function readTranscriptReply(sessionId, cwd, msgId) {
   try { lines = fs.readFileSync(file, "utf8").split("\n"); }
   catch { return null; }
   const descendants = new Set();
+  let absorbed = false;
   for (const line of lines) {
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
     if (entry.isSidechain) continue;
-    if (injectedMessageRoot(entry, msgId)) { if (typeof entry.uuid === "string") descendants.add(entry.uuid); continue; }
+    const root = injectedMessageRoot(entry, msgId);
+    if (root) { absorbed = root === "absorbed"; if (typeof entry.uuid === "string") descendants.add(entry.uuid); continue; }
     if (!descendants.has(entry.parentUuid)) continue;
     const role = entry.message?.role;
     const content = entry.message?.content;
@@ -317,7 +320,7 @@ export function readTranscriptReply(sessionId, cwd, msgId) {
     if (typeof entry.uuid === "string") descendants.add(entry.uuid);
     if (role !== "assistant" || !["end_turn", "stop_sequence"].includes(entry.message.stop_reason)) continue;
     const text = Array.isArray(content) ? content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") : String(content ?? "");
-    if (text.trim()) return { text: text.trim(), msgId: entry.uuid, source: "transcript", inReplyTo: msgId };
+    if (text.trim()) return { text: text.trim(), msgId: entry.uuid, source: "transcript", inReplyTo: msgId, absorbed };
   }
   return null;
 }
@@ -735,7 +738,7 @@ export class PeerEndpoint {
       ...(sent.recipient ? { recipientPermissionMode: sent.recipient.permissionMode ?? null, recipientPermissionClass: sent.recipient.permissionClass ?? null, recipientInboundPolicy: sent.recipient.inboundPolicy ?? null } : {}),
       replyThreadId: sent.replyThreadId ?? null,
       pending: this.pendingMessages.has(msgId),
-      ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer", ...(sent.reply.forwardingError ? { forwardingError: { ...sent.reply.forwardingError } } : {}) } : {}),
+      ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer", ...(sent.reply.absorbed ? { replyAbsorbed: true } : {}), ...(sent.reply.forwardingError ? { forwardingError: { ...sent.reply.forwardingError } } : {}) } : {}),
     };
   }
 

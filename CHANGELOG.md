@@ -8,7 +8,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Fixed
 
-- Correlate a Desktop reply to a message that arrived while the recipient was mid-turn. Claude Code absorbs such a message into the running turn and records it as a `queued_command` attachment whose `source_uuid` is the message id, under a fresh uuid; only the idle shape (a user entry whose uuid is the message id) was recognised, so the reply appeared in the app while the bridge reported `reply_timeout` and kept the message pending. Both shapes now resolve to the turn's closing text.
+- Correlate a Desktop reply to a message that arrived while the recipient was mid-turn. Claude Code absorbs such a message into the running turn and records it as a `queued_command` attachment whose `source_uuid` is the message id, under a fresh uuid; only the idle shape (a user entry whose uuid is the message id) was recognised, so the reply appeared in the app while the bridge reported `reply_timeout` and kept the message pending. Both shapes now resolve to the turn's closing text. A reply taken from an absorbed turn is marked `replyAbsorbed: true` in receipts, the tool result says so, and the text forwarded to Codex carries the same note, because that closing text may not address the message.
 - Detect a Claude Desktop task record rewritten during inspection by comparing its bytes, not only its stat fields. A same-size rewrite inside one filesystem timestamp tick (about 16 ms on Windows) left size, times and inode unchanged, so the replace-detection test failed intermittently on Windows CI and the guard could miss such a replacement.
 
 ### Added

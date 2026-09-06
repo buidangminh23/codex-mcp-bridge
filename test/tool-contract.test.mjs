@@ -231,6 +231,11 @@ describe("Claude message receipts", () => {
         assert.equal(result.structuredContent.receipt.status, expected);
         assert.equal(Boolean(result.isError), scenario === "timeout" || Boolean(controlStatus));
         if (controlStatus) assert.match(result.content[0].text, /Claude Desktop declares no peer approval dialog/);
+        if (controlStatus && desktop) assert.match(result.content[0].text, new RegExp(`Recipient task mode: ${recipientMode ?? "unknown"}${recipientClass ? ` \\(${recipientClass} class\\)` : ""}; this sender attested ${senderMode}\\.`));
+        if (desktop && !controlStatus) {
+          assert.equal(result.structuredContent.receipt.replyAbsorbed, busy ? true : undefined);
+          if (busy) assert.match(result.content[0].text, /closing text of a turn that absorbed the message/);
+        }
         assert.equal(count, 1);
         if (desktop) {
           if (!controlStatus) assert.equal(result.structuredContent.receipt.source, "transcript");

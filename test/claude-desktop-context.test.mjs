@@ -207,6 +207,30 @@ describe("Claude Desktop task identity", () => {
     assert.equal(resolve().status, "mismatch");
   });
 
+  /**
+   * A same-size rewrite inside one filesystem timestamp tick leaves every stat
+   * field unchanged, which is what made this detection flaky on Windows CI.
+   * Freezing lstat to its first answer reproduces that deterministically, so
+   * only the byte comparison can still notice the replacement.
+   */
+  it("rejects a same-size rewrite that leaves every stat field unchanged", () => {
+    writeTask();
+    const originalReaddir = fs.readdirSync;
+    const originalLstat = fs.lstatSync;
+    const frozen = new Map();
+    let rootReads = 0;
+    mock.method(fs, "lstatSync", (target, ...rest) => {
+      const stat = originalLstat(target, ...rest);
+      if (!frozen.has(target)) frozen.set(target, stat);
+      return frozen.get(target);
+    });
+    mock.method(fs, "readdirSync", (...args) => {
+      if (args[0] === root && ++rootReads === 2) writeTask({ cliSessionId: OTHER_SESSION });
+      return originalReaddir(...args);
+    });
+    assert.equal(resolve().status, "mismatch");
+  });
+
   it("rejects a duplicate task created while the metadata snapshot is being inspected", () => {
     writeTask();
     const original = fs.readdirSync;

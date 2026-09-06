@@ -16,7 +16,7 @@ import { ReplyForwarder } from "./reply-forwarder.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.13.5";
+const VERSION = "1.13.6";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 
@@ -138,6 +138,7 @@ const server = new McpServer(
       "In Desktop-only mode, both destinations must belong to their Desktop apps. " +
       "Read the Desktop task title and task ID as well as the exact project directory and sessionId before sending. " +
       "The host's current MCP turn metadata identifies the sender; unknown or stale permission context blocks sending. " +
+      "The sender class follows the verified approval policy; automated review flags are reported but never change it. " +
       "Never launch a CLI session or an external app-server as a substitute. A receipt confirms a reply, not visual verification in the app. " +
       "A held receipt does not prove that Desktop exposes an approval button; verify the UI before asking the user to approve.",
   },
@@ -256,7 +257,7 @@ server.registerTool(
       const targetLabel = `${session.desktop?.title ?? session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"}, via ${session.entrypoint ?? "unknown"}, cwd ${session.cwd ?? "?"})`;
 
       if (!reply && delivery && delivery.status !== "delivered") {
-        return result(`Claude inbox reported ${delivery.status} for ${targetLabel}.\n${delivery.reason}\nMessage id: ${msgId}\nInspect read_claude_delivery with this message ID. Do not resend, change the sender permission class, or alter recipient permissions to bypass this receipt. The approval UI has not been verified; do not tell the user an approval button exists without inspecting this exact Desktop task.`, true);
+        return result(`Claude inbox reported ${delivery.status} for ${targetLabel}.\n${delivery.reason}\nMessage id: ${msgId}\nInspect read_claude_delivery with this message ID. Do not resend, change the sender permission class, or alter recipient permissions to bypass this receipt. The approval UI has not been verified; Claude Desktop declares no peer approval dialog, so do not tell the user an approval button exists without inspecting this exact Desktop task.`, true);
       }
 
       if (wait === 0) {
@@ -418,6 +419,7 @@ server.registerTool(
         `peer socket:   ${peer.socketPath}`,
         `sender mode:   ${sender?.mode ?? (desktopOnly ? "unverified - Desktop sends blocked" : peer.permissionMode ?? "unknown")}`,
         ...(sender ? [`sender context: ${sender.status} (${sender.source ?? "unavailable"})`, `sender task: ${sender.threadId ?? "unknown"}`, `sender turn: ${sender.turnId ?? "unknown"}`, ...(sender.reason ? [`sender detail: ${sender.reason}`] : [])] : []),
+        ...(sender?.approvalPolicy ? [`sender approval policy: ${sender.approvalPolicy}`] : []),
         ...(sender?.review ? [`sender auto review: ${sender.review.autoReview}`, `sender Node REPL review: ${sender.review.nodeReplReview}`] : []),
         `session policy: ${desktopOnly ? "desktop-only" : "all Claude Code entrypoints"}`,
         `live sessions: ${eligible.length}`,

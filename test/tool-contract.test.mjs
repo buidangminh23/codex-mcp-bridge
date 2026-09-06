@@ -47,12 +47,14 @@ const NATIVE_RELAY_TOOLS = ["native_relay_status"];
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-tools-"));
 
 describe("Claude message receipts", () => {
-  for (const scenario of ["nowait", "timeout", "peer", "desktop", "desktop-reviewed", "desktop-reviewed-held", "desktop-reviewed-refused", "held", "refused", "diagnostic"]) {
+  for (const scenario of ["nowait", "timeout", "peer", "desktop", "desktop-prompting", "desktop-reviewed", "desktop-reviewed-held", "desktop-reviewed-refused", "held", "refused", "diagnostic"]) {
     it(`reports ${scenario} from the actual MCP transport`, async () => {
       const desktop = scenario.startsWith("desktop");
       const reviewed = scenario.startsWith("desktop-reviewed");
+      const prompting = scenario === "desktop-prompting";
       const controlStatus = scenario.endsWith("held") ? "held" : scenario.endsWith("refused") ? "refused" : null;
-      const senderMode = reviewed ? "prompting" : "bypass";
+      const senderMode = prompting ? "prompting" : "bypass";
+      const approvalPolicy = prompting ? "on-request" : "never";
       const home = fs.mkdtempSync(path.join(sandboxHome, "receipt-"));
       const registryDir = path.join(home, ".claude", "sessions");
       fs.mkdirSync(registryDir, { recursive: true });
@@ -80,7 +82,7 @@ describe("Claude message receipts", () => {
         fs.writeFileSync(path.join(rollouts, `rollout-fixture-${callerId}.jsonl`), [
           { type: "session_meta", payload: { id: callerId, originator: "Codex Desktop", source: "vscode", cwd: home } },
           { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
-          { type: "turn_context", payload: { turn_id: turnId, cwd: home, approval_policy: "never", approvals_reviewer: "user", permission_profile: { type: "disabled" }, sandbox_policy: { type: "danger-full-access" } } },
+          { type: "turn_context", payload: { turn_id: turnId, cwd: home, approval_policy: approvalPolicy, approvals_reviewer: "user", permission_profile: { type: "disabled" }, sandbox_policy: { type: "danger-full-access" } } },
         ].map(JSON.stringify).join("\n") + "\n");
       }
       let count = 0;
@@ -169,7 +171,10 @@ describe("Claude message receipts", () => {
           }
           const status = await client.callTool({ name: "claude_bridge_status", arguments: {}, _meta: meta });
           assert.equal(status.structuredContent.sender.mode, senderMode);
+          assert.equal(status.structuredContent.sender.approvalPolicy, approvalPolicy);
           assert.equal(status.structuredContent.sender.review.nodeReplReview, reviewed ? "enabled" : "disabled");
+          assert.match(status.content[0].text, new RegExp(`sender mode:\\s+${senderMode}`));
+          assert.match(status.content[0].text, new RegExp(`sender approval policy: ${approvalPolicy}`));
           for (const invalid of [undefined, "false"]) {
             const invalidMeta = { "x-codex-turn-metadata": { ...meta["x-codex-turn-metadata"], auto_review_enabled: invalid } };
             const refused = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Invalid review evidence", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: 0 }, _meta: invalidMeta });

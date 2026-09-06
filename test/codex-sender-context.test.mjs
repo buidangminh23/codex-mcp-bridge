@@ -79,7 +79,16 @@ it("requires a known approval reviewer even when automatic review is enabled", (
   assert.equal(f.read().status, "unavailable");
 });
 
-it("maps known reviewed callers to prompting and never grants them bypass", () => {
+/**
+ * Claude's inbound parity gate asks one question: does a human still prompt
+ * the sender? Codex answers that with approval_policy. Its two review flags
+ * describe automated review - node_repl_auto_review_required is a model
+ * catalog requirement ("To use model X, you need to use auto review") and
+ * auto_review_enabled a Guardian reviewer - so neither adds or removes a
+ * human prompt. Downgrading them to prompting held every gpt-6-astra send
+ * behind an approval dialog that Claude Desktop cannot render.
+ */
+it("classifies the sender by its human approval policy; automated review flags never change the class", () => {
   for (const policy of ["never", "on-request", "on-failure", "untrusted"]) {
     for (const autoReview of [false, true]) {
       for (const nodeReplReview of [false, true]) {
@@ -90,12 +99,25 @@ it("maps known reviewed callers to prompting and never grants them bypass", () =
         f.write();
         const result = f.read();
         assert.equal(result.status, "verified");
-        assert.equal(result.mode, policy === "never" && !autoReview && !nodeReplReview ? "bypass" : "prompting");
+        assert.equal(result.mode, policy === "never" ? "bypass" : "prompting", `${policy} autoReview=${autoReview} nodeReplReview=${nodeReplReview}`);
         assert.deepEqual(result.review, { autoReview: autoReview ? "enabled" : "disabled", nodeReplReview: nodeReplReview ? "enabled" : "disabled" });
         assert.equal(result.approvalPolicy, policy);
       }
     }
   }
+});
+
+it("keeps the exact live shape that was held on 2026-09-06 in the bypass class", () => {
+  const f = fixture();
+  f.metadata.auto_review_enabled = false;
+  f.metadata.node_repl_auto_review_required = true;
+  f.context.model = "gpt-6-astra";
+  f.context.active_permission_profile = { id: ":danger-full-access" };
+  f.write();
+  const result = f.read();
+  assert.equal(result.status, "verified");
+  assert.equal(result.mode, "bypass");
+  assert.deepEqual(result.review, { autoReview: "disabled", nodeReplReview: "enabled" });
 });
 
 it("reports review evidence without conflating enabled, missing, and invalid flags", () => {

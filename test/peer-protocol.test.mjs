@@ -347,6 +347,46 @@ describe("peer endpoint", () => {
     assert.deepEqual(readTranscriptReply("busy", "unused", "request"), { text: "absorbed answer", msgId: "answer", source: "transcript", inReplyTo: "request", absorbed: false });
   });
 
+  it("rejects ambiguous roots and responses that cross another command", () => {
+    const dir = path.join(projectsDir, "correlation-boundaries");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "boundaries.jsonl");
+    const root = { uuid: "root", type: "attachment", attachment: { type: "queued_command", source_uuid: "request", origin: { kind: "peer", msg_id: "request" } } };
+    const answer = { uuid: "answer", parentUuid: "root", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "answer" }] } };
+    const cases = [
+      ["conflicting attachment IDs", [{ ...root, attachment: { ...root.attachment, source_uuid: "other" } }, answer]],
+      ["conflicting origin ID", [{ ...root, attachment: { ...root.attachment, origin: { kind: "peer", msg_id: "other" } } }, answer]],
+      ["non-peer attachment origin", [{ ...root, attachment: { ...root.attachment, origin: { kind: "user", msg_id: "request" } } }, answer]],
+      ["missing attachment origin", [{ ...root, attachment: { type: "queued_command", source_uuid: "request" } }, answer]],
+      ["non-peer idle origin", [{ uuid: "root", origin: { kind: "user", msg_id: "request" }, message: { role: "user", content: "prompt" } }, answer]],
+      ["contradictory idle origin", [{ uuid: "request", origin: { kind: "peer", msg_id: "other" }, message: { role: "user", content: "prompt" } }, { ...answer, parentUuid: "request" }]],
+      ["empty root UUID", [{ ...root, uuid: "" }, { ...answer, parentUuid: "" }]],
+      ["multiple matching roots", [root, answer, { ...root, uuid: "second-root" }]],
+      ["later queued peer command", [root, { ...root, uuid: "next", parentUuid: "root", attachment: { type: "queued_command", origin: { kind: "peer", msg_id: "other" } } }, { ...answer, parentUuid: "next" }]],
+      ["later queued human command", [root, { uuid: "next", parentUuid: "root", type: "attachment", attachment: { type: "queued_command", prompt: "new question" } }, { ...answer, parentUuid: "next" }]],
+      ["empty user input", [root, { uuid: "next", parentUuid: "root", message: { role: "user", content: [] } }, { ...answer, parentUuid: "next" }]],
+    ];
+    for (const [name, rows] of cases) {
+      fs.writeFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+      assert.equal(readTranscriptReply("boundaries", "unused", "request"), null, name);
+    }
+    fs.writeFileSync(file, [root, { uuid: "other", parentUuid: "root", type: "attachment", attachment: { type: "queued_command", prompt: "new question" } }, answer].map((row) => JSON.stringify(row)).join("\n") + "\n");
+    assert.equal(readTranscriptReply("boundaries", "unused", "request")?.text, "answer", "a separate command branch must not cut the original branch");
+  });
+
+  it("handles malformed transcript records and content without crashing", () => {
+    const dir = path.join(projectsDir, "malformed-replies");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "malformed.jsonl");
+    const root = { uuid: "request", message: { role: "user", content: "prompt" } };
+    const answer = { uuid: "answer", parentUuid: "request", message: { role: "assistant", stop_reason: "end_turn", content: [null, 1, { type: "text", text: {} }, { type: "text", text: "valid answer" }] } };
+    const write = (rows) => fs.writeFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n{incomplete");
+    write([null, [], 3, "text", root, answer]);
+    assert.equal(readTranscriptReply("malformed", "unused", "request")?.text, "valid answer");
+    write([root, { uuid: "result", parentUuid: "request", message: { role: "user", content: [null] } }, { ...answer, parentUuid: "result" }]);
+    assert.equal(readTranscriptReply("malformed", "unused", "request"), null);
+  });
+
   after(() => endpoint.stop());
 
   const authLine = () => JSON.stringify({ type: "auth", token: endpoint.peerToken }) + "\n";

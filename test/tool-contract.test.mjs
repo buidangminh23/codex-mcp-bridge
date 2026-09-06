@@ -47,20 +47,24 @@ const NATIVE_RELAY_TOOLS = ["native_relay_status"];
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-tools-"));
 
 describe("Claude message receipts", () => {
-  for (const scenario of ["nowait", "timeout", "peer", "desktop", "held", "refused", "diagnostic"]) {
+  for (const scenario of ["nowait", "timeout", "peer", "desktop", "desktop-reviewed", "desktop-reviewed-held", "desktop-reviewed-refused", "held", "refused", "diagnostic"]) {
     it(`reports ${scenario} from the actual MCP transport`, async () => {
+      const desktop = scenario.startsWith("desktop");
+      const reviewed = scenario.startsWith("desktop-reviewed");
+      const controlStatus = scenario.endsWith("held") ? "held" : scenario.endsWith("refused") ? "refused" : null;
+      const senderMode = reviewed ? "prompting" : "bypass";
       const home = fs.mkdtempSync(path.join(sandboxHome, "receipt-"));
       const registryDir = path.join(home, ".claude", "sessions");
       fs.mkdirSync(registryDir, { recursive: true });
       const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\cc-msg-${crypto.randomBytes(16).toString("hex")}` : path.join(home, "mock.sock");
       const token = crypto.randomBytes(16).toString("hex");
-      fs.writeFileSync(path.join(registryDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, name: "receipt-target", sessionId: "receipt-session", cwd: home, messagingSocketPath: socketPath, entrypoint: scenario === "desktop" ? "claude-desktop" : "cli" }));
+      fs.writeFileSync(path.join(registryDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, name: "receipt-target", sessionId: "receipt-session", cwd: home, messagingSocketPath: socketPath, entrypoint: desktop ? "claude-desktop" : "cli" }));
       fs.writeFileSync(path.join(registryDir, path.basename(peerKeyPath(process.pid, socketPath))), JSON.stringify({ peerToken: token }));
       const desktopTaskId = "local_11111111-1111-4111-8111-111111111111";
       const callerId = "22222222-2222-4222-8222-222222222222";
       const turnId = "33333333-3333-4333-8333-333333333333";
-      const meta = { "x-codex-turn-metadata": { thread_id: callerId, turn_id: turnId, thread_source: "user", auto_review_enabled: false, node_repl_auto_review_required: false } };
-      if (scenario === "desktop") {
+      const meta = { "x-codex-turn-metadata": { thread_id: callerId, turn_id: turnId, thread_source: "user", auto_review_enabled: false, node_repl_auto_review_required: reviewed } };
+      if (desktop) {
         const registryFile = path.join(registryDir, `${process.pid}.json`);
         const identity = process.platform === "win32"
           ? { procStartFt: execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]).toString().trim() }
@@ -98,21 +102,21 @@ describe("Claude message receipts", () => {
               if (raw.type === "auth") { assert.equal(raw.token, token); authenticated = true; continue; }
               assert.equal(authenticated, true);
               if (scenario === "diagnostic") assert.match(raw.message.content, /from-mode="prompting"/);
-              if (scenario === "desktop") assert.match(raw.message.content, /from-mode="bypass"/);
+              if (desktop) assert.match(raw.message.content, new RegExp(`from-mode="${senderMode}"`));
               count += 1;
               received();
               const request = parseFrame(line);
-              if (scenario === "desktop") {
+              if (desktop && !controlStatus) {
                 const dir = path.join(home, ".claude", "projects", "fixture");
                 fs.mkdirSync(dir, { recursive: true });
                 fs.writeFileSync(path.join(dir, "receipt-session.jsonl"), [
                   { uuid: raw.uuid, isMeta: true, message: raw.message },
                   { uuid: "desktop-answer", parentUuid: raw.uuid, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "desktop verified" }] } },
                 ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-              } else if (["peer", "held", "refused", "diagnostic"].includes(scenario)) {
+              } else if (["peer", "diagnostic"].includes(scenario) || controlStatus) {
                 const owner = fs.readdirSync(registryDir).filter((file) => file.endsWith(".json")).map((file) => JSON.parse(fs.readFileSync(path.join(registryDir, file), "utf8"))).find((entry) => entry.messagingSocketPath === request.fromSocket);
                 const key = JSON.parse(fs.readFileSync(path.join(registryDir, path.basename(peerKeyPath(owner.pid, request.fromSocket))), "utf8"));
-                const frame = ["peer", "diagnostic"].includes(scenario) ? buildFrame({ text: "peer verified", fromSocket: socketPath }) : { type: "control", action: "peer_message_status", orig_msg_id: request.msgId, from: buildFrame({ text: "", fromSocket: socketPath }).from, status: scenario, reason: "Receiver policy" };
+                const frame = ["peer", "diagnostic"].includes(scenario) ? buildFrame({ text: "peer verified", fromSocket: socketPath }) : { type: "control", action: "peer_message_status", orig_msg_id: request.msgId, from: buildFrame({ text: "", fromSocket: socketPath }).from, status: controlStatus, reason: "Receiver policy" };
                 const reply = net.connect(request.fromSocket, () => reply.end(JSON.stringify({ type: "auth", token: key.peerToken }) + "\n" + JSON.stringify(frame) + "\n"));
                 reply.on("error", (error) => { handlerError = error; });
               }
@@ -134,11 +138,11 @@ describe("Claude message receipts", () => {
         } finally { await new Promise((resolve) => receiver.close(resolve)); }
         return;
       }
-      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"), CODEX_BRIDGE_AUTOSTART: "0", CLAUDE_BRIDGE_PERMISSION_MODE: "bypass", CODEX_BRIDGE_DESKTOP_TASKS: scenario === "desktop" ? "1" : "0" }, stderr: "ignore" });
+      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"), CODEX_BRIDGE_AUTOSTART: "0", CLAUDE_BRIDGE_PERMISSION_MODE: "bypass", CODEX_BRIDGE_DESKTOP_TASKS: desktop ? "1" : "0" }, stderr: "ignore" });
       const client = new Client({ name: "receipt-test", version: "1" });
       try {
         await client.connect(transport);
-        if (scenario === "desktop") {
+        if (desktop) {
           const listing = await client.callTool({ name: "list_claude_sessions", arguments: { expectedCwd: home } });
           assert.equal(listing.structuredContent.sessions[0].desktop.title, "Receipt test");
           assert.equal(listing.structuredContent.sessions[0].desktop.taskId, desktopTaskId);
@@ -164,10 +168,17 @@ describe("Claude message receipts", () => {
             assert.equal(count, 0);
           }
           const status = await client.callTool({ name: "claude_bridge_status", arguments: {}, _meta: meta });
-          assert.equal(status.structuredContent.sender.mode, "bypass");
+          assert.equal(status.structuredContent.sender.mode, senderMode);
+          assert.equal(status.structuredContent.sender.review.nodeReplReview, reviewed ? "enabled" : "disabled");
+          for (const invalid of [undefined, "false"]) {
+            const invalidMeta = { "x-codex-turn-metadata": { ...meta["x-codex-turn-metadata"], auto_review_enabled: invalid } };
+            const refused = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Invalid review evidence", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: 0 }, _meta: invalidMeta });
+            assert.equal(refused.structuredContent.preflight.sent, false);
+            assert.equal(count, 0);
+          }
           assert.equal(status.structuredContent.sender.threadId, callerId);
         }
-        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: scenario === "nowait" ? 0 : 2 }, ...(scenario === "desktop" ? { _meta: meta } : {}) });
+        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: scenario === "nowait" ? 0 : 2 }, ...(desktop ? { _meta: meta } : {}) });
         let receiptTimer;
         try {
           await Promise.race([receipt, new Promise((_, reject) => {
@@ -175,28 +186,44 @@ describe("Claude message receipts", () => {
           })]);
         } finally { clearTimeout(receiptTimer); }
         if (handlerError) throw handlerError;
-        const expected = { nowait: "sent_unconfirmed", timeout: "reply_timeout", peer: "reply_received", desktop: "reply_received", held: "held", refused: "refused" }[scenario];
+        const expected = controlStatus ?? (desktop ? "reply_received" : { nowait: "sent_unconfirmed", timeout: "reply_timeout", peer: "reply_received", desktop: "reply_received", held: "held", refused: "refused" }[scenario]);
         assert.equal(result.structuredContent.receipt.status, expected);
-        assert.equal(Boolean(result.isError), ["timeout", "held", "refused"].includes(scenario));
+        assert.equal(Boolean(result.isError), scenario === "timeout" || Boolean(controlStatus));
         assert.equal(count, 1);
-        if (scenario === "desktop") {
-          assert.equal(result.structuredContent.receipt.source, "transcript");
+        if (desktop) {
+          if (!controlStatus) assert.equal(result.structuredContent.receipt.source, "transcript");
           assert.equal(result.structuredContent.receipt.entrypoint, "claude-desktop");
           assert.equal(result.structuredContent.receipt.cwd, home);
           assert.equal(result.structuredContent.receipt.title, "Receipt test");
-          assert.equal(result.structuredContent.receipt.senderMode, "bypass");
+          assert.equal(result.structuredContent.receipt.senderMode, senderMode);
           assert.equal(result.structuredContent.receipt.senderThreadId, callerId);
           assert.equal(result.structuredContent.receipt.senderTurnId, turnId);
+          const senderReview = { autoReview: "disabled", nodeReplReview: reviewed ? "enabled" : "disabled" };
+          assert.deepEqual(result.structuredContent.receipt.senderReview, senderReview);
+          let inspected = await client.callTool({ name: "read_claude_delivery", arguments: { msgId: result.structuredContent.receipt.msgId } });
+          assert.deepEqual(inspected.structuredContent.receipt.senderReview, senderReview);
+          if (controlStatus) assert.equal(inspected.structuredContent.receipt.forwarding, null);
+          else {
+            const deadline = Date.now() + 2000;
+            while (["queued", "sending"].includes(inspected.structuredContent.receipt.forwarding?.status) && Date.now() < deadline) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+              inspected = await client.callTool({ name: "read_claude_delivery", arguments: { msgId: result.structuredContent.receipt.msgId } });
+            }
+            assert.equal(inspected.structuredContent.receipt.status, "reply_received");
+            assert.equal(inspected.structuredContent.receipt.forwarding.status, "failed");
+            assert.equal(inspected.structuredContent.receipt.forwarding.reasonCode, "RELAY_UNREACHABLE");
+            assert.equal(inspected.structuredContent.receipt.forwarding.threadId, callerId);
+          }
         }
-        if (["nowait", "timeout", "held"].includes(scenario)) {
+        if (["nowait", "timeout"].includes(scenario) || controlStatus === "held") {
           for (const waitSec of [1, 0]) {
-            const retry = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Never send this", waitSec } });
+            const retry = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Never send this", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec }, ...(desktop ? { _meta: meta } : {}) });
             assert.equal(retry.isError, true);
             assert.match(retry.content[0].text, /earlier message/);
             assert.equal(count, 1);
           }
           const inspected = await client.callTool({ name: "read_claude_delivery", arguments: { msgId: result.structuredContent.receipt.msgId } });
-          assert.equal(inspected.structuredContent.receipt.status, scenario === "held" ? "held" : "sent_unconfirmed");
+          assert.equal(inspected.structuredContent.receipt.status, controlStatus === "held" ? "held" : "sent_unconfirmed");
           assert.equal(inspected.structuredContent.receipt.pending, true);
           assert.equal(count, 1);
         }

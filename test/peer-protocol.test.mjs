@@ -424,6 +424,34 @@ describe("peer endpoint", () => {
     assert.ok(endpoint.drainInbox(100).some((entry) => entry.inReplyTo === request));
   });
 
+  it("does not consume a Desktop request when its peer sends an unrelated notification", async (t) => {
+    await endpoint.start();
+    const dir = path.join(projectsDir, "correlated-desktop");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "correlated-session.jsonl");
+    let request;
+    t.mock.method(endpoint, "send", async (target, text, options) => {
+      request = options.msgId;
+      fs.writeFileSync(file, JSON.stringify({ uuid: request, isMeta: true, message: { role: "user", content: text } }) + "\n");
+      await receiveMessage(target, "Unrelated peer notification");
+      return request;
+    });
+    const response = await endpoint.sendAndWait("correlated-desktop", "hello", {
+      timeoutMs: 20,
+      transcriptSession: { sessionId: "correlated-session", cwd: "unused" },
+      replyThreadId: "original-desktop-task",
+    });
+    assert.equal(response.reply, null);
+    assert.equal(endpoint.readDelivery(request).pending, true);
+    assert.equal(endpoint.readDelivery(request).status, "sent_unconfirmed");
+    const waiting = endpoint.waitForReply("correlated-desktop", { msgId: request, timeoutMs: 1500 });
+    fs.appendFileSync(file, JSON.stringify({ uuid: "correlated-answer", parentUuid: request, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "Actual Desktop answer" }] } }) + "\n");
+    const answer = await waiting;
+    assert.equal(answer?.text, "Actual Desktop answer");
+    assert.equal(answer?.replyThreadId, "original-desktop-task");
+    assert.equal(endpoint.readDelivery(request).pending, false);
+  });
+
   it("preserves multibyte text split between socket chunks", async () => {
     const text = "Chao sếp 🚀";
     const fromSocket = "fragmented-peer";
@@ -484,6 +512,16 @@ describe("peer endpoint", () => {
     endpoint.rename("codex-01a0beef");
     const registry = JSON.parse(fs.readFileSync(endpoint.registryPath, "utf8"));
     assert.equal(registry.name, "codex-01a0beef");
+  });
+
+  it("drains inbox pages in arrival order without deleting unread messages", () => {
+    const isolated = new PeerEndpoint({ name: "inbox-pagination" });
+    const messages = Array.from({ length: 5 }, (_, index) => ({ msgId: `message-${index}`, text: `Reply ${index}` }));
+    isolated.inbox.push(...messages);
+    assert.deepEqual(isolated.drainInbox(2), messages.slice(0, 2));
+    assert.deepEqual(isolated.drainInbox(2), messages.slice(2, 4));
+    assert.deepEqual(isolated.drainInbox(2), messages.slice(4));
+    assert.deepEqual(isolated.drainInbox(2), []);
   });
 
   it("serializes requests to one peer without reusing same-millisecond replies", async (t) => {

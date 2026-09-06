@@ -318,7 +318,7 @@ export function createThreadDelivery({
         return { backend: NATIVE_BACKEND, threadId, ack };
       } catch (err) {
         if (err.reachedCompanion || err.code !== "RELAY_UNREACHABLE") throw err;
-        if (desktopOnly) throw new Error(`Codex Desktop relay is unavailable: ${err.message}. Desktop-only mode will not start or use an external app-server.`);
+        if (desktopOnly) throw Object.assign(new Error(`Codex Desktop relay is unavailable: ${err.message}. Desktop-only mode will not start or use an external app-server.`), { code: "RELAY_UNREACHABLE", sent: false });
         log(`native relay unreachable (${err.message}); falling back to the app-server path`);
       }
     } else if (status.reason !== reportedUnavailable) {
@@ -326,7 +326,7 @@ export function createThreadDelivery({
       log(`native relay not in use: ${status.reason}`);
     }
 
-    if (desktopOnly) throw new Error(`Codex Desktop relay is unavailable: ${status.reason ?? "no native acknowledgement"}. Desktop-only mode will not start or use an external app-server.`);
+    if (desktopOnly) throw Object.assign(new Error(`Codex Desktop relay is unavailable: ${status.reason ?? "no native acknowledgement"}. Desktop-only mode will not start or use an external app-server.`), { code: "RELAY_UNREACHABLE", sent: false });
     if (!codex) throw new Error("No Codex app-server client is configured to deliver this message");
     const send = async () => {
       await codex.ensureThreadAttached(threadId);

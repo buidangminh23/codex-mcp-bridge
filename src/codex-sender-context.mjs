@@ -22,6 +22,13 @@ function unavailable(reason, identity = {}) {
   return { status: "unavailable", threadId: null, turnId: null, mode: null, cwd: null, source: null, ...identity, reason };
 }
 
+function reviewFlag(metadata, field) {
+  if (!Object.hasOwn(metadata, field) || metadata[field] === undefined) return "missing";
+  if (metadata[field] === true) return "enabled";
+  if (metadata[field] === false) return "disabled";
+  return "invalid";
+}
+
 function findRollout(sessions, threadId) {
   if (!fs.lstatSync(sessions).isDirectory()) throw new Error("The Codex sessions path is not a regular directory");
   const queue = [{ directory: sessions, depth: 0 }];
@@ -90,19 +97,21 @@ function readState(file, maxBytes) {
 }
 
 function permissionClass(context, metadata) {
-  if (metadata.auto_review_enabled !== false || metadata.node_repl_auto_review_required !== false) throw new Error("The caller's automatic approval review state is enabled or unverified");
+  for (const field of ["auto_review_enabled", "node_repl_auto_review_required"]) {
+    if (!Object.hasOwn(metadata, field) || typeof metadata[field] !== "boolean") throw new Error(`The caller's ${field} review evidence is ${reviewFlag(metadata, field)}; the host must supply an explicit boolean`);
+  }
   if (context.approvals_reviewer !== "user") throw new Error("The caller's effective approval reviewer is unverified");
   if (!exactObject(context.permission_profile, ["type"]) || context.permission_profile.type !== "disabled") throw new Error("The caller's permission profile is restricted or unsupported; no permission class was inferred");
   if (!exactObject(context.sandbox_policy, ["type"]) || context.sandbox_policy.type !== "danger-full-access") throw new Error("The caller's effective sandbox policy does not match its disabled permission profile");
-  if (context.approval_policy === "never") return "bypass";
-  if (["on-request", "on-failure", "untrusted"].includes(context.approval_policy)) return "prompting";
-  throw new Error("The caller's effective approval policy is unsupported");
+  if (!["never", "on-request", "on-failure", "untrusted"].includes(context.approval_policy)) throw new Error("The caller's effective approval policy is unsupported");
+  return context.approval_policy === "never" && !metadata.auto_review_enabled && !metadata.node_repl_auto_review_required ? "bypass" : "prompting";
 }
 
 export function readCodexSenderContext(meta, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
   const metadata = object(meta) ? meta[METADATA_KEY] : undefined;
   if (!object(metadata) || typeof metadata.thread_id !== "string" || typeof metadata.turn_id !== "string" || !UUID.test(metadata.thread_id) || !UUID.test(metadata.turn_id)) return unavailable("This MCP call has no valid host-supplied Codex task and turn identity");
-  const identity = { threadId: metadata.thread_id, turnId: metadata.turn_id };
+  const identity = { threadId: metadata.thread_id, turnId: metadata.turn_id,
+    review: { autoReview: reviewFlag(metadata, "auto_review_enabled"), nodeReplReview: reviewFlag(metadata, "node_repl_auto_review_required") } };
   try {
     if (!Number.isSafeInteger(maxRolloutBytes) || maxRolloutBytes < 1) throw new Error("The sender rollout read limit is invalid");
     if (metadata.thread_source !== "user") throw new Error("This MCP call is not from a user-owned Codex task");
@@ -118,7 +127,7 @@ export function readCodexSenderContext(meta, { env = process.env, maxRolloutByte
     const cwd = fs.realpathSync.native(context.cwd);
     if (!fs.statSync(cwd).isDirectory() || path.relative(fs.realpathSync.native(session.cwd), cwd)) throw new Error("The caller's workspace changed from its Desktop session identity");
     const mode = permissionClass(context, metadata);
-    return { status: "verified", ...identity, mode, cwd, source: file, reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" };
+    return { status: "verified", ...identity, mode, cwd, source: file, approvalPolicy: context.approval_policy, reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" };
   } catch (error) {
     return unavailable(error?.code ? `Caller evidence could not be read (${error.code}); no sender permission class was inferred` : error.message, identity);
   }

@@ -29,7 +29,7 @@ function fixture() {
 
 it("verifies only the exact active Desktop caller's effective disabled permissions", () => {
   const f = fixture();
-  assert.deepEqual(f.read(), { status: "verified", threadId, turnId, mode: "bypass", cwd: fs.realpathSync.native(f.home), source: f.file, reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" });
+  assert.deepEqual(f.read(), { status: "verified", threadId, turnId, mode: "bypass", cwd: fs.realpathSync.native(f.home), source: f.file, review: { autoReview: "disabled", nodeReplReview: "disabled" }, approvalPolicy: "never", reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" });
 });
 
 it("does not infer calling identity from global environment or manual relay binding", () => {
@@ -57,27 +57,62 @@ it("does not trust telemetry labels to grant bypass to a managed profile", () =>
   assert.equal(f.read().mode, null);
 });
 
-it("requires explicit disabled automatic review flags and a known approval reviewer", () => {
-  for (const value of [true, undefined, "false"]) {
+it("rejects missing or invalid review evidence even when the other review flag is enabled", () => {
+  for (const value of [undefined, null, "false", "true", 0, 1, {}]) {
     for (const field of ["auto_review_enabled", "node_repl_auto_review_required"]) {
       const f = fixture();
+      f.metadata.auto_review_enabled = true;
+      f.metadata.node_repl_auto_review_required = true;
       f.metadata[field] = value;
       assert.equal(f.read().status, "unavailable");
+      assert.equal(f.read().mode, null);
+      assert.match(f.read().reason, new RegExp(field));
     }
   }
+});
+
+it("requires a known approval reviewer even when automatic review is enabled", () => {
   const f = fixture();
+  f.metadata.auto_review_enabled = true;
   f.context.approvals_reviewer = "guardian_subagent";
   f.write();
   assert.equal(f.read().status, "unavailable");
 });
 
-it("classifies explicit prompting approval modes without changing permissions", () => {
-  for (const policy of ["on-request", "on-failure", "untrusted"]) {
-    const f = fixture();
-    f.context.approval_policy = policy;
-    f.write();
-    assert.equal(f.read().mode, "prompting");
+it("maps known reviewed callers to prompting and never grants them bypass", () => {
+  for (const policy of ["never", "on-request", "on-failure", "untrusted"]) {
+    for (const autoReview of [false, true]) {
+      for (const nodeReplReview of [false, true]) {
+        const f = fixture();
+        f.metadata.auto_review_enabled = autoReview;
+        f.metadata.node_repl_auto_review_required = nodeReplReview;
+        f.context.approval_policy = policy;
+        f.write();
+        const result = f.read();
+        assert.equal(result.status, "verified");
+        assert.equal(result.mode, policy === "never" && !autoReview && !nodeReplReview ? "bypass" : "prompting");
+        assert.deepEqual(result.review, { autoReview: autoReview ? "enabled" : "disabled", nodeReplReview: nodeReplReview ? "enabled" : "disabled" });
+        assert.equal(result.approvalPolicy, policy);
+      }
+    }
   }
+});
+
+it("reports review evidence without conflating enabled, missing, and invalid flags", () => {
+  const f = fixture();
+  f.metadata.auto_review_enabled = true;
+  delete f.metadata.node_repl_auto_review_required;
+  assert.deepEqual(f.read().review, { autoReview: "enabled", nodeReplReview: "missing" });
+  f.metadata.node_repl_auto_review_required = "false";
+  assert.deepEqual(f.read().review, { autoReview: "enabled", nodeReplReview: "invalid" });
+});
+
+it("does not authorize inherited review flags as host evidence", () => {
+  const f = fixture();
+  delete f.metadata.auto_review_enabled;
+  Object.setPrototypeOf(f.metadata, { auto_review_enabled: false });
+  assert.equal(f.read().status, "unavailable");
+  assert.equal(f.read().review.autoReview, "missing");
 });
 
 it("rejects unknown or extra permission profile and sandbox fields", () => {
@@ -90,6 +125,7 @@ it("rejects unknown or extra permission profile and sandbox fields", () => {
     (f) => { delete f.context.permission_profile; },
   ]) {
     const f = fixture();
+    f.metadata.auto_review_enabled = true;
     change(f);
     f.write();
     assert.equal(f.read().status, "unavailable");

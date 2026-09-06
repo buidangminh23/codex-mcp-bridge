@@ -289,8 +289,9 @@ export function readTranscript(sessionId, cwd, limit = 10) {
  * recipient starts a new turn with a user entry whose uuid is the message id
  * (origin.msg_id names it as well). A busy recipient absorbs the message into
  * the running turn instead: the entry is a queued_command attachment under a
- * fresh uuid whose source_uuid is the message id, and the reply is that
- * turn's closing text. Both were measured on Claude Code 2.1.260-2.1.263.
+ * fresh uuid, and the reply is that turn's closing text. The peer origin's
+ * msg_id identifies the message; source_uuid is unrelated on 2.1.229-2.1.237
+ * and equals the message id on the measured 2.1.260-2.1.263 builds.
  */
 function injectedMessageRoot(entry, msgId) {
   if (typeof entry.uuid !== "string" || !entry.uuid.trim()) return null;
@@ -300,8 +301,7 @@ function injectedMessageRoot(entry, msgId) {
     if (entry.uuid === msgId || matchesOrigin(entry.origin)) return "idle";
   }
   const attachment = entry.type === "attachment" ? entry.attachment : null;
-  if (attachment?.type === "queued_command" && matchesOrigin(attachment.origin)
-    && (attachment.source_uuid === undefined || attachment.source_uuid === msgId)) return "absorbed";
+  if (attachment?.type === "queued_command" && matchesOrigin(attachment.origin)) return "absorbed";
   return null;
 }
 

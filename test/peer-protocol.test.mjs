@@ -347,6 +347,19 @@ describe("peer endpoint", () => {
     assert.deepEqual(readTranscriptReply("busy", "unused", "request"), { text: "absorbed answer", msgId: "answer", source: "transcript", inReplyTo: "request", absorbed: false });
   });
 
+  it("correlates legacy queued messages by peer origin instead of an unrelated source UUID", () => {
+    const dir = path.join(projectsDir, "legacy-queued-replies");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "legacy.jsonl");
+    for (const version of ["2.1.229", "2.1.237"]) {
+      const root = { uuid: "queued-root", version, type: "attachment", attachment: { type: "queued_command", source_uuid: "unrelated-source", commandMode: "prompt", origin: { kind: "peer", msg_id: "request", fromMode: "bypass" }, isMeta: true } };
+      const answer = { uuid: "answer", parentUuid: "queued-root", version, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "legacy answer" }] } };
+      fs.writeFileSync(file, [root, answer].map((row) => JSON.stringify(row)).join("\n") + "\n");
+      assert.deepEqual(readTranscriptReply("legacy", "unused", "request"), { text: "legacy answer", msgId: "answer", source: "transcript", inReplyTo: "request", absorbed: true }, version);
+      assert.equal(readTranscriptReply("legacy", "unused", "unrelated-source"), null, "source_uuid must not claim the reply");
+    }
+  });
+
   it("rejects ambiguous roots and responses that cross another command", () => {
     const dir = path.join(projectsDir, "correlation-boundaries");
     fs.mkdirSync(dir, { recursive: true });
@@ -354,7 +367,6 @@ describe("peer endpoint", () => {
     const root = { uuid: "root", type: "attachment", attachment: { type: "queued_command", source_uuid: "request", origin: { kind: "peer", msg_id: "request" } } };
     const answer = { uuid: "answer", parentUuid: "root", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "answer" }] } };
     const cases = [
-      ["conflicting attachment IDs", [{ ...root, attachment: { ...root.attachment, source_uuid: "other" } }, answer]],
       ["conflicting origin ID", [{ ...root, attachment: { ...root.attachment, origin: { kind: "peer", msg_id: "other" } } }, answer]],
       ["non-peer attachment origin", [{ ...root, attachment: { ...root.attachment, origin: { kind: "user", msg_id: "request" } } }, answer]],
       ["missing attachment origin", [{ ...root, attachment: { type: "queued_command", source_uuid: "request" } }, answer]],

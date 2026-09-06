@@ -23,7 +23,7 @@ import { exitForVersionRequest } from "./cli-version.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.13.8";
+const VERSION = "1.13.9";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message) {

@@ -732,7 +732,7 @@ export class PeerEndpoint {
       senderMode: sent.permissionMode ?? null,
       ...(sent.senderApprovalPolicy !== undefined ? { senderApprovalPolicy: sent.senderApprovalPolicy ?? null } : {}),
       ...(sent.senderReview ? { senderReview: { ...sent.senderReview } } : {}),
-      ...(sent.recipient ? { recipientPermissionMode: sent.recipient.permissionMode ?? null, recipientPermissionClass: sent.recipient.permissionClass ?? null } : {}),
+      ...(sent.recipient ? { recipientPermissionMode: sent.recipient.permissionMode ?? null, recipientPermissionClass: sent.recipient.permissionClass ?? null, recipientInboundPolicy: sent.recipient.inboundPolicy ?? null } : {}),
       replyThreadId: sent.replyThreadId ?? null,
       pending: this.pendingMessages.has(msgId),
       ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer", ...(sent.reply.forwardingError ? { forwardingError: { ...sent.reply.forwardingError } } : {}) } : {}),

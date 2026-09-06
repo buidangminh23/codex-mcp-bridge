@@ -73,11 +73,11 @@ describe("Claude Desktop task identity", () => {
    * unknown or ambiguous mode yields no class rather than a guess.
    */
   it("reports the task's permission mode and its Claude parity class", () => {
-    for (const [mode, expectedClass] of [["bypassPermissions", "bypass"], ["default", "prompting"], ["acceptEdits", "prompting"], ["auto", "prompting"], ["dontAsk", "prompting"], ["plan", null], ["", null], [42, null], [undefined, null]]) {
+    for (const [mode, expectedClass] of [["bypassPermissions", "bypass"], ["default", "prompting"], ["acceptEdits", "prompting"], ["auto", "prompting"], ["dontAsk", "prompting"], ["plan", null], ["", null], [42, null], [undefined, null], ["bypass\u0001Permissions", null], ["x".repeat(65), null], ["mode with space", null]]) {
       writeTask(mode === undefined ? {} : { permissionMode: mode });
       const actual = resolve();
       assert.equal(actual.status, "matched", String(mode));
-      assert.equal(actual.permissionMode, typeof mode === "string" && mode ? mode : null, String(mode));
+      assert.equal(actual.permissionMode, typeof mode === "string" && /^[A-Za-z]{1,64}$/.test(mode) ? mode : null, String(mode));
       assert.equal(actual.permissionClass, expectedClass, String(mode));
     }
     writeTask({ permissionMode: "bypassPermissions", isArchived: true });

@@ -20,6 +20,10 @@ const sameVersion = (left, right) => VERSION_FIELDS.every((field) => left[field]
  */
 const PERMISSION_CLASSES = { bypassPermissions: "bypass", default: "prompting", acceptEdits: "prompting", auto: "prompting", dontAsk: "prompting" };
 
+const PERMISSION_MODE = /^[A-Za-z]{1,64}$/;
+
+const permissionModeOf = (mode) => typeof mode === "string" && PERMISSION_MODE.test(mode) ? mode : null;
+
 const permissionClassOf = (mode) => typeof mode === "string" && Object.hasOwn(PERMISSION_CLASSES, mode) ? PERMISSION_CLASSES[mode] : null;
 
 function result(status, reason, task = {}) {
@@ -189,7 +193,7 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
     taskId: record.taskId,
     title: record.title,
     cwd: taskCwd,
-    permissionMode: typeof record.permissionMode === "string" && record.permissionMode ? record.permissionMode : null,
-    permissionClass: permissionClassOf(record.permissionMode),
+    permissionMode: permissionModeOf(record.permissionMode),
+    permissionClass: permissionClassOf(permissionModeOf(record.permissionMode)),
   });
 }

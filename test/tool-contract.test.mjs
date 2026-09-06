@@ -47,17 +47,20 @@ const NATIVE_RELAY_TOOLS = ["native_relay_status"];
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-tools-"));
 
 describe("Claude message receipts", () => {
-  for (const scenario of ["nowait", "timeout", "peer", "desktop", "desktop-busy", "desktop-unknown-mode", "desktop-mismatch", "desktop-prompting", "desktop-reviewed", "desktop-reviewed-held", "desktop-reviewed-refused", "held", "refused", "diagnostic"]) {
+  for (const scenario of ["nowait", "timeout", "peer", "desktop", "desktop-busy", "desktop-unknown-mode", "desktop-mismatch", "desktop-mismatch-accepted", "desktop-inbound-hold", "desktop-prompting", "desktop-reviewed", "desktop-reviewed-held", "desktop-reviewed-refused", "held", "refused", "diagnostic"]) {
     it(`reports ${scenario} from the actual MCP transport`, async () => {
       const desktop = scenario.startsWith("desktop");
       const reviewed = scenario.startsWith("desktop-reviewed");
       const prompting = scenario === "desktop-prompting";
       const busy = scenario === "desktop-busy";
       const mismatch = scenario === "desktop-mismatch";
+      const accepted = scenario === "desktop-mismatch-accepted";
+      const inboundHold = scenario === "desktop-inbound-hold";
+      const inboundPolicy = accepted ? "accept" : inboundHold ? "hold" : null;
       const controlStatus = scenario.endsWith("held") ? "held" : scenario.endsWith("refused") ? "refused" : null;
       const senderMode = prompting ? "prompting" : "bypass";
       const approvalPolicy = prompting ? "on-request" : "never";
-      const recipientMode = scenario === "desktop-unknown-mode" ? null : mismatch ? "acceptEdits" : prompting ? "default" : "bypassPermissions";
+      const recipientMode = scenario === "desktop-unknown-mode" ? null : mismatch || accepted ? "acceptEdits" : prompting ? "default" : "bypassPermissions";
       const recipientClass = recipientMode === null ? null : recipientMode === "bypassPermissions" ? "bypass" : "prompting";
       const home = fs.mkdtempSync(path.join(sandboxHome, "receipt-"));
       const registryDir = path.join(home, ".claude", "sessions");
@@ -70,6 +73,10 @@ describe("Claude message receipts", () => {
       const callerId = "22222222-2222-4222-8222-222222222222";
       const turnId = "33333333-3333-4333-8333-333333333333";
       const meta = { "x-codex-turn-metadata": { thread_id: callerId, turn_id: turnId, thread_source: "user", auto_review_enabled: false, node_repl_auto_review_required: reviewed } };
+      if (inboundPolicy) {
+        fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+        fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ crossSessionInbound: inboundPolicy }));
+      }
       if (desktop) {
         const registryFile = path.join(registryDir, `${process.pid}.json`);
         const identity = process.platform === "win32"
@@ -159,6 +166,8 @@ describe("Claude message receipts", () => {
           assert.equal(listing.structuredContent.sessions[0].desktop.taskId, desktopTaskId);
           assert.equal(listing.structuredContent.sessions[0].desktop.permissionMode, recipientMode);
           assert.equal(listing.structuredContent.sessions[0].desktop.permissionClass, recipientClass);
+          assert.deepEqual(listing.structuredContent.sessions[0].inbound, { value: inboundPolicy, source: inboundPolicy ? "user" : null });
+          if (inboundPolicy) assert.match(listing.content[0].text, new RegExp(`inbound: crossSessionInbound ${inboundPolicy} \\(user settings\\)`));
           assert.match(listing.content[0].text, new RegExp(`permission: ${recipientMode ?? "unknown"}${recipientClass ? ` \\(${recipientClass} class\\)` : ""}`));
           const wrongProject = await client.callTool({ name: "list_claude_sessions", arguments: { expectedCwd: path.dirname(home) } });
           assert.match(wrongProject.content[0].text, /No live Claude Desktop session/);
@@ -196,12 +205,17 @@ describe("Claude message receipts", () => {
           assert.equal(status.structuredContent.sender.threadId, callerId);
         }
         const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: scenario === "nowait" ? 0 : 2 }, ...(desktop ? { _meta: meta } : {}) });
-        if (mismatch) {
+        if (mismatch || inboundHold) {
           assert.equal(result.isError, true);
-          assert.equal(result.structuredContent.preflight.code, "CLAUDE_RECIPIENT_CLASS_MISMATCH");
+          assert.equal(result.structuredContent.preflight.code, mismatch ? "CLAUDE_RECIPIENT_CLASS_MISMATCH" : "CLAUDE_RECIPIENT_INBOUND_POLICY");
           assert.equal(result.structuredContent.preflight.sent, false);
-          assert.match(result.content[0].text, /acceptEdits \(prompting class\)/);
-          assert.match(result.content[0].text, /attests bypass/);
+          if (mismatch) {
+            assert.match(result.content[0].text, /acceptEdits \(prompting class\)/);
+            assert.match(result.content[0].text, /attests bypass/);
+            assert.match(result.content[0].text, /approval policy/);
+          } else {
+            assert.match(result.content[0].text, /user settings set crossSessionInbound to hold/);
+          }
           assert.match(result.content[0].text, /no peer approval dialog/);
           assert.equal(count, 0);
           return;
@@ -227,6 +241,7 @@ describe("Claude message receipts", () => {
           assert.equal(result.structuredContent.receipt.senderApprovalPolicy, approvalPolicy);
           assert.equal(result.structuredContent.receipt.recipientPermissionMode, recipientMode);
           assert.equal(result.structuredContent.receipt.recipientPermissionClass, recipientClass);
+          assert.equal(result.structuredContent.receipt.recipientInboundPolicy, inboundPolicy);
           assert.equal(result.structuredContent.receipt.senderThreadId, callerId);
           assert.equal(result.structuredContent.receipt.senderTurnId, turnId);
           const senderReview = { autoReview: "disabled", nodeReplReview: reviewed ? "enabled" : "disabled" };
@@ -236,6 +251,7 @@ describe("Claude message receipts", () => {
           assert.equal(inspected.structuredContent.receipt.senderApprovalPolicy, approvalPolicy);
           assert.equal(inspected.structuredContent.receipt.recipientPermissionMode, recipientMode);
           assert.equal(inspected.structuredContent.receipt.recipientPermissionClass, recipientClass);
+          assert.equal(inspected.structuredContent.receipt.recipientInboundPolicy, inboundPolicy);
           if (controlStatus) assert.equal(inspected.structuredContent.receipt.forwarding, null);
           else {
             const deadline = Date.now() + 2000;

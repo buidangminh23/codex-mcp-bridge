@@ -13,7 +13,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Added
 
-- Read the recipient task's permission mode from Claude Desktop metadata, report it with its Claude parity class in `list_claude_sessions`, and refuse a send at preflight with `CLAUDE_RECIPIENT_CLASS_MISMATCH` when that class differs from the verified sender class, naming both, since Claude Desktop cannot show the approval dialog such a hold would need. The check repeats before writing; an unknown mode leaves the decision to Claude. Receipts carry `senderApprovalPolicy`, `recipientPermissionMode`, and `recipientPermissionClass`, and a held receipt names both classes.
+- Read the recipient session's effective `crossSessionInbound` (managed, user, project, and local settings with Claude's tightening precedence) and refuse a send at preflight with `CLAUDE_RECIPIENT_INBOUND_POLICY` when it is `refuse` or `hold`; an explicit `accept` sends without a class check. Otherwise read the recipient task's permission mode from Claude Desktop metadata, report it with its Claude parity class in `list_claude_sessions`, and refuse with `CLAUDE_RECIPIENT_CLASS_MISMATCH` when that class differs from the verified sender class, naming both classes and the user-only remedies on either side, since Claude Desktop cannot show the approval dialog such a hold would need. Both checks repeat before writing; an unknown mode leaves the decision to Claude. Only a plain alphabetic mode value is exposed. Receipts carry `senderApprovalPolicy`, `recipientPermissionMode`, `recipientPermissionClass`, and `recipientInboundPolicy`, and a held receipt names both classes.
 
 ### Changed
 

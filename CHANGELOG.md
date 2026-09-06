@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Changed
+
+- Document that an absorbed message is identified by `source_uuid` on Claude Code 2.1.260 and later and by `origin.msg_id` on earlier builds, which 1.13.7 already matches.
+
 ## [1.13.7] - 2026-09-07
 
 ### Fixed

@@ -72,6 +72,7 @@ function readMetadata(file, budget) {
     const current = fs.lstatSync(file);
     if (!sameVersion(before, after) || current.isSymbolicLink() || !sameVersion(current, after)) throw new Error("metadata changed");
     budget.versions.set(file, current);
+    budget.contents.set(file, bytes);
     const data = JSON.parse(bytes.toString("utf8"));
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("invalid metadata");
     return {
@@ -84,6 +85,26 @@ function readMetadata(file, budget) {
       isArchived: data.isArchived,
       permissionMode: data.permissionMode,
     };
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+/**
+ * Stat fields cannot prove a record is unchanged: a same-size rewrite inside
+ * one filesystem timestamp tick (about 16 ms on Windows) keeps size, times
+ * and inode identical. The final consistency pass therefore compares the
+ * bytes themselves; the records are small JSON files, so the extra read is
+ * cheap and the check is deterministic on every platform.
+ */
+function rereadMetadata(file) {
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error("file limit");
+    const bytes = Buffer.alloc(stat.size);
+    if (fs.readSync(descriptor, bytes, 0, bytes.length, 0) !== bytes.length) throw new Error("short read");
+    return bytes;
   } finally {
     fs.closeSync(descriptor);
   }
@@ -109,7 +130,7 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
   try {
     if (!fs.existsSync(directory)) return result("missing", "Claude Desktop task metadata is not available on this host.");
     const files = metadataFiles(directory);
-    const budget = { bytes: 0, versions: new Map() };
+    const budget = { bytes: 0, versions: new Map(), contents: new Map() };
     records = files.map((file) => readMetadata(file, budget));
     const currentFiles = metadataFiles(directory);
     if (files.length !== currentFiles.length || files.some((file, index) => file !== currentFiles[index])) {
@@ -118,6 +139,7 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
     for (const file of files) {
       const current = fs.lstatSync(file);
       if (!current.isFile() || !sameVersion(current, budget.versions.get(file))) throw new Error("metadata changed");
+      if (!rereadMetadata(file).equals(budget.contents.get(file))) throw new Error("metadata changed");
     }
   } catch {
     return result("mismatch", "Claude Desktop task metadata could not be read completely and consistently; no task identity is confirmed.");

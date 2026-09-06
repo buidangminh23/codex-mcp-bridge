@@ -82,11 +82,12 @@ it("requires a known approval reviewer even when automatic review is enabled", (
 /**
  * Claude's inbound parity gate asks one question: does a human still prompt
  * the sender? Codex answers that with approval_policy. Its two review flags
- * describe automated review - node_repl_auto_review_required is a model
- * catalog requirement ("To use model X, you need to use auto review") and
- * auto_review_enabled a Guardian reviewer - so neither adds or removes a
- * human prompt. Downgrading them to prompting held every gpt-6-astra send
- * behind an approval dialog that Claude Desktop cannot render.
+ * describe automated review - node_repl_auto_review_required is a per-model
+ * catalog attribute (Codex Desktop derives it from autoReview.requiredOnModels;
+ * the live gpt-6-astra task carried it with a user reviewer and auto review
+ * disabled) and auto_review_enabled names a Guardian reviewer - so neither
+ * adds or removes a human prompt. Downgrading them to prompting held every
+ * gpt-6-astra send behind an approval dialog that Claude Desktop cannot render.
  */
 it("classifies the sender by its human approval policy; automated review flags never change the class", () => {
   for (const policy of ["never", "on-request", "on-failure", "untrusted"]) {

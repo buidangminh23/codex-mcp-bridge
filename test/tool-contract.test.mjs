@@ -109,7 +109,7 @@ describe("Claude message receipts", () => {
         } finally { await new Promise((resolve) => receiver.close(resolve)); }
         return;
       }
-      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, CODEX_BRIDGE_AUTOSTART: "0" }, stderr: "ignore" });
+      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_DESKTOP_TASKS: scenario === "desktop" ? "1" : "0" }, stderr: "ignore" });
       const client = new Client({ name: "receipt-test", version: "1" });
       try {
         await client.connect(transport);
@@ -125,13 +125,58 @@ describe("Claude message receipts", () => {
         assert.equal(result.structuredContent.receipt.status, expected);
         assert.equal(Boolean(result.isError), ["timeout", "held", "refused"].includes(scenario));
         assert.equal(count, 1);
-        if (scenario === "desktop") assert.equal(result.structuredContent.receipt.source, "transcript");
+        if (scenario === "desktop") {
+          assert.equal(result.structuredContent.receipt.source, "transcript");
+          assert.equal(result.structuredContent.receipt.entrypoint, "claude-desktop");
+          assert.equal(result.structuredContent.receipt.cwd, home);
+        }
         if (["nowait", "timeout", "held"].includes(scenario)) {
           const retry = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Never send this", waitSec: 1 } });
           assert.equal(retry.isError, true);
           assert.match(retry.content[0].text, /earlier message/);
           assert.equal(count, 1);
         }
+      } finally {
+        await client.close();
+        await new Promise((resolve) => receiver.close(resolve));
+      }
+    });
+  }
+});
+
+describe("Claude Desktop destination enforcement", () => {
+  for (const policySource of ["environment", "shared-config"]) {
+    it(`refuses CLI delivery before connecting when Desktop mode comes from ${policySource}`, async () => {
+      const home = fs.mkdtempSync(path.join(sandboxHome, "desktop-only-"));
+      const registryDir = path.join(home, ".claude", "sessions");
+      fs.mkdirSync(registryDir, { recursive: true });
+      const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\cc-msg-${crypto.randomBytes(16).toString("hex")}` : path.join(home, "cli.sock");
+      fs.writeFileSync(path.join(registryDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, name: "cli-target", sessionId: "cli-session", cwd: home, messagingSocketPath: socketPath, entrypoint: "cli" }));
+      fs.writeFileSync(path.join(registryDir, path.basename(peerKeyPath(process.pid, socketPath))), JSON.stringify({ peerToken: crypto.randomBytes(16).toString("hex") }));
+      const env = { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, ".codex"), CODEX_BRIDGE_AUTOSTART: "0" };
+      if (policySource === "environment") env.CODEX_BRIDGE_DESKTOP_TASKS = "1";
+      else {
+        fs.mkdirSync(env.CODEX_HOME, { recursive: true });
+        fs.writeFileSync(path.join(env.CODEX_HOME, "native-relay.json"), JSON.stringify({ desktopTasks: true }));
+      }
+      let connections = 0;
+      const receiver = net.createServer((socket) => { connections += 1; socket.on("error", () => {}); socket.resume(); });
+      await new Promise((resolve, reject) => { receiver.once("error", reject); receiver.listen(socketPath, resolve); });
+      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env, stderr: "ignore" });
+      const client = new Client({ name: "desktop-policy-test", version: "1" });
+      try {
+        await client.connect(transport);
+        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "cli-session", message: "Must never reach the CLI", waitSec: 0 } });
+        assert.equal(result.isError, true);
+        assert.match(result.content[0].text, /Desktop-only.*refuses.*cli/s);
+        assert.equal(connections, 0);
+        const listing = await client.callTool({ name: "list_claude_sessions", arguments: {} });
+        assert.match(listing.content[0].text, /No live Claude Desktop session/);
+        assert.doesNotMatch(listing.content[0].text, /cli-target/);
+        const status = await client.callTool({ name: "claude_bridge_status", arguments: {} });
+        assert.match(status.content[0].text, /session policy: desktop-only/);
+        assert.match(status.content[0].text, /live sessions: 0/);
+        assert.match(status.content[0].text, /excluded.*1/);
       } finally {
         await client.close();
         await new Promise((resolve) => receiver.close(resolve));

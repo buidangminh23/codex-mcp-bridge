@@ -194,6 +194,7 @@ describe("Claude message receipts", () => {
         const expected = controlStatus ?? (desktop ? "reply_received" : { nowait: "sent_unconfirmed", timeout: "reply_timeout", peer: "reply_received", desktop: "reply_received", held: "held", refused: "refused" }[scenario]);
         assert.equal(result.structuredContent.receipt.status, expected);
         assert.equal(Boolean(result.isError), scenario === "timeout" || Boolean(controlStatus));
+        if (controlStatus) assert.match(result.content[0].text, /Claude Desktop declares no peer approval dialog/);
         assert.equal(count, 1);
         if (desktop) {
           if (!controlStatus) assert.equal(result.structuredContent.receipt.source, "transcript");

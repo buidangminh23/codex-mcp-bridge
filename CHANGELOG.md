@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Changed
+
+- Document Claude's symmetric inbound parity: a prompting-class Desktop recipient holds a `bypass` sender just as a bypassing recipient holds a `prompting` one, so a `held` receipt means the two tasks run in different permission classes and only the user can align them, by running the recipient in the matching class or setting `crossSessionInbound` to `accept` there. The bridge never adjusts the attested class. Describe `node_repl_auto_review_required` as the per-model catalog attribute observed live alongside a user reviewer, note that `auto_review_enabled: true` with a user reviewer is unobserved, and pin the held-receipt wording in the tool contract test.
+
 ## [1.13.6] - 2026-09-06
 
 ### Fixed

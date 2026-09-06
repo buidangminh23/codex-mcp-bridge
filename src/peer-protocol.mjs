@@ -187,9 +187,20 @@ export function listClaudeSessions({ includeDead = false, includeBridges = false
   return rows.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
 }
 
-export function findClaudeSession(target) {
+export function findClaudeSession(target, { desktopOnly = false } = {}) {
   const sessions = listClaudeSessions();
   const needle = String(target).trim();
+  if (desktopOnly) {
+    const byId = sessions.filter((session) => String(session.pid) === needle || session.sessionId === needle);
+    const matches = byId.length ? byId : sessions.filter((session) => session.name === needle);
+    if (!needle || matches.length === 0) return null;
+    if (matches.length !== 1) throw new Error(`Desktop-only mode requires an unambiguous sessionId or pid; "${needle}" matches multiple sessions. No message was sent.`);
+    const session = matches[0];
+    if (session.entrypoint !== "claude-desktop") {
+      throw new Error(`Desktop-only mode refuses Claude session ${session.sessionId ?? session.pid} with entrypoint ${session.entrypoint ?? "unknown"}. Open or reconnect an existing Code session in Claude Desktop for the intended project. Do not launch a replacement CLI session. No message was sent.`);
+    }
+    return session;
+  }
   return (
     sessions.find((s) => String(s.pid) === needle) ??
     sessions.find((s) => s.sessionId === needle) ??

@@ -173,6 +173,24 @@ describe("session registry", () => {
     assert.equal(findClaudeSession("LIVE-")?.sessionId, "session-live");
     assert.equal(findClaudeSession("nothing-like-this"), null);
   });
+
+  it("requires a unique exact Desktop target and refuses unknown entrypoints", () => {
+    const desktop = { pid: process.pid, sessionId: "desktop-session", name: "desktop-target", messagingSocketPath: path.join(sandbox, "live.sock"), entrypoint: "claude-desktop" };
+    writeSession("desktop-policy", desktop);
+    try {
+      assert.equal(findClaudeSession("desktop-session", { desktopOnly: true }).sessionId, "desktop-session");
+      assert.equal(findClaudeSession("desktop-target", { desktopOnly: true }).sessionId, "desktop-session");
+      assert.equal(findClaudeSession("desktop-targ", { desktopOnly: true }), null);
+      assert.equal(findClaudeSession("", { desktopOnly: true }), null);
+      assert.throws(() => findClaudeSession("session-live", { desktopOnly: true }), /Desktop-only mode refuses.*unknown/);
+      writeSession("desktop-policy-duplicate", { ...desktop, sessionId: "another-desktop-session" });
+      assert.throws(() => findClaudeSession("desktop-target", { desktopOnly: true }), /unambiguous.*multiple sessions/);
+      assert.equal(findClaudeSession("desktop-session", { desktopOnly: true }).sessionId, "desktop-session");
+    } finally {
+      fs.rmSync(path.join(sessionsDir, "desktop-policy.json"), { force: true });
+      fs.rmSync(path.join(sessionsDir, "desktop-policy-duplicate.json"), { force: true });
+    }
+  });
 });
 
 describe("Windows peer endpoint", { skip: isWindows ? false : "Windows named-pipe regression" }, () => {

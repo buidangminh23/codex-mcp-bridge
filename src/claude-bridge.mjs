@@ -8,6 +8,7 @@ import { PLATFORM_LABEL } from "./platform.mjs";
 import { PeerEndpoint, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
 import { createThreadDelivery } from "./thread-delivery.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
+import { desktopTasksConfigured } from "./native-relay.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -18,6 +19,7 @@ const FORWARD_MAX_PER_SESSION = 50;
 const log = (msg) => process.stderr.write(`[claude-bridge] ${msg}\n`);
 
 const defaultPeerName = process.env.CLAUDE_BRIDGE_PEER_NAME ?? `codex-${process.pid}`;
+const desktopOnly = desktopTasksConfigured();
 
 const peer = new PeerEndpoint({
   name: defaultPeerName,
@@ -36,7 +38,7 @@ const codex = new CodexAppServerClient({
  * other thread through the shared one. `claude-bridge` never picks between
  * them - see `thread-delivery.mjs`.
  */
-const delivery = createThreadDelivery({ codex, log });
+const delivery = createThreadDelivery({ codex, log, desktopOnly });
 
 const forwarding = {
   threadId: process.env.CODEX_THREAD_ID ?? null,
@@ -50,6 +52,8 @@ const textResult = (text, isError = false) => ({
 });
 
 const failure = (err) => textResult(`Claude bridge error: ${err?.message ?? String(err)}`, true);
+
+const missingDesktopSession = "No live Claude Desktop session with an exact matching ID or name and a messaging endpoint. Open or reconnect an existing Code session in Claude Desktop for the intended project. CLI sessions are excluded; do not launch a replacement CLI session.";
 
 function formatSessionRow(s) {
   const started = s.startedAt ? new Date(s.startedAt).toISOString().replace("T", " ").slice(0, 16) : "?";
@@ -96,7 +100,10 @@ const server = new McpServer(
       "Talk to a live Claude Code session from Codex. list_claude_sessions finds the session, " +
       "send_to_claude_session sends to its peer transport and waits for a reply to confirm receipt. " +
       "This bridge registers itself as a peer, so Claude sees it in its own agent list and can " +
-      "message back; bind_codex_thread relays those messages into a Codex thread.",
+      "message back; bind_codex_thread relays those messages into a Codex thread. " +
+      "In Desktop-only mode, both destinations must belong to their Desktop apps. " +
+      "Use an existing session with the exact project directory and sessionId; never launch a CLI session " +
+      "or an external app-server as a substitute. A receipt confirms a reply, not visual verification in the app.",
   },
 );
 
@@ -106,7 +113,7 @@ server.registerTool(
     title: "List live Claude Code sessions",
     description:
       "List Claude Code sessions running on this machine (name, pid, sessionId, cwd, how it was started). " +
-      "Use it to pick the session to talk to.",
+      "In Desktop-only mode, only Claude Desktop Code sessions are listed. Match the exact project cwd and sessionId before sending.",
     inputSchema: {
       includeDead: z.boolean().optional().describe("Also list sessions whose process is gone (default false)"),
     },
@@ -118,10 +125,10 @@ server.registerTool(
   async ({ includeDead }) => {
     try {
       const sessions = listClaudeSessions({ includeDead: includeDead ?? false }).filter(
-        (s) => s.pid !== process.pid,
+        (s) => s.pid !== process.pid && (!desktopOnly || s.entrypoint === "claude-desktop"),
       );
-      if (!sessions.length) return textResult("No live Claude Code session found.");
-      return textResult(`${sessions.length} Claude session(s):\n\n${sessions.map(formatSessionRow).join("\n")}`);
+      if (!sessions.length) return textResult(desktopOnly ? missingDesktopSession : "No live Claude Code session found.");
+      return textResult(`${sessions.length} Claude${desktopOnly ? " Desktop" : ""} session(s):\n\n${sessions.map(formatSessionRow).join("\n")}`);
     } catch (err) {
       return failure(err);
     }
@@ -136,7 +143,8 @@ server.registerTool(
       "Send a message to a running Claude Code session's peer transport and wait for its reply. " +
       "A socket write alone does not confirm that Claude received the message. Set waitSec to 0 to send without confirmation. " +
       "A waited send is refused while earlier messages to that session still await replies; " +
-      "wait for those replies and read_claude_inbox before trying again.",
+      "wait for those replies and read_claude_inbox before trying again. Desktop-only mode refuses CLI or unknown " +
+      "entrypoints, partial names, and ambiguous targets before sending. It never creates a replacement session.",
     inputSchema: {
       target: z.string().describe("Session name, pid or sessionId from list_claude_sessions"),
       message: z.string().describe("The message text to deliver"),
@@ -157,9 +165,9 @@ server.registerTool(
   },
   async ({ target, message, waitSec }) => {
     try {
+      const session = findClaudeSession(target, { desktopOnly });
+      if (!session) return textResult(desktopOnly ? missingDesktopSession : `No live Claude session matches "${target}".`, true);
       await peer.start();
-      const session = findClaudeSession(target);
-      if (!session) return textResult(`No live Claude session matches "${target}".`, true);
 
       const wait = waitSec ?? 180;
       const desktop = session.entrypoint === "claude-desktop";
@@ -169,9 +177,9 @@ server.registerTool(
         ...(desktop ? { transcriptSession: session } : {}),
       });
       const status = reply ? "reply_received" : delivery?.status ?? (wait === 0 ? "sent_unconfirmed" : "reply_timeout");
-      const receipt = { status, msgId, target: session.name ?? String(session.pid), sessionId: session.sessionId, waitSec: wait, ...(reply ? { source: reply.source ?? "peer" } : {}) };
+      const receipt = { status, msgId, target: session.name ?? String(session.pid), sessionId: session.sessionId, cwd: session.cwd, entrypoint: session.entrypoint, waitSec: wait, ...(reply ? { source: reply.source ?? "peer" } : {}) };
       const result = (text, isError = false) => ({ ...textResult(text, isError), structuredContent: { receipt } });
-      const targetLabel = `${session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"})`;
+      const targetLabel = `${session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"}, via ${session.entrypoint ?? "unknown"}, cwd ${session.cwd ?? "?"})`;
 
       if (!reply && delivery && delivery.status !== "delivered") {
         return result(`Claude inbox reported ${delivery.status} for ${targetLabel}.\n${delivery.reason}\nMessage id: ${msgId}`, true);
@@ -310,13 +318,16 @@ server.registerTool(
     try {
       await peer.start();
       const sessions = listClaudeSessions().filter((s) => s.pid !== process.pid);
+      const eligible = sessions.filter((session) => !desktopOnly || session.entrypoint === "claude-desktop");
       const lines = [
         `platform:      ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
         `bridge:        claude-bridge ${VERSION}`,
         `peer name:     ${peer.name}   (Claude sees this in its agent list)`,
         `peer socket:   ${peer.socketPath}`,
         `sender mode:   ${peer.permissionMode ?? "unknown (recipient may hold messages for approval)"}`,
-        `live sessions: ${sessions.length}`,
+        `session policy: ${desktopOnly ? "desktop-only" : "all Claude Code entrypoints"}`,
+        `live sessions: ${eligible.length}`,
+        `excluded:      ${sessions.length - eligible.length} non-Desktop session(s)`,
         `relay thread:  ${forwarding.threadId ?? "(none - use bind_codex_thread)"}`,
         `delivery:      ${delivery.describe()}`,
         `inbox:         ${peer.inbox.length} pending message(s)`,

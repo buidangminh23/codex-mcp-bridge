@@ -54,14 +54,37 @@ afterEach(() => {
 });
 
 describe("Claude Desktop task identity", () => {
-  it("returns only the native identity, exact title and canonical cwd for an exact match", () => {
+  it("returns only the native identity, exact title, canonical cwd and permission mode for an exact match", () => {
     writeTask({ remoteMcpServersConfig: { token: "must-never-appear" }, permissionMode: "bypassPermissions" });
     const actual = resolve();
     assert.deepEqual(actual, {
       status: "matched", taskId: TASK, title: "Exact native task title", cwd: fs.realpathSync.native(cwd),
+      permissionMode: "bypassPermissions", permissionClass: "bypass",
       reason: "Exact live CLI session identity and canonical project directory match one active native Desktop task.",
     });
-    assert.doesNotMatch(JSON.stringify(actual), /must-never-appear|metadata|permissionMode/);
+    assert.doesNotMatch(JSON.stringify(actual), /must-never-appear|metadata|remoteMcpServersConfig/);
+  });
+
+  /**
+   * Claude's inbound parity gate groups bypassPermissions (and plan, only when
+   * bypass is available) as one class and every other mode as prompting. The
+   * Desktop record's permissionMode is the only recipient-side evidence the
+   * bridge has, so it is reported verbatim with the derived class, and an
+   * unknown or ambiguous mode yields no class rather than a guess.
+   */
+  it("reports the task's permission mode and its Claude parity class", () => {
+    for (const [mode, expectedClass] of [["bypassPermissions", "bypass"], ["default", "prompting"], ["acceptEdits", "prompting"], ["auto", "prompting"], ["dontAsk", "prompting"], ["plan", null], ["", null], [42, null], [undefined, null]]) {
+      writeTask(mode === undefined ? {} : { permissionMode: mode });
+      const actual = resolve();
+      assert.equal(actual.status, "matched", String(mode));
+      assert.equal(actual.permissionMode, typeof mode === "string" && mode ? mode : null, String(mode));
+      assert.equal(actual.permissionClass, expectedClass, String(mode));
+    }
+    writeTask({ permissionMode: "bypassPermissions", isArchived: true });
+    const unmatched = resolve();
+    assert.notEqual(unmatched.status, "matched");
+    assert.equal(unmatched.permissionMode, null);
+    assert.equal(unmatched.permissionClass, null);
   });
 
   it("can map an exact CLI session before the registry advertises a bridge ID", () => {

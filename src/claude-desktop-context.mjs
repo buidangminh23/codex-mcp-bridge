@@ -12,8 +12,18 @@ const VERSION_FIELDS = ["size", "mtimeMs", "ctimeMs", "ino", "dev"];
 
 const sameVersion = (left, right) => VERSION_FIELDS.every((field) => left[field] === right[field]);
 
+/**
+ * Claude's inbound parity gate groups bypassPermissions as one class and
+ * default, acceptEdits, auto and dontAsk as the prompting class. Plan counts
+ * as bypass only when bypass is available to that session, which the record
+ * does not say, so it and any unknown value yield no class rather than a guess.
+ */
+const PERMISSION_CLASSES = { bypassPermissions: "bypass", default: "prompting", acceptEdits: "prompting", auto: "prompting", dontAsk: "prompting" };
+
+const permissionClassOf = (mode) => typeof mode === "string" && Object.hasOwn(PERMISSION_CLASSES, mode) ? PERMISSION_CLASSES[mode] : null;
+
 function result(status, reason, task = {}) {
-  return { status, taskId: task.taskId ?? null, title: task.title ?? null, cwd: task.cwd ?? null, reason };
+  return { status, taskId: task.taskId ?? null, title: task.title ?? null, cwd: task.cwd ?? null, permissionMode: task.permissionMode ?? null, permissionClass: task.permissionClass ?? null, reason };
 }
 
 function sessionsRoot(platform, env) {
@@ -72,6 +82,7 @@ function readMetadata(file, budget) {
       cwd: data.cwd,
       title: data.title,
       isArchived: data.isArchived,
+      permissionMode: data.permissionMode,
     };
   } finally {
     fs.closeSync(descriptor);
@@ -156,5 +167,7 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
     taskId: record.taskId,
     title: record.title,
     cwd: taskCwd,
+    permissionMode: typeof record.permissionMode === "string" && record.permissionMode ? record.permissionMode : null,
+    permissionClass: permissionClassOf(record.permissionMode),
   });
 }

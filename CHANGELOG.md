@@ -4,9 +4,23 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.13.7] - 2026-09-07
+
+### Fixed
+
+- Correlate a Desktop reply to a message that arrived while the recipient was mid-turn. Claude Code absorbs such a message into the running turn and records it as a `queued_command` attachment whose `source_uuid` is the message id, under a fresh uuid; only the idle shape (a user entry whose uuid is the message id) was recognised, so the reply appeared in the app while the bridge reported `reply_timeout` and kept the message pending. Both shapes now resolve to the turn's closing text.
+
+### Added
+
+- Read the recipient task's permission mode from Claude Desktop metadata, report it with its Claude parity class in `list_claude_sessions`, and refuse a send at preflight with `CLAUDE_RECIPIENT_CLASS_MISMATCH` when that class differs from the verified sender class, naming both, since Claude Desktop cannot show the approval dialog such a hold would need. The check repeats before writing; an unknown mode leaves the decision to Claude. Receipts carry `senderApprovalPolicy`, `recipientPermissionMode`, and `recipientPermissionClass`, and a held receipt names both classes.
+
 ### Changed
 
 - Document Claude's symmetric inbound parity: a prompting-class Desktop recipient holds a `bypass` sender just as a bypassing recipient holds a `prompting` one, so a `held` receipt means the two tasks run in different permission classes and only the user can align them, by running the recipient in the matching class or setting `crossSessionInbound` to `accept` there. The bridge never adjusts the attested class. Describe `node_repl_auto_review_required` as the per-model catalog attribute observed live alongside a user reviewer, note that `auto_review_enabled: true` with a user reviewer is unobserved, and pin the held-receipt wording in the tool contract test.
+
+### Upgrade notes
+
+- Reconnect the MCP connections in both Desktop clients after upgrading; a bridge process started before this version reports stale source and refuses new sends once the files change.
 
 ## [1.13.6] - 2026-09-06
 

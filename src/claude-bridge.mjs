@@ -16,7 +16,7 @@ import { ReplyForwarder } from "./reply-forwarder.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.13.6";
+const VERSION = "1.13.7";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 
@@ -80,7 +80,8 @@ const missingDesktopSession = "No live Claude Desktop session with an exact matc
 
 function formatSessionRow(s) {
   const started = s.startedAt ? new Date(s.startedAt).toISOString().replace("T", " ").slice(0, 16) : "?";
-  const task = s.desktop ? `\n    Desktop task: ${s.desktop.title ?? "unverified"}\n    task ID: ${s.desktop.taskId ?? "unverified"}\n    mapping: ${s.desktop.status}${s.desktop.reason ? ` - ${s.desktop.reason}` : ""}` : "";
+  const permission = s.desktop?.status === "matched" ? `\n    permission: ${s.desktop.permissionMode ?? "unknown"}${s.desktop.permissionClass ? ` (${s.desktop.permissionClass} class)` : ""}` : "";
+  const task = s.desktop ? `\n    Desktop task: ${s.desktop.title ?? "unverified"}\n    task ID: ${s.desktop.taskId ?? "unverified"}${permission}\n    mapping: ${s.desktop.status}${s.desktop.reason ? ` - ${s.desktop.reason}` : ""}` : "";
   return `- ${s.name ?? "(unnamed)"}  [pid ${s.pid}]\n    session: ${s.sessionId ?? "?"}\n    cwd: ${s.cwd ?? "?"}\n    started: ${started}  kind: ${s.kind ?? "?"}  via: ${s.entrypoint ?? "?"}${task}`;
 }
 
@@ -102,6 +103,19 @@ function assertDesktopTask(session, expectedTaskId) {
   if (expectedTaskId !== session.desktop.taskId) {
     throw preflightFailure("CLAUDE_DESKTOP_TASK_MISMATCH", "Provide expectedTaskId from the intended task in list_claude_sessions, after checking its title and cwd. A generated peer name is not a Desktop task title.");
   }
+}
+
+/**
+ * Claude's inbound gate holds any message whose attested sender class differs
+ * from the recipient's, and Claude Desktop cannot show the approval dialog,
+ * so a predictable mismatch is refused here with both classes named instead
+ * of expiring silently in the app. The recipient's mode comes from Desktop
+ * task metadata; an unknown mode leaves the decision to Claude.
+ */
+function assertRecipientClass(session, sender) {
+  const recipient = session.desktop?.permissionClass ?? null;
+  if (!sender || !recipient || recipient === sender.mode) return;
+  throw preflightFailure("CLAUDE_RECIPIENT_CLASS_MISMATCH", `The Claude Desktop task "${session.desktop.title}" runs in ${session.desktop.permissionMode} (${recipient} class) while this sender attests ${sender.mode}. Claude holds a cross-session message whose sender class differs from the recipient's, and Claude Desktop declares no peer approval dialog, so the message would expire unapproved. Report this to the user: only they can run that task in the ${sender.mode} class or set crossSessionInbound to accept in its own settings. Do not change the attested sender class or recipient settings.`);
 }
 
 function assertSender(meta) {
@@ -139,6 +153,7 @@ const server = new McpServer(
       "Read the Desktop task title and task ID as well as the exact project directory and sessionId before sending. " +
       "The host's current MCP turn metadata identifies the sender; unknown or stale permission context blocks sending. " +
       "The sender class follows the verified approval policy; automated review flags are reported but never change it. " +
+      "A Desktop recipient whose task metadata shows a different permission class is refused before sending, because Claude Desktop cannot show the approval dialog. " +
       "Never launch a CLI session or an external app-server as a substitute. A receipt confirms a reply, not visual verification in the app. " +
       "A held receipt does not prove that Desktop exposes an approval button; verify the UI before asking the user to approve.",
   },
@@ -222,6 +237,7 @@ server.registerTool(
         assertClaudeSessionProcess(session);
       }
       const sender = desktopOnly ? assertSender(extra?._meta) : null;
+      if (desktopOnly) assertRecipientClass(session, sender);
       await peer.start();
 
       const wait = waitSec ?? 180;
@@ -229,7 +245,8 @@ server.registerTool(
       const text = desktop ? `${message}\n\n[Bridge response routing: reply with ordinary text in this conversation. The bridge reads the response associated with this message from the local transcript; no cross-session reply tool is needed.]` : message;
       const { msgId, reply, delivery } = await peer.sendAndWait(session.socket, text, {
         timeoutMs: wait * 1000,
-        ...(sender ? { permissionMode: sender.mode, replyThreadId: sender.threadId, senderReview: sender.review } : {}),
+        ...(sender ? { permissionMode: sender.mode, replyThreadId: sender.threadId, senderReview: sender.review, senderApprovalPolicy: sender.approvalPolicy } : {}),
+        ...(desktop ? { recipient: { permissionMode: session.desktop.permissionMode ?? null, permissionClass: session.desktop.permissionClass ?? null } } : {}),
         beforeSend: () => {
           runtime.assertCurrent();
           const current = findClaudeSession(session.sessionId ?? String(session.pid), { desktopOnly });
@@ -239,25 +256,28 @@ server.registerTool(
           if (desktopOnly || expectedCwd !== undefined) assertClaudeSessionCwd(current, expectedCwd);
           if (desktopOnly) {
             assertClaudeSessionProcess(current);
-            assertDesktopTask(withDesktopContext(current), expectedTaskId);
+            const refreshed = withDesktopContext(current);
+            assertDesktopTask(refreshed, expectedTaskId);
             const active = assertSender(extra?._meta);
             if (active.threadId !== sender.threadId || active.turnId !== sender.turnId || active.cwd !== sender.cwd || active.mode !== sender.mode || active.approvalPolicy !== sender.approvalPolicy || JSON.stringify(active.review) !== JSON.stringify(sender.review)) {
               throw preflightFailure("CODEX_SENDER_CONTEXT_CHANGED", "The sender's active turn or permissions changed while this message was queued.");
             }
+            assertRecipientClass(refreshed, active);
           }
         },
         ...(desktop ? { transcriptSession: session } : {}),
       });
       const status = reply ? "reply_received" : delivery?.status ?? (wait === 0 ? "sent_unconfirmed" : "reply_timeout");
       const receipt = { status, msgId, target: session.name ?? String(session.pid), sessionId: session.sessionId, cwd: session.cwd, entrypoint: session.entrypoint, waitSec: wait,
-        ...(desktop ? { taskId: session.desktop.taskId, title: session.desktop.title, approvalUi: "unverified" } : {}),
-        ...(sender ? { senderMode: sender.mode, senderThreadId: sender.threadId, senderTurnId: sender.turnId, senderReview: sender.review } : {}),
+        ...(desktop ? { taskId: session.desktop.taskId, title: session.desktop.title, approvalUi: "unverified", recipientPermissionMode: session.desktop.permissionMode ?? null, recipientPermissionClass: session.desktop.permissionClass ?? null } : {}),
+        ...(sender ? { senderMode: sender.mode, senderApprovalPolicy: sender.approvalPolicy, senderThreadId: sender.threadId, senderTurnId: sender.turnId, senderReview: sender.review } : {}),
         ...(reply ? { source: reply.source ?? "peer", forwarding: replyForwarder.read(msgId) ?? reply.forwardingError ?? null } : {}) };
       const result = (text, isError = false) => ({ ...textResult(text, isError), structuredContent: { receipt } });
       const targetLabel = `${session.desktop?.title ?? session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"}, via ${session.entrypoint ?? "unknown"}, cwd ${session.cwd ?? "?"})`;
 
       if (!reply && delivery && delivery.status !== "delivered") {
-        return result(`Claude inbox reported ${delivery.status} for ${targetLabel}.\n${delivery.reason}\nMessage id: ${msgId}\nInspect read_claude_delivery with this message ID. Do not resend, change the sender permission class, or alter recipient permissions to bypass this receipt. The approval UI has not been verified; Claude Desktop declares no peer approval dialog, so do not tell the user an approval button exists without inspecting this exact Desktop task.`, true);
+        const classes = desktop && sender ? `Recipient task mode: ${session.desktop.permissionMode ?? "unknown"}${session.desktop.permissionClass ? ` (${session.desktop.permissionClass} class)` : ""}; this sender attested ${sender.mode}.\n` : "";
+        return result(`Claude inbox reported ${delivery.status} for ${targetLabel}.\n${delivery.reason}\n${classes}Message id: ${msgId}\nInspect read_claude_delivery with this message ID. Do not resend, change the sender permission class, or alter recipient permissions to bypass this receipt. The approval UI has not been verified; Claude Desktop declares no peer approval dialog, so do not tell the user an approval button exists without inspecting this exact Desktop task.`, true);
       }
 
       if (wait === 0) {

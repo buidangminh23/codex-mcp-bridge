@@ -13,7 +13,7 @@ import { createRuntimeState } from "./runtime-state.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.13.3";
+const VERSION = "1.13.4";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 

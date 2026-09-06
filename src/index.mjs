@@ -29,7 +29,7 @@ import { createRuntimeState } from "./runtime-state.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.13.3";
+const VERSION = "1.13.4";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**

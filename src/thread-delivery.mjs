@@ -1,4 +1,4 @@
-import { NativeDesktopRelay, desktopTaskSocketPath, desktopTasksConfigured } from "./native-relay.mjs";
+import { NativeDesktopRelay, accountRelaySocketPath, desktopTaskSocketPath, desktopTasksConfigured } from "./native-relay.mjs";
 import { runTurn } from "./turn.mjs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
@@ -42,20 +42,28 @@ export function matchDesktopProject(projects, cwd, { canonicalize = realpathSync
 }
 
 export class DesktopTaskDelivery {
-  constructor({ relay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath() }), security, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, receipts = new DesktopTaskReceipts() } = {}) {
+  constructor({ relay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath(), accountSocketPath: accountRelaySocketPath() }), security, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, receipts = new DesktopTaskReceipts(), beforeRequest, accountContext } = {}) {
     this.relay = relay;
     this.security = security;
     this.sleep = sleep;
     this.now = now;
     this.receipts = receipts;
+    this.beforeRequest = beforeRequest;
+    this.accountContext = accountContext;
     this.threadOperations = new Map();
   }
 
   async request(operation, args, { deadline } = {}) {
     try {
+      await this.beforeRequest?.({ operation, args });
       const remaining = deadline === undefined ? undefined : deadline - this.now();
       if (remaining !== undefined && remaining <= 0) throw new Error("The bridge's response deadline has elapsed; this operation was not sent");
-      const response = await this.relay.requestDesktop(operation, args, remaining === undefined ? undefined : { timeoutMs: remaining });
+      const accountContext = this.accountContext?.();
+      const response = await this.relay.requestDesktop(operation, args, {
+        ...(remaining === undefined ? {} : { timeoutMs: remaining }),
+        ...(this.beforeRequest ? { beforeSend: () => this.beforeRequest({ operation, args, phase: "write" }) } : {}),
+        ...(accountContext ? { accountContext } : {}),
+      });
       return response.result;
     } catch (err) {
       throw new Error(`Codex Desktop operation ${operation} failed: ${err.message}. Desktop-only mode will not start or use an external app-server. Open Codex Desktop and reconnect its native relay, then inspect the existing task before retrying a send.`, { cause: err });
@@ -87,12 +95,15 @@ export class DesktopTaskDelivery {
   }
 
   async status() {
+    const accountContext = this.accountContext?.();
+    const socketPath = this.relay.status?.({ accountContext })?.socketPath ?? this.relay.socketPath;
+    if (this.accountContext && !accountContext) return { available: false, socketPath, reason: "The current Claude and Codex accounts could not both be verified. Finish signing in and inspect the account diagnostics before sending work." };
     try {
       const response = await this.request("list_projects", {});
       if (!Array.isArray(response?.projects)) throw new Error("Desktop returned no project list");
-      return { available: true, socketPath: this.relay.socketPath, localProjects: response.projects.filter((project) => project.projectKind === "local" && project.hostId === "local").length };
+      return { available: true, socketPath, localProjects: response.projects.filter((project) => project.projectKind === "local" && project.hostId === "local").length };
     } catch (err) {
-      return { available: false, socketPath: this.relay.socketPath, reason: err.message };
+      return { available: false, socketPath, reason: err.message };
     }
   }
 
@@ -118,8 +129,11 @@ export class DesktopTaskDelivery {
     return { rows, coverage: "Codex Desktop's recent/pinned snapshot; local Codex workspaces only. Agent-created tasks visible in the sidebar can be omitted; read a known task ID directly before assuming creation failed." };
   }
 
-  async reuseReceipt(receipt, { cwd, promptHash, deadline }) {
+  async reuseReceipt(receipt, { cwd, promptHash, deadline, accountContext }) {
     if (!receipt) return null;
+    if (accountContext && (!receipt.accountContext || ["claude", "codex"].some((provider) => receipt.accountContext[provider] !== accountContext[provider]))) {
+      throw new Error(`The existing Desktop creation receipt ${receipt.threadId ? `for task ${receipt.threadId} ` : ""}${receipt.accountContext ? "belongs to different accounts" : "has no verified original account binding"}. Its receipt and task ID were retained. No creation or prompt resend was attempted; inspect the explicit existing task before continuing.`);
+    }
     if (path.relative(cwd, realpathSync.native(receipt.cwd))) throw new Error("The stored Desktop creation receipt belongs to another workspace. No prompt was sent.");
     if (receipt.state !== "known") throw new Error(`An earlier Desktop creation is ${receipt.state} and may already have started. ${receipt.threadId ? `threadId: ${receipt.threadId}. ` : ""}Do not resend or create another task; inspect the existing Desktop task and resolve its creation receipt first.`);
     let response;
@@ -180,7 +194,9 @@ export class DesktopTaskDelivery {
     this.security.assertCwd(cwd);
     dedupeName = dedupeName?.normalize("NFC").trim().replace(/\s+/g, " ") || undefined;
     const identity = this.receipts.key({ cwd, prompt, name: dedupeName });
-    const options = { cwd, promptHash: identity.promptHash, deadline };
+    const accountContext = this.accountContext?.();
+    if (this.accountContext && !accountContext) throw new Error("Desktop creation requires the original verified account context.");
+    const options = { cwd, promptHash: identity.promptHash, deadline, accountContext };
     const reused = await this.reuseReceipt(await this.receipts.read(identity.key), options);
     if (reused) return reused;
     const listed = await this.request("list_projects", {}, { deadline });
@@ -190,7 +206,7 @@ export class DesktopTaskDelivery {
       const existing = await this.reuseReceipt(await this.receipts.read(identity.key), options);
       if (existing) return existing;
       if (this.now() >= deadline) throw new Error("The response deadline elapsed before Desktop creation. No task was created.");
-      const receipt = { version: 1, ...identity, cwd, state: "pending", startedAt: this.now(), ...(dedupeName ? { name: dedupeName } : {}), projectId: project.projectId, ...(project.label ? { projectName: project.label } : {}) };
+      const receipt = { version: 1, ...identity, cwd, state: "pending", startedAt: this.now(), ...(accountContext ? { accountContext: { ...accountContext } } : {}), ...(dedupeName ? { name: dedupeName } : {}), projectId: project.projectId, ...(project.label ? { projectName: project.label } : {}) };
       await this.receipts.write(identity.key, receipt);
       let threadId;
       let creationConfirmed = false;
@@ -309,11 +325,11 @@ export function createThreadDelivery({
    * app-server only spawns a process that contends for the ~/.codex state and
    * then fails on the writer lock the native path exists to avoid.
    */
-  async function deliver(threadId, text) {
-    const status = relay.status();
+  async function deliver(threadId, text, options = {}) {
+    const status = relay.status(options);
     if (status.enabled) {
       try {
-        const ack = await relay.sendMessage(threadId, text);
+        const ack = await relay.sendMessage(threadId, text, options);
         reportedUnavailable = null;
         return { backend: NATIVE_BACKEND, threadId, ack };
       } catch (err) {

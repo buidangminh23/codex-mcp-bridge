@@ -11,7 +11,11 @@ import {
   MAX_FRAME_BYTES,
   NATIVE_DISPATCH_METHOD,
   NativeToolsClient,
+  NativeRelayError,
   RELAY_PROTOCOL_VERSION,
+  ACCOUNT_RELAY_PROTOCOL_VERSION,
+  accountRelaySocketPath,
+  relayAccountContext,
   relaySocketPath,
   resolveRelayThreadId,
   desktopTaskSocketPath,
@@ -20,14 +24,30 @@ import {
 } from "./native-relay.mjs";
 import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
+import { assertAccountIdentity } from "./bridge-account-context.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.13.9";
+const VERSION = "1.14.0";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
-function errorResponse(code, message) {
-  return { ok: false, v: RELAY_PROTOCOL_VERSION, error: { code, message } };
+function errorResponse(code, message, sent) {
+  return { ok: false, v: RELAY_PROTOCOL_VERSION, error: { code, message, ...(sent === false ? { sent: false } : {}) } };
+}
+
+function boundRequest(payload) {
+  return payload?.v === ACCOUNT_RELAY_PROTOCOL_VERSION;
+}
+
+function validProtocol(payload) {
+  return boundRequest(payload) ? Object.hasOwn(payload, "accountContext") : (payload?.v === undefined || payload.v === RELAY_PROTOCOL_VERSION) && !Object.hasOwn(payload, "accountContext");
+}
+
+async function checkAccountContext(payload, assertAccount) {
+  const accounts = relayAccountContext(payload.accountContext);
+  if (boundRequest(payload) && !accounts) throw new NativeRelayError("Protocol 2 requires the original account context", "RELAY_BAD_REQUEST");
+  if (accounts) await assertAccount(accounts);
+  return accounts;
 }
 
 /**
@@ -46,14 +66,13 @@ function errorCode(err) {
  */
 export async function handleRelayRequest(
   payload,
-  { dispatch, dispatchDesktop, resolveExecutor = resolveRelayThreadId, env = process.env } = {},
+  { dispatch, dispatchDesktop, resolveExecutor = resolveRelayThreadId, env = process.env, assertAccount = assertAccountIdentity } = {},
 ) {
   if (payload && typeof payload === "object" && Object.hasOwn(payload, "operation")) {
-    return handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env });
+    return handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env, assertAccount });
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
-      Object.keys(payload).some((key) => !["v", "targetThreadId", "message"].includes(key)) ||
-      (payload.v !== undefined && payload.v !== RELAY_PROTOCOL_VERSION)) {
+      Object.keys(payload).some((key) => !["v", "targetThreadId", "message", "accountContext"].includes(key)) || !validProtocol(payload)) {
     return errorResponse("RELAY_BAD_REQUEST", "expected a relay request with targetThreadId and message");
   }
   const targetThreadId = typeof payload?.targetThreadId === "string" ? payload.targetThreadId.trim() : "";
@@ -63,10 +82,12 @@ export async function handleRelayRequest(
   if (!message.trim()) return errorResponse("RELAY_BAD_REQUEST", "message must be a non-empty string");
 
   let executorThreadId;
+  let accountContext;
   try {
+    accountContext = await checkAccountContext(payload, assertAccount);
     executorThreadId = resolveExecutor(env).threadId;
   } catch (err) {
-    return errorResponse(errorCode(err), err.message);
+    return errorResponse(errorCode(err), err.message, false);
   }
 
   /**
@@ -83,24 +104,30 @@ export async function handleRelayRequest(
   }
 
   try {
-    const result = await dispatch({ executorThreadId, targetThreadId, message });
+    const result = await dispatch({ executorThreadId, targetThreadId, message }, { accountContext });
     if (result?.success !== true || result?.isError === true) {
       const detail = typeof result?.error === "string" ? result.error : result?.error?.message;
       return errorResponse("NATIVE_DISPATCH_FAILED", detail ?? "Codex Desktop did not confirm successful native dispatch");
     }
-    return { ok: true, v: RELAY_PROTOCOL_VERSION, targetThreadId, executorThreadId, result: result ?? null };
+    return { ok: true, v: boundRequest(payload) ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION, targetThreadId, executorThreadId, result: result ?? null };
   } catch (err) {
-    return errorResponse(errorCode(err), err?.message ?? String(err));
+    return errorResponse(errorCode(err), err?.message ?? String(err), err?.sent === false && err?.reachedCompanion !== true ? false : undefined);
   }
 }
 
-async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env }) {
-  if (Array.isArray(payload) || payload.v !== RELAY_PROTOCOL_VERSION ||
-      Object.keys(payload).some((key) => !["v", "operation", "arguments"].includes(key))) {
+async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env, assertAccount }) {
+  if (Array.isArray(payload) || ![RELAY_PROTOCOL_VERSION, ACCOUNT_RELAY_PROTOCOL_VERSION].includes(payload.v) || !validProtocol(payload) ||
+      Object.keys(payload).some((key) => !["v", "operation", "arguments", "accountContext"].includes(key))) {
     return errorResponse("RELAY_BAD_REQUEST", "expected an allowlisted Desktop operation");
   }
   try {
     validateDesktopOperation(payload.operation, payload.arguments);
+    let accountContext;
+    try {
+      accountContext = await checkAccountContext(payload, assertAccount);
+    } catch (error) {
+      return errorResponse(errorCode(error), error.message, false);
+    }
     if (typeof dispatchDesktop !== "function") {
       return errorResponse("NATIVE_OPERATION_UNAVAILABLE", "This companion does not support Desktop operations; reload the native relay");
     }
@@ -112,16 +139,16 @@ async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor,
       executorThreadId,
       operation: payload.operation,
       arguments: payload.arguments,
-    });
+    }, { accountContext });
     return {
       ok: true,
-      v: RELAY_PROTOCOL_VERSION,
+      v: boundRequest(payload) ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION,
       operation: payload.operation,
       executorThreadId,
       result: decodeNativeToolResult(nativeResult),
     };
   } catch (err) {
-    return errorResponse(errorCode(err), err?.message ?? String(err));
+    return errorResponse(errorCode(err), err?.message ?? String(err), err?.sent === false && err?.reachedCompanion !== true ? false : undefined);
   }
 }
 
@@ -137,6 +164,8 @@ export class RelaySocketServer {
     dispatch,
     dispatchDesktop,
     resolveExecutor = resolveRelayThreadId,
+    assertAccount = assertAccountIdentity,
+    requireAccountContext = false,
     restrictSocket = (target) => {
       if (!IS_WINDOWS) fs.chmodSync(target, 0o600);
     },
@@ -146,6 +175,8 @@ export class RelaySocketServer {
     this.dispatch = dispatch;
     this.dispatchDesktop = dispatchDesktop;
     this.resolveExecutor = resolveExecutor;
+    this.assertAccount = assertAccount;
+    this.requireAccountContext = requireAccountContext;
     this.restrictSocket = restrictSocket;
     this.log = logFn;
     this.server = null;
@@ -278,10 +309,15 @@ export class RelaySocketServer {
       this.#reply(socket, errorResponse("RELAY_BAD_REQUEST", `malformed JSON: ${err.message}`));
       return;
     }
+    if (this.requireAccountContext && !boundRequest(payload)) {
+      this.#reply(socket, errorResponse("RELAY_BAD_REQUEST", "The account relay requires protocol 2 and the original account context", false));
+      return;
+    }
     const response = await handleRelayRequest(payload, {
       dispatch: this.dispatch,
       dispatchDesktop: this.dispatchDesktop,
       resolveExecutor: this.resolveExecutor,
+      assertAccount: this.assertAccount,
     });
     if (!response.ok) this.log(`relay refused ${payload?.targetThreadId ?? "?"}: ${response.error.message}`);
     else this.log(response.operation ? `completed Desktop operation ${response.operation}` : `relayed a message into thread ${response.targetThreadId}`);
@@ -316,8 +352,10 @@ export function startRelayWhenAvailable({ nativeTools, relay, log: logFn = () =>
   const ready = new Promise((resolve) => { resolveReady = resolve; });
   const attempt = async () => {
     if (stopped) return;
+    let nativeConnected = false;
     try {
       await nativeTools.connect();
+      nativeConnected = true;
       if (stopped) {
         nativeTools.close();
         return;
@@ -331,8 +369,8 @@ export function startRelayWhenAvailable({ nativeTools, relay, log: logFn = () =>
       resolveReady(true);
     } catch (err) {
       if (stopped) return;
-      nativeTools.close();
-      if (!nativeTools.socketPath) {
+      if (!nativeConnected) nativeTools.close();
+      if (!nativeTools.socketPath && !nativeTools.hasDiscoveredSocket) {
         logFn(`native relay unavailable (${err.message})`);
         resolveReady(false);
         return;
@@ -379,17 +417,24 @@ if (invokedDirectly) {
   );
 
   const nativeTools = new NativeToolsClient();
-  const dispatch = (args) => nativeTools.dispatch(args);
+  const dispatch = (args, options) => nativeTools.dispatch(args, options);
 
   const relay = new RelaySocketServer({
     socketPath: relaySocketPath(),
     dispatch,
-    dispatchDesktop: (args) => nativeTools.dispatchDesktop(args),
+    dispatchDesktop: (args, options) => nativeTools.dispatchDesktop(args, options),
     log,
   });
   const desktopRelay = desktopTaskSocketPath() === relay.socketPath ? relay : new RelaySocketServer({
     socketPath: desktopTaskSocketPath(),
-    dispatchDesktop: (args) => nativeTools.dispatchDesktop(args),
+    dispatchDesktop: (args, options) => nativeTools.dispatchDesktop(args, options),
+    log,
+  });
+  const accountRelay = new RelaySocketServer({
+    socketPath: accountRelaySocketPath(),
+    requireAccountContext: true,
+    dispatch,
+    dispatchDesktop: (args, options) => nativeTools.dispatchDesktop(args, options),
     log,
   });
 
@@ -424,6 +469,7 @@ if (invokedDirectly) {
               `companion:      codex-native-relay ${VERSION}`,
               `relay socket:   ${relay.started ? relay.socketPath : `${relay.socketPath} (${listening ? "shared companion listening" : "not listening"})`}`,
               `desktop tasks:  ${desktopRelay.socketPath} (${await desktopRelay.isListening() ? "listening" : "not listening"})`,
+              `account relay:  ${accountRelay.socketPath} (protocol ${ACCOUNT_RELAY_PROTOCOL_VERSION}, ${await accountRelay.isListening() ? "listening" : "not listening"})`,
               `executor:       ${executor}`,
               `dispatch:       ${process.env.CODEX_NATIVE_RELAY_METHOD ?? NATIVE_DISPATCH_METHOD}`,
               `native pipe:    ${nativeTools.socketPath ?? "unavailable (requires Codex Desktop)"}`,
@@ -436,7 +482,8 @@ if (invokedDirectly) {
 
   const startup = startRelayWhenAvailable({ nativeTools, relay, log });
   const desktopStartup = desktopRelay === relay ? startup : startRelayWhenAvailable({ nativeTools, relay: desktopRelay, log });
-  mcp.server.onclose = () => { startup.stop(); desktopStartup.stop(); };
+  const accountStartup = startRelayWhenAvailable({ nativeTools, relay: accountRelay, log });
+  mcp.server.onclose = () => { startup.stop(); desktopStartup.stop(); accountStartup.stop(); };
   await mcp.connect(new StdioServerTransport());
   log(`ready on ${PLATFORM_LABEL} (${relay.started ? relay.socketPath : "socket down"})`);
 }

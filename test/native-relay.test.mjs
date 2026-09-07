@@ -12,6 +12,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 import {
   MAX_FRAME_BYTES,
+  ACCOUNT_RELAY_PROTOCOL_VERSION,
   NATIVE_DISPATCH_METHOD,
   NativeToolsClient,
   NativeDesktopRelay,
@@ -31,6 +32,7 @@ import {
   decodeNativeToolResult,
   desktopTasksConfigured,
   desktopTaskSocketPath,
+  accountRelaySocketPath,
 } from "../src/native-relay.mjs";
 import { RelaySocketServer, handleRelayRequest, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
 import { APP_SERVER_BACKEND, NATIVE_BACKEND, createThreadDelivery, DesktopTaskDelivery, matchDesktopProject } from "../src/thread-delivery.mjs";
@@ -1036,6 +1038,205 @@ async function nativePipe(onRequest, socketPath = tempSocket()) {
   };
 }
 
+describe("account-bound relay dispatch", () => {
+  const accountContext = { claude: "a".repeat(64), codex: "b".repeat(64) };
+  const changed = () => Object.assign(new Error("The active account changed"), { code: "BRIDGE_ACCOUNT_CHANGED" });
+
+  it("checks an asynchronous first-leg preflight before writing any request", async () => {
+    let calls = 0;
+    let release;
+    let entered;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const checked = new Promise((resolve) => { entered = resolve; });
+    const server = new RelaySocketServer({ socketPath: tempSocket(), resolveExecutor: stubExecutor, dispatch: async () => { calls += 1; return { success: true }; } });
+    await server.start();
+    const relay = new NativeDesktopRelay({ socketPath: server.socketPath });
+    try {
+      const pending = relay.sendMessage("target", "private work", { beforeSend: async () => { entered(); await gate; throw changed(); } });
+      const rejected = assert.rejects(pending, (error) => error.code === "BRIDGE_ACCOUNT_CHANGED" && error.sent === false && error.reachedCompanion === false);
+      await checked;
+      assert.equal(calls, 0);
+      release();
+      await rejected;
+      assert.equal(calls, 0);
+    } finally {
+      release();
+      server.stop();
+    }
+  });
+
+  it("never writes after an asynchronous first-leg guard exceeds its deadline", async () => {
+    let calls = 0;
+    let release;
+    let guardFinished;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const guarded = new Promise((resolve) => { guardFinished = resolve; });
+    const server = new RelaySocketServer({ socketPath: tempSocket(), resolveExecutor: stubExecutor, dispatchDesktop: async () => { calls += 1; return { success: true }; } });
+    await server.start();
+    const relay = new NativeDesktopRelay({ socketPath: server.socketPath, timeoutMs: 30 });
+    try {
+      await assert.rejects(() => relay.requestDesktop("list_projects", {}, { beforeSend: async () => { await gate; guardFinished(); } }), (error) => error.sent === false && error.reachedCompanion === false);
+      release();
+      await guarded;
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(calls, 0);
+    } finally {
+      release();
+      server.stop();
+    }
+  });
+
+  it("carries protocol 2 identities through a checked companion without adding them to native tool arguments", async () => {
+    const verified = [];
+    const dispatched = [];
+    const server = new RelaySocketServer({
+      socketPath: tempSocket(), resolveExecutor: stubExecutor,
+      assertAccount: (accounts) => { assert.deepEqual(accounts, accountContext); verified.push(accounts); },
+      dispatch: async (args, options) => { dispatched.push({ args, options }); return { success: true }; },
+    });
+    await server.start();
+    const relay = new NativeDesktopRelay({ socketPath: server.socketPath });
+    try {
+      const result = await relay.sendMessage("target", "bound work", { accountContext });
+      assert.equal(result.v, ACCOUNT_RELAY_PROTOCOL_VERSION);
+      assert.equal(verified.length, 1);
+      assert.deepEqual(dispatched[0].options.accountContext, accountContext);
+      assert.equal(Object.hasOwn(dispatched[0].args, "accountContext"), false);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("refuses a changed account at companion receipt before native dispatch", async () => {
+    let dispatched = 0;
+    const server = new RelaySocketServer({ socketPath: tempSocket(), resolveExecutor: stubExecutor, assertAccount: () => { throw changed(); }, dispatchDesktop: async () => { dispatched += 1; return { success: true }; } });
+    await server.start();
+    const relay = new NativeDesktopRelay({ socketPath: server.socketPath });
+    try {
+      await assert.rejects(() => relay.requestDesktop("list_projects", {}, { accountContext }), (error) => error.code === "BRIDGE_ACCOUNT_CHANGED" && error.sent === false && error.reachedCompanion === false);
+      assert.equal(dispatched, 0);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("rejects binding on legacy protocol and refuses a missing protocol 2 binding", async () => {
+    for (const request of [
+      { v: 1, targetThreadId: "target", message: "blocked", accountContext },
+      { v: 2, targetThreadId: "target", message: "blocked" },
+      { v: 2, targetThreadId: "target", message: "blocked", accountContext: undefined },
+      { v: 2, targetThreadId: "target", message: "blocked", accountContext: { ...accountContext, extra: true } },
+    ]) {
+      const result = await handleRelayRequest(request, { resolveExecutor: stubExecutor, assertAccount: () => assert.fail("invalid envelopes must not authenticate"), dispatch: () => assert.fail("invalid envelopes must not dispatch") });
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "RELAY_BAD_REQUEST");
+    }
+  });
+
+  it("lets an old protocol 1 companion reject account-bound work before dispatch", async () => {
+    let dispatched = 0;
+    const socketPath = tempSocket();
+    const server = net.createServer((socket) => {
+      let text = "";
+      socket.on("error", () => {});
+      socket.on("data", (chunk) => {
+        text += chunk.toString("utf8");
+        if (!text.includes("\n")) return;
+        const payload = JSON.parse(text.slice(0, text.indexOf("\n")));
+        if (Object.keys(payload).some((key) => !["v", "targetThreadId", "message"].includes(key)) || (payload.v !== undefined && payload.v !== 1)) {
+          socket.end(JSON.stringify({ ok: false, v: 1, error: { code: "RELAY_BAD_REQUEST", message: "expected a relay request with targetThreadId and message" } }) + "\n");
+          return;
+        }
+        dispatched += 1;
+        socket.end(JSON.stringify({ ok: true, v: 1 }) + "\n");
+      });
+    });
+    await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+    try {
+      const relay = new NativeDesktopRelay({ socketPath });
+      await assert.rejects(() => relay.sendMessage("target", "must not reach old dispatch", { accountContext }), { code: "RELAY_BAD_REQUEST" });
+      assert.equal(dispatched, 0);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("refuses a protocol downgrade on the dedicated account endpoint", async () => {
+    const server = new RelaySocketServer({ socketPath: tempSocket(), requireAccountContext: true, resolveExecutor: stubExecutor, dispatch: async () => assert.fail("an account endpoint cannot dispatch unbound work") });
+    await server.start();
+    try {
+      const relay = new NativeDesktopRelay({ socketPath: server.socketPath });
+      await assert.rejects(() => relay.sendMessage("target", "unbound work"), (error) => error.code === "RELAY_BAD_REQUEST" && error.sent === false);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("rechecks the original account after asynchronous native connection setup", async () => {
+    let calls = 0;
+    let release;
+    let current = accountContext;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const native = await nativePipe(() => { calls += 1; });
+    const client = new NativeToolsClient({ env: {}, resolveSocketPath: async () => { await gate; return native.socketPath; }, assertAccount: (accounts) => { if (accounts.codex !== current.codex) throw changed(); } });
+    try {
+      const pending = client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "must remain unsent" }, { accountContext });
+      const rejected = assert.rejects(pending, (error) => error.code === "BRIDGE_ACCOUNT_CHANGED" && error.sent === false && error.reachedCompanion === false);
+      current = { ...accountContext, codex: "c".repeat(64) };
+      release();
+      await rejected;
+      assert.equal(calls, 0);
+      assert.equal(client.pending.size, 0);
+    } finally {
+      release();
+      client.close();
+      await native.close();
+    }
+  });
+
+  it("never writes after an asynchronous native guard has timed out", async () => {
+    let calls = 0;
+    let release;
+    let guardFinished;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const guarded = new Promise((resolve) => { guardFinished = resolve; });
+    const native = await nativePipe(() => { calls += 1; });
+    const client = new NativeToolsClient({ env: {}, socketPath: native.socketPath, timeoutMs: 30 });
+    try {
+      await assert.rejects(() => client.dispatchDesktop({ executorThreadId: "executor", operation: "list_projects", arguments: {} }, { beforeSend: async () => { await gate; guardFinished(); } }), (error) => error.sent === false && error.reachedCompanion === false);
+      release();
+      await guarded;
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(calls, 0);
+    } finally {
+      release();
+      client.close();
+      await native.close();
+    }
+  });
+
+  it("routes bound work to the separate account endpoint while a legacy endpoint is owned", async () => {
+    let legacyCalls = 0;
+    let boundCalls = 0;
+    const base = tempSocket();
+    const legacy = new RelaySocketServer({ socketPath: base, resolveExecutor: stubExecutor, dispatch: async () => { legacyCalls += 1; return { success: true }; } });
+    const bound = new RelaySocketServer({ socketPath: accountRelaySocketPath({ CODEX_NATIVE_RELAY_SOCKET: base }), resolveExecutor: stubExecutor, assertAccount: (accounts) => assert.deepEqual(accounts, accountContext), dispatch: async () => { boundCalls += 1; return { success: true }; } });
+    await legacy.start();
+    await bound.start();
+    const relay = new NativeDesktopRelay({ env: { CODEX_NATIVE_RELAY_SOCKET: base } });
+    try {
+      assert.equal(relay.status({ accountContext }).socketPath, bound.socketPath);
+      await relay.sendMessage("target", "bound", { accountContext });
+      await relay.sendMessage("target", "legacy");
+      assert.equal(legacyCalls, 1);
+      assert.equal(boundCalls, 1);
+    } finally {
+      legacy.stop();
+      bound.stop();
+    }
+  });
+});
+
 describe("native tools pipe discovery", () => {
   const windowsExecutable = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.904.1121.0_x64__2p2nqsd0c76g0\app\resources\codex.exe`;
   const windowsPipe = String.raw`\\.\pipe\codex-app-tools-9d269c5c`;
@@ -1199,6 +1400,7 @@ describe("native tools pipe protocol", () => {
           assert.equal(client.socketPath, native.socketPath);
         } finally {
           client.close();
+          assert.equal(client.socketPath, native.socketPath);
         }
       }
     } finally {
@@ -1218,6 +1420,78 @@ describe("native tools pipe protocol", () => {
     } finally {
       client.close();
       await native.close();
+    }
+  });
+
+  it("re-discovers a changed Desktop endpoint after the old handshake fails", async () => {
+    let discoveries = 0;
+    let requests = 0;
+    const stale = tempSocket();
+    const native = await nativePipe((request, socket) => {
+      requests += 1;
+      socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true } }));
+    });
+    const client = new NativeToolsClient({ env: {}, resolveSocketPath: async () => (++discoveries === 1 ? stale : native.socketPath) });
+    try {
+      await assert.rejects(() => client.connect(), { code: "NATIVE_PIPE_UNAVAILABLE" });
+      assert.equal(client.socketPath, null);
+      assert.equal(client.hasDiscoveredSocket, true);
+      assert.deepEqual(await client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "new endpoint" }), { success: true });
+      assert.equal(discoveries, 2);
+      assert.equal(requests, 1);
+    } finally {
+      client.close();
+      await native.close();
+    }
+  });
+
+  it("re-discovers after close without letting the old close event clear the replacement", async () => {
+    const first = await nativePipe(() => assert.fail("the original connection must not receive a message"));
+    const second = await nativePipe((request, socket) => socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true } })));
+    let endpoint = first.socketPath;
+    const client = new NativeToolsClient({ env: {}, resolveSocketPath: async () => endpoint });
+    try {
+      await client.connect();
+      client.close();
+      assert.equal(client.socketPath, null);
+      endpoint = second.socketPath;
+      await client.connect();
+      assert.deepEqual(await client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "replacement" }), { success: true });
+      assert.equal(client.socketPath, second.socketPath);
+      assert.equal(first.connectionCount, 1);
+      assert.equal(second.connectionCount, 1);
+    } finally {
+      client.close();
+      await first.close();
+      await second.close();
+    }
+  });
+
+  it("forgets a disconnected discovered endpoint without replaying its uncertain message", async () => {
+    const originalMessages = [];
+    const replacementMessages = [];
+    const first = await nativePipe((request, socket) => {
+      originalMessages.push(request.params.arguments.prompt);
+      socket.destroy();
+    });
+    const second = await nativePipe((request, socket) => {
+      replacementMessages.push(request.params.arguments.prompt);
+      socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true } }));
+    });
+    let endpoint = first.socketPath;
+    const client = new NativeToolsClient({ env: {}, resolveSocketPath: async () => endpoint });
+    try {
+      await assert.rejects(() => client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "uncertain original" }), { code: "NATIVE_DELIVERY_UNCONFIRMED" });
+      assert.equal(client.socketPath, null);
+      endpoint = second.socketPath;
+      await client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "separate later message" });
+      assert.deepEqual(originalMessages, ["uncertain original"]);
+      assert.deepEqual(replacementMessages, ["separate later message"]);
+      assert.equal(client.pending.size, 0);
+    } finally {
+      client.close();
+      await first.close();
+      await second.close();
     }
   });
 
@@ -1368,6 +1642,54 @@ describe("native tools pipe protocol", () => {
 });
 
 describe("native relay startup recovery", () => {
+  it("does not disconnect shared native requests while another companion owns a legacy socket", async () => {
+    let attempts = 0;
+    let closes = 0;
+    const startup = startRelayWhenAvailable({
+      nativeTools: { socketPath: "connected-native-pipe", connect: async () => {}, close: () => { closes += 1; } },
+      relay: { start: async () => { if (++attempts === 1) throw new Error("another companion owns the legacy socket"); }, stop() {} },
+      retryDelayMs: 5,
+    });
+    const alive = setTimeout(() => {}, 1000);
+    try {
+      assert.equal(await startup.ready, true);
+      assert.equal(attempts, 2);
+      assert.equal(closes, 0);
+    } finally {
+      clearTimeout(alive);
+      startup.stop();
+    }
+  });
+
+  it("keeps startup recovery active after clearing a previously discovered socket", async () => {
+    let attempts = 0;
+    let started = 0;
+    const nativeTools = {
+      socketPath: null,
+      hasDiscoveredSocket: false,
+      connect: async () => {
+        attempts += 1;
+        nativeTools.hasDiscoveredSocket = true;
+        nativeTools.socketPath = "discovered-pipe";
+        if (attempts === 1) throw new Error("Desktop endpoint was replaced");
+      },
+      close() { nativeTools.socketPath = null; },
+    };
+    const startup = startRelayWhenAvailable({ nativeTools, relay: { start: async () => { started += 1; }, stop() {} }, retryDelayMs: 5 });
+    try {
+      const alive = globalThis.setTimeout(() => {}, 1000);
+      try {
+        assert.equal(await startup.ready, true);
+      } finally {
+        globalThis.clearTimeout(alive);
+      }
+      assert.equal(attempts, 2);
+      assert.equal(started, 1);
+    } finally {
+      startup.stop();
+    }
+  });
+
   it("retries with capped backoff until the configured pipe is ready", async () => {
     let attempts = 0;
     let started = 0;

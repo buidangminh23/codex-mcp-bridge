@@ -20,7 +20,7 @@ import { exitForVersionRequest } from "../src/cli-version.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.13.9";
+const VERSION = "1.14.0";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = path.join(root, "src", "native-relay-companion.mjs");
 const serverName = process.env.CODEX_NATIVE_RELAY_NAME ?? "codex-native-relay";

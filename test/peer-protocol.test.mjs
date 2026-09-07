@@ -610,6 +610,16 @@ describe("peer endpoint", () => {
     assert.deepEqual(isolated.drainInbox(2), []);
   });
 
+  it("preserves another account's unread replies while draining the active account", () => {
+    const isolated = new PeerEndpoint({ name: "account-inbox" });
+    const oldReply = { msgId: "old", text: "Old account", accountContext: { codex: "a" } };
+    const currentReply = { msgId: "current", text: "Current account", accountContext: { codex: "b" } };
+    isolated.inbox.push(oldReply, currentReply);
+    assert.deepEqual(isolated.drainInbox(1, (record) => record.accountContext.codex === "b"), [currentReply]);
+    assert.deepEqual(isolated.inbox, [oldReply]);
+    assert.deepEqual(isolated.drainInbox(1, (record) => record.accountContext.codex === "a"), [oldReply]);
+  });
+
   it("serializes requests to one peer without reusing same-millisecond replies", async (t) => {
     t.mock.method(Date, "now", () => 12345);
     const sent = [];
@@ -671,8 +681,10 @@ describe("peer endpoint", () => {
       sent.push({ socket, mode: options.permissionMode });
       return options.msgId;
     });
-    const first = endpoint.sendAndWait("caller-first", "first", { timeoutMs: 1000, permissionMode: "bypass", replyThreadId: "task-first" });
-    const second = endpoint.sendAndWait("caller-second", "second", { timeoutMs: 1000, permissionMode: "prompting", replyThreadId: "task-second" });
+    const firstAccounts = { codex: "codex-a", claude: "claude-a" };
+    const secondAccounts = { codex: "codex-b", claude: "claude-b" };
+    const first = endpoint.sendAndWait("caller-first", "first", { timeoutMs: 1000, permissionMode: "bypass", replyThreadId: "task-first", accountContext: firstAccounts });
+    const second = endpoint.sendAndWait("caller-second", "second", { timeoutMs: 1000, permissionMode: "prompting", replyThreadId: "task-second", accountContext: secondAccounts });
     await yieldToEvents();
     endpoint.permissionMode = "prompting";
     await receiveMessage("caller-second", "second reply");
@@ -681,6 +693,9 @@ describe("peer endpoint", () => {
     assert.deepEqual(sent, [{ socket: "caller-first", mode: "bypass" }, { socket: "caller-second", mode: "prompting" }]);
     assert.equal(results[0].reply.replyThreadId, "task-first");
     assert.equal(results[1].reply.replyThreadId, "task-second");
+    assert.deepEqual(results[0].reply.accountContext, firstAccounts);
+    assert.deepEqual(results[1].reply.accountContext, secondAccounts);
+    assert.equal(Object.isFrozen(results[0].reply.accountContext), true);
     assert.equal(endpoint.readDelivery(results[0].msgId).replyThreadId, "task-first");
     assert.equal(endpoint.readDelivery(results[0].msgId).senderMode, "bypass");
   });

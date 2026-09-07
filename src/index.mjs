@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import path from "node:path";
 import { realpathSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 import { CodexAppServerClient, writerLockWarning } from "./app-server-client.mjs";
 import {
@@ -26,10 +27,12 @@ import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "./thread-delivery.m
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
+import { accountIdentity, assertAccountIdentity, publicAccountState, readBridgeAccounts, requireBridgeAccounts } from "./bridge-account-context.mjs";
+import { assertClaudeSenderContext, readClaudeSenderContext, requireClaudeSenderContext } from "./claude-sender-context.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.13.9";
+const VERSION = "1.14.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -50,7 +53,40 @@ const RELEASE_TURN_STATUSES = TERMINAL_TURN_STATUSES;
 const security = new BridgeSecurityPolicy();
 const desktopTasksEnabled = desktopTasksConfigured();
 const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
-const desktopTasks = new DesktopTaskDelivery({ security });
+const desktopOperation = new AsyncLocalStorage();
+const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts });
+
+async function assertDesktopOperation(context, { verifyProcess = false } = {}) {
+  if (!context || context.diagnostic) return;
+  runtime.assertCurrent();
+  const accounts = readBridgeAccounts();
+  assertAccountIdentity(context.accounts, accounts);
+  await assertClaudeSenderContext(context.caller, {
+    account: accounts.claude,
+    ...(!verifyProcess ? { readAncestry: async () => context.caller.lineage } : {}),
+  });
+  assertAccountIdentity(context.accounts);
+}
+
+async function beforeDesktopRequest({ operation, args, phase }) {
+  const context = desktopOperation.getStore();
+  if (context?.diagnostic) return;
+  if (!context) throw new Error("Desktop operations require a verified calling Code session.");
+  const mutating = ["create_thread", "send_message_to_thread", "set_thread_title", "navigate_to_codex_page"].includes(operation);
+  await assertDesktopOperation(context, { verifyProcess: mutating && phase === "write" });
+  if (mutating) {
+    context.dispatched = true;
+    if (args.threadId) context.threadId = args.threadId;
+  }
+}
+
+function withheldDesktopResult(error, context) {
+  const reason = (error?.message ?? "The calling session or accounts could not be reverified.").replace(/\s*No message was sent\./g, "");
+  return {
+    ...textResult(`${reason} ${context.dispatched ? "A Desktop operation may already have been dispatched. Its original destination and any creation receipt were preserved." : "No Desktop mutation was dispatched."} Reply content was withheld. Inspect the original task and do not resend automatically.`, true),
+    structuredContent: { accountContext: context.accounts, operation: { state: context.dispatched ? "dispatched_outcome_unverified" : "blocked", threadId: context.threadId ?? null } },
+  };
+}
 
 const client = desktopTasksEnabled ? null : new CodexAppServerClient({
   clientInfo: { name: "codex-mcp-bridge", title: "Codex MCP Bridge", version: VERSION },
@@ -116,7 +152,7 @@ function threadNameFor({ cwd, prompt, name }) {
 }
 
 async function delegateDesktopTask({ cwd, prompt, name, model, effort, timeoutSec, openInApp, waitForReply = true }) {
-  const deadline = Date.now() + Math.min((timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS);
+  const deadline = desktopOperation.getStore()?.deadline ?? Date.now() + Math.min((timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS);
   const workspace = resolveWorkspacePath(cwd);
   const created = await desktopTasks.create({
     cwd: workspace.path, prompt, name: threadNameFor({ cwd: workspace.path, prompt, name }),
@@ -297,10 +333,31 @@ function registerTool(name, definition, handler) {
       if (name === "codex_bridge_status") {
         const state = runtime.status();
         if (!state.current) return { ...failure(new Error(`${state.reason}; reconnect this MCP server in the existing task.`)), structuredContent: { runtime: state } };
-        const result = await handler(...args);
+        const accounts = desktopTasksEnabled ? readBridgeAccounts() : null;
+        const result = await desktopOperation.run({ diagnostic: true, accounts: accountIdentity(accounts) }, () => handler(...args));
         result.content.push({ type: "text", text: `runtime pid: ${state.pid}\nloaded source: ${state.revision}\nruntime state: current` });
         result.structuredContent = { ...result.structuredContent, runtime: state };
+        if (desktopTasksEnabled) {
+          result.structuredContent.accounts = { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) };
+        }
         return result;
+      }
+      if (desktopTasksEnabled) {
+        const deadline = Date.now() + Math.min((args[0]?.timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS);
+        const accounts = readBridgeAccounts();
+        const identity = requireBridgeAccounts(accounts);
+        const caller = requireClaudeSenderContext(await readClaudeSenderContext({ account: accounts.claude }));
+        const context = { accounts: identity, caller, dispatched: false, deadline };
+        return await desktopOperation.run(context, async () => {
+          try {
+            await assertDesktopOperation(context);
+            const result = await handler(...args);
+            await assertDesktopOperation(context);
+            return result;
+          } catch (error) {
+            return withheldDesktopResult(error, context);
+          }
+        });
       }
       return await handler(...args);
     } catch (err) {
@@ -441,7 +498,7 @@ registerTool(
     },
   },
   async ({ threadId, prompt, timeoutSec, cwd, model, effort, name, openInApp, releaseAfterTurn }) => {
-    const deadline = desktopTasksEnabled ? Date.now() + Math.min((timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS) : undefined;
+    const deadline = desktopTasksEnabled ? desktopOperation.getStore()?.deadline ?? Date.now() + Math.min((timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS) : undefined;
     return (desktopTasksEnabled ? desktopTasks : client).withThread(threadId, async () => {
       const notes = [];
       const shouldOpen = openInApp ?? DEFAULT_OPEN_IN_APP;
@@ -670,7 +727,7 @@ registerTool(
   async ({ threadId, limit }) => {
     try {
       if (desktopTasksEnabled) {
-        const deadline = Date.now() + DESKTOP_TOOL_BUDGET_MS;
+        const deadline = desktopOperation.getStore()?.deadline ?? Date.now() + DESKTOP_TOOL_BUDGET_MS;
         await desktopTasks.inspect(threadId, undefined, { deadline });
         const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10) }, { deadline });
         return textResult(JSON.stringify(response, null, 2));
@@ -758,9 +815,12 @@ registerTool(
   async ({ threadId, background }) => {
     try {
       if (desktopTasksEnabled) {
-        const deadline = Date.now() + DESKTOP_TOOL_BUDGET_MS;
+        const deadline = desktopOperation.getStore()?.deadline ?? Date.now() + DESKTOP_TOOL_BUDGET_MS;
         await desktopTasks.inspect(threadId, undefined, { deadline });
-        if (background) await openThreadInCodexApp(threadId, { activate: false });
+        if (background) {
+          await beforeDesktopRequest({ operation: "navigate_to_codex_page", args: { threadId }, phase: "write" });
+          await openThreadInCodexApp(threadId, { activate: false });
+        }
         else await desktopTasks.open(threadId, { deadline });
         return textResult(`Opened ${codexThreadUrl(threadId)} in Codex Desktop.`);
       }

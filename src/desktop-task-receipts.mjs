@@ -5,7 +5,7 @@ import path from "node:path";
 import { homeDir } from "./platform.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
-const FIELDS = new Set(["version", "key", "cwd", "promptHash", "state", "startedAt", "threadId", "projectId", "projectName", "name"]);
+const FIELDS = new Set(["version", "key", "cwd", "promptHash", "state", "startedAt", "threadId", "projectId", "projectName", "name", "accountContext"]);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const normalizedName = (name) => name?.normalize("NFC").trim().replace(/\s+/g, " ");
 const canonicalCwd = (cwd) => process.platform === "win32" ? path.normalize(cwd).toLowerCase() : path.normalize(cwd);
@@ -26,6 +26,8 @@ function validateReceipt(key, receipt) {
     && nonemptyString(receipt.cwd) && path.isAbsolute(receipt.cwd)
     && ["pending", "unknown", "known"].includes(receipt.state)
     && Number.isSafeInteger(receipt.startedAt) && receipt.startedAt >= 0
+    && (receipt.accountContext === undefined || receipt.accountContext && typeof receipt.accountContext === "object" && !Array.isArray(receipt.accountContext)
+      && Object.keys(receipt.accountContext).length === 2 && ["claude", "codex"].every((provider) => typeof receipt.accountContext[provider] === "string" && HASH.test(receipt.accountContext[provider])))
     && ["threadId", "projectId", "projectName", "name"].every((field) => receipt[field] === undefined || nonemptyString(receipt[field]))
     && (receipt.state !== "known" || nonemptyString(receipt.threadId));
   if (!valid) throw unsafeReceipt(key);

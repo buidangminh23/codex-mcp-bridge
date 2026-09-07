@@ -7,7 +7,7 @@ import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "../src/thread-deliv
 import { DesktopTaskReceipts } from "../src/desktop-task-receipts.mjs";
 import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
 
-function fixture(t, { dispatch, now = Date.now, sleep } = {}) {
+function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountContext } = {}) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "desktop-receipt-delivery-")));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const cwd = path.join(directory, "project");
@@ -38,11 +38,65 @@ function fixture(t, { dispatch, now = Date.now, sleep } = {}) {
     throw new Error(`Unexpected operation ${operation}`);
   } };
   const receipts = new DesktopTaskReceipts({ directory: path.join(directory, "receipts") });
-  const createDelivery = () => new DesktopTaskDelivery({ relay, security, now, sleep, receipts: new DesktopTaskReceipts({ directory: receipts.directory }) });
+  const createDelivery = () => new DesktopTaskDelivery({ relay, security, now, sleep, beforeRequest, accountContext, receipts: new DesktopTaskReceipts({ directory: receipts.directory }) });
   return { directory, cwd, calls, registered, receipts, createDelivery, delivery: createDelivery(), setState(nextStatus, nextTurn) { status = nextStatus; turnStatus = nextTurn; } };
 }
 
 describe("Desktop creation receipts and deadlines", () => {
+  it("probes the account-bound endpoint for status and refuses readiness without verified accounts", async (t) => {
+    let accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
+    const f = fixture(t, { accountContext: () => accounts });
+    f.delivery.relay.status = ({ accountContext }) => ({ socketPath: accountContext ? "account-endpoint" : "legacy-endpoint" });
+    assert.deepEqual(await f.delivery.status(), { available: true, socketPath: "account-endpoint", localProjects: 1 });
+    assert.deepEqual(f.calls[0].options.accountContext, accounts);
+    accounts = null;
+    const unavailable = await f.delivery.status();
+    assert.equal(unavailable.available, false);
+    assert.match(unavailable.reason, /accounts could not both be verified/);
+    assert.equal(f.calls.length, 1);
+  });
+
+  it("binds new receipts to the original account pair and retains them after an account switch", async (t) => {
+    let accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
+    const f = fixture(t, { accountContext: () => accounts });
+    const args = { cwd: f.cwd, name: "Bound task", prompt: "Private original" };
+    const created = await f.delivery.create(args);
+    const key = f.receipts.key(args).key;
+    const receipt = await f.receipts.read(key);
+    assert.deepEqual(receipt.accountContext, accounts);
+    accounts = { ...accounts, claude: "c".repeat(64) };
+    await assert.rejects(f.createDelivery().create(args), /different accounts.*retained.*No creation or prompt resend/);
+    assert.deepEqual(await f.receipts.read(key), receipt);
+    assert.equal(receipt.threadId, created.threadId);
+    assert.deepEqual(f.calls.map((call) => call.operation), ["list_projects", "create_thread"]);
+  });
+
+  it("retains an unbound legacy receipt instead of reusing it or creating another task", async (t) => {
+    const f = fixture(t);
+    const args = { cwd: f.cwd, name: "Legacy task", prompt: "Original" };
+    await f.delivery.create(args);
+    const key = f.receipts.key(args).key;
+    const original = await f.receipts.read(key);
+    f.delivery.accountContext = () => ({ claude: "a".repeat(64), codex: "b".repeat(64) });
+    await assert.rejects(f.delivery.create(args), /no verified original account binding.*retained/);
+    assert.deepEqual(await f.receipts.read(key), original);
+    assert.deepEqual(f.calls.map((call) => call.operation), ["list_projects", "create_thread"]);
+  });
+
+  it("checks the original account before a queued send reaches the native endpoint", async (t) => {
+    let current = "a";
+    const f = fixture(t, { beforeRequest: () => { if (current !== "a") throw new Error("account changed"); } });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const first = f.delivery.withThread("task", () => gate);
+    const queued = f.delivery.withThread("task", () => f.delivery.send({ threadId: "task", prompt: "Queued" }));
+    current = "b";
+    release();
+    await first;
+    await assert.rejects(queued, /account changed/);
+    assert.deepEqual(f.calls, []);
+  });
+
   it("persists the accepted id before returning and reuses it after restart with an edited named brief", async (t) => {
     const f = fixture(t);
     const first = await f.delivery.create({ cwd: f.cwd, name: "Stable task", prompt: "Initial brief" });

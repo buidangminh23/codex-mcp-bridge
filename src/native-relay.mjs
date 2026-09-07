@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir } from "./platform.mjs";
+import { assertAccountIdentity } from "./bridge-account-context.mjs";
 
 /**
  * The Codex Desktop app owns the per-thread writer lock of every thread it has
@@ -35,6 +36,7 @@ import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir } from "./platform.mjs";
 export const NATIVE_DISPATCH_METHOD = "tools/call";
 
 export const RELAY_PROTOCOL_VERSION = 1;
+export const ACCOUNT_RELAY_PROTOCOL_VERSION = 2;
 
 /**
  * A relay frame carries one chat message, so a megabyte-scale line is either a
@@ -68,6 +70,28 @@ export function relaySocketPath(env = process.env) {
 
 export function desktopTaskSocketPath(env = process.env) {
   return env.CODEX_NATIVE_RELAY_SOCKET ?? `${relaySocketPath(env)}-desktop-tasks`;
+}
+
+export function accountRelaySocketPath(env = process.env) {
+  return `${relaySocketPath(env)}-accounts-v2`;
+}
+
+export function relayAccountContext(value) {
+  if (value === undefined) return undefined;
+  if (!exactObject(value, ["claude", "codex"]) || Object.keys(value).length !== 2 || [value.claude, value.codex].some((item) => typeof item !== "string" || !/^[a-f0-9]{64}$/.test(item))) {
+    throw beforeWriteError(new NativeRelayError("A bound relay request requires exact Claude and Codex account fingerprints", "RELAY_BAD_REQUEST"));
+  }
+  return Object.freeze({ claude: value.claude, codex: value.codex });
+}
+
+function beforeWriteError(error) {
+  const failure = new NativeRelayError(error?.message ?? "Relay preflight failed before dispatch", typeof error?.code === "string" ? error.code : "RELAY_PREFLIGHT_FAILED", { reachedCompanion: false });
+  failure.sent = false;
+  return failure;
+}
+
+function validateBeforeSend(beforeSend) {
+  if (beforeSend !== undefined && typeof beforeSend !== "function") throw beforeWriteError(new NativeRelayError("Relay beforeSend must be a function", "RELAY_BAD_REQUEST"));
 }
 
 export function desktopTasksConfigured(env = process.env) {
@@ -409,11 +433,14 @@ export async function resolveNativeToolsPipePath({
 }
 
 export class NativeToolsClient {
-  constructor({ env = process.env, socketPath = env.CODEX_APP_TOOLS_PIPE_PATH, timeoutMs = DEFAULT_TIMEOUT_MS, resolveSocketPath = () => resolveNativeToolsPipePath({ env }) } = {}) {
+  constructor({ env = process.env, socketPath = env.CODEX_APP_TOOLS_PIPE_PATH, timeoutMs = DEFAULT_TIMEOUT_MS, resolveSocketPath = () => resolveNativeToolsPipePath({ env }), assertAccount = assertAccountIdentity } = {}) {
     this.env = env;
     this.socketPath = socketPath;
+    this.explicitSocketPath = socketPath || null;
+    this.hasDiscoveredSocket = false;
     this.timeoutMs = timeoutMs;
     this.resolveSocketPath = resolveSocketPath;
+    this.assertAccount = assertAccount;
     this.socket = null;
     this.connectingSocket = null;
     this.connecting = null;
@@ -432,6 +459,7 @@ export class NativeToolsClient {
         throw new NativeRelayError("Native tools client closed while discovering the Desktop pipe", "NATIVE_PIPE_UNAVAILABLE");
       }
       this.socketPath = socketPath;
+      if (socketPath && !this.explicitSocketPath) this.hasDiscoveredSocket = true;
       if (!this.socketPath) {
         throw new NativeRelayError("CODEX_APP_TOOLS_PIPE_PATH is missing from the environment and parent Desktop app-server configuration; launch the companion from Codex Desktop", "NATIVE_PIPE_UNAVAILABLE");
       }
@@ -440,14 +468,17 @@ export class NativeToolsClient {
       this.connectingSocket = socket;
       let buffer = Buffer.alloc(0);
       let connected = false;
+      let failed = false;
       const timer = globalThis.setTimeout(() => {
-        reject(new NativeRelayError("Timed out connecting to the Codex Desktop native tools pipe", "NATIVE_PIPE_UNAVAILABLE"));
-        socket.destroy();
+        fail(new NativeRelayError("Timed out connecting to the Codex Desktop native tools pipe", "NATIVE_PIPE_UNAVAILABLE"));
       }, this.timeoutMs);
       const fail = (err) => {
+        if (failed) return;
+        failed = true;
         globalThis.clearTimeout(timer);
         if (!connected) reject(err);
         if (this.socket === socket) this.socket = null;
+        if (!this.explicitSocketPath && this.connectionGeneration === generation) this.socketPath = null;
         for (const pending of this.pending.values()) {
           if (pending.socket === socket) pending.reject(err);
         }
@@ -503,15 +534,17 @@ export class NativeToolsClient {
     }
   }
 
-  async dispatch(args) {
-    return this.#request(nativeDispatchParams(args));
+  async dispatch(args, options) {
+    return this.#request(nativeDispatchParams(args), options);
   }
 
-  async dispatchDesktop(args) {
-    return this.#request(nativeDesktopOperationParams(args));
+  async dispatchDesktop(args, options) {
+    return this.#request(nativeDesktopOperationParams(args), options);
   }
 
-  async #request(params) {
+  async #request(params, { beforeSend, accountContext } = {}) {
+    validateBeforeSend(beforeSend);
+    const accounts = relayAccountContext(accountContext);
     const id = this.nextId++;
     const payload = Buffer.from(JSON.stringify({
       jsonrpc: "2.0",
@@ -522,31 +555,50 @@ export class NativeToolsClient {
     if (payload.length > MAX_FRAME_BYTES) {
       throw new NativeRelayError("Native dispatch exceeds the frame limit", "RELAY_MESSAGE_TOO_LARGE");
     }
-    await this.connect();
+    try {
+      await this.connect();
+    } catch (error) {
+      throw beforeWriteError(error);
+    }
     const header = Buffer.alloc(4);
     header.writeUInt32LE(payload.length);
     return new Promise((resolve, reject) => {
+      const socket = this.socket;
+      let dispatched = false;
       const finish = (fn, value) => {
         if (!this.pending.delete(id)) return;
         globalThis.clearTimeout(timer);
         fn(value);
       };
       const timer = globalThis.setTimeout(() => {
-        finish(reject, new NativeRelayError("Codex Desktop native dispatch timed out; delivery may have occurred", "NATIVE_DELIVERY_UNCONFIRMED"));
+        finish(reject, dispatched
+          ? new NativeRelayError("Codex Desktop native dispatch timed out; delivery may have occurred", "NATIVE_DELIVERY_UNCONFIRMED")
+          : beforeWriteError(new NativeRelayError("Codex Desktop native send deadline elapsed before dispatch", "NATIVE_PIPE_UNAVAILABLE")));
       }, this.timeoutMs);
       this.pending.set(id, {
-        socket: this.socket,
+        socket,
         resolve: (value) => finish(resolve, value),
-        reject: (err) => finish(reject, err),
+        reject: (err) => finish(reject, dispatched ? err : beforeWriteError(err)),
       });
-      try {
-        if (!this.socket || this.socket.destroyed) throw new Error("native tools pipe is closed");
-        this.socket.write(Buffer.concat([header, payload]), (err) => {
-          if (err) finish(reject, new NativeRelayError(`Native dispatch write failed: ${err.message}`, "NATIVE_DELIVERY_UNCONFIRMED"));
-        });
-      } catch (err) {
-        finish(reject, new NativeRelayError(`Native dispatch write failed: ${err.message}`, "NATIVE_DELIVERY_UNCONFIRMED"));
-      }
+      void (async () => {
+        try {
+          const checked = beforeSend?.();
+          if (checked && typeof checked.then === "function") await checked;
+          if (!this.pending.has(id)) return;
+          if (accounts) {
+            const verified = this.assertAccount(accounts);
+            if (verified && typeof verified.then === "function") await verified;
+          }
+          if (!this.pending.has(id)) return;
+          if (!socket || socket.destroyed || this.socket !== socket) throw new NativeRelayError("Native tools pipe closed before dispatch", "NATIVE_PIPE_UNAVAILABLE");
+          dispatched = true;
+          socket.write(Buffer.concat([header, payload]), (err) => {
+            if (err) finish(reject, new NativeRelayError(`Native dispatch write failed: ${err.message}`, "NATIVE_DELIVERY_UNCONFIRMED"));
+          });
+        } catch (err) {
+          finish(reject, dispatched ? new NativeRelayError(`Native dispatch write failed: ${err.message}`, "NATIVE_DELIVERY_UNCONFIRMED") : beforeWriteError(err));
+        }
+      })();
     });
   }
 
@@ -554,6 +606,7 @@ export class NativeToolsClient {
     this.connectionGeneration++;
     const socket = this.socket;
     this.socket = null;
+    if (!this.explicitSocketPath) this.socketPath = null;
     for (const pending of this.pending.values()) {
       pending.reject(new NativeRelayError("Native tools client closed before confirming delivery", "NATIVE_DELIVERY_UNCONFIRMED"));
     }
@@ -603,9 +656,10 @@ export function nativeRelayStatus(env = process.env) {
  * socket cannot go stale while Codex Desktop restarts underneath it.
  */
 export class NativeDesktopRelay {
-  constructor({ env = process.env, socketPath = null, timeoutMs = DEFAULT_TIMEOUT_MS, log = () => {} } = {}) {
+  constructor({ env = process.env, socketPath = null, accountSocketPath = null, timeoutMs = DEFAULT_TIMEOUT_MS, log = () => {} } = {}) {
     this.env = env;
     this.explicitSocketPath = socketPath;
+    this.accountSocketPath = accountSocketPath ?? socketPath ?? accountRelaySocketPath(env);
     this.timeoutMs = timeoutMs;
     this.log = log;
   }
@@ -614,27 +668,31 @@ export class NativeDesktopRelay {
     return this.explicitSocketPath ?? relaySocketPath(this.env);
   }
 
-  status() {
-    if (!this.explicitSocketPath) return nativeRelayStatus(this.env);
-    const status = nativeRelayStatus({ ...this.env, CODEX_NATIVE_RELAY_SOCKET: this.explicitSocketPath });
-    return { ...status, socketPath: this.explicitSocketPath };
+  status({ accountContext } = {}) {
+    const socketPath = accountContext ? this.accountSocketPath : this.explicitSocketPath;
+    if (!socketPath) return nativeRelayStatus(this.env);
+    const status = nativeRelayStatus({ ...this.env, CODEX_NATIVE_RELAY_SOCKET: socketPath });
+    return { ...status, socketPath };
   }
 
   get available() {
     return this.status().enabled;
   }
 
-  async sendMessage(targetThreadId, message, { timeoutMs = this.timeoutMs } = {}) {
-    const request = { v: RELAY_PROTOCOL_VERSION, targetThreadId, message };
-    return this.#request(request, timeoutMs);
+  async sendMessage(targetThreadId, message, { timeoutMs = this.timeoutMs, beforeSend, accountContext } = {}) {
+    const accounts = relayAccountContext(accountContext);
+    const request = { v: accounts ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION, targetThreadId, message, ...(accounts ? { accountContext: accounts } : {}) };
+    return this.#request(request, timeoutMs, beforeSend);
   }
 
-  async requestDesktop(operation, args, { timeoutMs = this.timeoutMs } = {}) {
+  async requestDesktop(operation, args, { timeoutMs = this.timeoutMs, beforeSend, accountContext } = {}) {
     validateDesktopOperation(operation, args);
-    return this.#request({ v: RELAY_PROTOCOL_VERSION, operation, arguments: args }, timeoutMs);
+    const accounts = relayAccountContext(accountContext);
+    return this.#request({ v: accounts ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION, operation, arguments: args, ...(accounts ? { accountContext: accounts } : {}) }, timeoutMs, beforeSend);
   }
 
-  async #request(request, timeoutMs) {
+  async #request(request, timeoutMs, beforeSend) {
+    validateBeforeSend(beforeSend);
     const line = `${JSON.stringify(request)}\n`;
     if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES) {
       throw new NativeRelayError(
@@ -643,20 +701,21 @@ export class NativeDesktopRelay {
       );
     }
 
-    const response = await this.#roundTrip(line, timeoutMs);
-    if (response?.ok === true && response.v === RELAY_PROTOCOL_VERSION) {
+    const response = await this.#roundTrip(line, timeoutMs, beforeSend, request.accountContext ? this.accountSocketPath : this.socketPath);
+    if (response?.ok === true && response.v === request.v) {
       if (request.operation && response.operation !== request.operation) throw new NativeRelayError("The relay answered a different Desktop operation; do not retry this request", "RELAY_BAD_RESPONSE", { reachedCompanion: true });
       return response;
     }
-    throw new NativeRelayError(
+    const error = new NativeRelayError(
       response?.error?.message ?? "the Codex Desktop relay refused the message",
       response?.error?.code ?? "NATIVE_DISPATCH_FAILED",
-      { reachedCompanion: true },
+      { reachedCompanion: response?.error?.sent !== false },
     );
+    if (response?.error?.sent === false) error.sent = false;
+    throw error;
   }
 
-  #roundTrip(line, timeoutMs) {
-    const socketPath = this.socketPath;
+  #roundTrip(line, timeoutMs, beforeSend, socketPath) {
     return new Promise((resolve, reject) => {
       let buffer = Buffer.alloc(0);
       let settled = false;
@@ -675,18 +734,29 @@ export class NativeDesktopRelay {
         () =>
           finish(
             reject,
-            new NativeRelayError(
+            dispatched ? new NativeRelayError(
               `The Codex Desktop relay did not answer within ${timeoutMs}ms`,
               "RELAY_TIMEOUT",
-              { reachedCompanion: dispatched },
-            ),
+              { reachedCompanion: true },
+            ) : beforeWriteError(new NativeRelayError("The Codex Desktop relay send deadline elapsed before dispatch", "RELAY_UNREACHABLE")),
           ),
         timeoutMs,
       );
 
       socket.on("connect", () => {
-        dispatched = true;
-        socket.write(line);
+        if (settled) return;
+        void (async () => {
+          try {
+            const checked = beforeSend?.();
+            if (checked && typeof checked.then === "function") await checked;
+            if (settled) return;
+            if (socket.destroyed) throw new NativeRelayError("The relay socket closed before dispatch", "RELAY_UNREACHABLE");
+            dispatched = true;
+            socket.write(line);
+          } catch (error) {
+            finish(reject, dispatched ? new NativeRelayError(`Relay write failed: ${error.message}`, "RELAY_DELIVERY_UNCONFIRMED", { reachedCompanion: true }) : beforeWriteError(error));
+          }
+        })();
       });
       socket.on("data", (chunk) => {
         buffer = Buffer.concat([buffer, chunk]);
@@ -717,17 +787,19 @@ export class NativeDesktopRelay {
       socket.on("error", (err) =>
         finish(
           reject,
-          new NativeRelayError(`Codex Desktop relay connection failed at ${socketPath}: ${err.message}`, dispatched ? "RELAY_DELIVERY_UNCONFIRMED" : "RELAY_UNREACHABLE", { reachedCompanion: dispatched }),
+          dispatched
+            ? new NativeRelayError(`Codex Desktop relay connection failed at ${socketPath}: ${err.message}`, "RELAY_DELIVERY_UNCONFIRMED", { reachedCompanion: true })
+            : beforeWriteError(new NativeRelayError(`Codex Desktop relay connection failed at ${socketPath}: ${err.message}`, "RELAY_UNREACHABLE")),
         ),
       );
       socket.on("close", () =>
         finish(
           reject,
-          new NativeRelayError(
+          dispatched ? new NativeRelayError(
             `The Codex Desktop relay at ${socketPath} closed before answering`,
-            dispatched ? "RELAY_DELIVERY_UNCONFIRMED" : "RELAY_UNREACHABLE",
-            { reachedCompanion: dispatched },
-          ),
+            "RELAY_DELIVERY_UNCONFIRMED",
+            { reachedCompanion: true },
+          ) : beforeWriteError(new NativeRelayError(`The Codex Desktop relay at ${socketPath} closed before dispatch`, "RELAY_UNREACHABLE")),
         ),
       );
     });

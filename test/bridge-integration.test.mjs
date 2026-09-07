@@ -10,8 +10,54 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { startFakeAppServer } from "./helpers/fake-app-server.mjs";
 import { RelaySocketServer } from "../src/native-relay-companion.mjs";
 import { randomUUID } from "node:crypto";
+import { readProcessAncestry } from "../src/claude-sender-context.mjs";
+import { readClaudeAccountContext } from "../src/desktop-account-context.mjs";
+import { readCodexAccountContext } from "../src/codex-account-context.mjs";
+import { assertAccountIdentity } from "../src/bridge-account-context.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CLAUDE_ACCOUNT_A = "11111111-1111-4111-8111-111111111111";
+const CLAUDE_ACCOUNT_B = "22222222-2222-4222-8222-222222222222";
+
+function claudeFixtureRoot(home) {
+  return process.platform === "darwin" ? path.join(home, "Library", "Application Support", "Claude")
+    : process.platform === "win32" ? path.join(home, "AppData", "Roaming", "Claude") : path.join(home, ".config", "Claude");
+}
+
+function fixtureRelayServer({ home, socketPath, ...options }) {
+  const assertAccount = (expected) => assertAccountIdentity(expected, {
+    claude: readClaudeAccountContext({ root: claudeFixtureRoot(home) }),
+    codex: readCodexAccountContext({ root: path.join(home, ".codex") }),
+  });
+  const servers = [socketPath, `${socketPath}-accounts-v2`].map((endpoint) => new RelaySocketServer({
+    ...options, socketPath: endpoint, assertAccount,
+  }));
+  return { start: () => Promise.all(servers.map((server) => server.start())), stop: () => servers.forEach((server) => server.stop()) };
+}
+
+async function desktopCallerFixture(home, env) {
+  const accountRoot = claudeFixtureRoot(home);
+  Object.assign(env, { APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex") });
+  fs.mkdirSync(accountRoot, { recursive: true });
+  const setAccount = (accountId) => fs.writeFileSync(path.join(accountRoot, "config.json"), JSON.stringify({ lastKnownAccountUuid: accountId, windowSizeWasSignedIn: true }));
+  setAccount(CLAUDE_ACCOUNT_A);
+  fs.mkdirSync(env.CODEX_HOME, { recursive: true });
+  const token = [Buffer.from("{}").toString("base64url"), Buffer.from(JSON.stringify({ sub: "fixture-user", "https://api.openai.com/auth": { chatgpt_account_id: "fixture-codex" } })).toString("base64url"), "fixture"].join(".");
+  fs.writeFileSync(path.join(env.CODEX_HOME, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: "fixture-codex", id_token: token } }));
+  const registry = path.join(home, ".claude", "sessions");
+  fs.mkdirSync(registry, { recursive: true });
+  const endpoint = path.join(home, "unused-peer-endpoint");
+  fs.writeFileSync(endpoint, "");
+  const [parent] = await readProcessAncestry({ parentPid: process.pid, maxDepth: 1 });
+  assert.ok(parent?.processStart);
+  const registryFile = path.join(registry, `${process.pid}.json`);
+  fs.writeFileSync(registryFile, JSON.stringify({ pid: process.pid, sessionId: "fixture-caller", cwd: home, entrypoint: "claude-desktop", messagingSocketPath: endpoint, [process.platform === "win32" ? "procStartFt" : "procStart"]: parent.processStart }));
+  const tasks = path.join(accountRoot, "claude-code-sessions", CLAUDE_ACCOUNT_A, "33333333-3333-4333-8333-333333333333");
+  fs.mkdirSync(tasks, { recursive: true });
+  const taskId = "local_44444444-4444-4444-8444-444444444444";
+  fs.writeFileSync(path.join(tasks, `${taskId}.json`), JSON.stringify({ sessionId: taskId, cliSessionId: "fixture-caller", cwd: home, title: "Fixture caller", isArchived: false }));
+  return { setAccount, registryFile };
+}
 
 async function withBridge(onRequest, run, extraEnv = () => ({})) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-integration-"));
@@ -24,6 +70,7 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
     CODEX_BRIDGE_RELEASE_AFTER_TURN: "0",
     ...await extraEnv(home),
   };
+  const desktopFixture = env.CODEX_BRIDGE_DESKTOP_TASKS === "1" ? await desktopCallerFixture(home, env) : null;
   const client = new Client({ name: "bridge-integration", version: "1.0.0" });
   const transport = new StdioClientTransport({
     command: process.execPath, args: [path.join(root, "src", "index.mjs")],
@@ -31,7 +78,7 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
   });
   try {
     await client.connect(transport);
-    await run({ client, home, env, server });
+    await run({ client, home, env, server, desktopFixture });
   } finally {
     await client.close();
     await server.close();
@@ -52,7 +99,7 @@ async function withDesktopReceiptBridge(dispatch, run) {
   const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-receipts-${randomUUID()}` : path.join(socketRoot, "d.sock");
   try {
     await withBridge(() => { throw new Error("Desktop receipt operations must not reach an external app-server"); }, run, async (home) => {
-      relay = new RelaySocketServer({ socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async (request) => ({ success: true, contentItems: [{ type: "inputText", text: JSON.stringify(await dispatch(request, home)) }] }) });
+      relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async (request) => ({ success: true, contentItems: [{ type: "inputText", text: JSON.stringify(await dispatch(request, home)) }] }) });
       await relay.start();
       return { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: socketPath, CODEX_APP_SERVER_URL: "invalid-unused-legacy-endpoint" };
     });
@@ -68,6 +115,50 @@ function creationReceipts(home) {
 }
 
 describe("Desktop task MCP integration", () => {
+  it("withholds a delayed reply when the account changes after the explicit task was dispatched", async () => {
+    const calls = [];
+    let changeAccount;
+    await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {
+      calls.push(operation);
+      if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [] };
+      if (operation === "send_message_to_thread") return { threadId: args.threadId, status: "accepted" };
+      if (operation === "wait_threads") {
+        changeAccount();
+        return { polls: [{ thread: { id: "original-task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "original-turn", status: "completed" }, latestAssistantMessage: { turnId: "original-turn", phase: "final_answer", text: "PRIVATE_DELAYED_REPLY" } }] };
+      }
+      throw new Error(`Unexpected operation ${operation}`);
+    }, async ({ client, desktopFixture }) => {
+      changeAccount = () => desktopFixture.setAccount(CLAUDE_ACCOUNT_B);
+      const reply = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "original-task", prompt: "Original work", openInApp: false } });
+      assert.equal(reply.isError, true);
+      assert.equal(reply.structuredContent.operation.state, "dispatched_outcome_unverified");
+      assert.equal(reply.structuredContent.operation.threadId, "original-task");
+      assert.doesNotMatch(JSON.stringify(reply), /PRIVATE_DELAYED_REPLY|No message was sent/);
+      assert.match(reply.content[0].text, /may already have been dispatched/);
+      assert.deepEqual(calls, ["read_thread", "send_message_to_thread", "wait_threads"]);
+      const later = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "original-task", prompt: "Stale caller", openInApp: false } });
+      assert.equal(later.isError, true);
+      assert.match(later.content[0].text, /calling Claude Code session is not confirmed/);
+      assert.equal(calls.length, 3);
+    });
+  });
+
+  it("keeps status callable for a generic main-process MCP but refuses task mutations", async () => {
+    const calls = [];
+    await withDesktopReceiptBridge(async ({ operation }) => {
+      calls.push(operation);
+      if (operation === "list_projects") return { projects: [] };
+      throw new Error(`Unexpected operation ${operation}`);
+    }, async ({ client, home, desktopFixture }) => {
+      fs.unlinkSync(desktopFixture.registryFile);
+      const status = await client.callTool({ name: "codex_bridge_status", arguments: {} });
+      assert.equal(status.isError, undefined);
+      const mutation = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home, prompt: "Blocked generic caller" } });
+      assert.equal(mutation.isError, true);
+      assert.match(mutation.content[0].text, /no registered Claude Desktop Code session/);
+      assert.deepEqual(calls, ["list_projects"]);
+    });
+  });
   it("blocks concurrent named creation across MCP processes and reuses the completed task after restart with an edited prompt", async () => {
     const calls = [];
     let completed = false;
@@ -274,7 +365,7 @@ describe("Desktop task MCP integration", () => {
         assert.deepEqual(calls, ["list_projects", "list_threads", "read_thread", "read_thread", "read_thread", "navigate_to_codex_page"]);
         assert.equal(server.connections, 0);
       }, async (home) => {
-        relay = new RelaySocketServer({ socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation }) => {
+        relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation }) => {
           calls.push(operation);
           const target = { id: "target", kind: "codex", hostId: "local", cwd: home, title: "Target task", summary: "misleading-summary", status: "active", updatedAt: 1788597586 };
           let result;
@@ -338,7 +429,7 @@ describe("Desktop task MCP integration", () => {
         assert.deepEqual(sends, ["same:1", "other:1", "same:2"]);
         assert.equal(server.connections, 0);
       }, async (home) => {
-        relay = new RelaySocketServer({ socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
+        relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
           const threadId = args.threadId ?? args.targets?.[0]?.threadId;
           let result;
           if (operation === "read_thread") result = { thread: { id: threadId, hostId: "local", cwd: home }, turns: [{ id: `${threadId}:${turns.get(threadId) ?? 0}` }] };
@@ -381,7 +472,7 @@ describe("Desktop task MCP integration", () => {
         assert.match(empty.content[0].text, /No task was created/);
         assert.equal(calls.length, 4);
       }, async (home) => {
-        relay = new RelaySocketServer({ socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
+        relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
           calls.push([operation, args]);
           let result;
           if (operation === "list_projects") result = { projects: [{ projectId: "project-id", projectKind: "local", hostId: "local", path: home, label: "Test" }] };

@@ -21,7 +21,7 @@ let cwd;
 let session;
 
 function writeTask(changes = {}, { taskId = TASK, account = USER, directory = root } = {}) {
-  const location = path.join(directory, ORG, account);
+  const location = path.join(directory, account, ORG);
   fs.mkdirSync(location, { recursive: true });
   const file = path.join(location, `${taskId}.json`);
   fs.writeFileSync(file, JSON.stringify({
@@ -242,15 +242,49 @@ describe("Claude Desktop task identity", () => {
     assert.equal(resolve().status, "mismatch");
   });
 
-  it("bounds metadata reads and rejects symbolic metadata files", () => {
+  it("bounds metadata reads", () => {
     const file = writeTask();
     fs.truncateSync(file, 4 * 1024 * 1024 + 1);
     assert.equal(resolve().status, "mismatch");
+  });
+
+  it("rejects symbolic metadata files", (t) => {
+    const file = writeTask();
     fs.unlinkSync(file);
     const unrelated = path.join(sandbox, "unrelated.json");
     fs.writeFileSync(unrelated, "{}");
-    fs.symlinkSync(unrelated, file);
+    try { fs.symlinkSync(unrelated, file); }
+    catch (error) {
+      if (process.platform === "win32" && ["EPERM", "EACCES"].includes(error.code)) return t.skip("Windows does not grant file symlink creation");
+      throw error;
+    }
     assert.equal(resolve().status, "mismatch");
+  });
+
+  it("scopes repeated account switches to the first metadata directory level", () => {
+    writeTask({ title: "Account A" });
+    writeTask({ title: "Account B" }, { account: OTHER_USER });
+    for (const [accountId, title] of [[USER, "Account A"], [OTHER_USER, "Account B"], [USER, "Account A"]]) {
+      const account = { status: "verified", accountId, fingerprint: accountId, root: sandbox };
+      const actual = resolve({}, { account });
+      assert.equal(actual.status, "matched");
+      assert.equal(actual.title, title);
+      assert.equal(actual.accountFingerprint, accountId);
+    }
+  });
+
+  it("ignores malformed old-account metadata without accepting its live session", () => {
+    writeTask();
+    const oldFile = writeTask({ cliSessionId: OTHER_SESSION }, { account: OTHER_USER });
+    fs.writeFileSync(oldFile, "{");
+    const account = { status: "verified", accountId: USER, fingerprint: USER, root: sandbox };
+    assert.equal(resolve({}, { account }).status, "matched");
+    assert.notEqual(resolve({ sessionId: OTHER_SESSION }, { account }).status, "matched");
+  });
+
+  it("does not resolve lingering processes when the account has signed out", () => {
+    writeTask();
+    assert.equal(resolve({}, { account: { status: "signed_out", root: sandbox } }).status, "missing");
   });
 });
 

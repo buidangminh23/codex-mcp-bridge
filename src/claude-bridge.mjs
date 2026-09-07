@@ -15,13 +15,14 @@ import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
 import { assertRecipientClass, preflightFailure } from "./recipient-preflight.mjs";
 import { readCodexSenderContext } from "./codex-sender-context.mjs";
 import { ReplyForwarder } from "./reply-forwarder.mjs";
+import { clientReloadReason, createReloadControl } from "./reload-control.mjs";
 import { readClaudeAccountContext } from "./desktop-account-context.mjs";
 import { assertAccountIdentity, bindUnsolicitedClaudeMessageAccount, publicAccountState, readBridgeAccounts, requireBridgeAccounts, sameAccountIdentity } from "./bridge-account-context.mjs";
 import { resolveClaudeDesktopSession } from "./claude-session-router.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.14.0";
+const VERSION = "1.15.0";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 
@@ -65,6 +66,23 @@ const replyForwarder = new ReplyForwarder({
   },
   deliver: (threadId, record) => delivery.deliver(threadId, `[message from Claude session ${record.fromSocket ?? "?"}]\n${record.absorbed ? "[This reply is the closing text of a turn that absorbed the message while it was running; it may not address the message.]\n" : ""}\n${record.text}`,
     desktopOnly ? { beforeSend: () => assertAccountIdentity(record.accountContext), accountContext: record.accountContext } : {}),
+});
+
+const reload = createReloadControl({
+  entry: "claude-bridge.mjs",
+  inspect: () => peer.reloadReason() ?? replyForwarder.reloadReason() ?? clientReloadReason(codex),
+  quiesce: async () => { await peer.quiesce(); codex.close(); },
+  exportState: () => ({ desktopOnly, peer: peer.exportReloadState(), forwarding: replyForwarder.exportReloadState(), threadId: forwarding.threadId }),
+  restore: (state) => {
+    if (state.desktopOnly !== desktopOnly || state.threadId !== null && (typeof state.threadId !== "string" || !state.threadId.trim())) {
+      throw new Error("Invalid or incompatible Claude worker reload state");
+    }
+    peer.restoreReloadState(state.peer);
+    replyForwarder.restoreReloadState(state.forwarding);
+    forwarding.threadId = state.threadId;
+  },
+  activate: () => peer.start(),
+  resume: () => peer.resume(),
 });
 
 function readReceipt(msgId) {
@@ -152,7 +170,14 @@ const server = new McpServer(
   },
 );
 
-server.registerTool(
+function registerTool(name, definition, handler) {
+  return server.registerTool(name, definition, async (...args) => {
+    try { return await reload.run(() => handler(...args)); }
+    catch (error) { return failure(error); }
+  });
+}
+
+registerTool(
   "list_claude_sessions",
   {
     title: "List live Claude Code sessions",
@@ -189,7 +214,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "send_to_claude_session",
   {
     title: "Send a message to a Claude session",
@@ -309,7 +334,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "read_claude_delivery",
   {
     title: "Inspect a Claude message receipt without resending",
@@ -324,7 +349,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "read_claude_inbox",
   {
     title: "Read messages Claude sent to this bridge",
@@ -363,7 +388,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "read_claude_transcript",
   {
     title: "Read a Claude session transcript",
@@ -395,7 +420,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "bind_codex_thread",
   {
     title: "Relay Claude messages into a Codex thread",
@@ -427,7 +452,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "claude_bridge_status",
   {
     title: "Check the Claude bridge",
@@ -487,11 +512,12 @@ server.registerTool(
  * still lists sessions, reads transcripts and sends one-way messages.
  */
 try {
-  await peer.start();
+  if (!reload.staged) await peer.start();
 } catch (err) {
   log(`peer endpoint unavailable (${err.message}) - replies from Claude cannot be received`);
 }
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+reload.listen();
 log(`ready on ${PLATFORM_LABEL} as peer "${peer.name}" (${peer.started ? peer.socketPath : "peer endpoint down"})`);

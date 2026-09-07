@@ -64,6 +64,8 @@ describe("claude desktop installer", () => {
     assert.equal(env.CODEX_BRIDGE_APPROVAL, "deny");
     assert.equal(env.CODEX_BRIDGE_SANDBOX, "read-only");
     assert.equal(env.CODEX_BRIDGE_ALLOWED_THREADS, "preserved");
+    const releases = fs.readdirSync(path.join(sandbox, "bridge-runtimes"));
+    assert.ok(releases.some((release) => /^[a-f0-9]{64}$/.test(release)));
   });
 
   it("keeps autostart available with an explicit Desktop opt-out", () => {
@@ -117,6 +119,8 @@ describe("claude desktop installer", () => {
         "codex-bridge": {
           command: "stale-node",
           args: ["/old/path/index.mjs"],
+          disabled: true,
+          customAccess: { allow: ["codex_bridge_status"] },
           env: {
             CODEX_BIN: "/old/codex",
             CODEX_BRIDGE_ALLOWED_ROOTS: ["/work/a", "/work/b"].join(path.delimiter),
@@ -130,8 +134,11 @@ describe("claude desktop installer", () => {
       },
     });
 
-    const env = install({ config }).mcpServers["codex-bridge"].env;
+    const entry = install({ config }).mcpServers["codex-bridge"];
+    const env = entry.env;
 
+    assert.equal(entry.disabled, true);
+    assert.deepEqual(entry.customAccess, { allow: ["codex_bridge_status"] });
     assert.equal(env.CODEX_BRIDGE_THREAD_POLICY, "roots");
     assert.equal(env.CODEX_BRIDGE_ALLOWED_THREADS, "keep-me");
     assert.equal(env.CODEX_BRIDGE_MODEL, "some-model");
@@ -162,7 +169,7 @@ describe("claude desktop installer", () => {
     const entry = install({ config }).mcpServers["codex-bridge"];
 
     assert.equal(entry.command, process.execPath);
-    assert.deepEqual(entry.args, [path.join(root, "src", "index.mjs")]);
+    assert.deepEqual(entry.args, [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"]);
     assert.equal(entry.env.CODEX_BIN, codexStub, "a stale codex path is exactly what re-running should fix");
   });
 
@@ -177,6 +184,16 @@ describe("claude desktop installer", () => {
 
     assert.equal(env.CODEX_BRIDGE_THREAD_POLICY, "owned");
     assert.equal(env.CODEX_BRIDGE_SANDBOX, "read-only", "overriding one setting must not reset the others");
+  });
+
+  it("preserves and explicitly updates the Claude data root without pinning an account", () => {
+    const oldRoot = path.join(sandbox, "old-claude-data");
+    const nextRoot = path.join(sandbox, "new-claude-data");
+    const config = configWith({ mcpServers: { "codex-bridge": { env: { CLAUDE_DESKTOP_USER_DATA: oldRoot } } } });
+    assert.equal(install({ config }).mcpServers["codex-bridge"].env.CLAUDE_DESKTOP_USER_DATA, oldRoot);
+    const env = install({ config, env: { CLAUDE_DESKTOP_USER_DATA: nextRoot } }).mcpServers["codex-bridge"].env;
+    assert.equal(env.CLAUDE_DESKTOP_USER_DATA, nextRoot);
+    assert.equal(Object.keys(env).some((key) => /ACCOUNT_ID|TOKEN/.test(key)), false);
   });
 
   it("drops inherited values on --reset, so the defaults are reachable again", () => {

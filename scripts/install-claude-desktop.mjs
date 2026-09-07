@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { IS_WINDOWS, PLATFORM_LABEL, claudeDesktopConfigPath, resolveCodexBin } from "../src/platform.mjs";
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
+import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -51,7 +52,8 @@ cfg.mcpServers = cfg.mcpServers ?? {};
  * already says, then the default. `--reset` drops the middle one for the rare
  * case of wanting the defaults back.
  */
-const previousEnv = (reset ? {} : cfg.mcpServers["codex-bridge"]?.env) ?? {};
+const previousEntry = (reset ? {} : cfg.mcpServers["codex-bridge"]) ?? {};
+const previousEnv = previousEntry.env ?? {};
 const settled = (name, fallback) => process.env[name] ?? previousEnv[name] ?? fallback;
 const desktopMode = settled("CODEX_BRIDGE_DESKTOP_TASKS", desktopTasksConfigured() ? "1" : "0");
 
@@ -60,8 +62,9 @@ const kept = Object.keys(previousEnv).filter(
 );
 
 cfg.mcpServers["codex-bridge"] = {
+  ...previousEntry,
   command: nodeBin,
-  args: [path.join(root, "src", "index.mjs")],
+  args: [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"],
   env: {
     /**
      * Keys this installer knows nothing about survive too - a setting added by
@@ -100,8 +103,13 @@ cfg.mcpServers["codex-bridge"] = {
       : {}),
     ...(process.env.CODEX_BRIDGE_MODEL ? { CODEX_BRIDGE_MODEL: process.env.CODEX_BRIDGE_MODEL } : {}),
     ...(process.env.CODEX_BRIDGE_EFFORT ? { CODEX_BRIDGE_EFFORT: process.env.CODEX_BRIDGE_EFFORT } : {}),
+    ...(process.env.CLAUDE_DESKTOP_USER_DATA !== undefined
+      ? { CLAUDE_DESKTOP_USER_DATA: process.env.CLAUDE_DESKTOP_USER_DATA }
+      : {}),
   },
 };
+
+createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...cfg.mcpServers["codex-bridge"].env }) });
 
 if (fs.existsSync(cfgPath)) {
   const backup = `${cfgPath}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge`;
@@ -139,4 +147,5 @@ if (cfg.mcpServers["codex-bridge"].env.CODEX_BRIDGE_THREAD_POLICY === "owned") {
   );
 }
 
-console.log("\nRestart Claude Desktop to load the bridge.");
+console.log("\nReconnect codex-bridge once in the existing Claude task to load the supervisor. Subsequent compatible installed-source updates reload automatically when the worker is safely idle.");
+console.log("Verify codex_bridge_status from that task: autoReload must be enabled and runtime state must be current. A separate diagnostic process does not verify the app's loaded MCP process.");

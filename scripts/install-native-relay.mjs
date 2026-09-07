@@ -17,12 +17,15 @@ import {
   spawnEnv,
 } from "../src/platform.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
+import { stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
+import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.14.0";
+const VERSION = "1.15.0";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const entry = path.join(root, "src", "native-relay-companion.mjs");
+const entry = path.join(root, "src", "mcp-supervisor.mjs");
+const entryArgs = ["native-relay-companion.mjs"];
 const serverName = process.env.CODEX_NATIVE_RELAY_NAME ?? "codex-native-relay";
 const remove = process.argv.includes("--remove");
 const skipBootstrap = process.argv.includes("--no-bootstrap");
@@ -60,11 +63,10 @@ if (!IS_MACOS && !IS_WINDOWS) {
   console.log("claude-bridge will keep using the app-server path here.");
 }
 
-try {
-  run(["mcp", "remove", serverName]);
-} catch {
-  // not registered yet
-}
+const servers = JSON.parse(run(["mcp", "list", "--json"]));
+if (!Array.isArray(servers)) throw new Error("Codex returned an invalid MCP inventory; existing configuration was not changed");
+const existingServer = servers.some((server) => server.name === serverName)
+  ? JSON.parse(run(["mcp", "get", serverName, "--json"])) : null;
 /**
  * Registering under whichever Node happens to run this installer is what made
  * the companion unreachable on macOS: Codex Desktop rejects a peer whose
@@ -75,7 +77,11 @@ try {
  */
 const runtime = resolveCodexDesktopNodeBin();
 
-run(["mcp", "add", serverName, "--", runtime.path, entry]);
+const registration = stdioMcpRegistration({ name: serverName, existing: existingServer, node: runtime.path, entry, entryArgs, envOverrides: {
+  ...(process.env.CLAUDE_DESKTOP_USER_DATA !== undefined ? { CLAUDE_DESKTOP_USER_DATA: process.env.CLAUDE_DESKTOP_USER_DATA } : {}),
+} });
+createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...registration.environment }) });
+run(registration.args);
 
 console.log(`platform: ${PLATFORM_LABEL}`);
 console.log(`relay runtime: ${runtime.path} (${runtime.source})`);
@@ -120,5 +126,5 @@ if (process.argv.includes("--desktop-tasks")) {
   writeRelayConfig({ ...readRelayConfig(), desktopTasks: true });
   console.log("Desktop task creation enabled: exact saved local projects, immediate visibility, Codex Desktop permissions.");
 }
-console.log("Restart Codex Desktop so it launches the companion, then check with native_relay_status.");
+console.log("Reconnect codex-native-relay once in the existing Codex Desktop task to load the supervisor, then verify native_relay_status reports autoReload enabled. Subsequent compatible installed-source updates reload automatically when safely idle.");
 console.log("remove: node scripts/install-native-relay.mjs --remove");

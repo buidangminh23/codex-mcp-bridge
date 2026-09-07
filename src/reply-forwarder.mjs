@@ -1,3 +1,5 @@
+import { cloneReloadState } from "./reload-control.mjs";
+
 const KNOWN_UNSENT_CODES = new Set([
   "RELAY_UNREACHABLE",
   "RELAY_MESSAGE_TOO_LARGE",
@@ -95,6 +97,47 @@ export class ReplyForwarder {
     const counts = { total: this.records.size, queued: 0, sending: 0, forwarded: 0, failed: 0, unknown: 0, blocked: 0 };
     for (const { receipt } of this.records.values()) counts[receipt.status] += 1;
     return { ...counts, attempts: this.attempts, maxPerSession: this.maxPerSession, closed: this.closed };
+  }
+
+  reloadReason() {
+    if (this.active || this.queue.length || this.timer !== null) return "Reply forwarding is still active or queued";
+    if ([...this.records.values()].some(({ receipt }) => ["queued", "sending", "unknown"].includes(receipt.status))) {
+      return "A reply forwarding outcome remains unconfirmed";
+    }
+    return null;
+  }
+
+  exportReloadState() {
+    const reason = this.reloadReason();
+    if (reason) throw new Error(reason);
+    return cloneReloadState({ records: [...this.records], attempts: this.attempts, lastAt: this.lastAt, closed: this.closed,
+      maxPerSession: this.maxPerSession, minIntervalMs: this.minIntervalMs });
+  }
+
+  restoreReloadState(input) {
+    if (this.records.size || this.active || this.queue.length || this.timer !== null) throw new Error("Reply forwarding state is not empty");
+    const state = cloneReloadState(input);
+    if (!state || !Array.isArray(state.records) || !Number.isSafeInteger(state.attempts) || state.attempts < 0
+      || !Number.isSafeInteger(state.maxPerSession) || state.maxPerSession < 1 || state.attempts > state.maxPerSession
+      || !Number.isFinite(state.minIntervalMs) || state.minIntervalMs < 0 || typeof state.closed !== "boolean"
+      || state.lastAt !== null && (!Number.isFinite(state.lastAt) || state.lastAt < 0)) throw new Error("Invalid reply forwarding reload state");
+    const records = new Map();
+    for (const pair of state.records) {
+      if (!Array.isArray(pair) || pair.length !== 2) throw new Error("Invalid reply forwarding record");
+      const [id, entry] = pair;
+      if (!validIdentity(id) || records.has(id) || !entry?.record || !entry.receipt
+        || entry.receipt.msgId !== id || !validIdentity(entry.receipt.threadId)
+        || entry.record.replyThreadId !== entry.receipt.threadId || (entry.record.inReplyTo ?? entry.record.msgId) !== id
+        || typeof entry.record.text !== "string" || !entry.record.text.trim()
+        || !["forwarded", "failed", "blocked"].includes(entry.receipt.status)) throw new Error("Invalid or unconfirmed reply forwarding record");
+      records.set(id, { record: Object.freeze(entry.record), receipt: entry.receipt });
+    }
+    this.records = records;
+    this.attempts = state.attempts;
+    this.lastAt = state.lastAt;
+    this.closed = state.closed;
+    this.maxPerSession = Math.min(this.maxPerSession, state.maxPerSession);
+    this.minIntervalMs = Math.max(this.minIntervalMs, state.minIntervalMs);
   }
 
   close() {

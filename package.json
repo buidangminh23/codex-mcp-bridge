@@ -1,6 +1,6 @@
 {
   "name": "@minhspark/codex-mcp-bridge",
-  "version": "1.14.0",
+  "version": "1.15.0",
   "description": "Two-way MCP bridge between Claude and Codex: prompts into a live Codex thread, messages into a running Claude Code session.",
   "keywords": [
     "mcp",
@@ -22,11 +22,11 @@
   },
   "type": "module",
   "bin": {
-    "codex-mcp-bridge": "src/index.mjs",
-    "claude-mcp-bridge": "src/claude-bridge.mjs",
+    "codex-mcp-bridge": "src/codex-bridge-launcher.mjs",
+    "claude-mcp-bridge": "src/claude-bridge-launcher.mjs",
     "codex-mcp-bridge-install": "scripts/install-claude-desktop.mjs",
     "claude-mcp-bridge-install": "scripts/install-codex-mcp.mjs",
-    "codex-native-relay": "src/native-relay-companion.mjs",
+    "codex-native-relay": "src/native-relay-launcher.mjs",
     "codex-native-relay-install": "scripts/install-native-relay.mjs",
     "codex-npm-footer-install": "scripts/install-npm-footer.mjs"
   },
@@ -41,8 +41,8 @@
     "access": "public"
   },
   "scripts": {
-    "start": "node src/index.mjs",
-    "claude-bridge": "node src/claude-bridge.mjs",
+    "start": "node src/codex-bridge-launcher.mjs",
+    "claude-bridge": "node src/claude-bridge-launcher.mjs",
     "app-server": "codex app-server --listen ws://127.0.0.1:8791",
     "test": "node --test",
     "check": "node scripts/check.mjs",

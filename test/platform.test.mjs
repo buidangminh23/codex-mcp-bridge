@@ -26,6 +26,8 @@ const realEnv = {
   CODEX_BRIDGE_REMAP: process.env.CODEX_BRIDGE_REMAP,
   CODEX_BRIDGE_WORKSPACE_ROOTS: process.env.CODEX_BRIDGE_WORKSPACE_ROOTS,
   CODEX_BRIDGE_PATH_MAP: process.env.CODEX_BRIDGE_PATH_MAP,
+  CODEX_BRIDGE_WORKER: process.env.CODEX_BRIDGE_WORKER,
+  CODEX_BRIDGE_SOURCE_ROOT: process.env.CODEX_BRIDGE_SOURCE_ROOT,
 };
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-platform-"));
 
@@ -154,6 +156,24 @@ describe("platform facts", () => {
 });
 
 describe("workspace resolution", () => {
+  it("finds sibling projects beside the original source when running a snapshot worker", () => {
+    const sourceRoot = path.join(sandbox, "original", "bridge");
+    const project = path.join(sandbox, "original", "snapshot-sibling");
+    fs.mkdirSync(project, { recursive: true });
+    process.env.CODEX_BRIDGE_WORKER = "1";
+    process.env.CODEX_BRIDGE_SOURCE_ROOT = sourceRoot;
+    try {
+      assert.equal(resolveWorkspacePath("/Volumes/Shared/snapshot-sibling").path, project);
+      process.env.CODEX_BRIDGE_WORKSPACE_ROOTS = path.join(sandbox, "explicit-roots");
+      assert.throws(() => resolveWorkspacePath("/Volumes/Shared/snapshot-sibling"), /No usable working directory/);
+    } finally {
+      for (const key of ["CODEX_BRIDGE_WORKER", "CODEX_BRIDGE_SOURCE_ROOT", "CODEX_BRIDGE_WORKSPACE_ROOTS"]) {
+        if (realEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = realEnv[key];
+      }
+    }
+  });
+
   it("returns an absolute path for a relative workspace", () => {
     assert.equal(resolveWorkspacePath(".").path, process.cwd());
   });

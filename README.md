@@ -122,7 +122,7 @@ Two ways in. Pick by what you intend to do with it.
 npm install -g @minhspark/codex-mcp-bridge
 ```
 
-Already installed? The same command with `@latest` upgrades it in place — then restart the client. Details in [Upgrading an install you already have](#upgrading-an-install-you-already-have):
+Already installed? The same command with `@latest` upgrades it in place. Once the supervisor is registered, compatible updates load automatically without restarting the client. Details in [Upgrading an install you already have](#upgrading-an-install-you-already-have):
 
 ```bash
 npm install -g @minhspark/codex-mcp-bridge@latest
@@ -138,9 +138,15 @@ Either route puts the bridge servers, configuration installers, native relay, an
 
 #### Upgrading an install you already have
 
-`npm install -g @minhspark/codex-mcp-bridge@latest`, then restart Claude Desktop or Claude Code — an MCP server only loads its code when the client spawns it. Check `codex_bridge_status` reports the version you expect. The global install path carries no version number, so the entry keeps pointing at the right file. If the existing entry still has `CODEX_BRIDGE_THREAD_POLICY=owned`, pass `CODEX_BRIDGE_THREAD_POLICY=roots` once when re-running the installer to enable human-opened threads.
+Install the new files with `npm install -g @minhspark/codex-mcp-bridge@latest`. To migrate an existing direct-entry installation, run `codex-mcp-bridge-install` for Claude Desktop, `claude-mcp-bridge-install` for Codex, and `codex-native-relay-install --no-bootstrap` if the native companion is installed. Update Claude Code's separate registration as shown below. Reconnect each MCP server once in its existing task so it loads the supervisor. No replacement task or full app exit is required when the client exposes MCP reconnect/reload. A process launched before this upgrade cannot acquire the supervisor merely because files changed on disk.
 
-Re-running `codex-mcp-bridge-install` is **not** required to upgrade, and before 1.11.1 it actively hurt: it replaced the whole entry, discarding `CODEX_BRIDGE_ALLOWED_THREADS`, any hand-added `CODEX_BRIDGE_THREAD_POLICY`, and resetting `CODEX_BRIDGE_ALLOWED_ROOTS` to the install directory. From 1.11.1 it keeps what is already there — an environment variable you pass wins, the existing value is the fallback, and `--reset` gives you the defaults back.
+After this one-time migration, the stable supervisor keeps the client's MCP stdio connection open while it starts each worker from an immutable source snapshot. The installers prepare this snapshot before changing the registration, avoiding a slow first copy during MCP initialization. Compatible installed-source changes become candidates after the tree stabilizes. A candidate must initialize successfully before it can replace an idle worker. Active calls, pending deliveries, late replies, and relay work defer the switch; an update never silently resends a prompt. A failed candidate leaves the existing worker and its delivery state available.
+
+Call `codex_bridge_status`, `claude_bridge_status`, or `native_relay_status` from the actual app task to inspect `autoReload`, the loaded version, and any pending update or blocker. Reading an old message receipt still refers to the worker that accepted that message. Pending or uncertain messages can keep an update deferred until they are resolved; a new process or an unknown message ID is never evidence that a send failed. If the supervisor protocol itself changes incompatibly, reconnect that MCP server once again.
+
+Auto-reload watches the **installed source at the configured path**. It does not poll npm, download a release, run `git pull`, or upgrade Claude/Codex themselves. Keep the normal package update mechanism to install new versions. Changes to environment variables or access settings supplied by the MCP client require a client MCP reload to pass the new configuration to the supervisor. Subsequent account switches remain detectable per call without this configuration reload.
+
+The installers preserve existing environment and access settings; explicit supported environment variables override their stored values. Claude's `--reset` explicitly returns to defaults. Codex entries with custom access, timeout, or transport settings are left intact with the exact command and arguments to update in place. `CLAUDE_DESKTOP_USER_DATA` pins only the data directory, never an account identity. Re-running an installer is unnecessary for later compatible source updates. The global install path remains stable across package versions.
 
 #### Show the final npm installation result
 
@@ -167,7 +173,7 @@ npm install -g @minhspark/codex-mcp-bridge@latest
 | Dry run | `Dry run completed: ... (no changes applied).` |
 | Mode or installed metadata cannot be verified | A warning instead of a success claim |
 
-The footer runs after npm finishes and keeps npm's output and exit code. It supports `install`/`i`, explicit global installation, one bridge package, dry-run flags, common install booleans, and a single `--prefix`. Other commands, multiple packages, unknown options, and machine-readable or silent output modes pass through without a footer. Installing the package itself does not alter shell profiles. A successful install confirms files on disk; restart the MCP client separately to load the new bridge code.
+The footer runs after npm finishes and keeps npm's output and exit code. It supports `install`/`i`, explicit global installation, one bridge package, dry-run flags, common install booleans, and a single `--prefix`. Other commands, multiple packages, unknown options, and machine-readable or silent output modes pass through without a footer. Installing the package itself does not alter shell profiles. A successful install confirms files on disk; the app's bridge status separately confirms whether its supervisor has activated that version.
 
 **Clone it** — right if you intend to read, test or change the code:
 
@@ -177,7 +183,7 @@ cd codex-mcp-bridge
 npm install
 ```
 
-A clone upgrades with `git pull && npm ci`, then the same restart.
+A clone upgrades with `git pull && npm ci`; a registered supervisor activates a compatible stable update when its worker is safely idle. Direct `node src/index.mjs` and `node src/claude-bridge.mjs` remain available for diagnostics but bypass automatic reload. Use the registered supervisor or packaged bridge commands for long-lived clients.
 
 Confirm the tree is healthy before wiring it into anything:
 
@@ -227,7 +233,7 @@ The result on macOS:
   "mcpServers": {
     "codex-bridge": {
       "command": "/Users/<user>/.local/node/v24.18.0/bin/node",
-      "args": ["/Users/<user>/code/codex-mcp-bridge/src/index.mjs"],
+      "args": ["/Users/<user>/code/codex-mcp-bridge/src/mcp-supervisor.mjs", "index.mjs"],
       "env": {
         "CODEX_BIN": "/Users/<user>/.local/bin/codex",
         "CODEX_APP_SERVER_URL": "ws://127.0.0.1:8791"
@@ -237,19 +243,19 @@ The result on macOS:
 }
 ```
 
-Restart Claude Desktop afterwards. To write the same entry by hand, use absolute paths for both `command` and `args` — Claude Desktop does not resolve either from PATH.
+Reconnect `codex-bridge` once in the existing Claude task, then verify `codex_bridge_status` reports auto-reload enabled. To write the same entry by hand, use absolute paths for `command` and the supervisor script; its second argument is the worker filename.
 
 ### 3. Claude → Codex, into Claude Code (CLI)
 
 Claude Code keeps its own MCP registry, so it needs its own registration. Run this from the repo root:
 
 ```bash
-claude mcp add codex-bridge --scope user -e CODEX_BIN="$(command -v codex)" -- "$(command -v node)" "$PWD/src/index.mjs"
+claude mcp add codex-bridge --scope user -e CODEX_BIN="$(command -v codex)" -- "$(command -v node)" "$PWD/src/mcp-supervisor.mjs" index.mjs
 ```
 
 ```powershell
 # Windows (PowerShell 7+)
-claude mcp add codex-bridge --scope user -e CODEX_BIN="$((Get-Command codex).Source)" -- "$((Get-Command node).Source)" "$PWD\src\index.mjs"
+claude mcp add codex-bridge --scope user -e CODEX_BIN="$((Get-Command codex).Source)" -- "$((Get-Command node).Source)" "$PWD\src\mcp-supervisor.mjs" index.mjs
 ```
 
 Check and remove it with:
@@ -260,7 +266,7 @@ claude mcp get codex-bridge
 claude mcp remove codex-bridge --scope user
 ```
 
-`--scope user` makes the bridge available in every project. Use `--scope project` instead to commit the entry into a repo's `.mcp.json` and share it with the team.
+`--scope user` makes the bridge available in every project. Use `--scope project` instead to commit the entry into a repo's `.mcp.json` and share it with the team. For an existing registration, preserve its environment and access settings while replacing only the launcher command/arguments. Use the current session's `/mcp` reconnect action once, then verify `codex_bridge_status` from that session.
 
 ### 4. Codex → Claude, into Codex
 
@@ -271,7 +277,7 @@ node scripts/install-codex-mcp.mjs
 The installer updates the named entry through `codex mcp add`, preserves existing environment settings, pins the configured Desktop policy, and disables external autostart in Desktop mode. It refuses to reset custom access, timeout, or transport settings. It never infers the sender permission class from the recipient. The basic registration by hand is:
 
 ```bash
-codex mcp add claude-bridge --env CLAUDE_BRIDGE_PEER_NAME=codex-desktop -- "$(command -v node)" "$PWD/src/claude-bridge.mjs"
+codex mcp add claude-bridge --env CLAUDE_BRIDGE_PEER_NAME=codex-desktop -- "$(command -v node)" "$PWD/src/mcp-supervisor.mjs" claude-bridge.mjs
 ```
 
 Verify and remove:
@@ -282,7 +288,7 @@ codex mcp get claude-bridge
 node scripts/install-codex-mcp.mjs --remove
 ```
 
-Reconnect the MCP server in the existing Codex Desktop task, or restart the app and reopen that same task. Verify `claude_bridge_status` **from that task**: `runtime state` must be `current` and `session policy` must match the intended mode. Do not create a replacement task. `npm run check:claude` starts a separate diagnostic process and cannot prove that the app's existing MCP connection reloaded.
+Reconnect the MCP server once in the existing Codex Desktop task. Verify `claude_bridge_status` **from that task**: `autoReload` must be enabled, `runtime state` must be `current`, and `session policy` must match the intended mode. Codex may apply a requested reload on its next active turn. Do not create a replacement task. `npm run check:claude` starts a separate diagnostic process and cannot prove that the app's existing MCP connection reloaded.
 
 `CLAUDE_BRIDGE_PEER_NAME` sets the name Claude shows for this bridge in its agent list.
 
@@ -294,7 +300,7 @@ Optional, and only worth installing if you keep the bound thread **open in Codex
 node scripts/install-native-relay.mjs
 ```
 
-This registers the companion with Codex (`codex mcp add codex-native-relay -- <node> src/native-relay-companion.mjs`) and bootstraps the executor thread the native dispatch needs, writing its id to `~/.codex/native-relay.json`. The `<node>` is resolved rather than inherited: Codex Desktop authenticates the code-signing identity of any process that connects to its native tools pipe, so on macOS the installer registers the runtime the app ships and prints the `relay runtime:` line naming it and where it came from. `CODEX_NATIVE_RELAY_NODE` overrides that on any platform; Windows and Linux keep the Node running the installer, as before. The bootstrap creates one thread, unsubscribes it, and closes its connection. It leaves other clients and threads running; an idle server may retain the executor until its configured unload delay expires.
+This registers the companion with Codex (`codex mcp add codex-native-relay -- <node> src/mcp-supervisor.mjs native-relay-companion.mjs`) and bootstraps the executor thread the native dispatch needs, writing its id to `~/.codex/native-relay.json`. The installer preserves the existing environment and refuses to reset custom access, timeout, or transport settings. The `<node>` is resolved rather than inherited: Codex Desktop authenticates the code-signing identity of any process that connects to its native tools pipe, so on macOS the installer registers the runtime the app ships and prints the `relay runtime:` line naming it and where it came from. `CODEX_NATIVE_RELAY_NODE` overrides that on any platform; Windows and Linux keep the Node running the installer, as before. The supervisor uses that same runtime for its worker. The bootstrap creates one thread, unsubscribes it, and closes its connection. It leaves other clients and threads running; an idle server may retain the executor until its configured unload delay expires.
 
 ```bash
 codex mcp get codex-native-relay
@@ -302,7 +308,7 @@ node scripts/install-native-relay.mjs --no-bootstrap   # register only; supply C
 node scripts/install-native-relay.mjs --remove         # unregister, and remove the relay config and thread id
 ```
 
-Restart Codex Desktop so it launches the companion, then call its `native_relay_status` tool — or `claude_bridge_status`, whose `delivery:` line names the backend in force. Until both the companion and the executor thread are in place, `claude-bridge` keeps using the app-server path exactly as before.
+Reconnect `codex-native-relay` once in the existing Codex Desktop task so it launches the supervisor, then call its `native_relay_status` tool and verify auto-reload is enabled. `claude_bridge_status` also names the active delivery backend. Until both the companion and the executor thread are in place, `claude-bridge` keeps using the app-server path exactly as before.
 
 ### 6. macOS only: keep the app-server alive with launchd
 
@@ -408,7 +414,7 @@ A `held` receipt confirms only that the recipient has withheld a message. It doe
 
 Sends to the same Claude session run in order. An outstanding message blocks all further sends to that session, including `waitSec: 0`; changing wait time must not bypass a held or uncertain delivery. Use `read_claude_delivery` with the original message ID to observe `held`, `expired`, `refused`, or a late reply. A transport error after writing began also retains pending ownership. Different destination sessions remain independent. A process restart loses in-memory receipts: retain the original ID and inspect the existing recipient conversation before any resend; never treat an unknown ID as permission to retry.
 
-Both bridge status tools report the loaded source fingerprint and process identity. Source or Desktop-routing configuration changes make the running process stale and block new sends until reconnect, while Claude inbox/receipt reads remain available. This guard applies only after the version containing it has loaded; upgrading files cannot retrofit the guard into an older process already running.
+Both bridge status tools report the loaded source fingerprint and process identity. Supervised workers read immutable snapshots while the supervisor observes updates in the configured installation. An update waits for safe idle before activation; inspect `autoReload` for pending work or a failed candidate. Direct-entry workers retain the stale-source guard and require reconnect after source changes. Desktop-routing configuration changes still block new sends until the correct configuration is loaded, while Claude inbox/receipt reads remain available.
 
 Claude's [inbound permission controls](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages) remain authoritative, and their default rule is symmetric: when no `crossSessionInbound` value applies, a message is delivered only when the sender's attested class matches the recipient's. A recipient that bypasses permission prompts holds every sender that does not attest `bypass`; a recipient that prompts (default, `acceptEdits`, `auto`, `dontAsk`) holds every sender that attests `bypass`. The bridge attests the sender's true class from the verified Codex turn and never adjusts it to suit a recipient. Claude Desktop does not declare the `peer_inbound_approval` dialog kind to Claude Code, so a message held by a Desktop-hosted session has no approval button there; Claude Code keeps it until `dialogExpiry` (five minutes by default) and then reports it as expired. A `held` receipt in Desktop mode therefore means the two tasks run in different permission classes, not that the sender was misread. Report that to the user: only they can run the recipient task in the matching class or set `crossSessionInbound` to `accept` in that session's own settings. Because that outcome is predictable, `send_to_claude_session` first reads the recipient session's effective `crossSessionInbound` from the same files Claude Desktop loads (managed settings, then the user's `~/.claude/settings.json`, with the recipient project's `.claude/settings.json` and `settings.local.json` able only to tighten it) and refuses at preflight with `CLAUDE_RECIPIENT_INBOUND_POLICY` when that value is `refuse` or `hold`, since nothing could reach Claude or be approved. An explicit `accept` sends without a class check, because Claude delivers regardless of class. Otherwise the parity default applies: the recipient task's permission mode from Claude Desktop metadata is compared with the verified sender class and a mismatch is refused with `CLAUDE_RECIPIENT_CLASS_MISMATCH`, naming both classes and the user-only remedies on either side; both checks repeat immediately before writing. A task whose mode is unknown is sent as before and Claude decides. Flags passed at launch such as `--settings` are invisible to the bridge, so put the value in a settings file. `list_claude_sessions` shows an explicit inbound value with its source, and receipts carry `senderApprovalPolicy`, `recipientPermissionMode`, `recipientPermissionClass`, and `recipientInboundPolicy`; a held receipt repeats both classes. Do not change `CLAUDE_BRIDGE_PERMISSION_MODE`, fabricate a sender class, or edit recipient settings on the user's behalf. Legacy CLI configuration must truthfully represent every session using that MCP entry; Desktop sends derive their class from the verified calling turn. If the Desktop UI does not expose the pending approval, keep the original receipt rather than creating a CLI session.
 
@@ -452,7 +458,7 @@ See [Claude Code cross-session messaging](https://code.claude.com/docs/en/cross-
 
 The relay has two hard limits in `src/claude-bridge.mjs`: at most **one forwarding attempt every 5s** and **50 per bridge run**. Replies arriving together are queued in order rather than discarded. Rebinding cannot reset the limit. Every queued reply keeps its original destination task and an inspectable forwarding status: `queued`, `sending`, `forwarded`, `failed`, `unknown`, or `blocked`. Read `read_claude_delivery` for a specific request or `read_claude_inbox` for late replies; status includes queue totals. A confirmed relay acknowledgement marks `forwarded`, while visibility in the Desktop conversation requires a separate UI check.
 
-Uncertain delivery is never retried automatically or routed through another backend. Replies blocked by the session limit remain readable with an explicit reason. Source updates block new prompts until reconnect but do not discard replies to already accepted prompts while their configured Desktop routing remains unchanged. The queue and receipts live in the current MCP process only: inspect pending messages before restarting; a new process does not prove that an old request failed. Two agents left talking to each other unattended still come to a stop.
+Uncertain delivery is never retried automatically or routed through another backend. Replies blocked by the session limit remain readable with an explicit reason. Source updates defer worker replacement while deliveries or replies remain pending. The supervisor preserves the worker responsible for accepted prompts until it is safe to switch. A direct-entry worker instead blocks new prompts until reconnect after source changes. A manual restart still loses in-memory state: inspect pending messages before restarting; a new process does not prove that an old request failed. Two agents left talking to each other unattended still come to a stop.
 
 ## Tools — `codex-native-relay` (launched by Codex Desktop, macOS)
 
@@ -643,6 +649,9 @@ Runs the whole suite with `node --test`. It needs no Codex install, no login and
 
 | File | Covers |
 |---|---|
+| `test/mcp-supervisor.test.mjs` | live reload of all three real MCP workers over unchanged client connections, immutable dependencies, rollback, pending deliveries, and no replay after crashes |
+| `test/reload-control.test.mjs` | safe quiescence, retained receipts and account bindings, original task ownership, and forwarding limits |
+| `test/native-relay-companion.test.mjs` | active socket handlers, startup races, listener handoff, and failed activation rollback |
 | `test/tool-contract.test.mjs` | all three servers boot over stdio and every tool declares a title, a description, per-parameter descriptions and complete annotation hints |
 | `test/server-requests.test.mjs` | all 10 app-server requests get a reply in the shape their schema declares — the regression test for "the turn pauses itself" |
 | `test/reconnect.test.mjs` | reconnect after a dropped socket, no leaked pending requests or listeners, an interrupted turn ending promptly, a refused first handshake being retried |

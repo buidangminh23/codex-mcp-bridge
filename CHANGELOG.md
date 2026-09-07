@@ -2,7 +2,21 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.15.0] - 2026-09-07
+
+### Added
+
+- Keep Claude and Codex MCP stdio connections open through a stable supervisor, with immutable worker snapshots and automatic activation of compatible installed-source changes when safely idle. Packaged bridge commands and all three MCP installers use the supervisor.
+- Expose automatic reload state and pending-update blockers in status diagnostics. Failed candidates retain the working generation; active calls, pending deliveries, late replies, and native relay work defer replacement without replaying prompts.
+
+### Fixed
+
+- Preserve existing Claude MCP entry properties and native companion environment settings during installer upgrades. Codex registrations refuse to overwrite custom access, timeout, or transport settings and print the exact launcher fields to change in place. Accept or preserve an explicit Claude data directory without binding an account.
+
+### Upgrade notes
+
+- Re-run the relevant installers and reconnect each MCP server once in its existing task to load the supervisor. A previously running direct-entry process cannot adopt this mechanism from a disk update alone. Subsequent compatible worker updates do not require an application restart.
+- Automatic reload observes installed files; npm/Git updates remain the responsibility of the existing update mechanism. Client environment changes and incompatible supervisor changes still require MCP reconnect. Pending or uncertain deliveries can defer an update until safely resolved; never resend them merely to unblock a reload.
 
 ## [1.14.0] - 2026-09-07
 

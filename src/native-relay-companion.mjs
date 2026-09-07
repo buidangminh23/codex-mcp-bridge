@@ -25,10 +25,12 @@ import {
 import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { assertAccountIdentity } from "./bridge-account-context.mjs";
+import { createReloadControl } from "./reload-control.mjs";
+import { createRuntimeState } from "./runtime-state.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.14.0";
+const VERSION = "1.15.0";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent) {
@@ -182,6 +184,9 @@ export class RelaySocketServer {
     this.server = null;
     this.started = false;
     this.connections = new Set();
+    this.handlers = new Set();
+    this.accepting = true;
+    this.closed = Promise.resolve();
     this.processHandlers = new Map();
   }
 
@@ -279,6 +284,11 @@ export class RelaySocketServer {
   }
 
   #handleConnection(socket) {
+    if (!this.accepting) {
+      socket.on("error", () => {});
+      socket.end(`${JSON.stringify(errorResponse("RELAY_RELOADING", "The native relay is reloading; no message was sent", false))}\n`);
+      return;
+    }
     let buffer = Buffer.alloc(0);
     let handled = false;
     this.connections.add(socket);
@@ -296,7 +306,12 @@ export class RelaySocketServer {
       const index = buffer.indexOf(10);
       if (index < 0) return;
       handled = true;
-      void this.#handleLine(socket, buffer.subarray(0, index).toString("utf8"));
+      const handler = this.#handleLine(socket, buffer.subarray(0, index).toString("utf8"));
+      this.handlers.add(handler);
+      void handler.catch((error) => {
+        this.log(`relay request failed: ${error.message}`);
+        this.#reply(socket, errorResponse("NATIVE_DISPATCH_FAILED", "The native relay request failed before delivery was confirmed"));
+      }).finally(() => this.handlers.delete(handler));
       buffer = Buffer.alloc(0);
     });
   }
@@ -334,9 +349,12 @@ export class RelaySocketServer {
     this.processHandlers.clear();
     for (const socket of this.connections) socket.destroy();
     this.connections.clear();
-    try {
-      this.server?.close();
-    } catch {}
+    const server = this.server;
+    this.closed = new Promise((resolve) => {
+      if (!server) return resolve();
+      try { server.close(() => resolve()); }
+      catch { resolve(); }
+    });
     try {
       if (this.started && !IS_WINDOWS) fs.rmSync(this.socketPath, { force: true });
     } catch {}
@@ -350,6 +368,7 @@ export function startRelayWhenAvailable({ nativeTools, relay, log: logFn = () =>
   let delayMs = retryDelayMs;
   let resolveReady;
   const ready = new Promise((resolve) => { resolveReady = resolve; });
+  let pendingAttempt = null;
   const attempt = async () => {
     if (stopped) return;
     let nativeConnected = false;
@@ -378,22 +397,87 @@ export function startRelayWhenAvailable({ nativeTools, relay, log: logFn = () =>
       logFn(`native relay unavailable (${err.message}); retrying in ${delayMs}ms`);
       timer = globalThis.setTimeout(() => {
         timer = null;
-        void attempt();
+        runAttempt();
       }, delayMs);
       timer.unref();
       delayMs = Math.min(delayMs * 2, maxRetryDelayMs);
     }
   };
-  void attempt();
+  const runAttempt = () => {
+    const running = attempt();
+    pendingAttempt = running;
+    void running.finally(() => { if (pendingAttempt === running) pendingAttempt = null; });
+    return running;
+  };
+  const firstAttempt = runAttempt();
   return {
     ready,
+    firstAttempt,
+    get busy() { return pendingAttempt !== null; },
     stop() {
-      if (stopped) return;
+      if (stopped) return pendingAttempt ?? Promise.resolve();
       stopped = true;
       globalThis.clearTimeout(timer);
       nativeTools.close();
       relay.stop();
       resolveReady(false);
+      return (pendingAttempt ?? Promise.resolve()).then(() => relay.closed);
+    },
+  };
+}
+
+export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = () => {} }) {
+  const servers = [...new Set(relays)];
+  let startups = [];
+  let ownedSockets = [];
+  const inspect = () => {
+    if (servers.some((relay) => relay.handlers.size)) return "Native relay requests are still active";
+    if (servers.some((relay) => relay.connections.size)) return "Native relay clients are still connected";
+    if (nativeTools.pending.size) return "Native Desktop dispatches are still pending";
+    if (nativeTools.connecting || startups.some((startup) => startup.busy)) return "Native relay startup is still pending";
+    return null;
+  };
+  const stop = async () => {
+    for (const relay of servers) relay.accepting = false;
+    const active = startups;
+    startups = [];
+    await Promise.all(active.map((startup) => startup.stop()));
+    for (const relay of servers) relay.stop();
+    await Promise.all(servers.map((relay) => relay.closed));
+    nativeTools.close();
+  };
+  const activate = async () => {
+    if (startups.length) {
+      for (const relay of servers) relay.accepting = true;
+      return;
+    }
+    for (const relay of servers) relay.accepting = true;
+    startups = servers.map((relay) => startRelayWhenAvailable({ nativeTools, relay, log: logFn }));
+    await Promise.all(startups.map((startup) => startup.firstAttempt));
+    if (servers.some((relay) => ownedSockets.includes(relay.socketPath) && !relay.started)) {
+      await stop();
+      throw new Error("The replacement native relay could not reclaim its listening sockets");
+    }
+  };
+  return {
+    inspect,
+    activate,
+    stop,
+    async quiesce() {
+      for (const relay of servers) relay.accepting = false;
+      const reason = inspect();
+      if (reason) throw new Error(reason);
+      ownedSockets = servers.filter((relay) => relay.started).map((relay) => relay.socketPath);
+      await stop();
+    },
+    exportState: () => ({ ownedSockets }),
+    restore(payload) {
+      if (Object.keys(payload).some((key) => key !== "ownedSockets") || !Array.isArray(payload.ownedSockets)
+          || payload.ownedSockets.length > servers.length || new Set(payload.ownedSockets).size !== payload.ownedSockets.length
+          || payload.ownedSockets.some((socket) => typeof socket !== "string" || !servers.some((relay) => relay.socketPath === socket))) {
+        throw new Error("Native relay listener state does not match this worker");
+      }
+      ownedSockets = [...payload.ownedSockets];
     },
   };
 }
@@ -437,6 +521,9 @@ if (invokedDirectly) {
     dispatchDesktop: (args, options) => nativeTools.dispatchDesktop(args, options),
     log,
   });
+  const runtime = createRuntimeState();
+  const lifecycle = createNativeRelayLifecycle({ nativeTools, relays: [relay, desktopRelay, accountRelay], log });
+  const reload = createReloadControl({ entry: "native-relay-companion.mjs", ...lifecycle });
 
   mcp.registerTool(
     "native_relay_status",
@@ -451,7 +538,7 @@ if (invokedDirectly) {
         openWorldHint: false,
       },
     },
-    async () => {
+    async () => reload.run(async () => {
       const listening = await relay.isListening();
       let executor = "(unconfigured)";
       try {
@@ -461,12 +548,14 @@ if (invokedDirectly) {
         executor = err.message;
       }
       return {
+        structuredContent: { runtime: runtime.status() },
         content: [
           {
             type: "text",
             text: [
               `platform:       ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
               `companion:      codex-native-relay ${VERSION}`,
+              `runtime state:  ${runtime.status().current ? "current" : "stale"} (${reload.inspect().phase}, PID ${process.pid})`,
               `relay socket:   ${relay.started ? relay.socketPath : `${relay.socketPath} (${listening ? "shared companion listening" : "not listening"})`}`,
               `desktop tasks:  ${desktopRelay.socketPath} (${await desktopRelay.isListening() ? "listening" : "not listening"})`,
               `account relay:  ${accountRelay.socketPath} (protocol ${ACCOUNT_RELAY_PROTOCOL_VERSION}, ${await accountRelay.isListening() ? "listening" : "not listening"})`,
@@ -477,13 +566,12 @@ if (invokedDirectly) {
           },
         ],
       };
-    },
+    }),
   );
 
-  const startup = startRelayWhenAvailable({ nativeTools, relay, log });
-  const desktopStartup = desktopRelay === relay ? startup : startRelayWhenAvailable({ nativeTools, relay: desktopRelay, log });
-  const accountStartup = startRelayWhenAvailable({ nativeTools, relay: accountRelay, log });
-  mcp.server.onclose = () => { startup.stop(); desktopStartup.stop(); accountStartup.stop(); };
+  if (!reload.staged) void lifecycle.activate().catch((error) => log(`native relay startup failed: ${error.message}`));
+  mcp.server.onclose = () => { void lifecycle.stop(); };
   await mcp.connect(new StdioServerTransport());
+  reload.listen();
   log(`ready on ${PLATFORM_LABEL} (${relay.started ? relay.socketPath : "socket down"})`);
 }

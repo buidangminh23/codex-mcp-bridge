@@ -27,12 +27,13 @@ import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "./thread-delivery.m
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
+import { clientReloadReason, createReloadControl } from "./reload-control.mjs";
 import { accountIdentity, assertAccountIdentity, publicAccountState, readBridgeAccounts, requireBridgeAccounts } from "./bridge-account-context.mjs";
 import { assertClaudeSenderContext, readClaudeSenderContext, requireClaudeSenderContext } from "./claude-sender-context.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.14.0";
+const VERSION = "1.15.0";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**
@@ -81,6 +82,7 @@ async function beforeDesktopRequest({ operation, args, phase }) {
 }
 
 function withheldDesktopResult(error, context) {
+  if (context.dispatched) reload.defer("A Desktop operation was dispatched without a fully verified outcome");
   const reason = (error?.message ?? "The calling session or accounts could not be reverified.").replace(/\s*No message was sent\./g, "");
   return {
     ...textResult(`${reason} ${context.dispatched ? "A Desktop operation may already have been dispatched. Its original destination and any creation receipt were preserved." : "No Desktop mutation was dispatched."} Reply content was withheld. Inspect the original task and do not resend automatically.`, true),
@@ -91,6 +93,19 @@ function withheldDesktopResult(error, context) {
 const client = desktopTasksEnabled ? null : new CodexAppServerClient({
   clientInfo: { name: "codex-mcp-bridge", title: "Codex MCP Bridge", version: VERSION },
   log,
+});
+
+const reload = createReloadControl({
+  entry: "index.mjs",
+  inspect: () => desktopTasks.threadOperations.size ? "Desktop task operations are still active" : clientReloadReason(client),
+  quiesce: () => { client?.close(); },
+  exportState: () => ({ desktopTasksEnabled, ownedThreadIds: [...security.ownedThreadIds] }),
+  restore: (state) => {
+    if (state.desktopTasksEnabled !== desktopTasksEnabled || !Array.isArray(state.ownedThreadIds)
+      || state.ownedThreadIds.some((id) => typeof id !== "string" || !id.trim())
+      || new Set(state.ownedThreadIds).size !== state.ownedThreadIds.length) throw new Error("Invalid or incompatible Codex worker reload state");
+    security.ownedThreadIds = new Set(state.ownedThreadIds);
+  },
 });
 
 const textResult = (text, isError = false) => ({
@@ -329,6 +344,7 @@ const server = new McpServer(
 function registerTool(name, definition, handler) {
   server.registerTool(name, definition, async (...args) => {
     try {
+      return await reload.run(async () => {
       if (!definition.annotations?.readOnlyHint) runtime.assertCurrent();
       if (name === "codex_bridge_status") {
         const state = runtime.status();
@@ -360,6 +376,7 @@ function registerTool(name, definition, handler) {
         });
       }
       return await handler(...args);
+      });
     } catch (err) {
       return failure(err);
     }
@@ -954,4 +971,5 @@ registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+reload.listen();
 log(desktopTasksEnabled ? `ready on ${PLATFORM_LABEL} (Codex Desktop only; external app-server disabled)` : `ready on ${PLATFORM_LABEL} (app-server endpoint: ${client.url}, codex: ${client.codexBin})`);

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { homeDir, IS_WINDOWS } from "./platform.mjs";
+import { cloneReloadState } from "./reload-control.mjs";
 
 const SOCKET_DIR = "/tmp/cc-socks";
 
@@ -366,6 +367,10 @@ export class PeerEndpoint {
     this.sentMessages = new Map();
     this.pendingMessages = new Map();
     this.responsePoll = null;
+    this.connections = new Set();
+    this.activityRevision = 0;
+    this.reloadPaused = false;
+    this.processHandlersRegistered = false;
   }
 
   /**
@@ -396,6 +401,7 @@ export class PeerEndpoint {
   }
 
   async start() {
+    if (this.reloadPaused) throw new Error("The peer endpoint is quiesced for reload");
     if (this.started) return;
     this.#sweepDeadBridges();
     const procStart = readProcessStart(this.pid);
@@ -432,24 +438,33 @@ export class PeerEndpoint {
     fs.writeFileSync(this.registryPath, JSON.stringify(this.registry), { mode: 0o600 });
     fs.writeFileSync(this.keyPath, JSON.stringify({ peerToken, ...processIdentity }), { mode: 0o600 });
 
-    for (const signal of ["SIGINT", "SIGTERM"]) {
-      process.on(signal, () => {
-        this.stop();
-        process.exit(0);
-      });
+    if (!this.processHandlersRegistered) {
+      for (const signal of ["SIGINT", "SIGTERM"]) {
+        process.on(signal, () => {
+          this.stop();
+          process.exit(0);
+        });
+      }
+      process.on("exit", () => this.stop());
+      this.processHandlersRegistered = true;
     }
-    process.on("exit", () => this.stop());
 
     this.started = true;
     this.log(`peer "${this.name}" listening on ${this.socketPath}`);
   }
 
   #handleConnection(socket) {
+    this.activityRevision += 1;
+    this.connections.add(socket);
+    socket.once("close", () => this.connections.delete(socket));
+    if (this.reloadPaused) { socket.destroy(); return; }
     let buffer = "";
     let authenticated = false;
     let firstLine = true;
     socket.setEncoding("utf8");
     socket.on("data", (chunk) => {
+      this.activityRevision += 1;
+      if (this.reloadPaused) { socket.destroy(); return; }
       buffer += chunk;
       if (buffer.length > 1048576) { socket.destroy(); return; }
       let index;
@@ -502,6 +517,7 @@ export class PeerEndpoint {
   }
 
   #receiveMessage(message) {
+    this.activityRevision += 1;
     const record = { ...message, receivedAt: Date.now(), sequence: ++this.messageSequence };
     this.inbox.push(record);
     const key = record.inReplyTo ?? [...this.pendingMessages].find(([, entry]) => entry.targetSocket === record.fromSocket)?.[0];
@@ -565,6 +581,7 @@ export class PeerEndpoint {
   }
 
   async send(targetSocket, text, { priority = "next", msgId, permissionMode = this.permissionMode, beforeSend } = {}) {
+    if (this.reloadPaused) throw new Error("The peer endpoint is quiesced; no message was sent");
     const frame = buildFrame({ text, fromSocket: this.socketPath, priority, permissionMode });
     if (msgId) frame.uuid = frame.msg_id = msgId;
     const token = readPeerToken(targetSocket);
@@ -574,6 +591,8 @@ export class PeerEndpoint {
       try {
         await new Promise((resolve, reject) => {
           const client = net.connect({ path: targetSocket });
+          this.connections.add(client);
+          client.once("close", () => this.connections.delete(client));
           let connected = false;
           let writeStarted = false;
           let settled = false;
@@ -764,6 +783,85 @@ export class PeerEndpoint {
     };
   }
 
+  reloadReason() {
+    if (this.connections.size) return "Peer socket connections are still open";
+    if (this.requestQueues.size || this.pendingMessages.size || this.unconfirmedReplies.size) return "Claude messages still have pending or unconfirmed delivery";
+    for (const [id, sent] of this.sentMessages) {
+      if (!sent.reply && !sent.failed && !["refused", "denied", "expired", "dropped"].includes(this.deliveryReceipts.get(id)?.status)) {
+        return "A Claude delivery outcome remains unconfirmed";
+      }
+    }
+    return null;
+  }
+
+  async quiesce() {
+    const reason = this.reloadReason();
+    if (reason) throw new Error(reason);
+    const revision = this.activityRevision;
+    this.reloadPaused = true;
+    globalThis.clearInterval(this.responsePoll);
+    this.responsePoll = null;
+    if (this.server?.listening) {
+      await new Promise((resolve, reject) => this.server.close((error) => error ? reject(error) : resolve()));
+    }
+    this.started = false;
+    this.#removeRegistration();
+    if (revision !== this.activityRevision || this.reloadReason()) throw new Error("Peer activity raced with reload; the endpoint remains quiesced");
+  }
+
+  async resume() {
+    this.reloadPaused = false;
+    await this.start();
+  }
+
+  exportReloadState() {
+    const reason = this.reloadReason();
+    if (reason || this.started && !this.reloadPaused) throw new Error(reason ?? "Quiesce the peer endpoint before exporting state");
+    return cloneReloadState({ name: this.name, messageSequence: this.messageSequence, inbox: this.inbox,
+      sentMessages: [...this.sentMessages], deliveryReceipts: [...this.deliveryReceipts] });
+  }
+
+  restoreReloadState(input) {
+    if (this.started || this.connections.size || this.sentMessages.size || this.inbox.length) throw new Error("Peer reload state requires an empty dormant endpoint");
+    const state = cloneReloadState(input);
+    if (!state || typeof state.name !== "string" || !state.name || !Number.isSafeInteger(state.messageSequence) || state.messageSequence < 0
+      || !Array.isArray(state.inbox) || !Array.isArray(state.sentMessages) || !Array.isArray(state.deliveryReceipts)) throw new Error("Invalid peer reload state");
+    const restoreMap = (entries) => {
+      const restored = new Map();
+      for (const pair of entries) {
+        if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || !pair[0] || restored.has(pair[0])
+          || !pair[1] || typeof pair[1] !== "object" || Array.isArray(pair[1])) throw new Error("Invalid peer reload record");
+        restored.set(pair[0], pair[1]);
+      }
+      return restored;
+    };
+    const sentMessages = restoreMap(state.sentMessages);
+    const deliveryReceipts = restoreMap(state.deliveryReceipts);
+    for (const record of state.inbox) {
+      if (!record || typeof record.text !== "string" || !Number.isSafeInteger(record.sequence) || record.sequence < 1
+        || record.sequence > state.messageSequence || !Number.isFinite(record.receivedAt)) throw new Error("Invalid inbox reload record");
+    }
+    for (const [id, sent] of sentMessages) {
+      if (typeof sent.targetSocket !== "string" || !sent.targetSocket || !Number.isFinite(sent.sentAt)
+        || sent.reply && (typeof sent.reply.text !== "string" || sent.reply.inReplyTo !== id)
+        || !sent.reply && !sent.failed && !["refused", "denied", "expired", "dropped"].includes(deliveryReceipts.get(id)?.status)) {
+        throw new Error("Invalid or unconfirmed Claude delivery reload record");
+      }
+    }
+    this.name = state.name;
+    this.messageSequence = state.messageSequence;
+    this.inbox = state.inbox;
+    this.sentMessages = sentMessages;
+    this.deliveryReceipts = deliveryReceipts;
+  }
+
+  #removeRegistration() {
+    for (const file of [this.socketPath, this.registryPath, this.keyPath]) {
+      if (!file) continue;
+      try { fs.rmSync(file, { force: true }); } catch {}
+    }
+  }
+
   stop() {
     globalThis.clearInterval(this.responsePoll);
     this.responsePoll = null;
@@ -771,12 +869,9 @@ export class PeerEndpoint {
     try {
       this.server?.close();
     } catch {}
-    for (const file of [this.socketPath, this.registryPath, this.keyPath]) {
-      if (!file) continue;
-      try {
-        fs.rmSync(file, { force: true });
-      } catch {}
-    }
+    for (const socket of this.connections) socket.destroy();
+    this.connections.clear();
+    this.#removeRegistration();
     this.started = false;
   }
 }

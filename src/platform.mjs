@@ -61,7 +61,10 @@ const FOREIGN_ROOT_PATTERNS = [
  * directory layout out of the source.
  */
 function bridgeParentDir() {
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const sourceRoot = process.env.CODEX_BRIDGE_WORKER === "1" && process.env.CODEX_BRIDGE_SOURCE_ROOT;
+  const repoRoot = sourceRoot && path.isAbsolute(sourceRoot)
+    ? sourceRoot
+    : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   return path.dirname(repoRoot);
 }
 

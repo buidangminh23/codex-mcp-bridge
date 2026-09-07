@@ -139,12 +139,24 @@ function senderResult(status, reason, values = {}) {
   return { status, pid: null, sessionId: null, taskId: null, cwd: null, processStart: null, accountFingerprint: null, reason, ...values };
 }
 
+function senderFailureCode(error) {
+  if (error?.code === "ETIMEDOUT" || (error?.killed && ["SIGTERM", "SIGKILL"].includes(error.signal))) return "INSPECTION_TIMEOUT";
+  if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return "OUTPUT_LIMIT";
+  if (["ENOENT", "EACCES", "EPERM"].includes(error?.code)) return error.code;
+  if (typeof error?.code === "number") return "NATIVE_EXIT";
+  if (error instanceof SyntaxError) return "INVALID_JSON";
+  return "UNAVAILABLE";
+}
+
 export async function readClaudeSenderContext({ account, parentPid = process.ppid, readAncestry = readProcessAncestry, listSessions = listClaudeSessions, readContext = readClaudeDesktopContext } = {}) {
   if (account?.status !== "verified" || !account.fingerprint) return senderResult("unavailable", "The calling Claude account is not verified.");
+  let stage = "session_registry";
   try {
     const registered = listSessions();
     const direct = registered.some((session) => session.entrypoint === "claude-desktop" && session.alive && session.pid === parentPid);
+    stage = "process_inspection";
     const ancestry = await readAncestry({ parentPid, maxDepth: direct ? 1 : MAX_ANCESTORS });
+    stage = "ancestry_validation";
     if (!Array.isArray(ancestry) || !ancestry.length || ancestry.length > MAX_ANCESTORS) throw new Error("invalid ancestry");
     const seen = new Set();
     let expected = parentPid;
@@ -160,6 +172,7 @@ export async function readClaudeSenderContext({ account, parentPid = process.ppi
     const session = sessions[0];
     const process = ancestry.find((entry) => entry.pid === session.pid);
     if (session.processStart && session.processStart !== process.processStart) return senderResult("unavailable", "The calling Claude session's registered process identity changed.");
+    stage = "task_metadata";
     const context = readContext(session, { account });
     if (context.status !== "matched") return senderResult("unavailable", "The calling Claude Code session is not confirmed in the currently signed-in account.");
     return senderResult("verified", "The calling MCP process belongs to a live Claude Desktop Code session in the selected account.", {
@@ -167,8 +180,9 @@ export async function readClaudeSenderContext({ account, parentPid = process.ppi
       processStart: process.processStart, accountFingerprint: account.fingerprint,
       lineage: ancestry.map((entry) => ({ ...entry })),
     });
-  } catch {
-    return senderResult("unavailable", "The calling Claude process ancestry or task identity could not be verified.");
+  } catch (error) {
+    const code = senderFailureCode(error);
+    return senderResult("unavailable", `The calling Claude process ancestry or task identity could not be verified (${stage}:${code}).`, { diagnostic: { stage, code } });
   }
 }
 

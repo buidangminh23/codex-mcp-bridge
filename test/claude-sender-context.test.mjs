@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { describe, it } from "node:test";
+import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { assertClaudeSenderContext, readClaudeSenderContext, readProcessAncestry, requireClaudeSenderContext } from "../src/claude-sender-context.mjs";
 
 const accountA = { status: "verified", accountId: "account-a", fingerprint: "a".repeat(64) };
@@ -71,6 +77,36 @@ describe("bounded Windows native process ancestry", () => {
     assert.equal(direct[0].parentPid, process.ppid);
     assert.match(direct[0].processStart, /^[1-9]\d{16,18}$/);
     t.diagnostic(`Native snapshot durations: direct=${firstMs}ms, full=${Math.round(performance.now() - started) - firstMs}ms`);
+  });
+
+  it("verifies the caller under MCP's sanitized Windows environment and fresh fixture profile", { skip: process.platform !== "win32", timeout: 10000 }, async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "claude-caller-mcp-env-"));
+    try {
+      const env = { ...getDefaultEnvironment(), PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "",
+        HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"),
+        LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"),
+      };
+      fs.mkdirSync(path.join(env.APPDATA, "Claude"), { recursive: true });
+      fs.mkdirSync(env.CODEX_HOME, { recursive: true });
+      const source = `
+        import { readClaudeSenderContext } from ${JSON.stringify(new URL("../src/claude-sender-context.mjs", import.meta.url).href)};
+        const started = performance.now();
+        const sender = await readClaudeSenderContext({
+          account: { status: "verified", fingerprint: "a".repeat(64) },
+          listSessions: () => [{ pid: process.ppid, entrypoint: "claude-desktop", alive: true, sessionId: "fixture" }],
+          readContext: () => ({ status: "matched", taskId: "fixture-task", cwd: process.cwd() }),
+        });
+        console.log(JSON.stringify({ status: sender.status, reason: sender.reason, diagnostic: sender.diagnostic,
+          expectedParent: sender.pid === process.ppid, elapsedMs: Math.round(performance.now() - started) }));
+      `;
+      const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source], { cwd: home, env, windowsHide: true, timeout: 8000, maxBuffer: 16384 });
+      const result = JSON.parse(stdout);
+      assert.equal(result.status, "verified", JSON.stringify(result));
+      assert.equal(result.expectedParent, true);
+      t.diagnostic(`Sanitized MCP process inspection: ${result.elapsedMs}ms`);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -145,6 +181,28 @@ describe("Claude Desktop caller account and process binding", () => {
     f.session.processStart = "caller-start";
     assert.equal((await readClaudeSenderContext({ ...f.options, account: { status: "signed_out" } })).status, "unavailable");
     assert.equal((await readClaudeSenderContext({ ...f.options, readAncestry: async () => { throw new Error("OS unavailable"); } })).status, "unavailable");
+  });
+
+  it("reports allowlisted failure stages and codes without subprocess output or error messages", async () => {
+    const f = fixture();
+    for (const [fields, expected] of [
+      [{ killed: true, signal: "SIGTERM", code: null }, "INSPECTION_TIMEOUT"],
+      [{ code: "ETIMEDOUT" }, "INSPECTION_TIMEOUT"], [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }, "OUTPUT_LIMIT"],
+      [{ code: "ENOENT" }, "ENOENT"], [{ code: "EPERM" }, "EPERM"], [{ code: 1 }, "NATIVE_EXIT"],
+      [{ code: "PRIVATE_ERROR_TOKEN" }, "UNAVAILABLE"],
+    ]) {
+      const error = Object.assign(new Error("PRIVATE_ERROR_TOKEN"), fields, { stdout: "PRIVATE_STDOUT", stderr: "PRIVATE_STDERR" });
+      const result = await readClaudeSenderContext({ ...f.options, readAncestry: async () => { throw error; } });
+      assert.deepEqual(result.diagnostic, { stage: "process_inspection", code: expected });
+      assert.doesNotMatch(JSON.stringify(result), /PRIVATE_/);
+    }
+    const malformed = await readClaudeSenderContext({ ...f.options, readAncestry: async () => [] });
+    assert.deepEqual(malformed.diagnostic, { stage: "ancestry_validation", code: "UNAVAILABLE" });
+    const badJson = await readClaudeSenderContext({ ...f.options, readAncestry: async () => JSON.parse("private-invalid-json") });
+    assert.deepEqual(badJson.diagnostic, { stage: "process_inspection", code: "INVALID_JSON" });
+    const metadata = await readClaudeSenderContext({ ...f.options, readContext: () => { throw new Error("PRIVATE_METADATA"); } });
+    assert.deepEqual(metadata.diagnostic, { stage: "task_metadata", code: "UNAVAILABLE" });
+    assert.doesNotMatch(JSON.stringify(metadata), /PRIVATE_/);
   });
 
   it("rechecks the exact caller task and workspace before a later dispatch", async () => {

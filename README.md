@@ -663,7 +663,7 @@ Runs the whole suite with `node --test`. It needs no Codex install, no login and
 | `test/native-relay.test.mjs` | the Codex Desktop relay: executor thread resolution, feature detection, Windows named-pipe and POSIX socket round trips, backend selection and fallback, and the companion answering a real MCP client that plays Codex Desktop |
 | `test/repo-hygiene.test.mjs` | no environment file or build output is ever tracked, versions do not drift, documentation stays in English |
 
-GitHub Actions runs the same command on every push and pull request, across Node 22 and 24 on Linux, macOS and Windows (`.github/workflows/ci.yml`). The Codex → Claude direction uses unix sockets on macOS/Linux and named pipes on Windows; the native relay has matching platform-specific coverage.
+GitHub Actions runs the suite on every push and pull request, across Node 22 and 24 on Linux, macOS and Windows (`.github/workflows/ci.yml`). Windows runners limit concurrent test files to two so immutable snapshot copies do not starve the bounded PowerShell process-identity checks. The Codex → Claude direction uses unix sockets on macOS/Linux and named pipes on Windows; the native relay has matching platform-specific coverage.
 
 Two checks need a real Codex and are not part of `npm test`:
 

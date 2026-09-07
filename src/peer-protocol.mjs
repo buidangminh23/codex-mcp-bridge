@@ -512,11 +512,12 @@ export class PeerEndpoint {
       if (sent) {
         record.inReplyTo = key;
         record.replyThreadId = sent.replyThreadId ?? null;
+        record.accountContext = sent.accountContext ?? null;
         sent.reply = record;
       }
       this.#removePendingReply(record.fromSocket, key);
     }
-    this.log(`inbox <- ${record.fromSocket ?? "?"}: ${record.text.slice(0, 120)}`);
+    this.log(`inbox <- ${record.fromSocket ?? "?"}: ${record.text.length} characters`);
     for (const listener of [...this.listeners]) {
       try { listener(record); }
       catch (err) { this.log(`peer listener error: ${err.message}`); }
@@ -626,7 +627,7 @@ export class PeerEndpoint {
     return frame.msg_id;
   }
 
-  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend, permissionMode = this.permissionMode, replyThreadId, senderReview, senderApprovalPolicy, recipient } = {}) {
+  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend, permissionMode = this.permissionMode, replyThreadId, senderReview, senderApprovalPolicy, recipient, accountContext } = {}) {
     const previous = this.requestQueues.get(targetSocket) ?? Promise.resolve();
     const pending = previous.catch(() => {}).then(async () => {
       await beforeSend?.();
@@ -644,7 +645,7 @@ export class PeerEndpoint {
       this.unconfirmedReplies.set(targetSocket, unconfirmed + 1);
       let msgId = crypto.randomUUID();
       this.pendingMessages.set(msgId, { targetSocket, transcriptSession });
-      this.sentMessages.set(msgId, { targetSocket, transcriptSession, sentAt: since, replyThreadId, permissionMode, senderApprovalPolicy, ...(senderReview ? { senderReview: { ...senderReview } } : {}), ...(recipient ? { recipient: { ...recipient } } : {}) });
+      this.sentMessages.set(msgId, { targetSocket, transcriptSession, sentAt: since, replyThreadId, permissionMode, senderApprovalPolicy, ...(senderReview ? { senderReview: { ...senderReview } } : {}), ...(recipient ? { recipient: { ...recipient } } : {}), ...(accountContext ? { accountContext: Object.freeze({ ...accountContext }) } : {}) });
       if (transcriptSession && !this.responsePoll) {
         this.responsePoll = globalThis.setInterval(() => this.#refreshTranscriptReplies(), 250);
         this.responsePoll.unref();
@@ -726,9 +727,15 @@ export class PeerEndpoint {
     });
   }
 
-  drainInbox(limit = 20) {
+  drainInbox(limit = 20, accepts = () => true) {
     if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Inbox limit must be a positive integer");
-    return this.inbox.splice(0, limit);
+    const selected = [];
+    this.inbox = this.inbox.filter((record) => {
+      if (selected.length >= limit || !accepts(record)) return true;
+      selected.push(record);
+      return false;
+    });
+    return selected;
   }
 
   readDelivery(msgId) {
@@ -751,6 +758,7 @@ export class PeerEndpoint {
       ...(sent.senderReview ? { senderReview: { ...sent.senderReview } } : {}),
       ...(sent.recipient ? { recipientPermissionMode: sent.recipient.permissionMode ?? null, recipientPermissionClass: sent.recipient.permissionClass ?? null, recipientInboundPolicy: sent.recipient.inboundPolicy ?? null } : {}),
       replyThreadId: sent.replyThreadId ?? null,
+      ...(sent.accountContext ? { accountContext: { ...sent.accountContext } } : {}),
       pending: this.pendingMessages.has(msgId),
       ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer", ...(sent.reply.absorbed ? { replyAbsorbed: true } : {}), ...(sent.reply.forwardingError ? { forwardingError: { ...sent.reply.forwardingError } } : {}) } : {}),
     };

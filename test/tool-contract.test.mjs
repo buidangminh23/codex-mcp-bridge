@@ -45,6 +45,9 @@ const NATIVE_RELAY_TOOLS = ["native_relay_status"];
  * write peer registry entries into the developer's own ~/.claude.
  */
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-tools-"));
+const unavailableRelaySocket = (home) => process.platform === "win32"
+  ? `\\\\.\\pipe\\codex-bridge-test-${crypto.createHash("sha256").update(home).digest("hex")}`
+  : path.join(home, "missing-relay.sock");
 
 describe("Claude message receipts", () => {
   for (const scenario of ["nowait", "timeout", "peer", "desktop", "desktop-busy", "desktop-unknown-mode", "desktop-mismatch", "desktop-mismatch-accepted", "desktop-inbound-hold", "desktop-prompting", "desktop-reviewed", "desktop-reviewed-held", "desktop-reviewed-refused", "held", "refused", "diagnostic"]) {
@@ -87,9 +90,12 @@ describe("Claude message receipts", () => {
         const configRoot = process.platform === "darwin" ? path.join(home, "Library", "Application Support") : process.platform === "win32" ? path.join(home, "AppData", "Roaming") : path.join(home, ".config");
         const tasks = path.join(configRoot, "Claude", "claude-code-sessions", "44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555");
         fs.mkdirSync(tasks, { recursive: true });
+        fs.writeFileSync(path.join(configRoot, "Claude", "config.json"), JSON.stringify({ lastKnownAccountUuid: "44444444-4444-4444-8444-444444444444", windowSizeWasSignedIn: true }));
         fs.writeFileSync(path.join(tasks, desktopTaskId + ".json"), JSON.stringify({ sessionId: desktopTaskId, cliSessionId: "receipt-session", title: "Receipt test", cwd: home, isArchived: false, ...(recipientMode ? { permissionMode: recipientMode } : {}) }));
         const rollouts = path.join(home, ".codex", "sessions", "2026", "09", "06");
         fs.mkdirSync(rollouts, { recursive: true });
+        const idToken = `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "fixture-user" })).toString("base64url")}.fixture`;
+        fs.writeFileSync(path.join(home, ".codex", "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: "fixture-account", id_token: idToken } }));
         fs.writeFileSync(path.join(rollouts, `rollout-fixture-${callerId}.jsonl`), [
           { type: "session_meta", payload: { id: callerId, originator: "Codex Desktop", source: "vscode", cwd: home } },
           { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
@@ -156,7 +162,7 @@ describe("Claude message receipts", () => {
         } finally { await new Promise((resolve) => receiver.close(resolve)); }
         return;
       }
-      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"), CODEX_BRIDGE_AUTOSTART: "0", CLAUDE_BRIDGE_PERMISSION_MODE: "bypass", CODEX_BRIDGE_DESKTOP_TASKS: desktop ? "1" : "0" }, stderr: "ignore" });
+      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"), CODEX_NATIVE_RELAY_SOCKET: unavailableRelaySocket(home), CODEX_BRIDGE_AUTOSTART: "0", CLAUDE_BRIDGE_PERMISSION_MODE: "bypass", CODEX_BRIDGE_DESKTOP_TASKS: desktop ? "1" : "0" }, stderr: "ignore" });
       const client = new Client({ name: "receipt-test", version: "1" });
       try {
         await client.connect(transport);
@@ -290,6 +296,116 @@ describe("Claude message receipts", () => {
   }
 });
 
+describe("Claude Desktop account switching", () => {
+  it("rediscovers the current account over the actual MCP transport without duplicate sends", async () => {
+    const home = fs.mkdtempSync(path.join(sandboxHome, "account-switch-"));
+    const configRoot = process.platform === "darwin" ? path.join(home, "Library", "Application Support") : process.platform === "win32" ? path.join(home, "AppData", "Roaming") : path.join(home, ".config");
+    const userData = path.join(configRoot, "Claude");
+    const registry = path.join(home, ".claude", "sessions");
+    const transcripts = path.join(home, ".claude", "projects", "fixture");
+    const rollouts = path.join(home, ".codex", "sessions", "2026", "09", "07");
+    for (const directory of [userData, registry, transcripts, rollouts]) fs.mkdirSync(directory, { recursive: true });
+    const callerId = "22222222-2222-4222-8222-222222222222";
+    const turnId = "33333333-3333-4333-8333-333333333333";
+    const meta = { "x-codex-turn-metadata": { thread_id: callerId, turn_id: turnId, thread_source: "user", auto_review_enabled: false, node_repl_auto_review_required: false } };
+    const idToken = `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "fixture-user" })).toString("base64url")}.fixture`;
+    fs.writeFileSync(path.join(home, ".codex", "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: "fixture-account", id_token: idToken } }));
+    fs.writeFileSync(path.join(rollouts, `rollout-fixture-${callerId}.jsonl`), [
+      { type: "session_meta", payload: { id: callerId, originator: "Codex Desktop", source: "vscode", cwd: home } },
+      { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+      { type: "turn_context", payload: { turn_id: turnId, cwd: home, approval_policy: "never", approvals_reviewer: "user", permission_profile: { type: "disabled" }, sandbox_policy: { type: "danger-full-access" } } },
+    ].map(JSON.stringify).join("\n") + "\n");
+    const processIdentity = process.platform === "win32"
+      ? { procStartFt: execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]).toString().trim() }
+      : { procStart: execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).toString().trim() };
+    const destinations = [
+      { accountId: "44444444-4444-4444-8444-444444444444", taskId: "local_11111111-1111-4111-8111-111111111111", sessionId: "account-a-cli", title: "Account A task" },
+      { accountId: "77777777-7777-4777-8777-777777777777", taskId: "local_88888888-8888-4888-8888-888888888888", sessionId: "account-b-cli", title: "Account B task" },
+    ];
+    const received = [];
+    const servers = [];
+    let handlerError;
+    const writeDestination = (destination) => {
+      const directory = path.join(userData, "claude-code-sessions", destination.accountId, "55555555-5555-4555-8555-555555555555");
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, destination.taskId + ".json"), JSON.stringify({ sessionId: destination.taskId, cliSessionId: destination.sessionId, title: destination.title, cwd: home, isArchived: false, permissionMode: "bypassPermissions" }));
+      fs.writeFileSync(path.join(registry, destination.accountId + ".json"), JSON.stringify({ pid: process.pid, ...processIdentity, name: "same-name", sessionId: destination.sessionId, cwd: home, messagingSocketPath: destination.socketPath, entrypoint: "claude-desktop" }));
+    };
+    const activate = (destination, signedIn = true) => fs.writeFileSync(path.join(userData, "config.json"), JSON.stringify({ lastKnownAccountUuid: destination.accountId, windowSizeWasSignedIn: signedIn }));
+    const client = new Client({ name: "account-switch-test", version: "1" });
+    try {
+      for (const [index, destination] of destinations.entries()) {
+        destination.socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\cc-msg-${crypto.randomBytes(16).toString("hex")}` : path.join(home, `peer-${index}.sock`);
+        const token = crypto.randomBytes(16).toString("hex");
+        fs.writeFileSync(path.join(registry, path.basename(peerKeyPath(process.pid, destination.socketPath))), JSON.stringify({ peerToken: token }));
+        writeDestination(destination);
+        const server = net.createServer((socket) => {
+          let buffer = "";
+          let authenticated = false;
+          socket.on("error", (error) => { handlerError = error; });
+          socket.on("data", (data) => {
+            buffer += data.toString();
+            let newline;
+            while ((newline = buffer.indexOf("\n")) >= 0) {
+              const line = buffer.slice(0, newline);
+              buffer = buffer.slice(newline + 1);
+              try {
+                const frame = JSON.parse(line);
+                if (frame.type === "auth") { assert.equal(frame.token, token); authenticated = true; continue; }
+                assert.equal(authenticated, true);
+                received.push({ accountId: destination.accountId, msgId: frame.msg_id });
+                fs.appendFileSync(path.join(transcripts, destination.sessionId + ".jsonl"), [
+                  { uuid: frame.uuid, isMeta: true, message: frame.message },
+                  { uuid: crypto.randomUUID(), parentUuid: frame.uuid, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: destination.title + " received" }] } },
+                ].map(JSON.stringify).join("\n") + "\n");
+              } catch (error) { handlerError = error; }
+            }
+          });
+        });
+        await new Promise((resolve, reject) => { server.once("error", reject); server.listen(destination.socketPath, resolve); });
+        servers.push(server);
+      }
+      activate(destinations[0]);
+      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: {
+        PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"), CODEX_NATIVE_RELAY_SOCKET: unavailableRelaySocket(home), CLAUDE_DESKTOP_USER_DATA: userData, CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_DESKTOP_TASKS: "1",
+      }, stderr: "ignore" });
+      await client.connect(transport);
+      const send = (target = "auto", expectedTaskId) => client.callTool({ name: "send_to_claude_session", arguments: { target, message: "Account routing test", expectedCwd: home, expectedTaskId, waitSec: 2 }, _meta: meta });
+      for (const index of [0, 1, 0]) {
+        const destination = destinations[index];
+        activate(destination);
+        const listing = await client.callTool({ name: "list_claude_sessions", arguments: { expectedCwd: home } });
+        assert.deepEqual(listing.structuredContent.sessions.map((session) => session.sessionId), [destination.sessionId]);
+        const result = await send();
+        assert.equal(result.structuredContent?.receipt?.status, "reply_received", result.content?.[0]?.text);
+        assert.equal(result.structuredContent.receipt.sessionId, destination.sessionId);
+        assert.equal(result.structuredContent.receipt.taskId, destination.taskId);
+      }
+      assert.deepEqual(received.map((message) => message.accountId), [destinations[0].accountId, destinations[1].accountId, destinations[0].accountId]);
+      const rejected = await send(destinations[1].sessionId, destinations[0].taskId);
+      assert.equal(rejected.structuredContent.preflight.sent, false);
+      assert.equal(received.length, 3);
+      activate(destinations[0], false);
+      const signedOut = await send();
+      assert.equal(signedOut.structuredContent.preflight.sent, false);
+      assert.equal(received.length, 3);
+      activate(destinations[0]);
+      const oldSessionId = destinations[0].sessionId;
+      destinations[0].sessionId = "account-a-cli-restarted";
+      writeDestination(destinations[0]);
+      const restarted = await send(oldSessionId, destinations[0].taskId);
+      assert.equal(restarted.structuredContent?.receipt?.status, "reply_received", restarted.content?.[0]?.text);
+      assert.equal(restarted.structuredContent.receipt.sessionId, destinations[0].sessionId);
+      assert.equal(received.length, 4);
+      assert.equal(new Set(received.map((message) => message.msgId)).size, 4);
+      if (handlerError) throw handlerError;
+    } finally {
+      await client.close();
+      await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+    }
+  });
+});
+
 describe("Claude Desktop destination enforcement", () => {
   for (const policySource of ["environment", "shared-config"]) {
     it(`refuses CLI delivery before connecting when Desktop mode comes from ${policySource}`, async () => {
@@ -299,7 +415,13 @@ describe("Claude Desktop destination enforcement", () => {
       const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\cc-msg-${crypto.randomBytes(16).toString("hex")}` : path.join(home, "cli.sock");
       fs.writeFileSync(path.join(registryDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, name: "cli-target", sessionId: "cli-session", cwd: home, messagingSocketPath: socketPath, entrypoint: "cli" }));
       fs.writeFileSync(path.join(registryDir, path.basename(peerKeyPath(process.pid, socketPath))), JSON.stringify({ peerToken: crypto.randomBytes(16).toString("hex") }));
-      const env = { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, ".codex"), CODEX_BRIDGE_AUTOSTART: "0" };
+      const configRoot = process.platform === "darwin" ? path.join(home, "Library", "Application Support") : process.platform === "win32" ? path.join(home, "AppData", "Roaming") : path.join(home, ".config");
+      fs.mkdirSync(path.join(configRoot, "Claude"), { recursive: true });
+      fs.writeFileSync(path.join(configRoot, "Claude", "config.json"), JSON.stringify({ lastKnownAccountUuid: "44444444-4444-4444-8444-444444444444", windowSizeWasSignedIn: true }));
+      const env = { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"), CODEX_BRIDGE_AUTOSTART: "0" };
+      fs.mkdirSync(env.CODEX_HOME, { recursive: true });
+      const idToken = `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "fixture-user" })).toString("base64url")}.fixture`;
+      fs.writeFileSync(path.join(env.CODEX_HOME, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: "fixture-account", id_token: idToken } }));
       if (policySource === "environment") env.CODEX_BRIDGE_DESKTOP_TASKS = "1";
       else {
         fs.mkdirSync(env.CODEX_HOME, { recursive: true });
@@ -312,9 +434,10 @@ describe("Claude Desktop destination enforcement", () => {
       const client = new Client({ name: "desktop-policy-test", version: "1" });
       try {
         await client.connect(transport);
-        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "cli-session", message: "Must never reach the CLI", waitSec: 0 } });
+        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "cli-session", message: "Must never reach the CLI", expectedCwd: home, expectedTaskId: "local_11111111-1111-4111-8111-111111111111", waitSec: 0 } });
         assert.equal(result.isError, true);
-        assert.match(result.content[0].text, /Desktop-only.*refuses.*cli/s);
+        assert.equal(result.structuredContent.preflight.code, "CLAUDE_DESKTOP_TASK_UNVERIFIED");
+        assert.equal(result.structuredContent.preflight.sent, false);
         assert.equal(connections, 0);
         const listing = await client.callTool({ name: "list_claude_sessions", arguments: {} });
         assert.match(listing.content[0].text, /No live Claude Desktop session/);

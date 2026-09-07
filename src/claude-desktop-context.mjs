@@ -27,7 +27,7 @@ const permissionModeOf = (mode) => typeof mode === "string" && PERMISSION_MODE.t
 const permissionClassOf = (mode) => typeof mode === "string" && Object.hasOwn(PERMISSION_CLASSES, mode) ? PERMISSION_CLASSES[mode] : null;
 
 function result(status, reason, task = {}) {
-  return { status, taskId: task.taskId ?? null, title: task.title ?? null, cwd: task.cwd ?? null, permissionMode: task.permissionMode ?? null, permissionClass: task.permissionClass ?? null, reason };
+  return { status, taskId: task.taskId ?? null, title: task.title ?? null, cwd: task.cwd ?? null, permissionMode: task.permissionMode ?? null, permissionClass: task.permissionClass ?? null, ...(task.accountFingerprint ? { accountFingerprint: task.accountFingerprint } : {}), reason };
 }
 
 function sessionsRoot(platform, env) {
@@ -40,7 +40,7 @@ function sessionsRoot(platform, env) {
   return path.join(config, "Claude", "claude-code-sessions");
 }
 
-function metadataFiles(root) {
+function metadataFiles(root, accountId) {
   if (!path.isAbsolute(root) || !fs.lstatSync(root).isDirectory()) throw new Error("invalid root");
   const files = [];
   let entryCount = 0;
@@ -49,6 +49,7 @@ function metadataFiles(root) {
     entryCount += entries.length;
     if (entryCount > MAX_ENTRIES) throw new Error("scan limit");
     for (const entry of entries) {
+      if (depth === 0 && accountId && entry.name.toLowerCase() !== accountId.toLowerCase()) continue;
       const location = path.join(directory, entry.name);
       if (depth < 2 && ACCOUNT_ID.test(entry.name)) {
         if (!entry.isDirectory()) throw new Error("invalid account directory");
@@ -121,7 +122,10 @@ function canonicalDirectory(directory) {
   return canonical;
 }
 
-export function readClaudeDesktopContext(session, { platform = process.platform, env = process.env, root } = {}) {
+export function readClaudeDesktopContext(session, { platform = process.platform, env = process.env, root, account } = {}) {
+  if (account !== undefined && (account.status !== "verified" || !ACCOUNT_ID.test(account.accountId ?? "") || !account.root)) {
+    return result("missing", "Claude Desktop has no verified signed-in account; wait for sign-in to finish and discover its sessions again.");
+  }
   if (typeof session?.sessionId !== "string" || !session.sessionId.trim()) {
     return result("missing", "A live Claude sessionId is required to identify its Desktop task.");
   }
@@ -129,14 +133,14 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
       (typeof session.bridgeSessionId !== "string" || !session.bridgeSessionId.trim())) {
     return result("mismatch", "The live Claude bridge session identity is invalid.");
   }
-  const directory = root ?? sessionsRoot(platform, env);
+  const directory = root ?? (account ? path.join(account.root, "claude-code-sessions") : sessionsRoot(platform, env));
   let records;
   try {
     if (!fs.existsSync(directory)) return result("missing", "Claude Desktop task metadata is not available on this host.");
-    const files = metadataFiles(directory);
+    const files = metadataFiles(directory, account?.accountId);
     const budget = { bytes: 0, versions: new Map(), contents: new Map() };
     records = files.map((file) => readMetadata(file, budget));
-    const currentFiles = metadataFiles(directory);
+    const currentFiles = metadataFiles(directory, account?.accountId);
     if (files.length !== currentFiles.length || files.some((file, index) => file !== currentFiles[index])) {
       return result("mismatch", "Claude Desktop task metadata changed during inspection; inspect the existing task again.");
     }
@@ -195,5 +199,6 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
     cwd: taskCwd,
     permissionMode: permissionModeOf(record.permissionMode),
     permissionClass: permissionClassOf(permissionModeOf(record.permissionMode)),
+    accountFingerprint: account?.fingerprint,
   });
 }

@@ -4,6 +4,25 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-09-07
+
+### Added
+
+- Rediscover Claude Desktop and Codex account identity for each Desktop call, including repeated account switches and Windows Store Claude installations. Add `target: "auto"` for the unique current-account Claude Code task in an exact project directory, with native task identity retained across CLI restarts.
+- Bind pending replies and Codex creation receipts to their original account fingerprints. Verify the calling Claude Code task through process ancestry, reject lingering old-account callers, and hide delayed results after an account change without repeating an uncertain delivery.
+
+### Fixed
+
+- Clear automatically discovered native relay endpoints after disconnect, error, or close so the next request can discover a replacement while preserving explicit socket overrides and uncertain-delivery semantics.
+- Recheck account identity after asynchronous transport connection and before native dispatch. Account-bound requests use protocol v2 and a separate companion endpoint so an older shared companion cannot accept them without enforcement.
+- Isolate Windows MCP contract fixtures from the machine's live native relay pipe. Skip file-symlink tests only when Windows denies creating the test link.
+- Read Windows caller ancestry through a bounded native process snapshot instead of WMI service queries. Clean up integration fixtures even when initialization fails, and fail creation gates promptly when preflight rejects a request.
+
+### Upgrade notes
+
+- Reconnect both Desktop MCP clients once after upgrading. Codex can defer its reload until the next active turn. Verify the loaded version and current runtime from that task; subsequent account changes are inspected on each call.
+- Account detection uses Claude's local sign-in snapshot and Codex file-backed ChatGPT identity. Unsupported or transitional identity states stop dispatch until the next call can verify them. Legacy creation receipts without account fingerprints remain protected from implicit reuse.
+
 ## [1.13.9] - 2026-09-07
 
 ### Fixed

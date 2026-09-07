@@ -43,8 +43,19 @@ function removeOwned(directory, cache) {
 
 export function createReleaseSnapshot(root, { cache = snapshotRoot(), expectedRevision = sourceRevision(root) } = {}) {
   root = fs.realpathSync.native(root);
+  if (fs.existsSync(cache) && fs.lstatSync(cache).isSymbolicLink()) throw new Error("The runtime cache cannot be a symbolic link");
+  const missing = [];
+  let ancestor = path.resolve(cache);
+  while (!fs.existsSync(ancestor)) {
+    missing.unshift(path.basename(ancestor));
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) throw new Error("The runtime cache has no accessible filesystem root");
+    ancestor = parent;
+  }
+  cache = path.join(fs.realpathSync.native(ancestor), ...missing);
   fs.mkdirSync(cache, { recursive: true, mode: 0o700 });
   if (fs.lstatSync(cache).isSymbolicLink()) throw new Error("The runtime cache cannot be a symbolic link");
+  cache = fs.realpathSync.native(cache);
   const dependencies = inventory(root, "node_modules");
   const dependencyRevision = digestFiles(root, dependencies);
   const key = createHash("sha256").update(expectedRevision).update(dependencyRevision).digest("hex");

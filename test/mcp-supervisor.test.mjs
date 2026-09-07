@@ -181,13 +181,26 @@ it("resumes the original worker if candidate state restoration fails", async t =
   assert.equal(fs.readFileSync(fixture.ledger, "utf8"), "saved\nafter-rollback\n");
 });
 
+it("resolves cache parent aliases before launching an immutable worker", t => {
+  const fixture = installation(t);
+  t.after(() => fixture.cleanup());
+  const parent = path.join(fixture.root, "real-parent");
+  const alias = path.join(fixture.root, "parent-alias");
+  fs.mkdirSync(parent);
+  try { fs.symlinkSync(fs.realpathSync.native(parent), alias, process.platform === "win32" ? "junction" : "dir"); }
+  catch (error) { if (["EPERM", "EACCES"].includes(error.code)) return t.skip("Directory links are unavailable"); throw error; }
+  const snapshot = createReleaseSnapshot(fixture.root, {cache:path.join(alias,"cache")});
+  assert.equal(snapshot.directory, fs.realpathSync.native(snapshot.directory));
+  assert.equal(snapshot.directory.startsWith(fs.realpathSync.native(parent) + path.sep), true);
+});
+
 for (const [entry, statusName] of [["index.mjs", "codex_bridge_status"], ["claude-bridge.mjs", "claude_bridge_status"], ["native-relay-companion.mjs", "native_relay_status"]]) {
   it(`upgrades the real ${entry} without reconnecting its MCP client`, {timeout:180000}, async t => {
     const fixture = installation(t, entry);
     fs.cpSync(path.join(repository, "src"), path.join(fixture.root, "src"), {recursive:true});
     fs.copyFileSync(path.join(repository,"package.json"),path.join(fixture.root,"package.json"));
     fs.cpSync(path.join(repository,"node_modules"),path.join(fixture.root,"node_modules"),{recursive:true});
-    const prefix = process.platform === "win32" ? `\\\\.\\pipe\\supervisor-${randomUUID()}` : path.join(fixture.root,"native.sock");
+    const prefix = process.platform === "win32" ? `\\\\.\\pipe\\supervisor-${randomUUID()}` : path.join("/tmp",`supervisor-${randomUUID()}.sock`);
     const sockets = new Set();
     const native = net.createServer(socket => { sockets.add(socket); socket.on("close",()=>sockets.delete(socket)); });
     await new Promise(resolve=>native.listen(prefix,resolve));
@@ -204,5 +217,6 @@ for (const [entry, statusName] of [["index.mjs", "codex_bridge_status"], ["claud
     assert.equal(after.structuredContent.autoReload.supervisorPid,before.structuredContent.autoReload.supervisorPid);
     assert.notEqual(after.structuredContent.autoReload.workerPid,before.structuredContent.autoReload.workerPid);
     assert.equal(after.structuredContent.runtime.current,true);
+    if (entry === "native-relay-companion.mjs") assert.match(after.content[0].text, /account relay:.*\(protocol 2, listening\)/);
   });
 }

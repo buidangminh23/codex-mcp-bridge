@@ -61,30 +61,44 @@ async function desktopCallerFixture(home, env) {
 
 async function withBridge(onRequest, run, extraEnv = () => ({})) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-integration-"));
-  const server = await startFakeAppServer({ onRequest: (message, reply) => onRequest(message, reply, home) });
-  const env = {
-    PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "",
-    HOME: home, USERPROFILE: home, CODEX_APP_SERVER_URL: server.url,
-    CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_ALLOWED_ROOTS: home,
-    CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_OPEN_IN_APP: "0",
-    CODEX_BRIDGE_RELEASE_AFTER_TURN: "0",
-    ...await extraEnv(home),
-  };
-  const desktopFixture = env.CODEX_BRIDGE_DESKTOP_TASKS === "1" ? await desktopCallerFixture(home, env) : null;
-  const client = new Client({ name: "bridge-integration", version: "1.0.0" });
-  const transport = new StdioClientTransport({
-    command: process.execPath, args: [path.join(root, "src", "index.mjs")],
-    cwd: home, env, stderr: "ignore",
-  });
+  let server;
+  let client;
   try {
+    server = await startFakeAppServer({ onRequest: (message, reply) => onRequest(message, reply, home) });
+    const env = {
+      PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "",
+      HOME: home, USERPROFILE: home, CODEX_APP_SERVER_URL: server.url,
+      CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_ALLOWED_ROOTS: home,
+      CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_OPEN_IN_APP: "0",
+      CODEX_BRIDGE_RELEASE_AFTER_TURN: "0",
+      ...await extraEnv(home),
+    };
+    const desktopFixture = env.CODEX_BRIDGE_DESKTOP_TASKS === "1" ? await desktopCallerFixture(home, env) : null;
+    client = new Client({ name: "bridge-integration", version: "1.0.0" });
+    const transport = new StdioClientTransport({
+      command: process.execPath, args: [path.join(root, "src", "index.mjs")],
+      cwd: home, env, stderr: "ignore",
+    });
     await client.connect(transport);
     await run({ client, home, env, server, desktopFixture });
   } finally {
-    await client.close();
-    await server.close();
-    fs.rmSync(home, { recursive: true, force: true });
+    try {
+      await client?.close();
+    } finally {
+      await server?.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   }
 }
+
+it("cleans up a temporary bridge when fixture initialization fails", async () => {
+  let fixtureHome;
+  await assert.rejects(withBridge(() => {}, () => assert.fail("Unexpected initialized fixture"), async (home) => {
+    fixtureHome = home;
+    throw new Error("Fixture initialization failed");
+  }), /Fixture initialization failed/);
+  assert.equal(fs.existsSync(fixtureHome), false);
+});
 
 async function additionalBridgeProcess({ home, env }) {
   const client = new Client({ name: "bridge-restart-integration", version: "1.0.0" });
@@ -185,7 +199,7 @@ describe("Desktop task MCP integration", () => {
         clients.push(simultaneous.client);
         const first = client.callTool({ name: "start_codex_thread", arguments: args });
         first.catch(() => {});
-        await creating;
+        await Promise.race([creating, first.then((response) => assert.fail(`Desktop creation returned before dispatch: ${JSON.stringify(response)}`))]);
         assert.deepEqual(creationReceipts(home).map((receipt) => receipt.state), ["pending"]);
         const duplicate = await simultaneous.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Slightly edited private brief" } });
         assert.equal(duplicate.isError, true);

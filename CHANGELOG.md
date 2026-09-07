@@ -16,6 +16,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Clear automatically discovered native relay endpoints after disconnect, error, or close so the next request can discover a replacement while preserving explicit socket overrides and uncertain-delivery semantics.
 - Recheck account identity after asynchronous transport connection and before native dispatch. Account-bound requests use protocol v2 and a separate companion endpoint so an older shared companion cannot accept them without enforcement.
 - Isolate Windows MCP contract fixtures from the machine's live native relay pipe. Skip file-symlink tests only when Windows denies creating the test link.
+- Read Windows caller ancestry through a bounded native process snapshot instead of WMI service queries. Clean up integration fixtures even when initialization fails, and fail creation gates promptly when preflight rejects a request.
 
 ### Upgrade notes
 

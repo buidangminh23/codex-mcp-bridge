@@ -28,6 +28,7 @@ describe("bounded Windows native process ancestry", () => {
     assert.match(shell, /WindowsPowerShell\\v1\.0\\powershell\.exe$/);
     assert.deepEqual(args.slice(0, -1), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
     const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
+    assert.match(script, /\$PSModuleAutoLoadingPreference='None'; Import-Module -Name \(\[IO.Path\]::Combine\(\$PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1'\)\) -ErrorAction Stop; Add-Type/);
     assert.match(script, /CreateToolhelp32Snapshot\(2, 0\)/);
     assert.match(script, /Process32FirstW/);
     assert.match(script, /GetProcessTimes/);
@@ -97,7 +98,7 @@ describe("bounded Windows native process ancestry", () => {
         const started = performance.now();
         let lastStage = "not_started";
         const collectStage = (stderr) => {
-          const markers = [...String(stderr ?? "").matchAll(/BRIDGE_ANCESTRY_STAGE:(started|compiled|snapshot|serialized)/g)];
+          const markers = [...String(stderr ?? "").matchAll(/BRIDGE_ANCESTRY_STAGE:(started|utility_imported|compiled|snapshot|serialized)/g)];
           lastStage = markers.at(-1)?.[1] ?? "not_started";
         };
         const sender = await readClaudeSenderContext({
@@ -106,7 +107,8 @@ describe("bounded Windows native process ancestry", () => {
           readContext: () => ({ status: "matched", taskId: "fixture-task", cwd: process.cwd() }),
           readAncestry: (options) => readProcessAncestry({ ...options, run: async (shell, args, execution) => {
             let script = Buffer.from(args.at(-1), "base64").toString("utf16le");
-            script = script.replace("Add-Type -TypeDefinition", "[Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:started'); Add-Type -TypeDefinition")
+            script = script.replace("$ErrorActionPreference='Stop';", "$ErrorActionPreference='Stop'; [Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:started');")
+              .replace("Add-Type -TypeDefinition", "[Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:utility_imported'); Add-Type -TypeDefinition")
               .replace("\n'@\n", "\n'@\n[Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:compiled');\n")
               .replace(/ConvertTo-Json -InputObject @\((.+)\) -Compress$/, (_match, nativeRead) => `$ancestryRows=@(${nativeRead}); [Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:snapshot'); ConvertTo-Json -InputObject $ancestryRows -Compress; [Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:serialized')`);
             try {

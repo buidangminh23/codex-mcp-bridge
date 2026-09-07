@@ -37,7 +37,7 @@ function fixtureRelayServer({ home, socketPath, ...options }) {
 
 async function desktopCallerFixture(home, env) {
   const accountRoot = claudeFixtureRoot(home);
-  Object.assign(env, { CLAUDE_DESKTOP_USER_DATA: accountRoot, XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex") });
+  Object.assign(env, { CLAUDE_DESKTOP_USER_DATA: accountRoot, APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex") });
   fs.mkdirSync(accountRoot, { recursive: true });
   const setAccount = (accountId) => fs.writeFileSync(path.join(accountRoot, "config.json"), JSON.stringify({ lastKnownAccountUuid: accountId, windowSizeWasSignedIn: true }));
   setAccount(CLAUDE_ACCOUNT_A);
@@ -67,7 +67,7 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
     server = await startFakeAppServer({ onRequest: (message, reply) => onRequest(message, reply, home) });
     const env = {
       PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "",
-      HOME: home, CODEX_APP_SERVER_URL: server.url,
+      HOME: home, USERPROFILE: home, CODEX_APP_SERVER_URL: server.url,
       CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_ALLOWED_ROOTS: home,
       CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_OPEN_IN_APP: "0",
       CODEX_BRIDGE_RELEASE_AFTER_TURN: "0",

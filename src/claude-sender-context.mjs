@@ -111,7 +111,7 @@ export async function readProcessAncestry({ parentPid = process.ppid, platform =
   const options = { timeout: 5000, maxBuffer: 16384, windowsHide: true };
   if (platform === "win32") {
     const shell = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const script = `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition @'\n${WINDOWS_ANCESTRY_SOURCE}\n'@\nConvertTo-Json -InputObject @([ClaudeProcessAncestry]::Read(${parentPid},${limit})) -Compress`;
+    const script = `$ErrorActionPreference='Stop'; $PSModuleAutoLoadingPreference='None'; Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop; Add-Type -TypeDefinition @'\n${WINDOWS_ANCESTRY_SOURCE}\n'@\nConvertTo-Json -InputObject @([ClaudeProcessAncestry]::Read(${parentPid},${limit})) -Compress`;
     const { stdout } = await run(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], options);
     return parseWindowsAncestry(stdout, parentPid, limit);
   }

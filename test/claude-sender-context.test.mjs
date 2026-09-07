@@ -79,31 +79,66 @@ describe("bounded Windows native process ancestry", () => {
     t.diagnostic(`Native snapshot durations: direct=${firstMs}ms, full=${Math.round(performance.now() - started) - firstMs}ms`);
   });
 
-  it("verifies the caller under MCP's sanitized Windows environment and fresh fixture profile", { skip: process.platform !== "win32", timeout: 10000 }, async (t) => {
+  it("verifies the caller under MCP's sanitized Windows environment and fresh fixture profile", { skip: process.platform !== "win32", timeout: 20000 }, async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "claude-caller-mcp-env-"));
     try {
       const env = { ...getDefaultEnvironment(), PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "",
         HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"),
         LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"),
       };
-      fs.mkdirSync(path.join(env.APPDATA, "Claude"), { recursive: true });
+      const accountRoot = path.join(env.APPDATA, "Claude");
+      fs.mkdirSync(accountRoot, { recursive: true });
       fs.mkdirSync(env.CODEX_HOME, { recursive: true });
-      const source = `
-        import { readClaudeSenderContext } from ${JSON.stringify(new URL("../src/claude-sender-context.mjs", import.meta.url).href)};
+      async function inspectChildCaller(moduleUrl) {
+        const { readClaudeSenderContext, readProcessAncestry } = await import(moduleUrl);
+        const { execFile } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        const execute = promisify(execFile);
         const started = performance.now();
+        let lastStage = "not_started";
+        const collectStage = (stderr) => {
+          const markers = [...String(stderr ?? "").matchAll(/BRIDGE_ANCESTRY_STAGE:(started|compiled|snapshot|serialized)/g)];
+          lastStage = markers.at(-1)?.[1] ?? "not_started";
+        };
         const sender = await readClaudeSenderContext({
           account: { status: "verified", fingerprint: "a".repeat(64) },
           listSessions: () => [{ pid: process.ppid, entrypoint: "claude-desktop", alive: true, sessionId: "fixture" }],
           readContext: () => ({ status: "matched", taskId: "fixture-task", cwd: process.cwd() }),
+          readAncestry: (options) => readProcessAncestry({ ...options, run: async (shell, args, execution) => {
+            let script = Buffer.from(args.at(-1), "base64").toString("utf16le");
+            script = script.replace("Add-Type -TypeDefinition", "[Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:started'); Add-Type -TypeDefinition")
+              .replace("\n'@\n", "\n'@\n[Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:compiled');\n")
+              .replace(/ConvertTo-Json -InputObject @\((.+)\) -Compress$/, (_match, nativeRead) => `$ancestryRows=@(${nativeRead}); [Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:snapshot'); ConvertTo-Json -InputObject $ancestryRows -Compress; [Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:serialized')`);
+            try {
+              const result = await execute(shell, [...args.slice(0, -1), Buffer.from(script, "utf16le").toString("base64")], execution);
+              collectStage(result.stderr);
+              return result;
+            } catch (error) {
+              collectStage(error.stderr);
+              throw error;
+            }
+          } }),
         });
-        console.log(JSON.stringify({ status: sender.status, reason: sender.reason, diagnostic: sender.diagnostic,
+        console.log(JSON.stringify({ status: sender.status, diagnostic: sender.diagnostic, lastStage,
           expectedParent: sender.pid === process.ppid, elapsedMs: Math.round(performance.now() - started) }));
-      `;
-      const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source], { cwd: home, env, windowsHide: true, timeout: 8000, maxBuffer: 16384 });
-      const result = JSON.parse(stdout);
+      }
+      const source = `(${inspectChildCaller.toString()})(${JSON.stringify(new URL("../src/claude-sender-context.mjs", import.meta.url).href)})`;
+      const inspectEnvironment = async (environment) => {
+        const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source], { cwd: home, env: environment, windowsHide: true, timeout: 8000, maxBuffer: 16384 });
+        return JSON.parse(stdout);
+      };
+      const result = await inspectEnvironment(env);
+      t.diagnostic(`Sanitized MCP process inspection: ${JSON.stringify(result)}`);
+      if (result.status !== "verified") {
+        const preservedProfile = { ...getDefaultEnvironment(), PATH: env.PATH, SystemRoot: env.SystemRoot,
+          HOME: home, CODEX_HOME: env.CODEX_HOME, CLAUDE_DESKTOP_USER_DATA: accountRoot, XDG_CONFIG_HOME: env.XDG_CONFIG_HOME,
+        };
+        const comparison = await inspectEnvironment(preservedProfile);
+        t.diagnostic(`Preserved OS profile comparison: ${JSON.stringify(comparison)}`);
+      }
       assert.equal(result.status, "verified", JSON.stringify(result));
       assert.equal(result.expectedParent, true);
-      t.diagnostic(`Sanitized MCP process inspection: ${result.elapsedMs}ms`);
+      assert.equal(result.lastStage, "serialized");
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

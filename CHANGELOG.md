@@ -2,6 +2,13 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Reuse validated dependency hashes for unchanged files when preparing cached runtimes, avoiding repeated content reads that can delay MCP initialization during Windows startup. Changed source dependencies and modified cached copies still require verification; missing or invalid hash metadata falls back to reading file contents.
+- Log runtime preparation start and elapsed time before the MCP worker launches, so startup delays can be distinguished from worker initialization failures.
+
 ## [1.15.0] - 2026-09-07
 
 ### Added

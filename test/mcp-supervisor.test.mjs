@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -164,6 +165,109 @@ it("copies dependencies instead of sharing mutable installed files", t => {
   fs.writeFileSync(file,"changed");
   assert.equal(fs.readFileSync(path.join(snapshot.directory,"node_modules","dependency.js"),"utf8"),"original");
   assert.equal(fs.lstatSync(path.join(snapshot.directory,"node_modules")).isSymbolicLink(),false);
+});
+
+function countDependencyReads(action) {
+  const original = fs.readFileSync;
+  let count = 0;
+  fs.readFileSync = (file, ...args) => {
+    if (typeof file === "string" && file.includes(`${path.sep}node_modules${path.sep}`)) count++;
+    return original.call(fs, file, ...args);
+  };
+  try { return { result: action(), count }; }
+  finally { fs.readFileSync = original; }
+}
+
+it("reuses validated dependency digests without rereading unchanged content", t => {
+  const fixture = installation(t);
+  t.after(() => fixture.cleanup());
+  fs.writeFileSync(path.join(fixture.root, "node_modules", "dependency.js"), "original");
+  const options = { cache: path.join(fixture.root, "cache") };
+  const initial = createReleaseSnapshot(fixture.root, options);
+  const repeated = countDependencyReads(() => createReleaseSnapshot(fixture.root, options));
+  assert.equal(repeated.result.key, initial.key);
+  assert.equal(repeated.count, 0);
+});
+
+it("invalidates dependency digests for source edits additions and deletions", t => {
+  const fixture = installation(t);
+  t.after(() => fixture.cleanup());
+  const dependency = path.join(fixture.root, "node_modules", "dependency.js");
+  const added = path.join(fixture.root, "node_modules", "added.js");
+  const options = { cache: path.join(fixture.root, "cache") };
+  fs.writeFileSync(dependency, "original");
+  const initial = createReleaseSnapshot(fixture.root, options);
+  fs.writeFileSync(dependency, "modified");
+  const edited = createReleaseSnapshot(fixture.root, options);
+  assert.notEqual(edited.key, initial.key);
+  assert.equal(fs.readFileSync(path.join(edited.directory, "node_modules", "dependency.js"), "utf8"), "modified");
+  fs.writeFileSync(added, "added");
+  const expanded = createReleaseSnapshot(fixture.root, options);
+  assert.notEqual(expanded.key, edited.key);
+  fs.unlinkSync(added);
+  const reduced = createReleaseSnapshot(fixture.root, options);
+  assert.equal(reduced.key, edited.key);
+  assert.equal(fs.existsSync(path.join(reduced.directory, "node_modules", "added.js")), false);
+});
+
+it("rejects cached dependency corruption with unchanged size and restored mtime", async t => {
+  const fixture = installation(t);
+  t.after(() => fixture.cleanup());
+  fs.writeFileSync(path.join(fixture.root, "node_modules", "dependency.js"), "original");
+  const options = { cache: path.join(fixture.root, "cache") };
+  const initial = createReleaseSnapshot(fixture.root, options);
+  const cached = path.join(initial.directory, "node_modules", "dependency.js");
+  const fixedTime = 946684800;
+  fs.utimesSync(cached, fixedTime, fixedTime);
+  createReleaseSnapshot(fixture.root, options);
+  const before = fs.statSync(cached, { bigint: true });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  fs.writeFileSync(cached, "modified");
+  fs.utimesSync(cached, fixedTime, fixedTime);
+  const after = fs.statSync(cached, { bigint: true });
+  assert.equal(after.size, before.size);
+  assert.equal(after.mtimeNs, before.mtimeNs);
+  assert.notEqual(after.ctimeNs, before.ctimeNs);
+  assert.throws(() => createReleaseSnapshot(fixture.root, options), /immutable runtime failed integrity verification/);
+});
+
+it("rehashes dependencies when persisted digest metadata is malformed or unsafe", t => {
+  const fixture = installation(t);
+  t.after(() => fixture.cleanup());
+  fs.writeFileSync(path.join(fixture.root, "node_modules", "dependency.js"), "original");
+  const options = { cache: path.join(fixture.root, "cache") };
+  const initial = createReleaseSnapshot(fixture.root, options);
+  for (const malformed of ["json", "path", "hash"]) {
+    for (const name of fs.readdirSync(options.cache).filter(name => /^\.digests-.*\.json$/.test(name))) {
+      const file = path.join(options.cache, name);
+      const metadata = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (malformed === "path") metadata.files["../outside.js"] = Object.values(metadata.files)[0];
+      if (malformed === "hash") Object.values(metadata.files)[0].hash = [Object.values(metadata.files)[0].hash];
+      fs.writeFileSync(file, malformed === "json" ? "{" : JSON.stringify(metadata));
+    }
+    const repeated = countDependencyReads(() => createReleaseSnapshot(fixture.root, options));
+    assert.equal(repeated.result.key, initial.key);
+    assert.equal(repeated.count, 2, malformed);
+  }
+});
+
+it("publishes complete digest metadata during concurrent snapshot preparation", { timeout: 15000 }, async t => {
+  const fixture = installation(t);
+  t.after(() => fixture.cleanup());
+  fs.writeFileSync(path.join(fixture.root, "node_modules", "dependency.js"), "original");
+  const cache = path.join(fixture.root, "cache");
+  const script = `import { createReleaseSnapshot } from ${JSON.stringify(new URL("../src/release-snapshot.mjs", import.meta.url).href)}; process.stdout.write(JSON.stringify(createReleaseSnapshot(process.argv[1], {cache:process.argv[2]})));`;
+  const results = await Promise.allSettled(Array.from({ length: 3 }, () => new Promise((resolve, reject) => {
+    execFile(process.execPath, ["--input-type=module", "-e", script, fixture.root, cache], { timeout: 10000, windowsHide: true }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(JSON.parse(stdout));
+    });
+  })));
+  for (const result of results) assert.equal(result.status, "fulfilled", result.reason?.message);
+  assert.equal(new Set(results.map(result => result.value.key)).size, 1);
+  const repeated = countDependencyReads(() => createReleaseSnapshot(fixture.root, { cache }));
+  assert.equal(repeated.count, 0);
+  assert.equal(fs.readdirSync(cache).some(name => name.endsWith(".tmp") || name.startsWith(".preparing-")), false);
 });
 
 it("resumes the original worker if candidate state restoration fails", async t => {

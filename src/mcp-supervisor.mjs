@@ -296,7 +296,10 @@ export async function runSupervisor(entry, options = {}) {
     await Promise.allSettled([...workers].map((worker) => worker.stop()));
     process.stdin.pause();
   };
+  const preparationStarted = performance.now();
+  log(`preparing ${entry} runtime`);
   const initial = createReleaseSnapshot(root);
+  log(`prepared ${entry} runtime in ${Math.round(performance.now() - preparationStarted)} ms`);
   observed = initial.revision;
   active = spawn(initial);
   const timer = setInterval(() => { void check(); }, pollMs);

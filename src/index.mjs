@@ -33,7 +33,7 @@ import { assertClaudeSenderContext, readClaudeSenderContext, requireClaudeSender
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.15.1";
+const VERSION = "1.15.2";
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**

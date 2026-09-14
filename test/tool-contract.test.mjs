@@ -50,7 +50,7 @@ const unavailableRelaySocket = (home) => process.platform === "win32"
   : path.join(home, "missing-relay.sock");
 
 describe("Claude message receipts", () => {
-  for (const scenario of ["nowait", "timeout", "peer", "desktop", "desktop-busy", "desktop-unknown-mode", "desktop-mismatch", "desktop-mismatch-accepted", "desktop-inbound-hold", "desktop-prompting", "desktop-reviewed", "desktop-reviewed-held", "desktop-reviewed-refused", "held", "refused", "diagnostic"]) {
+  for (const scenario of ["nowait", "timeout", "peer", "desktop", "desktop-legacy-identity", "desktop-busy", "desktop-unknown-mode", "desktop-mismatch", "desktop-mismatch-accepted", "desktop-inbound-hold", "desktop-prompting", "desktop-reviewed", "desktop-reviewed-held", "desktop-reviewed-refused", "held", "refused", "diagnostic"]) {
     it(`reports ${scenario} from the actual MCP transport`, async () => {
       const desktop = scenario.startsWith("desktop");
       const reviewed = scenario.startsWith("desktop-reviewed");
@@ -85,7 +85,12 @@ describe("Claude message receipts", () => {
         const identity = process.platform === "win32"
           ? { procStartFt: execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]).toString().trim() }
           : { procStart: execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).toString().trim() };
+        if (process.platform === "win32" && scenario !== "desktop-legacy-identity") {
+          identity.procStart = identity.procStartFt;
+          delete identity.procStartFt;
+        }
         fs.writeFileSync(registryFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(registryFile)), ...identity }));
+        fs.writeFileSync(path.join(registryDir, path.basename(peerKeyPath(process.pid, socketPath))), JSON.stringify({ peerToken: token, ...identity }));
         assert.ok(Object.values(identity)[0], "The fixture must capture the actual process start identity");
         const configRoot = process.platform === "darwin" ? path.join(home, "Library", "Application Support") : process.platform === "win32" ? path.join(home, "AppData", "Roaming") : path.join(home, ".config");
         const tasks = path.join(configRoot, "Claude", "claude-code-sessions", "44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555");

@@ -4,6 +4,13 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-09-14
+
+### Fixed
+
+- Restore Codex-to-Claude Desktop messaging on Windows with Claude Code 2.1.270, which advertises its process FILETIME as `procStart` instead of `procStartFt`. Normalize both fields in session records and authentication keys, retain live process verification, and reject malformed or conflicting identities.
+- Advertise both Windows identity fields on bridge peer records and authentication keys so current Claude sessions and older peers can validate the same endpoint without restarting Desktop.
+
 ## [1.15.1] - 2026-09-14
 
 ### Fixed

@@ -17,6 +17,8 @@ import {
   peerKeyPath,
   readTranscript,
   readTranscriptReply,
+  readPeerProcessIdentity,
+  assertClaudeSessionProcess,
 } from "../src/peer-protocol.mjs";
 
 /**
@@ -96,6 +98,32 @@ describe("peer frames", () => {
   it("does not turn auth or control frames into empty replies", () => {
     assert.equal(parseFrame('{"type":"auth","token":"secret"}'), null);
     assert.equal(parseFrame('{"type":"control","action":"peer_message_status","status":"held"}'), null);
+  });
+});
+
+describe("peer process identity compatibility", () => {
+  const identity = "134338619704142970";
+
+  it("accepts current and legacy Windows FILETIME fields without losing precision", () => {
+    for (const entry of [{ procStart: identity }, { procStartFt: identity }, { procStart: identity, procStartFt: identity }]) {
+      assert.equal(readPeerProcessIdentity(entry, "win32"), identity);
+    }
+    assert.equal(readPeerProcessIdentity({}, "win32"), null);
+    assert.throws(() => assertClaudeSessionProcess({ alive: true, pid: process.pid, processStart: null }), /identity is missing or changed/);
+  });
+
+  it("rejects conflicting, malformed and imprecise Windows identities", () => {
+    for (const value of [null, "", 134338619704142970, "0", "-1", "01", " 1", "1e17", "18446744073709551616", "Mon Sep 14 19:19:30 2026"]) {
+      assert.throws(() => readPeerProcessIdentity({ procStart: value }, "win32"), /Invalid or conflicting/);
+      assert.throws(() => readPeerProcessIdentity({ procStartFt: value, procStart: identity }, "win32"), /Invalid or conflicting/);
+    }
+    assert.throws(() => readPeerProcessIdentity({ procStart: identity, procStartFt: "1" }, "win32"), /Invalid or conflicting/);
+  });
+
+  it("preserves Unix process identity semantics", () => {
+    const procStart = "Mon Sep 14 19:19:30 2026";
+    assert.equal(readPeerProcessIdentity({ procStart, procStartFt: identity }, "linux"), procStart);
+    assert.equal(readPeerProcessIdentity({ procStart }, "darwin"), procStart);
   });
 });
 
@@ -194,6 +222,49 @@ describe("session registry", () => {
 });
 
 describe("Windows peer endpoint", { skip: isWindows ? false : "Windows named-pipe regression" }, () => {
+  it("validates current and legacy registry identities against the live process", async () => {
+    const endpoint = new PeerEndpoint();
+    try {
+      await endpoint.start();
+      const entry = JSON.parse(fs.readFileSync(endpoint.registryPath, "utf8"));
+      const key = JSON.parse(fs.readFileSync(endpoint.keyPath, "utf8"));
+      assert.ok(entry.procStart);
+      assert.equal(entry.procStartFt, entry.procStart);
+      assert.equal(key.procStart, entry.procStart);
+      assert.equal(key.procStartFt, entry.procStart);
+      for (const field of ["procStart", "procStartFt"]) {
+        const single = { ...entry, entrypoint: "claude-desktop" };
+        delete single[field === "procStart" ? "procStartFt" : "procStart"];
+        fs.writeFileSync(endpoint.registryPath, JSON.stringify(single));
+        const session = listClaudeSessions().find((row) => row.socket === endpoint.socketPath);
+        assert.equal(session.processStart, entry.procStart);
+        assert.doesNotThrow(() => assertClaudeSessionProcess(session));
+        assert.throws(() => assertClaudeSessionProcess({ ...session, processStart: "1" }), /identity is missing or changed/);
+      }
+      for (const invalid of [{ procStart: entry.procStart, procStartFt: "1" }, { procStart: null }, { procStartFt: 123 }]) {
+        const { procStart, procStartFt, ...rest } = entry;
+        fs.writeFileSync(endpoint.registryPath, JSON.stringify({ ...rest, entrypoint: "claude-desktop", ...invalid }));
+        assert.equal(listClaudeSessions().some((row) => row.socket === endpoint.socketPath), false);
+      }
+    } finally { await endpoint.stop(); }
+  });
+
+  it("rejects stale or conflicting key identities before connecting", async () => {
+    const socketPath = namedPipePath();
+    const keyFile = peerKeyPath(process.pid, socketPath);
+    writeSession("stale-key", { pid: process.pid, messagingSocketPath: socketPath });
+    const endpoint = new PeerEndpoint();
+    try {
+      for (const identity of [{ procStart: "1" }, { procStartFt: "1" }, { procStart: "1", procStartFt: "2" }, { procStart: null }]) {
+        fs.writeFileSync(keyFile, JSON.stringify({ peerToken: "a".repeat(32), ...identity }));
+        await assert.rejects(endpoint.send(socketPath, "never sent"), /authentication key is missing or invalid/);
+      }
+    } finally {
+      fs.rmSync(path.join(sessionsDir, "stale-key.json"));
+      fs.rmSync(keyFile);
+    }
+  });
+
   it("refuses missing authentication before opening a target connection", async () => {
     const endpoint = new PeerEndpoint();
     await assert.rejects(endpoint.send(namedPipePath(), "never sent"), /No unique live session/);

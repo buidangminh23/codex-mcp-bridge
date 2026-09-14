@@ -99,13 +99,24 @@ function readPeerToken(socket) {
   try {
     const key = JSON.parse(fs.readFileSync(peerKeyPath(candidates[0].pid, socket), "utf8"));
     if (typeof key.peerToken !== "string" || !/^[0-9a-f]{32}$/i.test(key.peerToken)) throw new Error("Invalid peer key");
-    const identity = IS_WINDOWS ? key.procStartFt : key.procStart;
+    const identity = readPeerProcessIdentity(key);
     if (identity && identity !== readProcessStart(candidates[0].pid)) throw new Error("Peer process identity changed");
     return key.peerToken;
   } catch {
     if (IS_WINDOWS) throw new Error("The destination inbox authentication key is missing or invalid; message was not sent");
     return null;
   }
+}
+
+export function readPeerProcessIdentity(entry, platform = process.platform) {
+  if (platform !== "win32") return entry.procStart ?? null;
+  const values = ["procStart", "procStartFt"].filter((field) => Object.hasOwn(entry, field)).map((field) => entry[field]);
+  if (!values.length) return null;
+  if (values.some((value) => typeof value !== "string" || !/^[1-9]\d{0,19}$/.test(value) || BigInt(value) > 18446744073709551615n)
+      || values.some((value) => value !== values[0])) {
+    throw new Error("Invalid or conflicting Windows peer process identity");
+  }
+  return values[0];
 }
 
 /**
@@ -173,6 +184,9 @@ export function listClaudeSessions({ includeDead = false, includeBridges = false
     if (entry.entrypoint === BRIDGE_ENTRYPOINT && !includeBridges) continue;
     const alive = isProcessAlive(entry.pid) && hasMessagingEndpoint(entry);
     if (!alive && !includeDead) continue;
+    let processStart;
+    try { processStart = readPeerProcessIdentity(entry); }
+    catch { continue; }
     rows.push({
       pid: entry.pid,
       name: entry.name ?? null,
@@ -182,7 +196,7 @@ export function listClaudeSessions({ includeDead = false, includeBridges = false
       kind: entry.kind ?? null,
       entrypoint: entry.entrypoint ?? null,
       startedAt: entry.startedAt ?? null,
-      processStart: (IS_WINDOWS ? entry.procStartFt : entry.procStart) ?? null,
+      processStart,
       socket: entry.messagingSocketPath,
       alive,
     });
@@ -420,7 +434,7 @@ export class PeerEndpoint {
     });
     if (!IS_WINDOWS) fs.chmodSync(this.socketPath, 0o600);
 
-    const processIdentity = procStart ? (IS_WINDOWS ? { procStartFt: procStart } : { procStart }) : {};
+    const processIdentity = procStart ? (IS_WINDOWS ? { procStart, procStartFt: procStart } : { procStart }) : {};
     this.registry = {
       pid: this.pid,
       sessionId: crypto.randomUUID(),

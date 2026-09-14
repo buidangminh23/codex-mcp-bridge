@@ -235,7 +235,7 @@ registerTool(
   "read_claude_creation",
   {
     title: "Verify a new Claude Desktop session",
-    description: "Inspect an existing creation request without reopening or sending. A created receipt requires a new native task, matching account/project, live process identity, and the exact initial user prompt. An old task resumed with a new process never counts as a new session.",
+    description: "Inspect an existing creation request without reopening or sending. A created receipt requires a new native task, matching account/project, live process identity, and the exact initial user prompt. awaiting_project_confirmation means the prompt arrived in a new task but its folder still differs; the user must adopt the requested project before creation can be confirmed. An old task resumed with a new process never counts as a new session.",
     inputSchema: { requestId: z.string().describe("Original requestId returned by start_claude_session") },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },

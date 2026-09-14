@@ -89,10 +89,67 @@ describe("Claude native new session lifecycle", () => {
     assert.equal((await creation.inspect(id, args)).status, "awaiting_user");
     state.processValid = true;
     state.sessions[0].cwd = "/other";
-    assert.equal((await creation.inspect(id, args)).status, "awaiting_user");
+    assert.equal((await creation.inspect(id, args)).status, "awaiting_project_confirmation");
     state.sessions[0].cwd = "/project";
     state.sessions[0].entrypoint = "cli";
+    assert.equal((await creation.inspect(id, args)).status, "awaiting_project_confirmation");
+  });
+
+  it("records submission in a wrong folder and verifies a later native project change", async () => {
+    const { creation, state, dependencies, connect } = fixture();
+    await creation.start(args);
+    connect();
+    state.sessions[0].cwd = "/scratch/No folder";
+    state.messages[0].text = `<system-reminder>\nThe user started this session without choosing a project folder, so select a project if needed.\nRecent projects: /project, /other\n</system-reminder>\n\n${state.messages[0].text}`;
+    const pending = await creation.inspect(id, args);
+    assert.equal(pending.status, "awaiting_project_confirmation");
+    assert.equal(pending.promptSubmitted, true);
+    assert.equal(pending.observedCwd, "/scratch/No folder");
+    assert.equal(pending.cwd, "/project");
+    assert.equal(pending.taskId, "new-task");
+    await blocked(creation.start({ ...args, requestId: secondId, cwd: "/other" }), "CLAUDE_CREATION_PENDING");
+    const restored = new ClaudeSessionCreation(dependencies);
+    restored.restoreState(creation.exportState());
+    assert.deepEqual(await restored.inspect(id, args), pending);
+    state.sessions[0].cwd = "/project";
+    const confirmed = await restored.inspect(id, args);
+    assert.equal(confirmed.status, "created");
+    assert.equal(confirmed.observedCwd, "/project");
+    assert.equal(confirmed.promptSubmitted, true);
+  });
+
+  it("accepts only the anchored no-folder banner before the exact initial message", async () => {
+    const { creation, state, connect } = fixture();
+    await creation.start(args);
+    connect();
+    const exact = state.messages[0].text;
+    const banner = "<system-reminder>\r\nThe user started this session without choosing a project folder, with recent folders available.\r\n</system-reminder>\r\n\r\n";
+    for (const text of [`Leading text${banner}${exact}`, `${banner}Extra prompt\n${exact}`, `${banner}${exact}Trailing text`, `${banner.replace("The user started", "Another user started")}${exact}`, `${banner.replace("with recent folders available.", "<system-reminder>Nested</system-reminder>")}${exact}`]) {
+      state.messages[0].text = text;
+      assert.equal((await creation.inspect(id, args)).status, "awaiting_user");
+    }
+    state.messages[0].text = banner + exact;
+    assert.equal((await creation.inspect(id, args)).status, "created");
+  });
+
+  it("requires observed process cwd and native metadata cwd to agree", async () => {
+    const { creation, state, connect } = fixture({ readContext: async (session) => ({ status: "matched", taskId: session.taskId, cwd: "/different-context", title: null }) });
+    await creation.start(args);
+    connect();
+    state.sessions[0].cwd = "/scratch";
     assert.equal((await creation.inspect(id, args)).status, "awaiting_user");
+  });
+
+  it("rejects ambiguous correlated new tasks even when their directories differ", async () => {
+    const { creation, state, connect } = fixture();
+    await creation.start(args);
+    connect();
+    connect("another-task", "another-cli");
+    state.sessions[1].cwd = "/scratch";
+    const result = await creation.inspect(id, args);
+    assert.equal(result.status, "ambiguous");
+    assert.equal(result.promptSubmitted, true);
+    assert.equal(result.taskId, undefined);
   });
 
   it("refuses account and sender changes without launching or resolving", async () => {

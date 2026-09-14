@@ -12,11 +12,11 @@ The bridge preserves task history and working directories across messages. Enabl
 
 ## Desktop demo
 
-https://github.com/user-attachments/assets/2000b694-91b4-4657-9b27-3a625586978c
+[Watch the Desktop demo (22 seconds)](https://github.com/buidangminh23/codex-mcp-bridge/raw/refs/heads/main/desktop-demo.mp4)
 
-A 62-second, English-captioned recording of fresh conversations in Claude Desktop and Codex Desktop: Claude requests a function review, Codex sends the corrected function back, and Claude acknowledges it. Codex confirms `reply_received`. Both sidebars show the demo sessions under `codex-mcp-bridge`; Claude's project tooltip displays the actual folder, and the Codex folder caption was checked against its saved project and task metadata. Recorded on Windows with v1.16.0; no files were edited during the exchange.
+An edited recording of fresh conversations in Claude Desktop and Codex Desktop. Claude sends a message to Codex and receives "Hello from Codex." Codex then sends a message back and receives "Hello from Claude.", with a confirmed `reply_received` receipt. The video retains prompt entry, sending, and the replies; setup, waiting, and window transitions are shortened.
 
-The Codex task was opened by the user in the saved project before the exchange. Unrelated history is cropped or masked, and setup and waiting are shortened. The forward acknowledgement timed out during this run; the task was inspected to confirm delivery without resending, and the return message received a confirmed reply.
+Recorded on Windows. Unrelated projects, chats, account information, and personal paths are masked or excluded. No project files were edited during the exchange.
 
 ### Visible tasks in the correct Desktop project
 

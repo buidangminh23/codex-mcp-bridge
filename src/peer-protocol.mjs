@@ -299,6 +299,29 @@ export function readTranscript(sessionId, cwd, limit = 10) {
   return { file, messages: messages.slice(-limit) };
 }
 
+export function readInitialTranscriptMessage(sessionId, cwd) {
+  const file = findTranscriptFile(sessionId, cwd);
+  if (!fs.existsSync(file)) return { file, messages: [] };
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile()) return { file, messages: [] };
+    const buffer = Buffer.alloc(Math.min(stat.size, 1024 * 1024));
+    const bytes = fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+    const text = buffer.subarray(0, bytes).toString("utf8");
+    for (const line of text.slice(0, text.lastIndexOf("\n") + 1).split("\n")) {
+      if (!line.trim()) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { return { file, messages: [] }; }
+      if (entry.isMeta || entry.isSidechain || entry.message?.role !== "user") continue;
+      const content = entry.message.content;
+      const initial = (Array.isArray(content) ? content.filter((part) => part?.type === "text").map((part) => part.text ?? "").join("\n") : String(content ?? "")).trim();
+      return { file, messages: initial ? [{ role: "user", text: initial }] : [] };
+    }
+    return { file, messages: [] };
+  } finally { fs.closeSync(descriptor); }
+}
+
 /**
  * Claude Code records an injected peer message in one of two shapes. An idle
  * recipient starts a new turn with a user entry whose uuid is the message id

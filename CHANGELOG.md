@@ -4,6 +4,13 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-09-14
+
+### Added
+
+- Prepare a separate native Claude Desktop Code conversation in an existing project with `start_claude_session`, then verify its new task identity and exact initial prompt through `read_claude_creation`. The official Desktop link requires user confirmation and Send; opening a composer is reported as `awaiting_user`, never as completed creation.
+- Retain bounded creation receipts across automatic reload, prevent duplicate or competing composer launches, reject old tasks resumed as new processes, and allow explicit cancellation through `abandon_claude_creation`. Existing clients can use `send_to_claude_session` with `target: "new"` and inspect its request ID through `read_claude_delivery`.
+
 ## [1.15.2] - 2026-09-14
 
 ### Fixed

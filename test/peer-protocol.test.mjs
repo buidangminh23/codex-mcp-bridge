@@ -19,6 +19,7 @@ import {
   readTranscriptReply,
   readPeerProcessIdentity,
   assertClaudeSessionProcess,
+  readInitialTranscriptMessage,
 } from "../src/peer-protocol.mjs";
 
 /**
@@ -316,6 +317,21 @@ describe("Windows peer endpoint", { skip: isWindows ? false : "Windows named-pip
 });
 
 describe("transcript reading", () => {
+  it("checks the first user prompt rather than a later matching message or assistant echo", () => {
+    const directory = path.join(projectsDir, "initial-message");
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, "creation.jsonl");
+    const rows = [
+      { isMeta: true, message: { role: "user", content: "metadata" } },
+      { message: { role: "user", content: "original request" } },
+      ...Array.from({ length: 120 }, () => ({ message: { role: "assistant", content: "later request" } })),
+      { message: { role: "user", content: "later request" } },
+    ];
+    fs.writeFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
+    assert.deepEqual(readInitialTranscriptMessage("creation", "unused").messages, [{ role: "user", text: "original request" }]);
+    fs.writeFileSync(file, '{"message":');
+    assert.deepEqual(readInitialTranscriptMessage("creation", "unused").messages, []);
+  });
   /**
    * Claude Code slugifies the cwd into the project directory name and the
    * rewrite is lossy (/mnt/dev_disk becomes -mnt-dev-disk), so the transcript

@@ -2,15 +2,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { createHash } from "node:crypto";
 
 import { CodexAppServerClient } from "./app-server-client.mjs";
-import { PLATFORM_LABEL } from "./platform.mjs";
-import { PeerEndpoint, assertClaudeSessionCwd, assertClaudeSessionProcess, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
+import { PLATFORM_LABEL, openClaudeCodeComposer } from "./platform.mjs";
+import { PeerEndpoint, assertClaudeSessionCwd, assertClaudeSessionProcess, findClaudeSession, listClaudeSessions, readTranscript, readInitialTranscriptMessage } from "./peer-protocol.mjs";
 import { createThreadDelivery } from "./thread-delivery.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
-import { readClaudeDesktopContext } from "./claude-desktop-context.mjs";
+import { readClaudeDesktopContext, readClaudeDesktopTasks } from "./claude-desktop-context.mjs";
+import { ClaudeSessionCreation } from "./claude-session-creation.mjs";
 import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
 import { assertRecipientClass, preflightFailure } from "./recipient-preflight.mjs";
 import { readCodexSenderContext } from "./codex-sender-context.mjs";
@@ -22,7 +24,7 @@ import { resolveClaudeDesktopSession } from "./claude-session-router.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.15.2";
+const VERSION = "1.16.0";
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
 
@@ -55,6 +57,16 @@ const forwarding = {
   threadId: process.env.CODEX_THREAD_ID ?? null,
 };
 
+const creations = new ClaudeSessionCreation({
+  open: openClaudeCodeComposer,
+  listTasks: (account) => readClaudeDesktopTasks({ account }),
+  listSessions: () => listClaudeSessions(),
+  readContext: (session, account) => readClaudeDesktopContext(session, { account }),
+  readTranscript: readInitialTranscriptMessage,
+  readAccount: readClaudeAccountContext,
+  assertProcess: assertClaudeSessionProcess,
+});
+
 const replyForwarder = new ReplyForwarder({
   minIntervalMs: FORWARD_MIN_INTERVAL_MS,
   maxPerSession: FORWARD_MAX_PER_SESSION,
@@ -72,7 +84,7 @@ const reload = createReloadControl({
   entry: "claude-bridge.mjs",
   inspect: () => peer.reloadReason() ?? replyForwarder.reloadReason() ?? clientReloadReason(codex),
   quiesce: async () => { await peer.quiesce(); codex.close(); },
-  exportState: () => ({ desktopOnly, peer: peer.exportReloadState(), forwarding: replyForwarder.exportReloadState(), threadId: forwarding.threadId }),
+  exportState: () => ({ desktopOnly, peer: peer.exportReloadState(), forwarding: replyForwarder.exportReloadState(), threadId: forwarding.threadId, creations: creations.exportState() }),
   restore: (state) => {
     assertRoutingReload(state.desktopOnly, desktopOnly);
     if (state.threadId !== null && (typeof state.threadId !== "string" || !state.threadId.trim())) {
@@ -81,6 +93,7 @@ const reload = createReloadControl({
     peer.restoreReloadState(state.peer);
     replyForwarder.restoreReloadState(state.forwarding);
     forwarding.threadId = state.threadId;
+    if (state.creations !== undefined) creations.restoreState(state.creations);
   },
   activate: () => peer.start(),
   resume: () => peer.resume(),
@@ -134,6 +147,31 @@ function assertSender(meta) {
   return sender;
 }
 
+async function startClaudeCreation({ requestId, cwd, prompt }, meta) {
+  runtime.assertCurrent();
+  if (!desktopOnly) throw new Error("New Claude sessions require Desktop-only mode");
+  const sender = assertSender(meta);
+  const accounts = readBridgeAccounts();
+  const selectedAccounts = requireBridgeAccounts(accounts);
+  const receipt = await creations.start({ requestId, cwd, prompt, account: accounts.claude, senderThreadId: sender.threadId,
+    beforeOpen: () => {
+      runtime.assertCurrent();
+      assertAccountIdentity(selectedAccounts);
+      const current = assertSender(meta);
+      if (JSON.stringify(current) !== JSON.stringify(sender)) throw new Error("The calling Codex turn changed before opening Claude Desktop");
+    },
+  });
+  return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { creation: receipt } };
+}
+
+async function inspectClaudeCreation(requestId, meta) {
+  const sender = assertSender(meta);
+  const accounts = readBridgeAccounts();
+  requireBridgeAccounts(accounts);
+  const receipt = await creations.inspect(requestId, { account: accounts.claude, senderThreadId: sender.threadId });
+  return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { creation: receipt } };
+}
+
 function forwardToCodexThread(record) {
   const threadId = record.replyThreadId ?? (desktopOnly ? null : forwarding.threadId);
   if (!threadId) return;
@@ -179,6 +217,49 @@ function registerTool(name, definition, handler) {
 }
 
 registerTool(
+  "start_claude_session",
+  {
+    title: "Prepare a new Claude Desktop Code session",
+    description: "Use only when the user explicitly requests a NEW Claude Desktop session. Open the official Code composer in an existing project with a prefilled prompt. Claude Desktop requires the user to confirm the folder and press Send; opening the link is not session creation. Retain requestId and inspect read_claude_creation. Never substitute an existing task or launch a CLI session.",
+    inputSchema: {
+      requestId: z.string().describe("Stable UUID for this creation; reuse exactly when inspecting or retrying"),
+      cwd: z.string().describe("Exact absolute directory of the existing Claude Desktop project"),
+      prompt: z.string().describe("Initial prompt for the NEW conversation; shown for user confirmation"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  async (args, extra) => startClaudeCreation(args, extra?._meta),
+);
+
+registerTool(
+  "read_claude_creation",
+  {
+    title: "Verify a new Claude Desktop session",
+    description: "Inspect an existing creation request without reopening or sending. A created receipt requires a new native task, matching account/project, live process identity, and the exact initial user prompt. An old task resumed with a new process never counts as a new session.",
+    inputSchema: { requestId: z.string().describe("Original requestId returned by start_claude_session") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ requestId }, extra) => inspectClaudeCreation(requestId, extra?._meta),
+);
+
+registerTool(
+  "abandon_claude_creation",
+  {
+    title: "Release a cancelled Claude creation request",
+    description: "Use only when the user explicitly cancels a pending creation request. Release its composer reservation while retaining the receipt. This does not close Claude Desktop or prove that the prefilled prompt was never submitted; the old request remains inspectable.",
+    inputSchema: { requestId: z.string().describe("Exact creation requestId the user cancelled") },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ requestId }, extra) => {
+    const sender = assertSender(extra?._meta);
+    const accounts = readBridgeAccounts();
+    requireBridgeAccounts(accounts);
+    const receipt = await creations.abandon(requestId, { account: accounts.claude, senderThreadId: sender.threadId });
+    return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { creation: receipt } };
+  },
+);
+
+registerTool(
   "list_claude_sessions",
   {
     title: "List live Claude Code sessions",
@@ -221,13 +302,14 @@ registerTool(
     title: "Send a message to a Claude session",
     description:
       "Send a message to a running Claude Code session's peer transport and wait for its reply. " +
+      "Only when the user requests a NEW conversation, target new prepares the native Desktop composer in expectedCwd; it requires user confirmation and returns a creation receipt, not a delivery receipt. " +
       "A socket write alone does not confirm that Claude received the message. Set waitSec to 0 to send without confirmation. " +
       "Every send is refused while earlier messages to that session still await replies, including waitSec 0; " +
       "wait for those replies and read_claude_inbox before trying again. Desktop-only mode refuses CLI or unknown " +
       "entrypoints, partial names, ambiguous targets, and a missing or mismatched expectedCwd or expectedTaskId before sending. Use target auto and expectedCwd for automatic current-account discovery; expectedTaskId is optional only when auto finds exactly one matching task. " +
       "The sender's current permissions are verified per call; environment overrides and manual binding cannot bypass an unknown sender. It never creates a replacement session.",
     inputSchema: {
-      target: z.string().describe("Use auto for current-account discovery in expectedCwd, or an exact session name, pid or sessionId"),
+      target: z.string().describe("Use auto for current-account discovery in expectedCwd, an exact session identity, or new to prepare a separate Desktop conversation requiring user confirmation"),
       message: z.string().describe("The message text to deliver"),
       expectedCwd: z.string().optional().describe("Exact absolute project directory independently verified by the caller; required in Desktop-only mode"),
       expectedTaskId: z.string().optional().describe("Exact native Claude Desktop task ID from list_claude_sessions; verify its title in the app before sending"),
@@ -249,6 +331,12 @@ registerTool(
   async ({ target, message, waitSec, expectedCwd, expectedTaskId }, extra) => {
     try {
       runtime.assertCurrent();
+      if (target === "new") {
+        if (expectedTaskId !== undefined) throw new Error("A new Claude conversation cannot target an existing task ID");
+        const sender = assertSender(extra?._meta);
+        const requestId = createHash("sha256").update(JSON.stringify([sender.threadId, sender.turnId, expectedCwd, message])).digest("hex");
+        return await startClaudeCreation({ requestId, cwd: expectedCwd, prompt: message }, extra?._meta);
+      }
       const accounts = desktopOnly ? readBridgeAccounts() : null;
       const selectedAccounts = desktopOnly ? requireBridgeAccounts(accounts) : null;
       const found = desktopOnly ? resolveClaudeDesktopSession({ target, expectedCwd, expectedTaskId,
@@ -339,11 +427,12 @@ registerTool(
   "read_claude_delivery",
   {
     title: "Inspect a Claude message receipt without resending",
-    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
+    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process. Also accepts the 64-character requestId returned by target new to inspect creation without reopening. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
     inputSchema: { msgId: z.string().describe("The original message ID returned by send_to_claude_session") },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
-  async ({ msgId }) => {
+  async ({ msgId }, extra) => {
+    if (/^[0-9a-f]{64}$/i.test(msgId)) return inspectClaudeCreation(msgId, extra?._meta);
     const receipt = readReceipt(msgId);
     if (!receipt) return textResult("This MCP process has no receipt for that message ID. It may belong to a previous process; do not infer failure or resend. Inspect the original Claude Desktop session.", true);
     return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { receipt } };

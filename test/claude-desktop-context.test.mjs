@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
 
-import { readClaudeDesktopContext } from "../src/claude-desktop-context.mjs";
+import { readClaudeDesktopContext, readClaudeDesktopTasks } from "../src/claude-desktop-context.mjs";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const USER = "22222222-2222-4222-8222-222222222222";
@@ -54,6 +54,15 @@ afterEach(() => {
 });
 
 describe("Claude Desktop task identity", () => {
+  it("lists an account-scoped baseline without leaking native task configuration", () => {
+    writeTask({ remoteMcpServersConfig: { token: "must-never-appear" } });
+    writeTask({}, { taskId: OTHER_TASK, account: OTHER_USER });
+    const tasks = readClaudeDesktopTasks({ root, account: { status: "verified", accountId: USER, root: sandbox } });
+    assert.deepEqual(tasks.map((task) => task.taskId), [TASK]);
+    assert.equal(tasks[0].fileTaskId, TASK);
+    assert.doesNotMatch(JSON.stringify(tasks), /must-never-appear|remoteMcpServersConfig/);
+    assert.throws(() => readClaudeDesktopTasks({ root, account: { status: "signed_out" } }), /not verified/);
+  });
   it("returns only the native identity, exact title, canonical cwd and permission mode for an exact match", () => {
     writeTask({ remoteMcpServersConfig: { token: "must-never-appear" }, permissionMode: "bypassPermissions" });
     const actual = resolve();

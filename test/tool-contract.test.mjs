@@ -27,6 +27,9 @@ const CODEX_TOOLS = [
 ];
 
 const CLAUDE_TOOLS = [
+  "start_claude_session",
+  "read_claude_creation",
+  "abandon_claude_creation",
   "list_claude_sessions",
   "send_to_claude_session",
   "read_claude_inbox",
@@ -617,7 +620,7 @@ describe("claude-bridge tool contract", async () => {
 
   it("marks the tools that only read as read-only", () => {
     const readOnly = tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name);
-    assert.deepEqual(readOnly.sort(), ["list_claude_sessions", "read_claude_delivery", "read_claude_transcript"]);
+    assert.deepEqual(readOnly.sort(), ["list_claude_sessions", "read_claude_creation", "read_claude_delivery", "read_claude_transcript"]);
   });
 });
 

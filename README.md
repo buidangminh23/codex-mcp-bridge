@@ -400,9 +400,18 @@ Under `owned`, a thread a human opened is **unreachable rather than merely restr
 
 ## Tools — `claude-bridge` (runs inside Codex)
 
+When the user explicitly requests a separate conversation, call `start_claude_session` with a stable `requestId`, exact existing project `cwd`, and initial `prompt`. This uses the [official Claude Desktop Code link](https://support.claude.com/en/articles/14729294-open-claude-desktop-with-a-link), which prefills the composer but requires the user to confirm the folder and press Send. It is not unattended session creation. The bridge never patches Desktop, writes session metadata, starts a substitute CLI, or silently sends into an old conversation.
+
+Retain the creation receipt and call `read_claude_creation`. Only `created` identifies a verified new native task and live session; it does not claim an assistant reply. Once created, use the returned exact session and task IDs with the existing send/read tools. One pending request reserves the current account's composer, including across different projects. If the user cancels it, `abandon_claude_creation` releases that reservation without discarding evidence or claiming that the old composer was closed. Compatible automatic reload preserves creation receipts; after a full restart, an unknown request is not proof that creation failed.
+
+Clients whose tool list has not refreshed can use `send_to_claude_session` with `target: "new"`, `expectedCwd`, and `message`. It returns a creation receipt instead of a message receipt. Repeated calls with the same payload in the same verified Codex turn reuse that request; inspect its 64-character `requestId` with `read_claude_delivery`. A later explicit new-session request in a new turn has a separate identity.
+
 | Tool | What it does | Hints |
 |---|---|---|
 | `list_claude_sessions` | Lists Claude Code sessions running on this machine (name, pid, sessionId, cwd, entrypoint). | read-only |
+| `start_claude_session` | Opens the official Claude Code composer for a new conversation in an existing project. Returns `awaiting_user`; the user confirms the folder and presses Send in Claude Desktop. Reuse the same `requestId` to avoid reopening. | writes |
+| `read_claude_creation` | Verifies a creation request using a new native task ID, exact initial user prompt, account, cwd, and live process identity. A resumed old task never counts as newly created. | read-only |
+| `abandon_claude_creation` | Releases a pending composer reservation only when the user cancels it. Retains the receipt; does not close Desktop or prove the prompt was never submitted. | writes |
 | `send_to_claude_session` | Sends to a Claude inbox and waits for a correlated reply. Receipt statuses distinguish `reply_received`, `sent_unconfirmed`, `reply_timeout`, and receiver policy outcomes such as `held` or `refused`. `waitSec: 0` sends without waiting for confirmation. Prefer an exact `sessionId` because session names can change. | destructive |
 | `read_claude_delivery` | Inspects the latest recipient receipt or correlated reply by original message ID without resending or clearing the inbox. Receipts belong to this MCP process; an unknown ID after reconnect never proves non-delivery. | read-only |
 | `read_claude_inbox` | Reads and consumes the oldest requested page of messages, including late replies, preserving unread messages. Includes reply forwarding status. | destructive |

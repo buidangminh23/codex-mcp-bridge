@@ -133,22 +133,11 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
       (typeof session.bridgeSessionId !== "string" || !session.bridgeSessionId.trim())) {
     return result("mismatch", "The live Claude bridge session identity is invalid.");
   }
-  const directory = root ?? (account ? path.join(account.root, "claude-code-sessions") : sessionsRoot(platform, env));
   let records;
   try {
+    const directory = root ?? (account ? path.join(account.root, "claude-code-sessions") : sessionsRoot(platform, env));
     if (!fs.existsSync(directory)) return result("missing", "Claude Desktop task metadata is not available on this host.");
-    const files = metadataFiles(directory, account?.accountId);
-    const budget = { bytes: 0, versions: new Map(), contents: new Map() };
-    records = files.map((file) => readMetadata(file, budget));
-    const currentFiles = metadataFiles(directory, account?.accountId);
-    if (files.length !== currentFiles.length || files.some((file, index) => file !== currentFiles[index])) {
-      return result("mismatch", "Claude Desktop task metadata changed during inspection; inspect the existing task again.");
-    }
-    for (const file of files) {
-      const current = fs.lstatSync(file);
-      if (!current.isFile() || !sameVersion(current, budget.versions.get(file))) throw new Error("metadata changed");
-      if (!rereadMetadata(file).equals(budget.contents.get(file))) throw new Error("metadata changed");
-    }
+    records = readClaudeDesktopTasks({ platform, env, root, account });
   } catch {
     return result("mismatch", "Claude Desktop task metadata could not be read completely and consistently; no task identity is confirmed.");
   }
@@ -201,4 +190,21 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
     permissionClass: permissionClassOf(permissionModeOf(record.permissionMode)),
     accountFingerprint: account?.fingerprint,
   });
+}
+
+export function readClaudeDesktopTasks({ platform = process.platform, env = process.env, root, account } = {}) {
+  if (account !== undefined && (account.status !== "verified" || !ACCOUNT_ID.test(account.accountId ?? "") || !account.root)) {
+    throw new Error("Claude Desktop account is not verified");
+  }
+  const directory = root ?? (account ? path.join(account.root, "claude-code-sessions") : sessionsRoot(platform, env));
+  const files = metadataFiles(directory, account?.accountId);
+  const budget = { bytes: 0, versions: new Map(), contents: new Map() };
+  const records = files.map((file) => readMetadata(file, budget));
+  const currentFiles = metadataFiles(directory, account?.accountId);
+  if (files.length !== currentFiles.length || files.some((file, index) => file !== currentFiles[index])) throw new Error("metadata changed");
+  for (const file of files) {
+    const current = fs.lstatSync(file);
+    if (!current.isFile() || !sameVersion(current, budget.versions.get(file)) || !rereadMetadata(file).equals(budget.contents.get(file))) throw new Error("metadata changed");
+  }
+  return records;
 }

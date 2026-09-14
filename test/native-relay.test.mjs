@@ -21,6 +21,7 @@ import {
   nativeDispatchParams,
   nativeRelayStatus,
   nativeToolsPipeFromCommandLine,
+  nativeToolsPipeCandidatesFromWindowsSnapshot,
   readRelayConfig,
   relayConfigPath,
   relaySocketPath,
@@ -1354,8 +1355,162 @@ describe("native tools pipe discovery", () => {
       async () => null,
       async () => { throw new Error("parent exited"); },
     ]) {
-      assert.equal(await resolveNativeToolsPipePath({ env: {}, platform: "win32", parentPid: 1234, readParentCommandLine }), null);
+      assert.equal(await resolveNativeToolsPipePath({ env: {}, platform: "win32", parentPid: 1234, readParentCommandLine, readWindowsSnapshot: async () => null }), null);
     }
+  });
+
+  const localAppData = String.raw`C:\Users\test\AppData\Local`;
+  const modernPipe = String.raw`\\.\pipe\codex-browser-use-17660621-a54b`;
+  const desktopPath = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.908.4834.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`;
+  const downloadedServer = `${localAppData}\\OpenAI\\Codex\\bin\\bffc5354119c8421\\codex.exe`;
+  const modernSnapshot = () => ({
+    ancestors: [
+      { pid: 10, parentPid: 20, executablePath: String.raw`C:\Program Files\nodejs\node.exe`, commandLine: "node.exe supervisor.mjs" },
+      { pid: 20, parentPid: 30, executablePath: downloadedServer, commandLine: windowsCommandLine([downloadedServer, "-c", "features.code_mode_host=true", "app-server", "--analytics-default-enabled", "-c", "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true"]) },
+      { pid: 30, parentPid: 40, executablePath: desktopPath, commandLine: windowsCommandLine([desktopPath]) },
+    ],
+    pipes: [{ path: modernPipe, serverPid: 30 }],
+  });
+
+  it("discovers the current Desktop pipe through the supervisor and exact ancestor owner", async () => {
+    const probed = [];
+    const resolved = await resolveNativeToolsPipePath({
+      env: { LOCALAPPDATA: localAppData }, platform: "win32", parentPid: 10,
+      readParentCommandLine: async () => null,
+      readWindowsSnapshot: async (pid) => { probed.push(pid); return modernSnapshot(); },
+      probeWindowsPipe: async (pipe) => pipe === modernPipe,
+    });
+    assert.equal(resolved, modernPipe);
+    assert.deepEqual(probed, [10]);
+  });
+
+  it("supports a direct app-server parent and its bundled runtime", () => {
+    const snapshot = modernSnapshot();
+    snapshot.ancestors.shift();
+    snapshot.ancestors[0].executablePath = windowsExecutable;
+    snapshot.ancestors[0].commandLine = windowsParent();
+    snapshot.ancestors[1].executablePath = path.win32.join(path.win32.dirname(path.win32.dirname(windowsExecutable)), "ChatGPT.exe");
+    assert.deepEqual(nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentPid: 20, localAppData }), [modernPipe]);
+  });
+
+  it("skips browser-only pipes and chooses an owned pipe supporting native app tools", async () => {
+    const snapshot = modernSnapshot();
+    const supported = `${modernPipe}-native`;
+    snapshot.pipes.push({ path: supported, serverPid: 30 });
+    const probes = [];
+    const result = await resolveNativeToolsPipePath({ env: { LOCALAPPDATA: localAppData }, parentPid: 10, platform: "win32",
+      readParentCommandLine: async () => null, readWindowsSnapshot: async () => snapshot,
+      probeWindowsPipe: async (pipe, { timeoutMs }) => {
+        probes.push(pipe);
+        assert.ok(timeoutMs > 0 && timeoutMs <= 750);
+        if (pipe === modernPipe) throw new Error("No handler registered for method: tools/call");
+        return true;
+      },
+    });
+    assert.equal(result, supported);
+    assert.deepEqual(probes, [modernPipe, supported]);
+  });
+
+  it("leaves discovery unavailable when every owned endpoint lacks native app tools", async () => {
+    for (const probeWindowsPipe of [async () => false, async () => { throw new Error("native endpoint unavailable"); }]) {
+      assert.equal(await resolveNativeToolsPipePath({ env: { LOCALAPPDATA: localAppData }, parentPid: 10, platform: "win32",
+        readParentCommandLine: async () => null, readWindowsSnapshot: async () => modernSnapshot(), probeWindowsPipe,
+      }), null);
+    }
+  });
+
+  it("probes owned endpoints using only framed read-only list_projects with the existing executor", { skip: !IS_WINDOWS }, async () => {
+    const requests = [];
+    const prefix = String.raw`\\.\pipe\codex-browser-use-test-${process.pid}-${Date.now()}`;
+    const browser = await nativePipe((request, socket) => {
+      requests.push(request);
+      socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "No handler registered for method: tools/call" } }));
+    }, `${prefix}-a`);
+    const native = await nativePipe((request, socket) => {
+      requests.push(request);
+      socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true, contentItems: [{ type: "inputText", text: JSON.stringify({ projects: [] }) }] } }));
+    }, `${prefix}-b`);
+    try {
+      const snapshot = modernSnapshot();
+      snapshot.pipes = [{ path: browser.socketPath, serverPid: 30 }, { path: native.socketPath, serverPid: 30 }];
+      assert.equal(await resolveNativeToolsPipePath({ env: { LOCALAPPDATA: localAppData, CODEX_RELAY_ID: "existing-executor" }, parentPid: 10, platform: "win32",
+        readParentCommandLine: async () => null, readWindowsSnapshot: async () => snapshot,
+      }), native.socketPath);
+      assert.equal(requests.length, 2);
+      for (const request of requests) {
+        assert.equal(request.method, "tools/call");
+        assert.equal(request.params.tool, "list_projects");
+        assert.equal(request.params.threadId, "existing-executor");
+        assert.deepEqual(request.params.arguments, {});
+      }
+    } finally {
+      await browser.close();
+      await native.close();
+    }
+  });
+
+  it("does not start capability probes after the Windows discovery deadline", async () => {
+    assert.equal(await resolveNativeToolsPipePath({ env: { LOCALAPPDATA: localAppData }, parentPid: 10, platform: "win32",
+      windowsDiscoveryTimeoutMs: 1,
+      readParentCommandLine: async () => null,
+      readWindowsSnapshot: async () => { await new Promise((resolve) => setTimeout(resolve, 5)); return modernSnapshot(); },
+      probeWindowsPipe: async () => assert.fail("discovery deadline already elapsed"),
+    }), null);
+  });
+
+  it("rejects unrelated ancestry, untrusted executable paths, and non-app-server commands", () => {
+    const changes = [
+      (snapshot) => { snapshot.ancestors[0].pid = 99; },
+      (snapshot) => { snapshot.ancestors[0].parentPid = 99; },
+      (snapshot) => { snapshot.ancestors[0].executablePath = String.raw`C:\Windows\powershell.exe`; },
+      (snapshot) => { snapshot.ancestors[1].executablePath = String.raw`C:\Temp\codex.exe`; },
+      (snapshot) => { snapshot.ancestors[1].executablePath = downloadedServer.replace("bffc5354119c8421", "..\\elsewhere"); },
+      (snapshot) => { snapshot.ancestors[1].commandLine = windowsCommandLine([downloadedServer, "exec", "app-server"]); },
+      (snapshot) => { snapshot.ancestors[1].commandLine = windowsCommandLine(["codex.exe", "app-server"]); },
+      (snapshot) => { snapshot.ancestors[2].executablePath = String.raw`C:\Temp\ChatGPT.exe`; },
+      (snapshot) => { snapshot.ancestors[2].executablePath = desktopPath.replace("2p2nqsd0c76g0", "otherpublisher"); },
+      (snapshot) => { snapshot.ancestors[2].pid = 10; },
+    ];
+    for (const change of changes) {
+      const snapshot = modernSnapshot();
+      change(snapshot);
+      assert.equal(nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentPid: 10, localAppData }), null);
+    }
+  });
+
+  it("selects a local browser-use pipe owned by the exact Desktop ancestor", () => {
+    const snapshot = modernSnapshot();
+    snapshot.pipes.unshift({ path: `${modernPipe}-other`, serverPid: 99 });
+    assert.deepEqual(nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentPid: 10, localAppData }), [modernPipe]);
+    for (const pipes of [
+      [{ path: modernPipe, serverPid: 99 }],
+      [{ path: modernPipe, serverPid: 20 }],
+      [{ path: modernPipe.replace("codex-browser-use-", "codex-app-tools-"), serverPid: 30 }],
+      [{ path: modernPipe.replace("\\\\.\\", "\\\\remote\\"), serverPid: 30 }],
+    ]) {
+      snapshot.pipes = pipes;
+      assert.deepEqual(nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentPid: 10, localAppData }), []);
+    }
+    snapshot.pipes = [{ path: `${modernPipe}-second`, serverPid: 30 }, { path: modernPipe, serverPid: 30 }];
+    assert.deepEqual(nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentPid: 10, localAppData }), [modernPipe, `${modernPipe}-second`]);
+  });
+
+  it("keeps inherited and legacy pipe precedence and never probes Windows ancestors on Unix", async () => {
+    for (const options of [
+      { env: { CODEX_APP_TOOLS_PIPE_PATH: windowsPipe }, platform: "win32", readParentCommandLine: async () => null },
+      { env: {}, platform: "win32", readParentCommandLine: async () => windowsParent("-c", config(windowsPipe)) },
+      { env: {}, platform: "darwin", readParentCommandLine: async () => null },
+    ]) {
+      const resolved = await resolveNativeToolsPipePath({ ...options, readWindowsSnapshot: async () => assert.fail("fallback must not run") });
+      assert.equal(resolved, options.platform === "darwin" ? null : windowsPipe);
+    }
+  });
+
+  it("fails closed when the bounded Windows snapshot cannot be obtained", async () => {
+    assert.equal(await resolveNativeToolsPipePath({ env: {}, platform: "win32", parentPid: 10,
+      readParentCommandLine: async () => null,
+      readWindowsSnapshot: async () => { throw new Error("inspection timeout"); },
+    }), null);
   });
 });
 

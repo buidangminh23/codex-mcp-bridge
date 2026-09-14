@@ -10,6 +10,12 @@ A **two-way** bridge between Claude and Codex: Claude pushes prompts into a **li
 
 The bridge preserves task history and working directories across messages. Enable **Desktop tasks** to create, assign, and watch work directly in Codex Desktop. The separate app-server backend remains available for CLI use; it cannot provide live Desktop viewing while it owns the task's writer lock.
 
+## Desktop demo
+
+A 50-second, English-captioned recording of fresh conversations in Claude Desktop and Codex Desktop: Claude requests a function review, Codex sends the corrected function back, and Claude acknowledges it. Codex confirms `reply_received`. Recorded on Windows with v1.16.0; no files were edited during the exchange.
+
+The Codex task was opened by the user in the saved project before the exchange. Footage is cropped to hide unrelated history and edited to shorten setup and waiting. The forward acknowledgement timed out during this run; the task was inspected to confirm delivery without resending, and the return message received a confirmed reply.
+
 ### Visible tasks in the correct Desktop project
 
 Install the native companion, choose an existing local project in Codex Desktop, and enable Desktop task delivery:

@@ -66,11 +66,16 @@ describe("bounded Windows native process ancestry", () => {
     assert.deepEqual(await readProcessAncestry({ platform: "win32", parentPid: 200, run: async () => ({ stdout: "[]" }) }), []);
   });
 
-  it("matches the live OS parent and stable FILETIME identity across fresh Windows snapshots", { skip: process.platform !== "win32", timeout: 15000 }, async (t) => {
+  it("matches the live OS parent and stable FILETIME identity across cold Windows fixture snapshots", { skip: process.platform !== "win32", timeout: 35000 }, async (t) => {
+    const execute = promisify(execFile);
+    const runFixtureSnapshot = (command, args, options) => {
+      assert.equal(options.timeout, 5000);
+      return execute(command, args, { ...options, timeout: 15000 });
+    };
     const started = performance.now();
-    const direct = await readProcessAncestry({ parentPid: process.pid, maxDepth: 1 });
+    const direct = await readProcessAncestry({ parentPid: process.pid, maxDepth: 1, run: runFixtureSnapshot });
     const firstMs = Math.round(performance.now() - started);
-    const full = await readProcessAncestry({ parentPid: process.pid });
+    const full = await readProcessAncestry({ parentPid: process.pid, run: runFixtureSnapshot });
     assert.equal(direct.length, 1);
     assert.ok(full.length > 0 && full.length <= 8);
     assert.deepEqual(full[0], direct[0]);

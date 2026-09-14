@@ -8,6 +8,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Fixed
 
+- Allow bounded cold startup time for the Windows snapshot identity test on slower CI hosts while preserving the production five-second inspection deadline and the real MCP caller check.
 - Discover the native tools pipe on current Windows Codex Desktop builds that load app tools through a plugin instead of an inline app-server override. Validate the Desktop process ancestry and pipe owner before connecting, so the relay can start without a pinned pipe address.
 - Keep native relay reloads usable when another companion takes over a shared listener during the handoff, while still rejecting a missing endpoint.
 - Migrate legacy Desktop installations explicitly with `install-claude-desktop.mjs --desktop-tasks`, disable external app-server autostart, and leave automatic routing unpinned so a later relay installation can take effect.

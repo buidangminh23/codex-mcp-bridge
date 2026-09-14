@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-09-14
+
 ### Fixed
 
 - Discover the native tools pipe on current Windows Codex Desktop builds that load app tools through a plugin instead of an inline app-server override. Validate the Desktop process ancestry and pipe owner before connecting, so the relay can start without a pinned pipe address.

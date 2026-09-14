@@ -30,7 +30,7 @@ import { createRuntimeState } from "./runtime-state.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.15.0";
+const VERSION = "1.15.1";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent) {

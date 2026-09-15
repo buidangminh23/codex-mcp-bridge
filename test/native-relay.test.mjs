@@ -214,7 +214,7 @@ describe("Desktop project task delivery", () => {
     }
   });
 
-  it("ignores the previous completed turn when waiting for a queued follow-up", async () => {
+  it("ignores the previous completed turn and withholds uncorroborated follow-up text", async () => {
     let count = 0;
     let elapsed = 0;
     const delivery = new DesktopTaskDelivery({ now: () => elapsed, sleep: async (ms) => { elapsed += ms; }, relay: { requestDesktop: async () => {
@@ -225,7 +225,10 @@ describe("Desktop project task delivery", () => {
     const result = await delivery.wait("task", { previousTurnId: "previous", timeoutMs: 5000 });
     assert.equal(count, 2);
     assert.equal(result.turnId, "new-turn");
-    assert.equal(result.text, "new-turn");
+    assert.equal(result.status, "completed");
+    assert.equal(result.text, "");
+    assert.equal(result.responseStatus, "unavailable");
+    assert.deepEqual(result.assistantItems, []);
   });
 
   it("stops observing on timeout without pausing or interrupting the task", async () => {

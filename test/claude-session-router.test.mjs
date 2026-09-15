@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 
-import { resolveClaudeDesktopSession } from "../src/claude-session-router.mjs";
+import { resolveClaudeDesktopSession, sameClaudeDesktopRecipient } from "../src/claude-session-router.mjs";
 
 const project = fs.mkdtempSync(path.join(os.tmpdir(), "claude-router-"));
 const otherProject = fs.mkdtempSync(path.join(os.tmpdir(), "claude-router-other-"));
@@ -63,12 +63,13 @@ describe("Claude Desktop session rediscovery", () => {
     blocked(() => resolveClaudeDesktopSession({ ...args, target: "cli-a" }), "CLAUDE_DESKTOP_TASK_MISMATCH");
   });
 
-  it("rediscovers a restarted CLI only for the same native task and current account", () => {
+  it("rediscovers a restarted CLI only through auto for the same native task and current account", () => {
     const { args, records, sessions } = fixture();
     sessions[0] = { ...sessions[0], pid: 201, sessionId: "cli-a-restarted", socket: "pipe-restarted" };
     records.set("cli-a-restarted", records.get("cli-a"));
     records.delete("cli-a");
-    const session = resolveClaudeDesktopSession({ ...args, target: "cli-a", expectedTaskId: "task-a" });
+    blocked(() => resolveClaudeDesktopSession({ ...args, target: "cli-a", expectedTaskId: "task-a" }), "CLAUDE_SESSION_NOT_FOUND");
+    const session = resolveClaudeDesktopSession({ ...args, target: "auto", expectedTaskId: "task-a" });
     assert.equal(session.sessionId, "cli-a-restarted");
     assert.equal(session.desktop.taskId, "task-a");
     blocked(() => resolveClaudeDesktopSession({ ...args, target: "cli-a", expectedTaskId: "task-b" }), "CLAUDE_SESSION_NOT_FOUND");
@@ -86,7 +87,8 @@ describe("Claude Desktop session rediscovery", () => {
     const { args, sessions, records } = fixture();
     sessions.push({ ...sessions[0], pid: 103, sessionId: "cli-c" });
     records.set("cli-c", records.get("cli-a"));
-    blocked(() => resolveClaudeDesktopSession({ ...args, target: "vanished-cli", expectedTaskId: "task-a" }), "CLAUDE_SESSION_AMBIGUOUS");
+    blocked(() => resolveClaudeDesktopSession({ ...args, target: "vanished-cli", expectedTaskId: "task-a" }), "CLAUDE_SESSION_NOT_FOUND");
+    blocked(() => resolveClaudeDesktopSession({ ...args, target: "auto", expectedTaskId: "task-a" }), "CLAUDE_SESSION_AMBIGUOUS");
   });
 
   it("checks the canonical project directory and never redirects a wrong-cwd exact target", () => {
@@ -141,5 +143,83 @@ describe("Claude Desktop session rediscovery", () => {
     for (const expectedTaskId of [null, "", " ", 101]) {
       blocked(() => resolveClaudeDesktopSession({ ...args, expectedTaskId }), "CLAUDE_DESKTOP_TASK_MISMATCH");
     }
+  });
+});
+
+describe("exact Claude Desktop recipient identity", () => {
+  const intendedSession = "b8ae8399-f3b9-4ad3-9637-3178d9692dee";
+  const intendedTask = "local_44388d4a-3299-4f19-8b8f-08f90fa773a5";
+  const intendedSocket = "pipe-true-inbox";
+
+  function exactFixture() {
+    const trueSession = { pid: 39648, sessionId: intendedSession, name: "Bridge safety lab", cwd: project,
+      entrypoint: "claude-desktop", alive: true, socket: intendedSocket, processStart: "true-process-start" };
+    const helpers = [33560, 36460, 39188].map((pid, index) => ({ pid, sessionId: `helper-${index}`, name: "Bridge safety lab", cwd: project,
+      entrypoint: "codex-bridge", alive: true, socket: `pipe-helper-${index}`, processStart: `helper-start-${index}` }));
+    const readContext = (session, account) => session.sessionId === intendedSession && account.accountId === "account-a"
+      ? { status: "matched", accountId: "account-a", taskId: intendedTask, cwd: project, title: "Bridge safety lab" }
+      : { status: "missing", reason: "No exact task in the current account." };
+    const args = { target: intendedSession, expectedCwd: project, expectedTaskId: intendedTask,
+      sessions: [...helpers, trueSession], account: { status: "verified", accountId: "account-a" }, readContext };
+    return { args, helpers, trueSession };
+  }
+
+  it("ignores multiple live bridge helpers sharing the intended cwd", () => {
+    const { args } = exactFixture();
+    assert.equal(resolveClaudeDesktopSession({ ...args, target: "auto" }).sessionId, intendedSession);
+  });
+
+  it("resolves the exact Desktop task and session", () => {
+    const { args } = exactFixture();
+    const selected = resolveClaudeDesktopSession(args);
+    assert.equal(selected.sessionId, intendedSession);
+    assert.equal(selected.desktop.taskId, intendedTask);
+  });
+
+  it("rejects a wrong native Desktop task for the exact session", () => {
+    const { args } = exactFixture();
+    blocked(() => resolveClaudeDesktopSession({ ...args, expectedTaskId: "local_wrong" }), "CLAUDE_DESKTOP_TASK_MISMATCH");
+  });
+
+  it("rejects a wrong explicit session without falling back by task and cwd", () => {
+    const { args } = exactFixture();
+    blocked(() => resolveClaudeDesktopSession({ ...args, target: "wrong-session" }), "CLAUDE_SESSION_NOT_FOUND");
+  });
+
+  it("rejects a wrong cwd before inspecting Desktop task metadata", () => {
+    const { args } = exactFixture();
+    blocked(() => resolveClaudeDesktopSession({ ...args, expectedCwd: otherProject, readContext: () => assert.fail("must not inspect") }), "CLAUDE_SESSION_CWD_MISMATCH");
+  });
+
+  it("rejects a stale explicit session without selecting another live session", () => {
+    const { args, trueSession } = exactFixture();
+    const replacement = { ...trueSession, pid: 40000, sessionId: "replacement-session", socket: "replacement-inbox" };
+    blocked(() => resolveClaudeDesktopSession({ ...args, sessions: [{ ...trueSession, alive: false }, replacement],
+      readContext: (session) => session.sessionId === replacement.sessionId ? { status: "matched", taskId: intendedTask, cwd: project } : args.readContext(session, args.account) }), "CLAUDE_SESSION_NOT_FOUND");
+  });
+
+  it("rejects the exact session after the current account changes", () => {
+    const { args } = exactFixture();
+    blocked(() => resolveClaudeDesktopSession({ ...args, account: { status: "verified", accountId: "account-b" } }), "CLAUDE_DESKTOP_TASK_UNVERIFIED");
+  });
+
+  it("rejects a same-pid and same-socket process restart before sending", () => {
+    const { args } = exactFixture();
+    const selected = resolveClaudeDesktopSession(args);
+    assert.equal(sameClaudeDesktopRecipient(selected, { ...selected }), true);
+    assert.equal(sameClaudeDesktopRecipient(selected, { ...selected, processStart: "reused-process-start" }), false);
+  });
+
+  it("never substitutes another live process when an explicit selector is missing", () => {
+    const { args, trueSession } = exactFixture();
+    blocked(() => resolveClaudeDesktopSession({ ...args, target: "missing-explicit-session",
+      sessions: [trueSession, { ...trueSession, pid: 50000, sessionId: "other-session", socket: "other-inbox" }] }), "CLAUDE_SESSION_NOT_FOUND");
+  });
+
+  it("returns only the true inbox owner despite helper subprocesses", () => {
+    const { args, helpers } = exactFixture();
+    const selected = resolveClaudeDesktopSession(args);
+    assert.equal(selected.socket, intendedSocket);
+    assert.ok(helpers.every((helper) => helper.socket !== selected.socket));
   });
 });

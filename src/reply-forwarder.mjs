@@ -93,10 +93,17 @@ export class ReplyForwarder {
     return entry ? { ...entry.receipt } : null;
   }
 
-  status() {
+  status(accepts = () => true) {
     const counts = { total: this.records.size, queued: 0, sending: 0, forwarded: 0, failed: 0, unknown: 0, blocked: 0 };
-    for (const { receipt } of this.records.values()) counts[receipt.status] += 1;
-    return { ...counts, attempts: this.attempts, maxPerSession: this.maxPerSession, closed: this.closed };
+    counts.total = 0;
+    let attempts = 0;
+    for (const { record, receipt } of this.records.values()) {
+      if (!accepts(record, receipt)) continue;
+      counts.total += 1;
+      counts[receipt.status] += 1;
+      if (Number.isFinite(receipt.attemptedAt)) attempts += 1;
+    }
+    return { ...counts, attempts, maxPerSession: this.maxPerSession, closed: this.closed };
   }
 
   reloadReason() {

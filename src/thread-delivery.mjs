@@ -3,6 +3,7 @@ import { runTurn } from "./turn.mjs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { DesktopTaskReceipts } from "./desktop-task-receipts.mjs";
+import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse } from "./codex-native-response.mjs";
 
 /**
  * Which backend puts a message into a Codex thread.
@@ -23,6 +24,11 @@ export const APP_SERVER_BACKEND = "app-server";
 export const DESKTOP_TOOL_BUDGET_MS = 40000;
 const RELEASE_STATUSES = new Set(["completed", "interrupted", "failed"]);
 
+function sameAccountContext(expected, current) {
+  return Boolean(expected && current && ["claude", "codex"].every((provider) =>
+    typeof expected[provider] === "string" && expected[provider] === current[provider]));
+}
+
 export function matchDesktopProject(projects, cwd, { canonicalize = realpathSync.native, paths = path } = {}) {
   const requested = canonicalize(cwd);
   const matches = projects.filter((project) => {
@@ -42,7 +48,7 @@ export function matchDesktopProject(projects, cwd, { canonicalize = realpathSync
 }
 
 export class DesktopTaskDelivery {
-  constructor({ relay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath(), accountSocketPath: accountRelaySocketPath() }), security, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, receipts = new DesktopTaskReceipts(), beforeRequest, accountContext } = {}) {
+  constructor({ relay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath(), accountSocketPath: accountRelaySocketPath() }), security, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, receipts = new DesktopTaskReceipts(), beforeRequest, accountContext, captureResponse = captureCodexRolloutWatermark, readResponse = readCodexNativeTurnResponse, inspectResponse = inspectCodexNativeTurn } = {}) {
     this.relay = relay;
     this.security = security;
     this.sleep = sleep;
@@ -50,10 +56,13 @@ export class DesktopTaskDelivery {
     this.receipts = receipts;
     this.beforeRequest = beforeRequest;
     this.accountContext = accountContext;
+    this.captureResponse = captureResponse;
+    this.readResponse = readResponse;
+    this.inspectResponse = inspectResponse;
     this.threadOperations = new Map();
   }
 
-  async request(operation, args, { deadline } = {}) {
+  async request(operation, args, { deadline, includeRelayContext = false } = {}) {
     try {
       await this.beforeRequest?.({ operation, args });
       const remaining = deadline === undefined ? undefined : deadline - this.now();
@@ -64,7 +73,7 @@ export class DesktopTaskDelivery {
         ...(this.beforeRequest ? { beforeSend: () => this.beforeRequest({ operation, args, phase: "write" }) } : {}),
         ...(accountContext ? { accountContext } : {}),
       });
-      return response.result;
+      return includeRelayContext ? { result: response.result, executorThreadId: response.executorThreadId } : response.result;
     } catch (err) {
       throw new Error(`Codex Desktop operation ${operation} failed: ${err.message}. Desktop-only mode will not start or use an external app-server. Open Codex Desktop and reconnect its native relay, then inspect the existing task before retrying a send.`, { cause: err });
     }
@@ -247,17 +256,32 @@ export class DesktopTaskDelivery {
   async send({ threadId, prompt, cwd, model, effort, name, deadline }) {
     const inspected = await this.inspect(threadId, cwd, { deadline });
     if (name) await this.request("set_thread_title", { threadId, title: name.trim().slice(0, 200) }, { deadline });
-    const response = await this.request("send_message_to_thread", {
+    const expectedCwd = realpathSync.native(inspected.thread.cwd);
+    const accountContext = this.accountContext?.();
+    const watermark = this.captureResponse({ threadId, expectedCwd });
+    const envelope = await this.request("send_message_to_thread", {
       threadId, prompt,
       ...(model ? { model } : {}),
       ...(effort ? { thinking: effort } : {}),
-    }, { deadline });
+    }, { deadline, includeRelayContext: true });
+    const response = envelope.result;
     if (response?.threadId !== threadId || response?.success === false || response?.isError === true ||
         (response?.status !== undefined && !["accepted", "sent"].includes(response.status)) ||
         (response?.firstTurn && response.firstTurn.status !== "accepted")) {
       throw new Error(`Desktop send is not confirmed for ${threadId}. Do not resend: ${JSON.stringify(response)}`);
     }
-    return { threadId, cwd: inspected.thread.cwd, name: inspected.thread.title, previousTurnId: inspected.latestTurnId, backend: NATIVE_BACKEND };
+    return {
+      threadId, cwd: expectedCwd, name: inspected.thread.title, previousTurnId: inspected.latestTurnId, backend: NATIVE_BACKEND,
+      responseObservation: {
+        threadId,
+        previousTurnId: inspected.latestTurnId,
+        expectedCwd,
+        executorThreadId: envelope.executorThreadId ?? null,
+        prompt,
+        accountContext: accountContext ? { ...accountContext } : null,
+        watermark,
+      },
+    };
   }
 
   async open(threadId, { deadline } = {}) {
@@ -265,12 +289,51 @@ export class DesktopTaskDelivery {
     if (response?.navigated !== true) throw new Error(`Desktop did not confirm opening task ${threadId}`);
   }
 
-  async wait(threadId, { timeoutMs = 240000, previousTurnId = null } = {}) {
+  async observeNativeResponse(threadId, turnId, responseObservation, { deadline } = {}) {
+    if (!responseObservation) return unavailableObservation("Codex Desktop completed the turn without exposing assistant response text or a pre-send observation binding.");
+    const { expectedCwd } = responseObservation;
+    const args = { threadId, hostId: "local", turnLimit: 1 };
+    const recheck = async () => {
+      await this.beforeRequest?.({ operation: "read_thread", args, phase: "observe" });
+      if (this.accountContext && !sameAccountContext(responseObservation.accountContext, this.accountContext())) throw new Error("The original account changed while the native response was being observed; reply content was withheld");
+      this.security.assertCwd(expectedCwd);
+      this.security.assertThread(threadId, expectedCwd);
+      if (realpathSync.native(expectedCwd) !== expectedCwd) throw new Error("The selected native task workspace changed while its response was being observed");
+    };
+    await recheck();
+    const observed = this.readResponse({ ...responseObservation, threadId, turnId });
+    await recheck();
+    const inspected = await this.inspect(threadId, expectedCwd, { deadline });
+    if (inspected.latestTurnId !== turnId) throw new Error("The selected native task changed before its response could be confirmed; reply content was withheld");
+    await recheck();
+    return observed;
+  }
+
+  async inspectNativeTurn(threadId, turnId, cwd, { deadline } = {}) {
+    const initial = await this.inspect(threadId, cwd, { deadline });
+    const expectedCwd = realpathSync.native(initial.thread.cwd);
+    const accountContext = this.accountContext?.() ?? null;
+    const args = { threadId, hostId: "local", turnLimit: 1 };
+    const recheck = async () => {
+      await this.beforeRequest?.({ operation: "read_thread", args, phase: "inspect-turn" });
+      if (this.accountContext && !sameAccountContext(accountContext, this.accountContext())) throw new Error("The account changed while the native turn was being inspected; response content was withheld");
+      this.security.assertCwd(expectedCwd);
+      this.security.assertThread(threadId, expectedCwd);
+      if (realpathSync.native(expectedCwd) !== expectedCwd) throw new Error("The selected native task workspace changed while its turn was being inspected");
+    };
+    await recheck();
+    const result = this.inspectResponse({ threadId, turnId, expectedCwd });
+    await recheck();
+    await this.inspect(threadId, expectedCwd, { deadline });
+    await recheck();
+    return result;
+  }
+
+  async wait(threadId, { timeoutMs = 240000, previousTurnId = null, responseObservation = null } = {}) {
     const startedAt = this.now();
     let cursor;
     let turnId = null;
-    let text = "";
-    const expired = () => ({ threadId, turnId, status: "timeout", text, activity: [], errors: [], durationMs: this.now() - startedAt });
+    const expired = () => ({ threadId, turnId, status: "timeout", text: "", responseStatus: "unavailable", assistantItems: [], replySha256: null, activity: [], errors: [], durationMs: this.now() - startedAt });
     for (;;) {
       if (this.now() - startedAt >= timeoutMs) return expired();
       let response;
@@ -292,16 +355,31 @@ export class DesktopTaskDelivery {
       }
       if (turn?.id && turn.id !== previousTurnId) {
         turnId = turn.id;
-        if (poll.latestAssistantMessage?.turnId === turnId && poll.latestAssistantMessage?.phase === "final_answer") text = poll.latestAssistantMessage.text ?? text;
         const status = turn.status;
         if (RELEASE_STATUSES.has(status)) {
-          return { threadId, turnId, status, text, activity: [], errors: turn.error ? [turn.error] : [], durationMs: turn.durationMs ?? this.now() - startedAt };
+          const observed = await this.observeNativeResponse(threadId, turnId, responseObservation, { deadline: startedAt + timeoutMs });
+          const responseStatus = observed.status;
+          return {
+            threadId, turnId, status,
+            text: responseStatus === "completed" ? observed.text : "",
+            responseStatus,
+            observationStatus: responseStatus,
+            ...(observed.reason ? { observationReason: observed.reason } : {}),
+            assistantItems: observed.assistantItems ?? [],
+            replySha256: observed.replySha256 ?? null,
+            responseSource: observed.source ?? null,
+            activity: [], errors: turn.error ? [turn.error] : [], durationMs: turn.durationMs ?? this.now() - startedAt,
+          };
         }
       }
       if (this.now() - startedAt >= timeoutMs) return expired();
       await this.sleep(Math.min(1500, timeoutMs - (this.now() - startedAt)));
     }
   }
+}
+
+function unavailableObservation(reason) {
+  return { status: "unavailable", reason };
 }
 
 export function createThreadDelivery({

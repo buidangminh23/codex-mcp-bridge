@@ -365,6 +365,10 @@ for (const [entry, statusName] of [["index.mjs", "codex_bridge_status"], ["claud
     const native = net.createServer(socket => { sockets.add(socket); socket.on("close",()=>sockets.delete(socket)); });
     await new Promise(resolve=>native.listen(prefix,resolve));
     t.after(async()=>{for(const socket of sockets) socket.destroy(); await new Promise(resolve=>native.close(resolve));});
+    // The installer prepares the immutable release before registering a client.
+    // Prewarming keeps this real-worker fixture faithful to that lifecycle while
+    // retaining the unchanged MCP initialization and reload deadlines.
+    createReleaseSnapshot(fixture.root,{cache:path.join(fixture.root,"cache")});
     const api = await connect(t,fixture,{
       HOME: fixture.root, USERPROFILE: fixture.root, CODEX_HOME: path.join(fixture.root,".codex"), APPDATA:path.join(fixture.root,"Roaming"),
       LOCALAPPDATA:path.join(fixture.root,"Local"), CODEX_BRIDGE_AUTOSTART:"0", CODEX_BRIDGE_DESKTOP_TASKS:"0",

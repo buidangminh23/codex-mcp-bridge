@@ -172,6 +172,87 @@ function creationReceipts(home) {
 }
 
 describe("Desktop task MCP integration", () => {
+  it("returns the same exact assistant item and hash from send and authoritative turn read", async () => {
+    const threadId = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
+    const turnId = "01a08812-f472-7f43-8f9b-1137e61f6d32";
+    const previousTurnId = "01a087dd-d587-76c3-93c3-60c16bc08542";
+    const executorThreadId = "01a08793-b558-7800-b847-0f8ac1e26285";
+    const itemId = "msg_00247afa401aa603016aa1cf9ffea887d08621cc411b2bce65";
+    const prompt = "exact fixture dispatch";
+    const reply = "exact fixture reply";
+    const expectedHash = "135bb9cc61646f3a99ca1836d483c115fa7a1939fa4015f03360d879e0ecfe77";
+    const calls = [];
+    let relay;
+    let sent = false;
+    const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
+    const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-integrity-${randomUUID()}` : path.join(socketRoot, "d.sock");
+    try {
+      await withBridge(() => { throw new Error("Desktop integrity test must not reach an external app-server"); }, async ({ client }) => {
+        const sentResult = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId, prompt, openInApp: false } });
+        assert.equal(sentResult.isError, undefined);
+        assert.match(sentResult.content[0].text, new RegExp(itemId));
+        assert.match(sentResult.content[0].text, new RegExp(expectedHash));
+        assert.match(sentResult.content[0].text, /exact fixture reply/);
+        const readResult = await client.callTool({ name: "read_codex_thread", arguments: { threadId, turnId } });
+        assert.equal(readResult.isError, undefined);
+        const authoritative = JSON.parse(readResult.content[0].text);
+        assert.equal(authoritative.status, "completed");
+        assert.deepEqual(authoritative.assistantItems, [{ id: itemId, text: reply }]);
+        assert.equal(authoritative.replySha256, expectedHash);
+        assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, 1);
+        assert.equal(calls.includes("create_thread"), false);
+      }, async (home) => {
+        const directory = path.join(home, ".codex", "sessions", "2026", "09", "09");
+        fs.mkdirSync(directory, { recursive: true });
+        const rollout = path.join(directory, `rollout-2026-09-09T11-44-55-${threadId}.jsonl`);
+        const append = (record) => fs.appendFileSync(rollout, `${JSON.stringify(record)}\n`);
+        append({ type: "session_meta", payload: { id: threadId, originator: "Codex Desktop", source: "vscode", cwd: home } });
+        relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: executorThreadId }), dispatchDesktop: async ({ operation, arguments: args }) => {
+          calls.push(operation);
+          let result;
+          if (operation === "read_thread") result = { thread: { id: threadId, hostId: "local", cwd: home }, turns: [{ id: sent ? turnId : previousTurnId, status: sent ? "completed" : "completed" }] };
+          else if (operation === "send_message_to_thread") {
+            sent = true;
+            append({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } });
+            append({ type: "turn_context", payload: { turn_id: turnId, cwd: home } });
+            append({ type: "response_item", payload: { type: "function_call_output", id: randomUUID(), namespace: "codex_app", name: "send_message_to_thread", output: `<codex_delegation>\n  <source_thread_id>${executorThreadId}</source_thread_id>\n  <input>${prompt}</input>\n</codex_delegation>`, internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
+            append({ type: "event_msg", payload: { type: "item_completed", thread_id: threadId, turn_id: turnId, item: { type: "AgentMessage", id: itemId, content: [{ type: "Text", text: reply }], phase: "final_answer" } } });
+            append({ type: "response_item", payload: { type: "message", id: itemId, role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: reply }], internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
+            append({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId } });
+            result = { threadId, status: "accepted" };
+          } else if (operation === "wait_threads") result = { polls: [{ thread: { id: threadId, hostId: "local", status: { type: "idle" } }, latestTurn: { id: turnId, status: "completed" }, latestAssistantMessage: { turnId: previousTurnId, phase: "final_answer", text: "must not be used" } }] };
+          else throw new Error(`Unexpected operation ${operation}`);
+          return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
+        } });
+        await relay.start();
+        return { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: socketPath, CODEX_APP_SERVER_URL: "invalid-unused-legacy-endpoint" };
+      });
+    } finally {
+      relay?.stop();
+      fs.rmSync(socketRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an unavailable response explicitly without resending a completed native turn", async () => {
+    const calls = [];
+    let sent = false;
+    await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {
+      calls.push(operation);
+      if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [{ id: sent ? "new-turn" : "old-turn" }] };
+      if (operation === "send_message_to_thread") { sent = true; return { threadId: args.threadId, status: "accepted" }; }
+      if (operation === "wait_threads") return { polls: [{ thread: { id: args.targets[0].threadId, hostId: "local", status: { type: "idle" } }, latestTurn: { id: "new-turn", status: "completed" }, latestAssistantMessage: null }] };
+      throw new Error(`Unexpected operation ${operation}`);
+    }, async ({ client }) => {
+      const result = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "target", prompt: "one native send", openInApp: false } });
+      assert.equal(result.isError, undefined);
+      assert.match(result.content[0].text, /response observation: unavailable/);
+      assert.match(result.content[0].text, /assistant response unavailable.*do not resend/i);
+      assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, 1);
+      assert.equal(calls.includes("create_thread"), false);
+      assert.deepEqual(calls, ["read_thread", "send_message_to_thread", "wait_threads", "read_thread"]);
+    });
+  });
+
   it("withholds a delayed reply when the account changes after the explicit task was dispatched", async () => {
     const calls = [];
     let changeAccount;
@@ -511,7 +592,7 @@ describe("Desktop task MCP integration", () => {
     }
   });
 
-  it("creates, assigns, opens, and waits without sending anything to a second app-server", async () => {
+  it("creates, assigns, opens, and withholds an uncorroborated latest-message reply", async () => {
     const calls = [];
     let relay;
     const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
@@ -522,7 +603,8 @@ describe("Desktop task MCP integration", () => {
         assert.equal(result.isError, undefined);
         assert.match(result.content[0].text, /projectId: project-id/);
         assert.match(result.content[0].text, /opened in Codex Desktop while/);
-        assert.match(result.content[0].text, /COMPLETE/);
+        assert.match(result.content[0].text, /response observation: unavailable/);
+        assert.doesNotMatch(result.content[0].text, /COMPLETE/);
         assert.deepEqual(calls.map(([op]) => op), ["list_projects", "create_thread", "navigate_to_codex_page", "wait_threads"]);
         const empty = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home } });
         assert.equal(empty.isError, true);

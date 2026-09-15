@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 
 import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir } from "./platform.mjs";
 import { assertAccountIdentity } from "./bridge-account-context.mjs";
+import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
 
 /**
  * The Codex Desktop app owns the per-thread writer lock of every thread it has
@@ -793,6 +794,7 @@ export class NativeDesktopRelay {
 
   async sendMessage(targetThreadId, message, { timeoutMs = this.timeoutMs, beforeSend, accountContext } = {}) {
     const accounts = relayAccountContext(accountContext);
+    if (hardenedBridgeEnabled(this.env) && !accounts) throw beforeWriteError(new NativeRelayError("Hardened relay requires protocol 2 account context", "RELAY_BAD_REQUEST"));
     const request = { v: accounts ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION, targetThreadId, message, ...(accounts ? { accountContext: accounts } : {}) };
     return this.#request(request, timeoutMs, beforeSend);
   }
@@ -800,6 +802,7 @@ export class NativeDesktopRelay {
   async requestDesktop(operation, args, { timeoutMs = this.timeoutMs, beforeSend, accountContext } = {}) {
     validateDesktopOperation(operation, args);
     const accounts = relayAccountContext(accountContext);
+    if (hardenedBridgeEnabled(this.env) && !accounts) throw beforeWriteError(new NativeRelayError("Hardened relay requires protocol 2 account context", "RELAY_BAD_REQUEST"));
     return this.#request({ v: accounts ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION, operation, arguments: args, ...(accounts ? { accountContext: accounts } : {}) }, timeoutMs, beforeSend);
   }
 

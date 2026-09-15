@@ -23,6 +23,19 @@ function uniqueLiveSessions(sessions) {
   return [...unique.values()];
 }
 
+export function sameClaudeDesktopRecipient(selected, current) {
+  return Boolean(
+    selected && current &&
+    selected.pid === current.pid &&
+    typeof selected.sessionId === "string" && selected.sessionId.length > 0 &&
+    selected.sessionId === current.sessionId &&
+    typeof selected.socket === "string" && selected.socket.length > 0 &&
+    selected.socket === current.socket &&
+    typeof selected.processStart === "string" && selected.processStart.length > 0 &&
+    selected.processStart === current.processStart
+  );
+}
+
 export function resolveClaudeDesktopSession({ target, expectedCwd, expectedTaskId, sessions, account, readContext }) {
   if (account?.status !== "verified") {
     throw preflightFailure("CLAUDE_ACCOUNT_UNVERIFIED", account?.reason ?? "The current Claude Desktop account is not confirmed.");
@@ -52,6 +65,9 @@ export function resolveClaudeDesktopSession({ target, expectedCwd, expectedTaskI
     const matches = byId.length ? byId : live.filter((session) => session.name === needle);
     if (matches.length > 1) {
       throw preflightFailure("CLAUDE_SESSION_AMBIGUOUS", "The exact target identifies multiple live sessions; use an unambiguous sessionId or pid.");
+    }
+    if (!matches.length) {
+      throw preflightFailure("CLAUDE_SESSION_NOT_FOUND", "No live Claude Desktop session matches the exact target. Reinspect the existing task and use its current sessionId or pid.");
     }
     if (matches.length === 1) {
       const found = matches[0];

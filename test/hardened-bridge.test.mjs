@@ -356,7 +356,21 @@ test("Windows protected relay permits current user and proves anonymous read and
   const socketPath = `\\\\.\\pipe\\LOCAL\\codex-native-relay-test-${randomUUID().replaceAll("-", "")}`;
   const relay = new RelaySocketServer({ socketPath, strict: true }); t.after(async () => { relay.stop(); await relay.closed; });
   await relay.start(); const readback = await protectCurrentUserPipe(socketPath);
-  assert.equal(readback.ownerMatches, true); assert.equal(readback.protected, true); assert.equal(readback.aceCount, 1); assert.equal(readback.anonymousDenied, true); assert.equal(readback.readError, 5); assert.equal(readback.duplexError, 5);
+  assert.equal(readback.serverUserMatches, true); assert.equal(readback.ownerMatches, true); assert.equal(readback.protected, true); assert.equal(readback.aceCount, 1); assert.equal(readback.anonymousDenied, true); assert.equal(readback.readError, 5); assert.equal(readback.duplexError, 5);
   const response = JSON.parse(await sendLines(socketPath, `${JSON.stringify({ v: 1, targetThreadId: "target", message: "same user" })}\n`));
   assert.equal(response.ok, false); assert.equal(response.error.code, "RELAY_BAD_REQUEST"); relay.stop(); await relay.closed; assert.equal(relay.server.listening, false); assert.equal(relay.connections.size, 0);
+});
+
+
+test("Windows pipe protection refuses a wrong server PID and incomplete user verification", { skip: !IS_WINDOWS }, async (t) => {
+  const socketPath = `\\\\.\\pipe\\LOCAL\\codex-native-relay-test-${randomUUID().replaceAll("-", "")}`;
+  const relay = new RelaySocketServer({ socketPath, strict: true });
+  t.after(async () => { relay.stop(); await relay.closed; });
+  await relay.start();
+  await assert.rejects(protectCurrentUserPipe(socketPath, { pid: 0 }), /Pipe server identity mismatch/);
+  const verified = await protectCurrentUserPipe(socketPath);
+  for (const serverUserMatches of [undefined, false]) {
+    await assert.rejects(protectCurrentUserPipe(socketPath, { run: async () => ({ stdout: JSON.stringify({ ...verified, serverUserMatches }) }) }), /readback did not prove/);
+  }
+  assert.equal((await protectCurrentUserPipe(socketPath)).serverUserMatches, true);
 });

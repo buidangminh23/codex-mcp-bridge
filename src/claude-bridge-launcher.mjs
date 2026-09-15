@@ -1,3 +1,4 @@
 #!/usr/bin/env node
 import { runSupervisor } from "./mcp-supervisor.mjs";
-await runSupervisor("claude-bridge.mjs");
+import { handleTelemetryCommand } from "./telemetry.mjs";
+if (!await handleTelemetryCommand(process.argv.slice(2))) await runSupervisor("claude-bridge.mjs");

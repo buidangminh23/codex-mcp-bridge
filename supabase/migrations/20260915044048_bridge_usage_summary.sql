@@ -1,0 +1,32 @@
+CREATE FUNCTION public.get_bridge_usage_summary()
+RETURNS json
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+SET statement_timeout = '4s'
+AS $function$
+SELECT json_build_object(
+  'collectedAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+  'active', (SELECT json_build_object(
+    'day', count(DISTINCT install_id) FILTER (WHERE day = (now() AT TIME ZONE 'UTC')::date),
+    'week', count(DISTINCT install_id) FILTER (WHERE day >= (now() AT TIME ZONE 'UTC')::date - 6),
+    'month', count(DISTINCT install_id) FILTER (WHERE day >= (now() AT TIME ZONE 'UTC')::date - 29)
+  ) FROM public.bridge_usage_daily),
+  'daily', (SELECT coalesce(json_agg(rows ORDER BY day), '[]'::json) FROM (
+    SELECT day, count(*) AS installations FROM public.bridge_usage_daily GROUP BY day
+  ) rows),
+  'platforms', (SELECT coalesce(json_agg(rows ORDER BY platform), '[]'::json) FROM (
+    SELECT platform, count(DISTINCT install_id) AS installations FROM public.bridge_usage_daily
+    WHERE day >= (now() AT TIME ZONE 'UTC')::date - 29 GROUP BY platform
+  ) rows),
+  'versions', (SELECT coalesce(json_agg(rows ORDER BY version), '[]'::json) FROM (
+    SELECT version, count(DISTINCT install_id) AS installations FROM public.bridge_usage_daily
+    WHERE day >= (now() AT TIME ZONE 'UTC')::date - 29 GROUP BY version
+  ) rows)
+) AS summary;
+
+$function$;
+REVOKE ALL ON FUNCTION public.get_bridge_usage_summary() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.get_bridge_usage_summary() TO service_role;
+COMMENT ON FUNCTION public.get_bridge_usage_summary() IS 'Aggregate installation counts only; contains no installation identifiers. Service-role-only read for public stats endpoint.';

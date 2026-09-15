@@ -41,6 +41,8 @@
     "access": "public"
   },
   "scripts": {
+    "analytics": "node scripts/collect-repo-analytics.mjs",
+    "analytics:publish": "node scripts/publish-repo-analytics.mjs",
     "start": "node src/codex-bridge-launcher.mjs",
     "claude-bridge": "node src/claude-bridge-launcher.mjs",
     "app-server": "codex app-server --listen ws://127.0.0.1:8791",

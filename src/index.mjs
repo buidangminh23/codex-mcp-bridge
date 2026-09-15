@@ -34,6 +34,7 @@ import { assertClaudeSenderContext, readClaudeSenderContext, requireClaudeSender
 exitForVersionRequest(import.meta.url);
 
 const VERSION = "1.16.0";
+void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
 /**

@@ -737,6 +737,11 @@ function runCheck(env) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(root, "scripts", "check.mjs")], {
       env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+      // check.mjs probes a relay and an app-server, both of which can be absent
+      // in these tests; measured 1.1-1.2s when it has to give up on both. The
+      // ceiling bounds a wedged probe - the exit listener below still resolves
+      // normally, and a killed child arrives as a non-zero code the test reports.
+      timeout: 60000,
     });
     let output = "";
     child.stdout.on("data", chunk => { output += chunk; });

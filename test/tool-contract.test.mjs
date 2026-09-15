@@ -52,6 +52,16 @@ const unavailableRelaySocket = (home) => process.platform === "win32"
   ? `\\\\.\\pipe\\codex-bridge-test-${crypto.createHash("sha256").update(home).digest("hex")}`
   : path.join(home, "missing-relay.sock");
 
+/**
+ * A cold PowerShell on a contended Windows runner has been measured between 5s
+ * and 15s in this suite, and a 15s ceiling already failed a run once, so this
+ * budget sits at twice that worst case - the same ceiling bridge-integration
+ * gives its own PowerShell identity read. It is here to fail a wedged child
+ * fast instead of letting it run to the CI job wall, not to police how long a
+ * healthy read takes.
+ */
+const PROCESS_IDENTITY_TIMEOUT_MS = 30000;
+
 describe("Claude message receipts", () => {
   for (const scenario of ["nowait", "timeout", "peer", "desktop", "desktop-legacy-identity", "desktop-busy", "desktop-unknown-mode", "desktop-mismatch", "desktop-mismatch-accepted", "desktop-inbound-hold", "desktop-prompting", "desktop-reviewed", "desktop-reviewed-held", "desktop-reviewed-refused", "held", "refused", "diagnostic"]) {
     it(`reports ${scenario} from the actual MCP transport`, async () => {
@@ -86,8 +96,8 @@ describe("Claude message receipts", () => {
       if (desktop) {
         const registryFile = path.join(registryDir, `${process.pid}.json`);
         const identity = process.platform === "win32"
-          ? { procStartFt: execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]).toString().trim() }
-          : { procStart: execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).toString().trim() };
+          ? { procStartFt: execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`], { timeout: PROCESS_IDENTITY_TIMEOUT_MS }).toString().trim() }
+          : { procStart: execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, timeout: PROCESS_IDENTITY_TIMEOUT_MS }).toString().trim() };
         if (process.platform === "win32" && scenario !== "desktop-legacy-identity") {
           identity.procStart = identity.procStartFt;
           delete identity.procStartFt;
@@ -236,8 +246,17 @@ describe("Claude message receipts", () => {
         }
         let receiptTimer;
         try {
+          /**
+           * Every scenario that legitimately receives nothing has already
+           * returned above, so this only ever waits for a delivery that is
+           * expected to arrive: it reports a wedged peer readably instead of
+           * hanging, and can never mask a real failure. It was 5s, and a
+           * contended Windows runner running two test files at once blew it
+           * twice - the enclosing test measured 12048ms on the run it failed,
+           * against healthy siblings at 5.3-5.9s.
+           */
           await Promise.race([receipt, new Promise((_, reject) => {
-            receiptTimer = setTimeout(() => reject(new Error("Mock peer did not receive the message")), 5000);
+            receiptTimer = setTimeout(() => reject(new Error("Mock peer did not receive the message")), 30000);
           })]);
         } finally { clearTimeout(receiptTimer); }
         if (handlerError) throw handlerError;
@@ -324,8 +343,8 @@ describe("Claude Desktop account switching", () => {
       { type: "turn_context", payload: { turn_id: turnId, cwd: home, approval_policy: "never", approvals_reviewer: "user", permission_profile: { type: "disabled" }, sandbox_policy: { type: "danger-full-access" } } },
     ].map(JSON.stringify).join("\n") + "\n");
     const processIdentity = process.platform === "win32"
-      ? { procStartFt: execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]).toString().trim() }
-      : { procStart: execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).toString().trim() };
+      ? { procStartFt: execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`], { timeout: PROCESS_IDENTITY_TIMEOUT_MS }).toString().trim() }
+      : { procStart: execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, timeout: PROCESS_IDENTITY_TIMEOUT_MS }).toString().trim() };
     const destinations = [
       { accountId: "44444444-4444-4444-8444-444444444444", taskId: "local_11111111-1111-4111-8111-111111111111", sessionId: "account-a-cli", title: "Account A task" },
       { accountId: "77777777-7777-4777-8777-777777777777", taskId: "local_88888888-8888-4888-8888-888888888888", sessionId: "account-b-cli", title: "Account B task" },

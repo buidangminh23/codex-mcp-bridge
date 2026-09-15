@@ -358,7 +358,7 @@ describe("runTurn", () => {
       await new Promise((r) => setTimeout(r, 200));
       process.stdout.write("survived");
     `;
-    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" });
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 10000 });
     assert.equal(child.status, 0, `the bridge process died: ${child.stderr}`);
     assert.equal(child.stdout, "survived");
   });

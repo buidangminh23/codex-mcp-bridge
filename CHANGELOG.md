@@ -6,6 +6,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Fixed
 
+- Bound every short-lived process the test suite spawns, so a wedged child fails its test instead of running to the CI job wall. Thirteen spawn sites had no time limit at all. The children that are meant to outlive their call - the MCP stdio servers, the relay socket server, and the lock holder that waits on stdin - are deliberately left unbounded, since killing those on a timer would end a healthy process mid-test.
+- Raise the mock peer delivery guard in the tool contract tests from five to thirty seconds. Every scenario that legitimately receives nothing returns before that guard, so it only ever waits on a delivery that is expected to arrive; five seconds was not enough on a contended Windows runner and failed two runs.
 - Read this process's own ancestry once per test process in the Desktop caller fixture, in a hook rather than inside whichever test runs first, and retry a failed cold read instead of reusing its rejection. The snapshot cannot change while the test process runs, so the eleven repeat reads only paid PowerShell's startup cost again; the first one reached the old ceiling and failed a Windows run, and the one test carrying its own timeout would have had to absorb that cold start inside its cap. The production five-second inspection deadline is unchanged and still asserted.
 
 ## [1.16.0] - 2026-09-14

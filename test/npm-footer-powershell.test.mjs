@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
 const footerPath = fileURLToPath(new URL("../scripts/npm-footer.ps1", import.meta.url));
-const pwshProbe = spawnSync("pwsh", ["-NoProfile", "-Command", "(Get-Process -Id $PID).Path"], { encoding: "utf8" });
+const pwshProbe = spawnSync("pwsh", ["-NoProfile", "-Command", "(Get-Process -Id $PID).Path"], { encoding: "utf8", timeout: 20000 });
 const missingPwsh = pwshProbe.error?.code === "ENOENT";
 const pwshExecutable = pwshProbe.stdout?.trim() || "pwsh";
 const packageName = "@minhspark/codex-mcp-bridge";

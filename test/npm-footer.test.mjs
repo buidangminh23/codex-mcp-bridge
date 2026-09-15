@@ -58,7 +58,7 @@ function run(shell, { before, beforeMetadata, after = "1.2.3", args = ["install"
 }
 
 for (const shell of ["bash", "zsh"]) {
-  const available = process.platform !== "win32" && spawnSync(shell, ["--version"]).status === 0;
+  const available = process.platform !== "win32" && spawnSync(shell, ["--version"], { timeout: 20000 }).status === 0;
   describe(`${shell} npm installation footer`, { skip: !available && `${shell} is not available` }, () => {
     it("reports a first installation after npm's own final output", () => {
       const result = run(shell);

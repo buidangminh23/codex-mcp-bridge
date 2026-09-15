@@ -276,6 +276,61 @@ Start with `codex doctor` for Codex installation problems and `claude doctor` fo
 
 For unresolved failures, [open an issue](https://github.com/buidangminh23/codex-mcp-bridge/issues) with the OS, Node/bridge/client versions, the failing command, and the relevant redacted status/error. Leave out tokens, credentials, and private conversations. More detail is in the [technical reference](https://github.com/buidangminh23/codex-mcp-bridge/blob/main/REFERENCE.md#troubleshooting).
 
+## Repository analytics
+
+[![Repository usage dashboard](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/dashboard.svg)](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics)
+
+[Full statistics and daily history](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics) · [Public aggregate JSON](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/data.json)
+
+The dashboard is refreshed daily when the owner's scheduled collector is available. It includes GitHub traffic, npm and release downloads, repository counters, and opted-in installation statistics. Source timestamps show freshness; missing data is unavailable, not zero. Only aggregate figures are published. Installation IDs stay in the private database.
+
+Repository owners can view [GitHub traffic](https://github.com/buidangminh23/codex-mcp-bridge/graphs/traffic) for recent views and clones. Downloads and clones include updates, reinstalls, and automation; they do not measure active users. GitHub traffic only covers the recent 14-day window, so collect it regularly to keep a longer history.
+
+From a source checkout with Node 22+ and GitHub CLI authenticated as an account with repository traffic access:
+
+```bash
+gh auth status
+npm run analytics
+```
+
+The collector saves `history.json` and a self-contained `index.html` dashboard privately:
+
+| Platform | Default directory |
+|---|---|
+| Windows | `%LOCALAPPDATA%\codex-mcp-bridge\analytics` |
+| macOS | `~/Library/Application Support/codex-mcp-bridge/analytics` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/codex-mcp-bridge/analytics` |
+
+Open `index.html` in a browser. Back up `history.json` to preserve the archive. Use `npm run analytics -- --output <directory>` to choose another private directory. Each run refreshes overlapping dates without double-counting, records per-source collection times, and preserves earlier successful data if a source fails. Daily unique visitors/cloners cannot be summed to estimate unique people across days. Release asset download counters are also retained in the JSON archive.
+
+Run this command daily through a local scheduler or Codex automation while the machine is available. Scheduling is not installed by the package. A missed interval longer than GitHub's retention window cannot be recovered. For collection errors, check `gh auth status`, repository permissions, network connectivity, and API limits; rerun after correcting the cause. Never commit the private output directory.
+
+### Optional active-install statistics
+
+Usage reporting is **off by default**. Each end user must explicitly enable it:
+
+```bash
+codex-mcp-bridge telemetry enable
+codex-mcp-bridge telemetry status
+codex-mcp-bridge telemetry disable
+```
+
+The equivalent `claude-mcp-bridge telemetry ...` commands share the same local consent. When enabled, the bridge checks at startup and hourly while running, sending at most one successful report per UTC day to the project's Supabase endpoint: a random installation ID, UTC day, bridge version, and operating system. No chat content, paths, account identity, or credentials are included. Network infrastructure may process normal request metadata; the application's statistics table does not store IP addresses. Reporting failures do not interrupt bridge operation. `DO_NOT_TRACK=1` or `CODEX_BRIDGE_TELEMETRY=0` overrides local consent and suppresses reporting.
+
+These counts represent voluntarily reporting installations, not unique people or all users. Disabling stops future reports and removes the local installation ID. Previously submitted records older than 90 days are removed during subsequent ingestion. Source checkouts containing this feature support these commands; older published package versions do not.
+
+The owner can query `public.bridge_usage_daily` in the Supabase SQL editor. Public and authenticated client roles cannot read the table or call its ingestion function. The endpoint validates the project's public publishable key, so counts are approximate and can include fabricated IDs; its 10,000-record daily storage cap does not prevent request spam. Apply the migration under `supabase/migrations` before deploying `bridge-usage` with the supplied function configuration (custom publishable-key validation; legacy JWT verification disabled). The client contains only a public publishable key; service credentials stay in the Edge Function environment.
+
+```sql
+SELECT day, count(*) AS reporting_installations
+FROM public.bridge_usage_daily
+GROUP BY day ORDER BY day DESC;
+
+SELECT count(DISTINCT install_id) AS reporting_installations_last_30_days
+FROM public.bridge_usage_daily
+WHERE day >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - 29;
+```
+
 ## Development
 
 ```bash
@@ -283,6 +338,6 @@ npm ci
 npm test
 ```
 
-On Windows, use `npm test -- --test-concurrency=2`. CI tests Node 22 and 24 on Linux, macOS, and Windows. Tests use isolated fixtures and do not spend model quota.
+On Windows, use `node --test --test-concurrency=2` (also avoids npm versions that reject forwarded flags). CI tests Node 22 and 24 on Linux, macOS, and Windows. Tests use isolated fixtures and do not spend model quota. For the optional telemetry endpoint, also run `deno test --allow-env supabase/functions/bridge-usage/contract-check.ts`.
 
 [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)

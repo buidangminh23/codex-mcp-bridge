@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Read this process's own ancestry once per test process in the Desktop caller fixture, in a hook rather than inside whichever test runs first, and retry a failed cold read instead of reusing its rejection. The snapshot cannot change while the test process runs, so the eleven repeat reads only paid PowerShell's startup cost again; the first one reached the old ceiling and failed a Windows run, and the one test carrying its own timeout would have had to absorb that cold start inside its cap. The production five-second inspection deadline is unchanged and still asserted.
+
 ## [1.16.0] - 2026-09-14
 
 ### Added

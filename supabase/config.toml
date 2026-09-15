@@ -1,2 +1,5 @@
 [functions.bridge-usage]
 verify_jwt = false
+
+[functions.bridge-stats]
+verify_jwt = false

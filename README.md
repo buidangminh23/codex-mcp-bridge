@@ -8,6 +8,14 @@ Send prompts and replies between **Claude and Codex**, keeping each conversation
 
 [![Claude and Codex exchanging messages](https://github.com/buidangminh23/codex-mcp-bridge/releases/download/v1.16.0/desktop-demo.gif)](https://github.com/buidangminh23/codex-mcp-bridge/releases/download/v1.16.0/desktop-demo.mp4)
 
+## Project statistics
+
+**[Open live dashboard — refreshes every 30 seconds](https://buidangminh23.github.io/codex-mcp-bridge/)**
+
+[![Repository usage dashboard](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/dashboard.svg)](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics)
+
+[Full statistics and daily history](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics) · [Public aggregate JSON](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/data.json) · [How these metrics work](#repository-analytics)
+
 ## Installation
 
 [Windows](#windows-powershell) · [macOS](#macos-terminal) · [Linux / WSL](#linux--wsl-bash) · [Claude Code registration](#register-claude-code) · [Verify](#verify-the-installation) · [Troubleshooting](#troubleshooting)
@@ -278,11 +286,7 @@ For unresolved failures, [open an issue](https://github.com/buidangminh23/codex-
 
 ## Repository analytics
 
-[![Repository usage dashboard](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/dashboard.svg)](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics)
-
-[Full statistics and daily history](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics) · [Public aggregate JSON](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/data.json)
-
-The dashboard is refreshed daily when the owner's scheduled collector is available. It includes GitHub traffic, npm and release downloads, repository counters, and opted-in installation statistics. Source timestamps show freshness; missing data is unavailable, not zero. Only aggregate figures are published. Installation IDs stay in the private database.
+The live dashboard polls the aggregate API every 30 seconds. Installation counts reflect reports received by the server; this is not a count of currently online processes. Public GitHub/npm sources are refreshed with a short cache, but their own statistics may be delayed. Private GitHub traffic is archived hourly when the owner's scheduled collector is available. The README image is a snapshot and may be cached by GitHub; open the live dashboard for automatic updates. Source timestamps show freshness; missing data is unavailable, not zero. Only aggregate figures are published. Installation IDs stay in the private database.
 
 Repository owners can view [GitHub traffic](https://github.com/buidangminh23/codex-mcp-bridge/graphs/traffic) for recent views and clones. Downloads and clones include updates, reinstalls, and automation; they do not measure active users. GitHub traffic only covers the recent 14-day window, so collect it regularly to keep a longer history.
 
@@ -304,6 +308,8 @@ The collector saves `history.json` and a self-contained `index.html` dashboard p
 Open `index.html` in a browser. Back up `history.json` to preserve the archive. Use `npm run analytics -- --output <directory>` to choose another private directory. Each run refreshes overlapping dates without double-counting, records per-source collection times, and preserves earlier successful data if a source fails. Daily unique visitors/cloners cannot be summed to estimate unique people across days. Release asset download counters are also retained in the JSON archive.
 
 Run this command daily through a local scheduler or Codex automation while the machine is available. Scheduling is not installed by the package. A missed interval longer than GitHub's retention window cannot be recovered. For collection errors, check `gh auth status`, repository permissions, network connectivity, and API limits; rerun after correcting the cause. Never commit the private output directory.
+
+To refresh the public dashboard, run `npm run analytics:publish`. It publishes an allowlisted aggregate snapshot to the separate `analytics` data branch and leaves application source unchanged. To include installation metrics, run `scripts/usage-summary.sql` through the owner's Supabase SQL editor or connector, save the returned `summary` object privately as `usage-summary.json`, and pass `--usage <path-to-usage-summary.json>` to the publisher. The summary query returns counts only. Do not supply raw installation rows or service credentials.
 
 ### Optional active-install statistics
 

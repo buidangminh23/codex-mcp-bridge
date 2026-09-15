@@ -13,7 +13,7 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: deno test --allow-env supabase/functions/bridge-usage/contract-check.ts
+      - run: deno test --allow-env supabase/functions/bridge-usage/contract-check.ts supabase/functions/bridge-stats/contract-check.ts
   test:
     strategy:
       fail-fast: false

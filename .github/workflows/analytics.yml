@@ -17,6 +17,9 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -33,6 +36,7 @@ jobs:
         with:
           path: public-analytics
       - uses: actions/deploy-pages@v4
+        id: deployment
       - name: Report incomplete collection
         if: steps.refresh.outcome == 'failure'
         run: exit 1

@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.16.1] - 2026-09-15
+
+### Changed
+
+- Serve the README demo from the Pages branch and show it as a GIF that opens the recording. GitHub serves release assets with `Content-Disposition: attachment`, so clicking the demo downloaded a file instead of playing it, and its embedded player could not replace it: GitHub wraps every video in chrome carrying the file name that a README cannot style away, and strips an `<img>` fallback placed inside the `<video>` tag, which left npm showing a bare link. Pages returns `video/mp4` and `image/gif` with no attachment header, so npm renders the GIF and the video plays with seeking.
+
 ### Fixed
 
 - Bound every short-lived process the test suite spawns, so a wedged child fails its test instead of running to the CI job wall. Thirteen spawn sites had no time limit at all. The children that are meant to outlive their call - the MCP stdio servers, the relay socket server, and the lock holder that waits on stdin - are deliberately left unbounded, since killing those on a timer would end a healthy process mid-test.

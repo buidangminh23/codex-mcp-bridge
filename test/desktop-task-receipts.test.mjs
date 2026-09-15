@@ -19,8 +19,16 @@ function fixture(name) {
   return { store, key: identity.key, receipt: { version: 1, ...identity, cwd: sandbox, state: "pending", startedAt: Date.now(), ...(name ? { name } : {}) } };
 }
 
-function child(code, args) {
-  const process = spawn(globalThis.process.execPath, ["--input-type=module", "-e", `import { DesktopTaskReceipts } from ${JSON.stringify(moduleUrl)}; ${code}`, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+/**
+ * Bounded by default so a wedged child fails the test instead of running to the
+ * CI job wall, and opted out of explicitly by the one caller whose child is
+ * meant to outlive the call: the lock holder below blocks on stdin until the
+ * test releases it, so a timeout would kill a healthy process mid-test. Every
+ * other caller awaits `completed`, and a killed child reports a null exit code
+ * that the surrounding assertions already reject.
+ */
+function child(code, args, { longLived = false } = {}) {
+  const process = spawn(globalThis.process.execPath, ["--input-type=module", "-e", `import { DesktopTaskReceipts } from ${JSON.stringify(moduleUrl)}; ${code}`, ...args], { stdio: ["pipe", "pipe", "pipe"], ...(longLived ? {} : { timeout: 15000 }) });
   let stdout = "";
   let stderr = "";
   process.stdout.on("data", (data) => { stdout += data; });
@@ -84,7 +92,7 @@ describe("durable Desktop task creation receipts", () => {
 
   it("holds one exclusive creation lock across actual concurrent processes", async () => {
     const { store, key } = fixture();
-    const holder = child('const s = new DesktopTaskReceipts({directory:process.argv[1]}); await s.withLock(process.argv[2], async () => { console.log("locked"); await new Promise(resolve => process.stdin.once("data", resolve)); }); process.stdin.destroy();', [store.directory, key]);
+    const holder = child('const s = new DesktopTaskReceipts({directory:process.argv[1]}); await s.withLock(process.argv[2], async () => { console.log("locked"); await new Promise(resolve => process.stdin.once("data", resolve)); }); process.stdin.destroy();', [store.directory, key], { longLived: true });
     try {
       await once(holder.process.stdout, "data");
       const competing = await child('const s = new DesktopTaskReceipts({directory:process.argv[1]}); await s.withLock(process.argv[2], () => console.log("unexpected"));', [store.directory, key]).completed;

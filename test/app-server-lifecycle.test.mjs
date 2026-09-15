@@ -40,7 +40,7 @@ describe("app-server request lifecycle", () => {
       await new Promise((resolve) => setTimeout(resolve, 80));
       process.stdout.write("survived");
     `;
-    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" });
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 10000 });
     assert.equal(child.status, 0, child.stderr);
     assert.equal(child.stdout, "survived");
   });

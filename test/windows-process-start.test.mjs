@@ -12,7 +12,7 @@ const saved={HOME:process.env.HOME,CODEX_BRIDGE_HARDENED:process.env.CODEX_BRIDG
 const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-process-identity-'));
 const registry=path.join(scratch,'.claude','sessions');
 const shell=path.join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
-const identity=windows?execFileSync(shell,['-NoProfile','-NonInteractive','-Command',`[System.Diagnostics.Process]::GetProcessById(${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`],{windowsHide:true}).toString().trim():'';
+const identity=windows?execFileSync(shell,['-NoProfile','-NonInteractive','-Command',`[System.Diagnostics.Process]::GetProcessById(${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`],{windowsHide:true,timeout:30000}).toString().trim():'';
 const socket=`\\\\.\\pipe\\LOCAL\\bridge-identity-test-${process.pid}`;
 before(()=>{process.env.HOME=scratch;process.env.CODEX_BRIDGE_HARDENED='1';fs.mkdirSync(registry,{recursive:true});});
 after(()=>{for(const [key,value] of Object.entries(saved)){if(value===undefined)delete process.env[key];else process.env[key]=value;}fs.rmSync(scratch,{recursive:true,force:true});});

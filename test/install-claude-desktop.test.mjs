@@ -28,6 +28,14 @@ after(() => {
 let configCounter = 0;
 
 /**
+ * The installer walks the package tree to hash its release snapshot, which is
+ * genuinely multi-second work: 7.2-8.3s measured locally and ~8.3s per call on
+ * CI. This ceiling is about seven times that worst case - it exists to fail a
+ * wedged install fast instead of at the job wall, not to police a slow one.
+ */
+const INSTALL_TIMEOUT_MS = 60000;
+
+/**
  * A deliberately bare environment. Inheriting the real one would let a
  * CODEX_BRIDGE_* variable set on the developer's machine decide what the
  * installer writes, and the test would pass or fail according to whose
@@ -45,6 +53,7 @@ function install({ config, env = {}, args = [] }) {
     },
     encoding: "utf8",
     stdio: "pipe",
+    timeout: INSTALL_TIMEOUT_MS,
   });
   return JSON.parse(fs.readFileSync(config, "utf8"));
 }
@@ -282,6 +291,7 @@ describe("claude desktop installer", () => {
         CLAUDE_DESKTOP_CONFIG: configWith(null),
         CODEX_EXE: codexStub,
       },
+      timeout: INSTALL_TIMEOUT_MS,
       encoding: "utf8",
     });
 

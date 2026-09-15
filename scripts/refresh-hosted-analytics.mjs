@@ -28,6 +28,10 @@ const directory = path.resolve('public-analytics');
 await mkdir(directory, { recursive: true });
 for (const [name, content] of Object.entries(publicFiles(history, usage))) await writeFile(path.join(directory, name), content);
 console.log(`Published aggregate analytics: ${sha}`);
-for (const error of snapshot.errors) console.error(`::warning::${error.source} was not refreshed; previous data retained.`);
+for (const error of snapshot.errors) {
+  const status = error.status ? ` (HTTP ${error.status})` : '';
+  const hint = error.status === 403 && ['views', 'clones'].includes(error.source) ? ' GitHub traffic requires the ANALYTICS_TOKEN secret to be a token with push access (fine-grained: Administration read); the default workflow token cannot read traffic.' : '';
+  console.error(`::warning::${error.source} was not refreshed${status}; previous data retained.${hint}`);
+}
 if (usageFailed) console.error('::warning::Usage was not refreshed; previous data retained.');
 if (snapshot.errors.length || usageFailed) process.exitCode = 1;

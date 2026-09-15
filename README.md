@@ -6,7 +6,7 @@
 
 Send prompts and replies between **Claude and Codex**, keeping each conversation in its own app. Supports Windows, macOS, and Linux; native Desktop integration supports Windows and macOS.
 
-[![Claude and Codex exchanging messages](desktop-demo.gif)](https://github.com/buidangminh23/codex-mcp-bridge/raw/refs/heads/main/desktop-demo.mp4)
+[![Claude and Codex exchanging messages](https://github.com/buidangminh23/codex-mcp-bridge/releases/download/v1.16.0/desktop-demo.gif)](https://github.com/buidangminh23/codex-mcp-bridge/releases/download/v1.16.0/desktop-demo.mp4)
 
 ## Quick start
 

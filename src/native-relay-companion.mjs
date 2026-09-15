@@ -30,7 +30,7 @@ import { createRuntimeState } from "./runtime-state.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.15.0";
+const VERSION = "1.16.0";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent) {
@@ -369,9 +369,10 @@ export function startRelayWhenAvailable({ nativeTools, relay, log: logFn = () =>
   let resolveReady;
   const ready = new Promise((resolve) => { resolveReady = resolve; });
   let pendingAttempt = null;
+  let nativeConnected = false;
   const attempt = async () => {
     if (stopped) return;
-    let nativeConnected = false;
+    nativeConnected = false;
     try {
       await nativeTools.connect();
       nativeConnected = true;
@@ -413,6 +414,7 @@ export function startRelayWhenAvailable({ nativeTools, relay, log: logFn = () =>
   return {
     ready,
     firstAttempt,
+    get connected() { return nativeConnected; },
     get busy() { return pendingAttempt !== null; },
     stop() {
       if (stopped) return pendingAttempt ?? Promise.resolve();
@@ -454,7 +456,9 @@ export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = (
     for (const relay of servers) relay.accepting = true;
     startups = servers.map((relay) => startRelayWhenAvailable({ nativeTools, relay, log: logFn }));
     await Promise.all(startups.map((startup) => startup.firstAttempt));
-    if (servers.some((relay) => ownedSockets.includes(relay.socketPath) && !relay.started)) {
+    const restoredListeners = await Promise.all(servers.map(async (relay, index) =>
+      !ownedSockets.includes(relay.socketPath) || startups[index].connected && await relay.isListening()));
+    if (restoredListeners.some((available) => !available)) {
       await stop();
       throw new Error("The replacement native relay could not reclaim its listening sockets");
     }

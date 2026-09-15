@@ -468,3 +468,21 @@ export async function openThreadInCodexApp(threadId, { activate = true } = {}) {
   await execFileAsync("open", args, { timeout: 10000 });
   return url;
 }
+
+export async function openClaudeCodeComposer(url, { platform = process.platform, env = process.env, run = execFileAsync } = {}) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "claude:" || parsed.hostname !== "code" || parsed.pathname !== "/new" || parsed.username || parsed.password || parsed.port || parsed.hash
+      || [...parsed.searchParams.keys()].some((key) => !["q", "folder"].includes(key))) {
+    throw new Error("Invalid Claude Desktop Code creation link");
+  }
+  if (platform === "win32") {
+    const shell = path.win32.join(env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const encodedUrl = Buffer.from(url, "utf8").toString("base64");
+    const script = `$ErrorActionPreference='Stop'; $creationUrl=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedUrl}')); Start-Process -FilePath $creationUrl -ErrorAction Stop`;
+    await run(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 10000 });
+    return;
+  }
+  const command = platform === "darwin" ? "/usr/bin/open" : platform === "linux" ? "/usr/bin/xdg-open" : null;
+  if (!command) throw new Error("Claude Desktop Code links are unsupported on this platform");
+  await run(command, [url], { windowsHide: true, timeout: 10000 });
+}

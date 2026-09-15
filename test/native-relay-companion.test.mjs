@@ -111,6 +111,56 @@ it("blocks reload while an accepted client has not sent its frame", async (t) =>
   client.destroy();
 });
 
+it("accepts a healthy shared listener acquired by another companion during owner reload", async (t) => {
+  const socketPath = fixture(t);
+  const original = new RelaySocketServer(relayOptions(socketPath));
+  const shared = new RelaySocketServer(relayOptions(socketPath));
+  const replacement = new RelaySocketServer(relayOptions(socketPath));
+  const originalLifecycle = createNativeRelayLifecycle({ nativeTools: nativeStub(), relays: [original] });
+  const sharedLifecycle = createNativeRelayLifecycle({ nativeTools: nativeStub(), relays: [shared] });
+  const replacementLifecycle = createNativeRelayLifecycle({ nativeTools: nativeStub(), relays: [replacement] });
+  t.after(async () => { await replacementLifecycle.stop(); await sharedLifecycle.stop(); await originalLifecycle.stop(); });
+  await originalLifecycle.activate();
+  await originalLifecycle.quiesce();
+  await sharedLifecycle.activate();
+  replacementLifecycle.restore(originalLifecycle.exportState());
+  await replacementLifecycle.activate();
+  assert.equal(replacement.started, false);
+  assert.equal(shared.started, true);
+  assert.equal(await replacement.isListening(), true);
+  assert.equal(replacementLifecycle.inspect(), null);
+  const client = net.connect(socketPath);
+  let response = "";
+  client.on("data", (chunk) => { response += chunk; });
+  await once(client, "connect");
+  client.write(`${JSON.stringify({ targetThreadId: "destination", message: "during simultaneous reload" })}\n`);
+  await once(client, "close");
+  assert.equal(JSON.parse(response).ok, true);
+});
+
+it("rejects a missing formerly owned listener when rebinding fails", async (t) => {
+  const server = new RelaySocketServer(relayOptions(fixture(t)));
+  server.start = async () => { throw new Error("listener bind failed"); };
+  const lifecycle = createNativeRelayLifecycle({ nativeTools: nativeStub(), relays: [server] });
+  t.after(() => lifecycle.stop());
+  lifecycle.restore({ ownedSockets: [server.socketPath] });
+  await assert.rejects(lifecycle.activate(), /could not reclaim its listening sockets/);
+  assert.equal(await server.isListening(), false);
+});
+
+it("rejects failed native connectivity even when another companion owns the listener", async (t) => {
+  const socketPath = fixture(t);
+  const shared = new RelaySocketServer(relayOptions(socketPath));
+  const replacement = new RelaySocketServer(relayOptions(socketPath));
+  const nativeTools = { ...nativeStub(), connect: async () => { throw new Error("native Desktop unavailable"); } };
+  const lifecycle = createNativeRelayLifecycle({ nativeTools, relays: [replacement] });
+  t.after(async () => { await lifecycle.stop(); shared.stop(); await shared.closed; });
+  await shared.start();
+  lifecycle.restore({ ownedSockets: [socketPath] });
+  await assert.rejects(lifecycle.activate(), /could not reclaim its listening sockets/);
+  assert.equal(shared.started, true);
+});
+
 it("waits for pending listener startup to unwind after cancellation", async () => {
   let finishStart;
   let listening = false;

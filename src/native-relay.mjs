@@ -418,18 +418,130 @@ async function readParentCommandLine(parentPid, platform) {
   return stdout.trim();
 }
 
+export function nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentPid, localAppData = process.env.LOCALAPPDATA } = {}) {
+  if (!Number.isSafeInteger(parentPid) || parentPid <= 0 || !Array.isArray(snapshot?.ancestors)
+      || snapshot.ancestors.length < 2 || snapshot.ancestors.length > 4 || !Array.isArray(snapshot.pipes)) return null;
+  const ancestors = snapshot.ancestors;
+  let expectedPid = parentPid;
+  const visited = new Set();
+  for (const ancestor of ancestors) {
+    if (!Number.isSafeInteger(ancestor?.pid) || ancestor.pid !== expectedPid || visited.has(ancestor.pid)
+        || typeof ancestor.executablePath !== "string" || /[\r\n\0]/.test(ancestor.executablePath)) return null;
+    visited.add(ancestor.pid);
+    expectedPid = ancestor.parentPid;
+  }
+  const desktop = ancestors.at(-1);
+  const appServer = ancestors.at(-2);
+  const desktopPath = path.win32.normalize(desktop.executablePath);
+  if (!/^[a-z]:\\Program Files\\WindowsApps\\OpenAI\.Codex_[0-9.]+_(?:x64|arm64)__2p2nqsd0c76g0\\app\\ChatGPT\.exe$/i.test(desktopPath)) return null;
+  if (ancestors.slice(0, -2).some((ancestor) => path.win32.basename(ancestor.executablePath).toLowerCase() !== "node.exe")) return null;
+  const serverPath = path.win32.normalize(appServer.executablePath);
+  const bundledServer = path.win32.join(path.win32.dirname(desktopPath), "resources", "codex.exe");
+  const downloadedRoot = localAppData ? path.win32.join(localAppData, "OpenAI", "Codex", "bin") : null;
+  const downloadedRelative = downloadedRoot ? path.win32.relative(downloadedRoot, serverPath) : "";
+  if (serverPath.toLowerCase() !== bundledServer.toLowerCase() && !/^[a-f0-9]{8,64}\\codex\.exe$/i.test(downloadedRelative)) return null;
+  if (typeof appServer.commandLine !== "string" || /[\r\n\0]/.test(appServer.commandLine)) return null;
+  const args = splitDesktopCommandLine(appServer.commandLine, "win32");
+  if (!args.length || path.win32.normalize(args[0]).toLowerCase() !== serverPath.toLowerCase()) return null;
+  let command = null;
+  for (let index = 1; index < args.length; index++) {
+    if (args[index] === "-c" || args[index] === "--config") index++;
+    else if (!args[index].startsWith("-")) { command = args[index]; break; }
+  }
+  if (command !== "app-server") return null;
+  const candidates = snapshot.pipes.filter((pipe) => pipe?.serverPid === desktop.pid
+    && typeof pipe.path === "string" && /^\\\\\.\\pipe\\codex-browser-use-[a-z0-9-]+$/i.test(pipe.path));
+  const paths = [...new Set(candidates.map((pipe) => pipe.path))].sort();
+  return paths;
+}
+
+async function readWindowsNativePipeSnapshot(parentPid) {
+  if (!Number.isSafeInteger(parentPid) || parentPid <= 0) return null;
+  const powershell = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+$ancestors = @()
+$nextProcessId = ${parentPid}
+for ($depth = 0; $depth -lt 4; $depth++) {
+  $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId=$nextProcessId"
+  if (!$ancestor) { break }
+  $ancestors += @{ pid = [int]$ancestor.ProcessId; parentPid = [int]$ancestor.ParentProcessId; executablePath = $ancestor.ExecutablePath; commandLine = $ancestor.CommandLine }
+  if ($ancestor.Name -ieq 'ChatGPT.exe') { break }
+  if ($ancestor.Name -ine 'node.exe' -and $ancestor.Name -ine 'codex.exe') { break }
+  $nextProcessId = [int]$ancestor.ParentProcessId
+}
+$pipes = @()
+if ($ancestors.Count -ge 2 -and $ancestor.Name -ieq 'ChatGPT.exe') {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class CodexNativePipeOwner {
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint serverProcessId);
+}
+'@
+  $names = @([System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match '^\\\\\.\\pipe\\codex-browser-use-[a-zA-Z0-9-]+$' } | Sort-Object | Select-Object -First 128)
+  foreach ($pipePath in $names) {
+      $client = $null
+      try {
+        $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $pipePath.Substring(9), [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
+        $client.Connect(30)
+        $serverProcessId = [uint32]0
+        if ([CodexNativePipeOwner]::GetNamedPipeServerProcessId($client.SafePipeHandle, [ref]$serverProcessId) -and $serverProcessId -eq $ancestor.ProcessId) {
+          $pipes += @{ path = $pipePath; serverPid = [int]$serverProcessId }
+        }
+      } catch {} finally { if ($client) { $client.Dispose() } }
+  }
+}
+@{ ancestors = @($ancestors); pipes = @($pipes) } | ConvertTo-Json -Depth 4 -Compress
+`;
+  const { stdout } = await execFileAsync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
+    timeout: 5000, maxBuffer: 128 * 1024, windowsHide: true,
+  });
+  return stdout.trim() ? JSON.parse(stdout.trim()) : null;
+}
+
+async function probeWindowsNativeToolsPipe(socketPath, { env, timeoutMs }) {
+  const executorThreadId = resolveRelayThreadId(env).threadId;
+  const client = new NativeToolsClient({ env, socketPath, timeoutMs });
+  const timer = globalThis.setTimeout(() => client.close(), timeoutMs);
+  try {
+    const nativeResult = await client.dispatchDesktop({ executorThreadId, operation: "list_projects", arguments: {} });
+    return Array.isArray(decodeNativeToolResult(nativeResult)?.projects);
+  } finally {
+    globalThis.clearTimeout(timer);
+    client.close();
+  }
+}
+
 export async function resolveNativeToolsPipePath({
   env = process.env,
   parentPid = process.ppid,
   platform = process.platform,
   readParentCommandLine: readParent = readParentCommandLine,
+  readWindowsSnapshot = readWindowsNativePipeSnapshot,
+  probeWindowsPipe = probeWindowsNativeToolsPipe,
+  windowsDiscoveryTimeoutMs = 7000,
 } = {}) {
   if (env.CODEX_APP_TOOLS_PIPE_PATH) return env.CODEX_APP_TOOLS_PIPE_PATH;
   try {
-    return nativeToolsPipeFromCommandLine(await readParent(parentPid, platform), { platform });
-  } catch {
+    const inherited = nativeToolsPipeFromCommandLine(await readParent(parentPid, platform), { platform });
+    if (inherited) return inherited;
+  } catch {}
+  if (platform !== "win32") return null;
+  const deadline = Date.now() + Math.max(1, Math.min(7000, Number(windowsDiscoveryTimeoutMs) || 7000));
+  try {
+    const candidates = nativeToolsPipeCandidatesFromWindowsSnapshot(await readWindowsSnapshot(parentPid), { parentPid, localAppData: env.LOCALAPPDATA }) ?? [];
+    for (const candidate of candidates) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      try {
+        if (await probeWindowsPipe(candidate, { env, timeoutMs: Math.min(750, remaining) })) return candidate;
+      } catch {}
+    }
     return null;
-  }
+  } catch { return null; }
 }
 
 export class NativeToolsClient {

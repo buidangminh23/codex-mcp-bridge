@@ -6,6 +6,30 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Fixed
 
+- Read this process's own ancestry once per test process in the Desktop caller fixture, in a hook rather than inside whichever test runs first, and retry a failed cold read instead of reusing its rejection. The snapshot cannot change while the test process runs, so the eleven repeat reads only paid PowerShell's startup cost again; the first one reached the old ceiling and failed a Windows run, and the one test carrying its own timeout would have had to absorb that cold start inside its cap. The production five-second inspection deadline is unchanged and still asserted.
+
+## [1.16.0] - 2026-09-14
+
+### Added
+
+- Prepare a separate native Claude Desktop Code conversation in an existing project with `start_claude_session`, then verify its new task identity and exact initial prompt through `read_claude_creation`. The official Desktop link requires user confirmation and Send; opening a composer is reported as `awaiting_user`, never as completed creation.
+- Retain bounded creation receipts across automatic reload, prevent duplicate or competing composer launches, reject old tasks resumed as new processes, and allow explicit cancellation through `abandon_claude_creation`. Existing clients can use `send_to_claude_session` with `target: "new"` and inspect its request ID through `read_claude_delivery`.
+- Detect a submitted new conversation that remains in No folder as `awaiting_project_confirmation`, preserve its native identity, and verify completion after the user moves it to the requested project. Recognize Claude Desktop's initial No folder banner without accepting a different or later user prompt.
+
+## [1.15.2] - 2026-09-14
+
+### Fixed
+
+- Restore Codex-to-Claude Desktop messaging on Windows with Claude Code 2.1.270, which advertises its process FILETIME as `procStart` instead of `procStartFt`. Normalize both fields in session records and authentication keys, retain live process verification, and reject malformed or conflicting identities.
+- Advertise both Windows identity fields on bridge peer records and authentication keys so current Claude sessions and older peers can validate the same endpoint without restarting Desktop.
+
+## [1.15.1] - 2026-09-14
+
+### Fixed
+
+- Allow bounded cold startup time for the Windows snapshot identity test on slower CI hosts while preserving the production five-second inspection deadline and the real MCP caller check.
+- Discover the native tools pipe on current Windows Codex Desktop builds that load app tools through a plugin instead of an inline app-server override. Validate the Desktop process ancestry and pipe owner before connecting, so the relay can start without a pinned pipe address.
+- Keep native relay reloads usable when another companion takes over a shared listener during the handoff, while still rejecting a missing endpoint.
 - Migrate legacy Desktop installations explicitly with `install-claude-desktop.mjs --desktop-tasks`, disable external app-server autostart, and leave automatic routing unpinned so a later relay installation can take effect.
 - Reload effective shared routing changes on the existing MCP connection when safely idle. Allow legacy-to-Desktop upgrades while preserving confirmed receipts without replay; reject automatic downgrades to the external app-server. Clarify that open Desktop tasks are valid native destinations.
 - Reuse validated dependency hashes for unchanged files when preparing cached runtimes, avoiding repeated content reads that can delay MCP initialization during Windows startup. Changed source dependencies and modified cached copies still require verification; missing or invalid hash metadata falls back to reading file contents.

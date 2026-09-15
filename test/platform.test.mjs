@@ -16,6 +16,7 @@ import {
   resolveCodexDesktopNodeBin,
   resolveWorkspacePath,
   spawnEnv,
+  openClaudeCodeComposer,
 } from "../src/platform.mjs";
 
 const realEnv = {
@@ -30,6 +31,33 @@ const realEnv = {
   CODEX_BRIDGE_SOURCE_ROOT: process.env.CODEX_BRIDGE_SOURCE_ROOT,
 };
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-platform-"));
+
+describe("Claude Desktop composer links", () => {
+  it("opens Windows links through the registered URL handler without interpolating prompt text into shell code", async () => {
+    const url = 'claude://code/new?q=%24%28Write-Output%20bad%29%26%22%27&folder=C%3A%5C';
+    let call;
+    await openClaudeCodeComposer(url, { platform: "win32", env: { SystemRoot: "C:\\Windows" }, run: async (...args) => { call = args; } });
+    assert.equal(call[0], "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    assert.deepEqual(call[1].slice(0, 3), ["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    const script = Buffer.from(call[1][3], "base64").toString("utf16le");
+    assert.match(script, /Start-Process -FilePath \$creationUrl -ErrorAction Stop/);
+    assert.ok(script.includes(Buffer.from(url, "utf8").toString("base64")));
+    assert.ok(!script.includes(url));
+    assert.equal(call[2].windowsHide, true);
+  });
+
+  it("uses native URL openers on macOS/Linux and refuses foreign URLs before launching", async () => {
+    for (const [platform, command] of [["darwin", "/usr/bin/open"], ["linux", "/usr/bin/xdg-open"]]) {
+      let call;
+      await openClaudeCodeComposer("claude://code/new?q=hello&folder=%2Fwork", { platform, run: async (...args) => { call = args; } });
+      assert.equal(call[0], command);
+      assert.equal(call[1].length, 1);
+    }
+    for (const url of ["https://claude.ai/new", "claude://code/old", "claude://user@code/new", "claude://code/new?command=bad"]) {
+      await assert.rejects(openClaudeCodeComposer(url, { run: async () => assert.fail("must not launch") }), /Invalid Claude/);
+    }
+  });
+});
 
 before(() => {
   process.env.HOME = sandbox;

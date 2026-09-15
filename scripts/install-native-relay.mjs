@@ -22,7 +22,7 @@ import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.15.0";
+const VERSION = "1.16.0";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = path.join(root, "src", "mcp-supervisor.mjs");
 const entryArgs = ["native-relay-companion.mjs"];

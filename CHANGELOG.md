@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Read this process's own ancestry once in the Desktop caller test fixture instead of once per fixture, and give that single cold read enough room on a contended Windows CI runner. The snapshot cannot change while the test process runs, so the repeat spawns only paid PowerShell's startup cost again; the first one reached the old ceiling and failed a run. The production five-second inspection deadline is unchanged and still asserted.
+
 ## [1.16.0] - 2026-09-14
 
 ### Added

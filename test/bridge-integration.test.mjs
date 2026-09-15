@@ -37,6 +37,30 @@ function fixtureRelayServer({ home, socketPath, ...options }) {
   return { start: () => Promise.all(servers.map((server) => server.start())), stop: () => servers.forEach((server) => server.stop()) };
 }
 
+/**
+ * This process's own ancestry cannot change while it is running, so the fixture
+ * reads it once and every later fixture reuses that row. Each read spawns a cold
+ * PowerShell on Windows, and the suite builds this fixture seven times - repeating
+ * it bought nothing and paid the startup cost again every time.
+ *
+ * The budget is the fixture's, not the product's: src/claude-sender-context.mjs
+ * keeps the five-second production deadline, and test/claude-sender-context.mjs
+ * asserts that policy. A cold PowerShell start on a contended Windows CI runner
+ * has been measured between 5s and 15s, and the old 15s ceiling was reached and
+ * failed a run. Nothing here waits on this, so the ceiling only has to be high
+ * enough that a slow host is not mistaken for a broken one.
+ */
+let callerProcessIdentityPromise = null;
+
+function callerProcessIdentity() {
+  callerProcessIdentityPromise ??= readProcessAncestry({ parentPid: process.pid, maxDepth: 1,
+    run: (command, args, options) => execute(command, args, {
+      ...options, timeout: process.platform === "win32" ? 60000 : options.timeout,
+    }),
+  }).then(([parent]) => parent);
+  return callerProcessIdentityPromise;
+}
+
 async function desktopCallerFixture(home, env) {
   const accountRoot = claudeFixtureRoot(home);
   Object.assign(env, { CLAUDE_DESKTOP_USER_DATA: accountRoot, APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex") });
@@ -50,11 +74,7 @@ async function desktopCallerFixture(home, env) {
   fs.mkdirSync(registry, { recursive: true });
   const endpoint = path.join(home, "unused-peer-endpoint");
   fs.writeFileSync(endpoint, "");
-  const [parent] = await readProcessAncestry({ parentPid: process.pid, maxDepth: 1,
-    run: (command, args, options) => execute(command, args, {
-      ...options, timeout: process.platform === "win32" ? 15000 : options.timeout,
-    }),
-  });
+  const parent = await callerProcessIdentity();
   assert.ok(parent?.processStart);
   const registryFile = path.join(registry, `${process.pid}.json`);
   fs.writeFileSync(registryFile, JSON.stringify({ pid: process.pid, sessionId: "fixture-caller", cwd: home, entrypoint: "claude-desktop", messagingSocketPath: endpoint, [process.platform === "win32" ? "procStartFt" : "procStart"]: parent.processStart }));

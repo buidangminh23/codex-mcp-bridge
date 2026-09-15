@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
-import { describe, it } from "node:test";
+import { before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -38,28 +38,46 @@ function fixtureRelayServer({ home, socketPath, ...options }) {
 }
 
 /**
- * This process's own ancestry cannot change while it is running, so the fixture
- * reads it once and every later fixture reuses that row. Each read spawns a cold
- * PowerShell on Windows, and the suite builds this fixture seven times - repeating
- * it bought nothing and paid the startup cost again every time.
+ * This process's own ancestry cannot change while it is running, yet this file
+ * builds the Desktop caller fixture eleven times and every build used to read it
+ * again. On Windows each read spawns PowerShell and compiles the snapshot type,
+ * so the repeats bought nothing and paid that startup cost ten more times.
+ *
+ * The first read is the expensive one, and it is read here rather than inside
+ * whichever test happens to run first. A cold start on a contended Windows CI
+ * runner has been measured between 5s and 15s; one reached the old 15s ceiling
+ * and failed a run. One test below carries its own timeout - "shares a
+ * ten-second budget", measured at 11.7s against its 20s cap - and would have
+ * had to absorb that cold start inside that cap had it ever gone first. Priming
+ * in a hook keeps the cost out of every test's timeout, so this ceiling and that
+ * cap stay independent instead of one holding up the other.
+ *
+ * A failed read clears the memo so the next caller retries rather than
+ * inheriting one rejected promise, which is also what makes a single unlucky
+ * cold start survivable.
  *
  * The budget is the fixture's, not the product's: src/claude-sender-context.mjs
- * keeps the five-second production deadline, and test/claude-sender-context.mjs
- * asserts that policy. A cold PowerShell start on a contended Windows CI runner
- * has been measured between 5s and 15s, and the old 15s ceiling was reached and
- * failed a run. Nothing here waits on this, so the ceiling only has to be high
- * enough that a slow host is not mistaken for a broken one.
+ * keeps the five-second production deadline and test/claude-sender-context.mjs
+ * asserts it.
  */
 let callerProcessIdentityPromise = null;
 
 function callerProcessIdentity() {
   callerProcessIdentityPromise ??= readProcessAncestry({ parentPid: process.pid, maxDepth: 1,
     run: (command, args, options) => execute(command, args, {
-      ...options, timeout: process.platform === "win32" ? 60000 : options.timeout,
+      ...options, timeout: process.platform === "win32" ? 30000 : options.timeout,
     }),
-  }).then(([parent]) => parent);
+  }).then(([parent]) => {
+    assert.ok(parent?.processStart);
+    return parent;
+  }).catch((error) => {
+    callerProcessIdentityPromise = null;
+    throw error;
+  });
   return callerProcessIdentityPromise;
 }
+
+before(() => callerProcessIdentity().catch(() => {}));
 
 async function desktopCallerFixture(home, env) {
   const accountRoot = claudeFixtureRoot(home);
@@ -75,7 +93,6 @@ async function desktopCallerFixture(home, env) {
   const endpoint = path.join(home, "unused-peer-endpoint");
   fs.writeFileSync(endpoint, "");
   const parent = await callerProcessIdentity();
-  assert.ok(parent?.processStart);
   const registryFile = path.join(registry, `${process.pid}.json`);
   fs.writeFileSync(registryFile, JSON.stringify({ pid: process.pid, sessionId: "fixture-caller", cwd: home, entrypoint: "claude-desktop", messagingSocketPath: endpoint, [process.platform === "win32" ? "procStartFt" : "procStart"]: parent.processStart }));
   const tasks = path.join(accountRoot, "claude-code-sessions", CLAUDE_ACCOUNT_A, "33333333-3333-4333-8333-333333333333");

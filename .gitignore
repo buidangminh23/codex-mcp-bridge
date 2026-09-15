@@ -5,3 +5,5 @@ node_modules/
 .claude/
 /desktop-demo.gif
 /desktop-demo.mp4
+.agentgate/
+receipt*.json

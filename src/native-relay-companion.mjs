@@ -19,6 +19,7 @@ import {
   relaySocketPath,
   resolveRelayThreadId,
   desktopTaskSocketPath,
+  desktopTasksConfigured,
   validateDesktopOperation,
   decodeNativeToolResult,
 } from "./native-relay.mjs";
@@ -27,6 +28,9 @@ import { exitForVersionRequest } from "./cli-version.mjs";
 import { assertAccountIdentity } from "./bridge-account-context.mjs";
 import { createReloadControl } from "./reload-control.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
+import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
+import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
+import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -61,6 +65,172 @@ function errorCode(err) {
   return typeof err?.code === "string" ? err.code : "NATIVE_DISPATCH_FAILED";
 }
 
+export function createNativeScopeAuthorizer({ dispatchDesktop, env = process.env } = {}) {
+  const roots = createHardenedRootPolicy(env);
+  if (typeof dispatchDesktop !== "function") throw new Error("Native metadata dispatcher is required");
+  const call = async (executorThreadId, operation, arguments_, accountContext) => decodeNativeToolResult(await dispatchDesktop({ executorThreadId, operation, arguments: arguments_ }, { accountContext }));
+  const fail = (message) => { throw new NativeRelayError(message, "NATIVE_SCOPE_UNVERIFIED"); };
+  const projectRecord = (project) => {
+    if (project?.projectKind !== "local" || project.hostId !== "local" || typeof project.projectId !== "string" || !project.projectId) return null;
+    try {
+      return { project, projectId: project.projectId, root: roots.capture(project.path, "Saved project directory") };
+    } catch {
+      return null;
+    }
+  };
+  const projectsFor = async (executorThreadId, accountContext) => {
+    const result = await call(executorThreadId, "list_projects", {}, accountContext);
+    if (!Array.isArray(result?.projects)) fail("Native project metadata is unavailable");
+    const projects = result.projects.map(projectRecord).filter(Boolean);
+    return projects.filter((candidate) =>
+      projects.filter((other) => other.projectId === candidate.projectId).length === 1
+      && projects.filter((other) => other.root.path === candidate.root.path).length === 1);
+  };
+  const projectForThread = (thread, projects) => {
+    const root = roots.capture(thread.cwd, "Native task working directory");
+    const matching = projects.filter((project) => project.root.path === root.path);
+    if (matching.length !== 1) fail("Native task does not map to exactly one allowed local saved project");
+    if (thread.projectId !== undefined && thread.projectId !== matching[0].projectId) fail("Native task project identity conflicts with its saved project directory");
+    return { root, project: matching[0] };
+  };
+  const validateThread = (thread, threadId, projects) => {
+    if (thread?.id !== threadId || thread.kind !== "codex" || thread.hostId !== "local") fail("Native task metadata does not prove the exact allowed local task");
+    const scope = projectForThread(thread, projects);
+    return { threadId, kind: thread.kind, hostId: thread.hostId, root: scope.root, projectId: scope.project.projectId };
+  };
+  const threadFor = async (executorThreadId, threadId, accountContext, projects) => {
+    if (typeof threadId !== "string" || !threadId) fail("Operation has no target task");
+    const result = await call(executorThreadId, "read_thread", { threadId, hostId: "local", turnLimit: 1 }, accountContext);
+    return validateThread(result?.thread, threadId, projects);
+  };
+  const targetIds = (operation, args, targetThreadId) => {
+    if (["read_thread", "send_message_to_thread", "navigate_to_codex_page", "set_thread_title"].includes(operation)) return [targetThreadId ?? args?.threadId];
+    if (operation === "wait_threads") {
+      if (!Array.isArray(args?.targets) || !args.targets.length) fail("Wait targets are not verifiable");
+      const ids = args.targets.map((target) => target?.threadId);
+      if (ids.some((id) => typeof id !== "string" || !id) || new Set(ids).size !== ids.length) fail("Wait targets must be distinct exact task ids");
+      return ids;
+    }
+    return [];
+  };
+  const contextFor = async ({ executorThreadId, targetThreadId, operation, arguments: args, accountContext }) => {
+    const projects = await projectsFor(executorThreadId, accountContext);
+    const executor = await threadFor(executorThreadId, executorThreadId, accountContext, projects);
+    if (operation === "wait_threads" && targetIds(operation, args, targetThreadId).includes(executorThreadId)) {
+      fail("The native wait operation cannot target its calling executor task");
+    }
+    const targets = [];
+    for (const id of targetIds(operation, args, targetThreadId)) targets.push(await threadFor(executorThreadId, id, accountContext, projects));
+    if (operation === "create_thread") {
+      const requested = args?.target?.type === "project" ? args.target.projectId : null;
+      const matching = projects.filter((project) => project.projectId === requested);
+      if (matching.length !== 1 || args?.target?.environment?.type !== "local") fail("Creation target is not the exact allowed saved local project");
+      return { executor, targets, requestedProject: matching[0], projects };
+    }
+    return { executor, targets, requestedProject: null, projects };
+  };
+  const compare = (expected, current) => {
+    if (!expected) return;
+    roots.recheck(expected.executor.root, "Relay executor working directory");
+    if (expected.executor.threadId !== current.executor.threadId || expected.executor.projectId !== current.executor.projectId
+        || expected.executor.root.path !== current.executor.root.path) fail("Relay executor identity changed while the operation was pending");
+    if (expected.targets.length !== current.targets.length) fail("Native target set changed while the operation was pending");
+    for (let index = 0; index < expected.targets.length; index += 1) {
+      const before = expected.targets[index];
+      const after = current.targets[index];
+      roots.recheck(before.root, "Native target working directory");
+      if (before.threadId !== after.threadId || before.kind !== after.kind || before.hostId !== after.hostId
+          || before.projectId !== after.projectId || before.root.path !== after.root.path) fail("Native target identity changed while the operation was pending");
+    }
+    if (expected.requestedProject) {
+      roots.recheck(expected.requestedProject.root, "Creation project directory");
+      if (!current.requestedProject || expected.requestedProject.projectId !== current.requestedProject.projectId
+          || expected.requestedProject.root.path !== current.requestedProject.root.path) fail("Creation project identity changed while the operation was pending");
+    }
+  };
+  const filterProjects = (result, current) => {
+    if (!Array.isArray(result?.projects)) fail("Native project list result is invalid");
+    const allowed = new Map(current.projects.map((project) => [project.projectId, project]));
+    return { projects: result.projects.filter((project) => {
+      const scope = projectRecord(project);
+      const expected = scope && allowed.get(scope.projectId);
+      return Boolean(expected && expected.root.path === scope.root.path);
+    }) };
+  };
+  const filterThreads = (result, current) => {
+    if (!Array.isArray(result?.threads) || !Array.isArray(result?.pinnedThreads)) fail("Native thread list result is invalid");
+    const seen = new Set();
+    const filter = (rows) => rows.filter((thread) => {
+      if (typeof thread?.id !== "string" || seen.has(thread.id)) return false;
+      try {
+        validateThread(thread, thread.id, current.projects);
+        seen.add(thread.id);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    return { pinnedThreads: filter(result.pinnedThreads), threads: filter(result.threads) };
+  };
+  const filterWait = (result, current) => {
+    if (typeof result?.timedOut !== "boolean" || !Array.isArray(result?.polls)) fail("Native wait result is invalid");
+    const allowed = new Map(current.targets.map((target) => [target.threadId, target]));
+    const checkReturnedBinding = (row, target) => {
+      // Native wait rows may omit these fields; explicit contradictions cannot
+      // override the independently reread target binding.
+      if ((row.kind !== undefined && row.kind !== target.kind)
+          || (row.projectId !== undefined && row.projectId !== target.projectId)) fail("Native wait result contradicts the selected task identity");
+      if (row.cwd !== undefined) {
+        const returned = roots.capture(row.cwd, "Native wait result working directory");
+        if (returned.path !== target.root.path || returned.identity !== target.root.identity) fail("Native wait result contradicts the selected task directory");
+      }
+    };
+    const seen = new Set();
+    const polls = result.polls.filter((poll) => {
+      const id = poll?.thread?.id;
+      if (typeof id !== "string" || poll?.thread?.hostId !== "local" || !allowed.has(id) || seen.has(id)) return false;
+      checkReturnedBinding(poll.thread, allowed.get(id));
+      seen.add(id);
+      return true;
+    });
+    const wake = result.wake && typeof result.wake === "object"
+      && result.wake.hostId === "local" && allowed.has(result.wake.threadId)
+      ? result.wake : null;
+    if (wake) checkReturnedBinding(wake, allowed.get(wake.threadId));
+    return { timedOut: result.timedOut, wake, polls };
+  };
+  return async (request) => {
+    try {
+      const current = await contextFor(request);
+      compare(request.expected, current);
+      if (request.phase !== "return") return current;
+      const result = request.result;
+      if (request.operation === "list_projects") return { ...current, result: filterProjects(result, current) };
+      if (request.operation === "list_threads") return { ...current, result: filterThreads(result, current) };
+      if (request.operation === "wait_threads") return { ...current, result: filterWait(result, current) };
+      if (request.operation === "read_thread") {
+        const returned = validateThread(result?.thread, request.targetThreadId ?? request.arguments?.threadId, current.projects);
+        const selected = current.targets[0];
+        if (!selected || returned.projectId !== selected.projectId || returned.root.path !== selected.root.path
+            || returned.root.identity !== selected.root.identity) fail("Native read result does not match the selected task binding");
+      }
+      if (request.operation === "create_thread") {
+        const createdId = result?.threadId;
+        if (typeof createdId !== "string" || !createdId.trim()) throw new NativeRelayError("Native creation did not return a confirmed task id; inspect the existing outcome before any further creation", "NATIVE_DELIVERY_UNCONFIRMED");
+        if (result.hostId !== undefined && result.hostId !== "local") fail("Native creation result does not identify the requested local host");
+        const created = await threadFor(request.executorThreadId, createdId, request.accountContext, current.projects);
+        roots.recheck(current.requestedProject.root, "Creation project directory");
+        if (created.projectId !== current.requestedProject.projectId || created.root.path !== current.requestedProject.root.path
+            || created.root.identity !== current.requestedProject.root.identity) fail("Created task does not belong to the requested saved project");
+      }
+      return { ...current, result };
+    } catch (error) {
+      if (typeof error?.code === "string") throw error;
+      fail(error?.message ?? String(error));
+    }
+  };
+}
+
 /**
  * The whole request handler, kept free of sockets and of the MCP connection so
  * the rules it enforces can be tested against a stub dispatcher rather than
@@ -68,10 +238,12 @@ function errorCode(err) {
  */
 export async function handleRelayRequest(
   payload,
-  { dispatch, dispatchDesktop, resolveExecutor = resolveRelayThreadId, env = process.env, assertAccount = assertAccountIdentity } = {},
+  { dispatch, dispatchDesktop, resolveExecutor = resolveRelayThreadId, env = process.env, assertAccount = assertAccountIdentity, authorize, strict = hardenedBridgeEnabled(env) } = {},
 ) {
+  if (strict && (!boundRequest(payload) || !validProtocol(payload))) return errorResponse("RELAY_BAD_REQUEST", "Hardened relay accepts only protocol 2 requests with account context", false);
+  if (strict && typeof authorize !== "function") return errorResponse("NATIVE_SCOPE_UNVERIFIED", "Hardened relay requires verified current native project and task metadata; no dispatch was attempted", false);
   if (payload && typeof payload === "object" && Object.hasOwn(payload, "operation")) {
-    return handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env, assertAccount });
+    return handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env, assertAccount, authorize, strict });
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
       Object.keys(payload).some((key) => !["v", "targetThreadId", "message", "accountContext"].includes(key)) || !validProtocol(payload)) {
@@ -88,6 +260,8 @@ export async function handleRelayRequest(
   try {
     accountContext = await checkAccountContext(payload, assertAccount);
     executorThreadId = resolveExecutor(env).threadId;
+    var authorization;
+    if (strict) authorization = await authorize({ executorThreadId, targetThreadId, operation: "send_message_to_thread", accountContext });
   } catch (err) {
     return errorResponse(errorCode(err), err.message, false);
   }
@@ -106,7 +280,11 @@ export async function handleRelayRequest(
   }
 
   try {
-    const result = await dispatch({ executorThreadId, targetThreadId, message }, { accountContext });
+    const result = await dispatch({ executorThreadId, targetThreadId, message }, {
+      accountContext,
+      ...(strict ? { beforeSend: () => authorize({ executorThreadId, targetThreadId, operation: "send_message_to_thread", accountContext, phase: "write", expected: authorization }) } : {}),
+    });
+    if (strict) await authorize({ executorThreadId, targetThreadId, operation: "send_message_to_thread", accountContext, phase: "return", expected: authorization, result });
     if (result?.success !== true || result?.isError === true) {
       const detail = typeof result?.error === "string" ? result.error : result?.error?.message;
       return errorResponse("NATIVE_DISPATCH_FAILED", detail ?? "Codex Desktop did not confirm successful native dispatch");
@@ -117,7 +295,8 @@ export async function handleRelayRequest(
   }
 }
 
-async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env, assertAccount }) {
+async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env, assertAccount, authorize, strict = hardenedBridgeEnabled(env) }) {
+  if (strict && !boundRequest(payload)) return errorResponse("RELAY_BAD_REQUEST", "Hardened relay accepts only protocol 2 Desktop operations", false);
   if (Array.isArray(payload) || ![RELAY_PROTOCOL_VERSION, ACCOUNT_RELAY_PROTOCOL_VERSION].includes(payload.v) || !validProtocol(payload) ||
       Object.keys(payload).some((key) => !["v", "operation", "arguments", "accountContext"].includes(key))) {
     return errorResponse("RELAY_BAD_REQUEST", "expected an allowlisted Desktop operation");
@@ -134,6 +313,8 @@ async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor,
       return errorResponse("NATIVE_OPERATION_UNAVAILABLE", "This companion does not support Desktop operations; reload the native relay");
     }
     const executorThreadId = resolveExecutor(env).threadId;
+    const request = { executorThreadId, targetThreadId: payload.arguments?.threadId, operation: payload.operation, arguments: payload.arguments, accountContext };
+    const authorization = strict ? await authorize(request) : null;
     if (payload.operation === "send_message_to_thread" && payload.arguments.threadId === executorThreadId) {
       return errorResponse("RELAY_BAD_REQUEST", "The relay executor cannot receive its own relayed message");
     }
@@ -141,13 +322,18 @@ async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor,
       executorThreadId,
       operation: payload.operation,
       arguments: payload.arguments,
-    }, { accountContext });
+    }, {
+      accountContext,
+      ...(strict ? { beforeSend: () => authorize({ ...request, phase: "write", expected: authorization }) } : {}),
+    });
+    const decoded = decodeNativeToolResult(nativeResult);
+    const checked = strict ? await authorize({ ...request, phase: "return", expected: authorization, result: decoded }) : null;
     return {
       ok: true,
       v: boundRequest(payload) ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION,
       operation: payload.operation,
       executorThreadId,
-      result: decodeNativeToolResult(nativeResult),
+      result: checked?.result ?? decoded,
     };
   } catch (err) {
     return errorResponse(errorCode(err), err?.message ?? String(err), err?.sent === false && err?.reachedCompanion !== true ? false : undefined);
@@ -167,7 +353,10 @@ export class RelaySocketServer {
     dispatchDesktop,
     resolveExecutor = resolveRelayThreadId,
     assertAccount = assertAccountIdentity,
+    authorize,
     requireAccountContext = false,
+    strict = hardenedBridgeEnabled(),
+    protectSocket = protectCurrentUserPipe,
     restrictSocket = (target) => {
       if (!IS_WINDOWS) fs.chmodSync(target, 0o600);
     },
@@ -178,7 +367,10 @@ export class RelaySocketServer {
     this.dispatchDesktop = dispatchDesktop;
     this.resolveExecutor = resolveExecutor;
     this.assertAccount = assertAccount;
+    this.authorize = authorize;
     this.requireAccountContext = requireAccountContext;
+    this.strict = strict;
+    this.protectSocket = protectSocket;
     this.restrictSocket = restrictSocket;
     this.log = logFn;
     this.server = null;
@@ -188,12 +380,28 @@ export class RelaySocketServer {
     this.accepting = true;
     this.closed = Promise.resolve();
     this.processHandlers = new Map();
+    this.aclReady = !IS_WINDOWS || !strict;
+    this.provisionalSockets = new Set();
+    this.startGeneration = 0;
+    this.startPromise = null;
   }
 
-  async start() {
+  start() {
     if (this.started) return this.socketPath;
+    if (this.startPromise) return this.startPromise;
+    const starting = this.#startOnce();
+    const shared = starting.finally(() => {
+      if (this.startPromise === shared) this.startPromise = null;
+    });
+    this.startPromise = shared;
+    return shared;
+  }
+
+  async #startOnce() {
     if (!IS_WINDOWS) fs.mkdirSync(path.dirname(this.socketPath), { recursive: true });
 
+    const generation = ++this.startGeneration;
+    this.aclReady = !IS_WINDOWS || !this.strict;
     this.server = net.createServer((socket) => this.#handleConnection(socket));
     await this.#listen({ replaceStale: true });
 
@@ -204,11 +412,19 @@ export class RelaySocketServer {
      * thread writes on an address anyone can open.
      */
     try {
-      this.restrictSocket(this.socketPath);
+      if (IS_WINDOWS && this.strict) {
+        await this.protectSocket(this.socketPath);
+        if (generation !== this.startGeneration) throw new Error("Windows pipe ACL startup was cancelled");
+        this.aclReady = true;
+        for (const provisional of this.provisionalSockets) provisional.destroy();
+        this.provisionalSockets.clear();
+      } else this.restrictSocket(this.socketPath);
+      if (generation !== this.startGeneration) throw new Error("Relay socket startup was cancelled");
     } catch (err) {
-      try {
-        this.server.close();
-      } catch {}
+      this.aclReady = !IS_WINDOWS || !this.strict;
+      for (const socket of this.provisionalSockets) socket.destroy();
+      this.provisionalSockets.clear();
+      await this.#closeServer();
       throw new Error(`refusing to serve on ${this.socketPath}: its mode could not be restricted (${err.message})`);
     }
     this.started = true;
@@ -227,6 +443,19 @@ export class RelaySocketServer {
 
     this.log(`relay socket listening on ${this.socketPath}`);
     return this.socketPath;
+  }
+
+  #closeServer() {
+    const server = this.server;
+    return new Promise((resolve) => {
+      if (!server) return resolve();
+      try {
+        if (!server.listening) return resolve();
+        server.close(() => resolve());
+      } catch {
+        resolve();
+      }
+    });
   }
 
   /**
@@ -280,10 +509,20 @@ export class RelaySocketServer {
   }
 
   async isListening() {
+    if (this.startPromise) {
+      try { await this.startPromise; } catch { return false; }
+      return this.started;
+    }
     return this.started || this.#socketIsLive();
   }
 
   #handleConnection(socket) {
+    if (IS_WINDOWS && !this.aclReady) {
+      this.provisionalSockets.add(socket);
+      socket.once("close", () => this.provisionalSockets.delete(socket));
+      socket.once("error", () => {});
+      return;
+    }
     if (!this.accepting) {
       socket.on("error", () => {});
       socket.end(`${JSON.stringify(errorResponse("RELAY_RELOADING", "The native relay is reloading; no message was sent", false))}\n`);
@@ -324,7 +563,7 @@ export class RelaySocketServer {
       this.#reply(socket, errorResponse("RELAY_BAD_REQUEST", `malformed JSON: ${err.message}`));
       return;
     }
-    if (this.requireAccountContext && !boundRequest(payload)) {
+    if ((this.requireAccountContext || this.strict) && !boundRequest(payload)) {
       this.#reply(socket, errorResponse("RELAY_BAD_REQUEST", "The account relay requires protocol 2 and the original account context", false));
       return;
     }
@@ -333,6 +572,8 @@ export class RelaySocketServer {
       dispatchDesktop: this.dispatchDesktop,
       resolveExecutor: this.resolveExecutor,
       assertAccount: this.assertAccount,
+      authorize: this.authorize,
+      strict: this.strict,
     });
     if (!response.ok) this.log(`relay refused ${payload?.targetThreadId ?? "?"}: ${response.error.message}`);
     else this.log(response.operation ? `completed Desktop operation ${response.operation}` : `relayed a message into thread ${response.targetThreadId}`);
@@ -345,6 +586,10 @@ export class RelaySocketServer {
   }
 
   stop() {
+    this.startGeneration += 1;
+    this.aclReady = !IS_WINDOWS || !this.strict;
+    for (const socket of this.provisionalSockets) socket.destroy();
+    this.provisionalSockets.clear();
     for (const [event, handler] of this.processHandlers) process.off(event, handler);
     this.processHandlers.clear();
     for (const socket of this.connections) socket.destroy();
@@ -507,6 +752,8 @@ if (invokedDirectly) {
   const nativeTools = new NativeToolsClient();
   const dispatch = (args, options) => nativeTools.dispatch(args, options);
 
+  const hardened = hardenedBridgeEnabled();
+  if (hardened && !desktopTasksConfigured()) throw new Error("CODEX_BRIDGE_HARDENED=1 requires CODEX_BRIDGE_DESKTOP_TASKS=1; legacy relay listeners are disabled");
   const relay = new RelaySocketServer({
     socketPath: relaySocketPath(),
     dispatch,
@@ -521,12 +768,15 @@ if (invokedDirectly) {
   const accountRelay = new RelaySocketServer({
     socketPath: accountRelaySocketPath(),
     requireAccountContext: true,
+    strict: hardened,
     dispatch,
     dispatchDesktop: (args, options) => nativeTools.dispatchDesktop(args, options),
+    authorize: hardened ? createNativeScopeAuthorizer({ dispatchDesktop: (args, options) => nativeTools.dispatchDesktop(args, options) }) : undefined,
     log,
   });
   const runtime = createRuntimeState();
-  const lifecycle = createNativeRelayLifecycle({ nativeTools, relays: [relay, desktopRelay, accountRelay], log });
+  const strictDesktop = hardened && desktopTasksConfigured();
+  const lifecycle = createNativeRelayLifecycle({ nativeTools, relays: strictDesktop ? [accountRelay] : [relay, desktopRelay, accountRelay], log });
   const reload = createReloadControl({ entry: "native-relay-companion.mjs", ...lifecycle });
 
   mcp.registerTool(
@@ -543,7 +793,7 @@ if (invokedDirectly) {
       },
     },
     async () => reload.run(async () => {
-      const listening = await relay.isListening();
+      const listening = await (strictDesktop ? accountRelay : relay).isListening();
       let executor = "(unconfigured)";
       try {
         const resolved = resolveRelayThreadId();
@@ -560,8 +810,8 @@ if (invokedDirectly) {
               `platform:       ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
               `companion:      codex-native-relay ${VERSION}`,
               `runtime state:  ${runtime.status().current ? "current" : "stale"} (${reload.inspect().phase}, PID ${process.pid})`,
-              `relay socket:   ${relay.started ? relay.socketPath : `${relay.socketPath} (${listening ? "shared companion listening" : "not listening"})`}`,
-              `desktop tasks:  ${desktopRelay.socketPath} (${await desktopRelay.isListening() ? "listening" : "not listening"})`,
+               `relay socket:   ${strictDesktop ? "disabled by hardened Desktop profile" : relay.started ? relay.socketPath : `${relay.socketPath} (${listening ? "shared companion listening" : "not listening"})`}`,
+               `desktop tasks:  ${strictDesktop ? "disabled by hardened Desktop profile" : `${desktopRelay.socketPath} (${await desktopRelay.isListening() ? "listening" : "not listening"})`}`,
               `account relay:  ${accountRelay.socketPath} (protocol ${ACCOUNT_RELAY_PROTOCOL_VERSION}, ${await accountRelay.isListening() ? "listening" : "not listening"})`,
               `executor:       ${executor}`,
               `dispatch:       ${process.env.CODEX_NATIVE_RELAY_METHOD ?? NATIVE_DISPATCH_METHOD}`,
@@ -577,5 +827,5 @@ if (invokedDirectly) {
   mcp.server.onclose = () => { void lifecycle.stop(); };
   await mcp.connect(new StdioServerTransport());
   reload.listen();
-  log(`ready on ${PLATFORM_LABEL} (${relay.started ? relay.socketPath : "socket down"})`);
+  log(`ready on ${PLATFORM_LABEL} (${strictDesktop ? accountRelay.socketPath : relay.started ? relay.socketPath : "socket down"})`);
 }

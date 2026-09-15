@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
+import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 
 const APPROVAL_POLICIES = new Set(["untrusted", "on-failure", "on-request", "never"]);
 const SANDBOXES = new Set(["read-only", "workspace-write"]);
@@ -84,6 +85,7 @@ export function assertAllowedAppServerUrl(value) {
 
 export class BridgeSecurityPolicy {
   constructor(env = process.env) {
+    this.hardenedRoots = createHardenedRootPolicy(env);
     const configuredThreads = parseList(env.CODEX_BRIDGE_ALLOWED_THREADS);
     this.allowAllThreads = configuredThreads.has(ALLOW_ALL_THREADS);
     this.allowedThreadIds = new Set([...configuredThreads].filter((threadId) => threadId !== ALLOW_ALL_THREADS));
@@ -189,6 +191,7 @@ export class BridgeSecurityPolicy {
   }
 
   isCwdAuthorized(cwd) {
+    if (this.hardenedRoots.enabled) return this.hardenedRoots.allows(cwd);
     if (!cwd) return false;
     if (this.allowAllRoots) return true;
     if (!this.allowedRoots.length) return false;
@@ -197,6 +200,7 @@ export class BridgeSecurityPolicy {
   }
 
   assertCwd(cwd) {
+    if (this.hardenedRoots.enabled) return this.hardenedRoots.assert(cwd);
     if (!this.allowAllRoots && !this.allowedRoots.length) {
       throw new Error(
         "No authorized workspace roots are configured. Set CODEX_BRIDGE_ALLOWED_ROOTS to one or more project directories.",

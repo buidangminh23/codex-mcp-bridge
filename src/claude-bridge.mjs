@@ -20,7 +20,8 @@ import { ReplyForwarder } from "./reply-forwarder.mjs";
 import { assertRoutingReload, clientReloadReason, createReloadControl } from "./reload-control.mjs";
 import { readClaudeAccountContext } from "./desktop-account-context.mjs";
 import { assertAccountIdentity, bindUnsolicitedClaudeMessageAccount, publicAccountState, readBridgeAccounts, requireBridgeAccounts, sameAccountIdentity } from "./bridge-account-context.mjs";
-import { resolveClaudeDesktopSession } from "./claude-session-router.mjs";
+import { resolveClaudeDesktopSession, sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
+import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -32,6 +33,7 @@ const log = (msg) => process.stderr.write(`[claude-bridge] ${msg}\n`);
 
 const defaultPeerName = process.env.CLAUDE_BRIDGE_PEER_NAME ?? `codex-${process.pid}`;
 const desktopOnly = desktopTasksConfigured();
+const rootPolicy = createHardenedRootPolicy();
 const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
 
 const peer = new PeerEndpoint({
@@ -57,15 +59,34 @@ const forwarding = {
   threadId: process.env.CODEX_THREAD_ID ?? null,
 };
 
+const creationRootBindings = new Map();
+
 const creations = new ClaudeSessionCreation({
   open: openClaudeCodeComposer,
-  listTasks: (account) => readClaudeDesktopTasks({ account }),
-  listSessions: () => listClaudeSessions(),
+  listTasks: (account) => readClaudeDesktopTasks({ account }).filter((task) => rootPolicy.allows(task.cwd)),
+  listSessions: () => listClaudeSessions().filter((session) => rootPolicy.allows(session.cwd)),
   readContext: (session, account) => readClaudeDesktopContext(session, { account }),
-  readTranscript: readInitialTranscriptMessage,
+  readTranscript: (...args) => {
+    const binding = rootPolicy.capture(args[1], "Claude creation transcript working directory");
+    const transcript = readInitialTranscriptMessage(...args);
+    rootPolicy.recheck(binding, "Claude creation transcript working directory");
+    return transcript;
+  },
   readAccount: readClaudeAccountContext,
   assertProcess: assertClaudeSessionProcess,
 });
+function recheckScopeBindings(bindings) {
+  if (!rootPolicy.enabled) return;
+  if (!bindings?.sender || !bindings?.recipient) throw Object.assign(new Error("Hardened bridge record has no original sender and recipient root binding"), { code: "ROOT_BINDING_MISSING" });
+  rootPolicy.recheck(bindings.sender, "Original Codex sender working directory");
+  rootPolicy.recheck(bindings.recipient, "Original Claude recipient working directory");
+}
+
+function recordVisible(record, accounts = readBridgeAccounts()) {
+  if (desktopOnly && !sameAccountIdentity(record?.accountContext, accounts)) return false;
+  if (!rootPolicy.enabled) return true;
+  try { recheckScopeBindings(record?.scopeBindings); return true; } catch { return false; }
+}
 
 const replyForwarder = new ReplyForwarder({
   minIntervalMs: FORWARD_MIN_INTERVAL_MS,
@@ -75,16 +96,17 @@ const replyForwarder = new ReplyForwarder({
       throw Object.assign(new Error("Bridge routing changed; the reply was not forwarded. Inspect the original receipt before reconnecting."), { code: "REPLY_ROUTING_CHANGED" });
     }
     if (desktopOnly) assertAccountIdentity(record.accountContext);
+    recheckScopeBindings(record.scopeBindings);
   },
   deliver: (threadId, record) => delivery.deliver(threadId, `[message from Claude session ${record.fromSocket ?? "?"}]\n${record.absorbed ? "[This reply is the closing text of a turn that absorbed the message while it was running; it may not address the message.]\n" : ""}\n${record.text}`,
-    desktopOnly ? { beforeSend: () => assertAccountIdentity(record.accountContext), accountContext: record.accountContext } : {}),
+    desktopOnly ? { beforeSend: () => { assertAccountIdentity(record.accountContext); recheckScopeBindings(record.scopeBindings); }, accountContext: record.accountContext } : {}),
 });
 
 const reload = createReloadControl({
   entry: "claude-bridge.mjs",
   inspect: () => peer.reloadReason() ?? replyForwarder.reloadReason() ?? clientReloadReason(codex),
   quiesce: async () => { await peer.quiesce(); codex.close(); },
-  exportState: () => ({ desktopOnly, peer: peer.exportReloadState(), forwarding: replyForwarder.exportReloadState(), threadId: forwarding.threadId, creations: creations.exportState() }),
+  exportState: () => ({ desktopOnly, peer: peer.exportReloadState(), forwarding: replyForwarder.exportReloadState(), threadId: forwarding.threadId, creations: creations.exportState(), creationRootBindings: [...creationRootBindings] }),
   restore: (state) => {
     assertRoutingReload(state.desktopOnly, desktopOnly);
     if (state.threadId !== null && (typeof state.threadId !== "string" || !state.threadId.trim())) {
@@ -94,6 +116,13 @@ const reload = createReloadControl({
     replyForwarder.restoreReloadState(state.forwarding);
     forwarding.threadId = state.threadId;
     if (state.creations !== undefined) creations.restoreState(state.creations);
+    if (state.creationRootBindings !== undefined) {
+      if (!Array.isArray(state.creationRootBindings) || state.creationRootBindings.length > 32) throw new Error("Invalid Claude creation root bindings");
+      for (const entry of state.creationRootBindings) {
+        if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || creationRootBindings.has(entry[0]) || !creations.requests.has(entry[0])) throw new Error("Invalid Claude creation root binding");
+        creationRootBindings.set(entry[0], entry[1]);
+      }
+    }
   },
   activate: () => peer.start(),
   resume: () => peer.resume(),
@@ -102,6 +131,9 @@ const reload = createReloadControl({
 function readReceipt(msgId) {
   const receipt = peer.readDelivery(msgId);
   if (desktopOnly && receipt && !sameAccountIdentity(receipt.accountContext, readBridgeAccounts())) return null;
+  if (rootPolicy.enabled) {
+    try { recheckScopeBindings(receipt?.scopeBindings); } catch { return null; }
+  }
   return receipt ? { ...receipt, forwarding: replyForwarder.read(msgId) ?? receipt.forwardingError ?? null } : null;
 }
 
@@ -130,6 +162,10 @@ function withDesktopContext(session, account = readClaudeAccountContext()) {
     ? { ...session, desktop: readClaudeDesktopContext(session, { account }), inbound: readClaudeInboundPolicy(session.cwd) } : session;
 }
 
+function assertSessionRoot(session, label = "Claude session") {
+  return rootPolicy.assert(session?.cwd, `${label} working directory`);
+}
+
 function assertDesktopTask(session, expectedTaskId) {
   if (session.desktop?.status !== "matched") {
     throw preflightFailure("CLAUDE_DESKTOP_TASK_UNVERIFIED", session.desktop?.reason ?? "The live session could not be matched to a Claude Desktop task.");
@@ -147,28 +183,44 @@ function assertSender(meta) {
   return sender;
 }
 
+function assertCreationRoots(requestId, sender) {
+  if (!rootPolicy.enabled) return;
+  rootPolicy.assert(sender.cwd, "Codex sender working directory");
+  recheckScopeBindings(creationRootBindings.get(requestId));
+}
+
 async function startClaudeCreation({ requestId, cwd, prompt }, meta) {
   runtime.assertCurrent();
   if (!desktopOnly) throw new Error("New Claude sessions require Desktop-only mode");
   const sender = assertSender(meta);
   const accounts = readBridgeAccounts();
   const selectedAccounts = requireBridgeAccounts(accounts);
+  if (rootPolicy.enabled && creations.requests.has(requestId)) assertCreationRoots(requestId, sender);
+  const scopeBindings = rootPolicy.enabled ? creationRootBindings.get(requestId) ?? {
+    sender: rootPolicy.capture(sender.cwd, "Codex sender working directory"),
+    recipient: rootPolicy.capture(cwd, "Claude creation working directory"),
+  } : null;
   const receipt = await creations.start({ requestId, cwd, prompt, account: accounts.claude, senderThreadId: sender.threadId,
     beforeOpen: () => {
       runtime.assertCurrent();
       assertAccountIdentity(selectedAccounts);
+      recheckScopeBindings(scopeBindings);
+      if (rootPolicy.enabled && !rootPolicy.same(cwd, scopeBindings.recipient.path)) throw new Error("The Claude creation working directory changed before opening Desktop");
       const current = assertSender(meta);
       if (JSON.stringify(current) !== JSON.stringify(sender)) throw new Error("The calling Codex turn changed before opening Claude Desktop");
     },
   });
+  if (rootPolicy.enabled) creationRootBindings.set(requestId, scopeBindings);
   return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { creation: receipt } };
 }
 
 async function inspectClaudeCreation(requestId, meta) {
   const sender = assertSender(meta);
+  assertCreationRoots(requestId, sender);
   const accounts = readBridgeAccounts();
   requireBridgeAccounts(accounts);
   const receipt = await creations.inspect(requestId, { account: accounts.claude, senderThreadId: sender.threadId });
+  assertCreationRoots(requestId, sender);
   return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { creation: receipt } };
 }
 
@@ -184,6 +236,9 @@ function forwardToCodexThread(record) {
 }
 
 peer.onMessage((record) => {
+  if (rootPolicy.enabled && !record.cwd) { record.forwardingError = { status: "blocked", reasonCode: "ROOT_UNAUTHORIZED", reason: "Unsolicited inbound messages are disabled in hardened mode without a verified root binding" }; return; }
+  try { if (rootPolicy.enabled) rootPolicy.assert(record.cwd, "Inbound Claude message working directory"); }
+  catch (err) { record.forwardingError = { status: "blocked", reasonCode: "ROOT_UNAUTHORIZED", reason: err.message }; return; }
   if (desktopOnly) bindUnsolicitedClaudeMessageAccount(record, {
     hasPendingSource: (socket) => [...peer.pendingMessages.values()].some((pending) => pending.targetSocket === socket),
   });
@@ -252,6 +307,7 @@ registerTool(
   },
   async ({ requestId }, extra) => {
     const sender = assertSender(extra?._meta);
+    assertCreationRoots(requestId, sender);
     const accounts = readBridgeAccounts();
     requireBridgeAccounts(accounts);
     const receipt = await creations.abandon(requestId, { account: accounts.claude, senderThreadId: sender.threadId });
@@ -277,11 +333,13 @@ registerTool(
   },
   async ({ includeDead, expectedCwd }) => {
     try {
+      if (rootPolicy.enabled && expectedCwd !== undefined) rootPolicy.assert(expectedCwd, "Requested working directory");
       if (expectedCwd !== undefined) assertClaudeSessionCwd({ cwd: expectedCwd }, expectedCwd);
       const account = readClaudeAccountContext();
       if (desktopOnly && account.status !== "verified") return { ...textResult(`Claude account ${account.status}: ${account.reason} Sign in and retry discovery.`, true), structuredContent: { account: publicAccountState(account), sessions: [] } };
       const sessions = listClaudeSessions({ includeDead: includeDead ?? false }).filter(
         (s) => s.pid !== process.pid && (!desktopOnly || s.entrypoint === "claude-desktop"),
+      ).filter((session) => !rootPolicy.enabled || rootPolicy.allows(session.cwd)
       ).filter((session) => {
         if (expectedCwd === undefined) return true;
         try { assertClaudeSessionCwd(session, expectedCwd); return true; }
@@ -345,6 +403,7 @@ registerTool(
       }) : findClaudeSession(target, { desktopOnly });
       if (!found) return textResult(desktopOnly ? missingDesktopSession : `No live Claude session matches "${target}".`, true);
       const session = desktopOnly ? { ...found, inbound: readClaudeInboundPolicy(found.cwd) } : withDesktopContext(found);
+      assertSessionRoot(session);
       const selectedTaskId = target === "auto" ? session.desktop?.taskId : expectedTaskId;
       if (desktopOnly || expectedCwd !== undefined) assertClaudeSessionCwd(session, expectedCwd);
       if (desktopOnly) {
@@ -352,6 +411,10 @@ registerTool(
         assertClaudeSessionProcess(session);
       }
       const sender = desktopOnly ? assertSender(extra?._meta) : null;
+      const scopeBindings = rootPolicy.enabled ? {
+        sender: rootPolicy.capture(sender?.cwd, "Codex sender working directory"),
+        recipient: rootPolicy.capture(session.cwd, "Claude recipient working directory"),
+      } : null;
       if (desktopOnly) assertRecipientClass(session, sender);
       await peer.start();
 
@@ -363,19 +426,28 @@ registerTool(
         ...(selectedAccounts ? { accountContext: selectedAccounts } : {}),
         ...(sender ? { permissionMode: sender.mode, replyThreadId: sender.threadId, senderReview: sender.review, senderApprovalPolicy: sender.approvalPolicy } : {}),
         ...(desktop ? { recipient: { permissionMode: session.desktop.permissionMode ?? null, permissionClass: session.desktop.permissionClass ?? null, inboundPolicy: session.inbound?.value ?? null } } : {}),
+        ...(scopeBindings ? { scopeBindings } : {}),
         beforeSend: () => {
           runtime.assertCurrent();
           if (desktopOnly) assertAccountIdentity(selectedAccounts);
           const current = findClaudeSession(session.sessionId ?? String(session.pid), { desktopOnly });
-          if (!current || current.pid !== session.pid || current.socket !== session.socket) {
+          const destinationUnchanged = desktopOnly
+            ? sameClaudeDesktopRecipient(session, current)
+            : Boolean(current && current.pid === session.pid && current.socket === session.socket);
+          if (!destinationUnchanged) {
             throw new Error("The Claude destination changed while this message was queued. No message was sent; inspect the existing Desktop session.");
           }
           if (desktopOnly || expectedCwd !== undefined) assertClaudeSessionCwd(current, expectedCwd);
+          assertSessionRoot(current);
           if (desktopOnly) {
             assertClaudeSessionProcess(current);
             const refreshed = withDesktopContext(current, readClaudeAccountContext());
             assertDesktopTask(refreshed, selectedTaskId);
             const active = assertSender(extra?._meta);
+            if (rootPolicy.enabled) {
+              rootPolicy.recheck(scopeBindings.sender, "Codex sender working directory");
+              rootPolicy.recheck(scopeBindings.recipient, "Claude recipient working directory");
+            }
             if (active.threadId !== sender.threadId || active.turnId !== sender.turnId || active.cwd !== sender.cwd || active.mode !== sender.mode || active.approvalPolicy !== sender.approvalPolicy || JSON.stringify(active.review) !== JSON.stringify(sender.review)) {
               throw preflightFailure("CODEX_SENDER_CONTEXT_CHANGED", "The sender's active turn or permissions changed while this message was queued.");
             }
@@ -460,7 +532,7 @@ registerTool(
     try {
       await peer.start();
       const accounts = desktopOnly ? readBridgeAccounts() : null;
-      const messages = peer.drainInbox(limit ?? 20, (record) => !desktopOnly || sameAccountIdentity(record.accountContext, accounts));
+      const messages = peer.drainInbox(limit ?? 20, (record) => recordVisible(record, accounts));
       if (!messages.length) return textResult(desktopOnly ? "No messages for the current accounts." : "Inbox is empty.");
       const result = textResult(
         messages
@@ -471,7 +543,8 @@ registerTool(
           })
           .join("\n\n"),
       );
-      return { ...result, structuredContent: { messages: messages.map((record) => ({ ...record, forwarding: replyForwarder.read(record.inReplyTo ?? record.msgId) ?? record.forwardingError ?? null })), remaining: peer.inbox.length } };
+      const remaining = peer.inbox.filter((record) => recordVisible(record, accounts)).length;
+      return { ...result, structuredContent: { messages: messages.map((record) => ({ ...record, forwarding: replyForwarder.read(record.inReplyTo ?? record.msgId) ?? record.forwardingError ?? null })), remaining } };
     } catch (err) {
       return failure(err);
     }
@@ -496,9 +569,17 @@ registerTool(
     try {
       const session = findClaudeSession(target, { desktopOnly });
       if (!session) return textResult(`No live Claude session matches "${target}".`, true);
+      const transcriptRoot = rootPolicy.enabled ? rootPolicy.capture(session.cwd, "Claude transcript working directory") : null;
+      assertSessionRoot(session);
       if (desktopOnly) {
         const verified = withDesktopContext(session);
         if (verified.desktop?.status !== "matched") throw preflightFailure("CLAUDE_DESKTOP_TASK_UNVERIFIED", verified.desktop?.reason ?? "This task is not in the signed-in Claude account.");
+      }
+      if (transcriptRoot) {
+        const current = findClaudeSession(session.sessionId ?? String(session.pid), { desktopOnly });
+        if (!current || current.pid !== session.pid || current.socket !== session.socket) throw new Error("The Claude transcript target changed before it could be read");
+        rootPolicy.recheck(transcriptRoot, "Claude transcript working directory");
+        if (desktopOnly) assertClaudeSessionProcess(current);
       }
       const { file, messages } = readTranscript(session.sessionId, session.cwd, limit ?? 10);
       if (!messages.length) return textResult(`No transcript entries found (looked at ${file}).`);
@@ -563,7 +644,11 @@ registerTool(
       const sessions = listClaudeSessions().filter((s) => s.pid !== process.pid);
       const accounts = readBridgeAccounts();
       const eligible = sessions.filter((session) => !desktopOnly || session.entrypoint === "claude-desktop")
+        .filter((session) => !rootPolicy.enabled || rootPolicy.allows(session.cwd))
         .filter((session) => !desktopOnly || withDesktopContext(session, accounts.claude).desktop?.status === "matched");
+      const visibleInbox = peer.inbox.filter((record) => recordVisible(record, accounts));
+      const visiblePending = [...peer.pendingMessages.keys()].filter((id) => readReceipt(id));
+      const visibleForwarding = replyForwarder.status((record) => recordVisible(record, accounts));
       const sender = desktopOnly ? readCodexSenderContext(extra?._meta) : null;
       const lines = [
         `platform:      ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
@@ -578,17 +663,17 @@ registerTool(
         `Claude account: ${accounts.claude.status}${accounts.claude.fingerprint ? ` (${accounts.claude.fingerprint.slice(0, 12)})` : ` - ${accounts.claude.reason}`}`,
         `Codex account: ${accounts.codex.status}${accounts.codex.fingerprint ? ` (${accounts.codex.fingerprint.slice(0, 12)})` : ` - ${accounts.codex.reason}`}`,
         `live sessions: ${eligible.length}`,
-        `excluded:      ${sessions.length - eligible.length} non-Desktop or inactive-account session(s)`,
+        ...(rootPolicy.enabled ? [] : [`excluded:      ${sessions.length - eligible.length} non-Desktop or inactive-account session(s)`]),
         `relay thread:  ${forwarding.threadId ?? "(none - use bind_codex_thread)"}`,
         `delivery:      ${delivery.describe()}`,
-        `inbox:         ${peer.inbox.length} pending message(s)`,
-        `outstanding:   ${peer.pendingMessages.size} message(s) awaiting receipt or reply`,
-        `reply forwarding: ${JSON.stringify(replyForwarder.status())}`,
-        ...[...peer.pendingMessages.keys()].map((id) => `pending message: ${id} (${peer.readDelivery(id)?.status ?? "sent_unconfirmed"})`),
+        `inbox:         ${visibleInbox.length} pending message(s)`,
+        `outstanding:   ${visiblePending.length} message(s) awaiting receipt or reply`,
+        `reply forwarding: ${JSON.stringify(visibleForwarding)}`,
+        ...visiblePending.map((id) => `pending message: ${id} (${peer.readDelivery(id)?.status ?? "sent_unconfirmed"})`),
       ];
       const state = runtime.status();
       lines.push(`runtime pid:   ${state.pid}`, `loaded source: ${state.revision}`, `disk source:   ${state.diskRevision ?? "unreadable"}`, `runtime state: ${state.current ? "current" : `STALE - ${state.reason}; reconnect this MCP server in the existing task`}`);
-      return { ...textResult(lines.join("\n"), !state.current), structuredContent: { runtime: state, accounts: { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) }, replyForwarding: replyForwarder.status(), ...(sender ? { sender } : {}) } };
+      return { ...textResult(lines.join("\n"), !state.current), structuredContent: { runtime: state, accounts: { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) }, replyForwarding: visibleForwarding, ...(sender ? { sender } : {}) } };
     } catch (err) {
       return failure(err);
     }

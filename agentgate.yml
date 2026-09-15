@@ -1,0 +1,10 @@
+# AgentGate configuration (agents provide claims; AgentGate determines status)
+tests_required:
+  - node --test --test-concurrency=1 test/hardened-bridge.test.mjs test/windows-process-start.test.mjs test/claude-session-router.test.mjs test/tool-contract.test.mjs test/codex-native-response.test.mjs test/desktop-task-delivery.test.mjs test/turn.test.mjs
+  - node --test --test-name-pattern="same exact assistant item|reports an unavailable response explicitly|withholds an uncorroborated" test/bridge-integration.test.mjs
+base_ref: null
+deploy_target: null
+version_url: null
+health_url: null
+user_visible:
+max_age_hours: 24

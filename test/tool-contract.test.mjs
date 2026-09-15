@@ -401,7 +401,11 @@ describe("Claude Desktop account switching", () => {
       const oldSessionId = destinations[0].sessionId;
       destinations[0].sessionId = "account-a-cli-restarted";
       writeDestination(destinations[0]);
-      const restarted = await send(oldSessionId, destinations[0].taskId);
+      const stale = await send(oldSessionId, destinations[0].taskId);
+      assert.equal(stale.structuredContent?.preflight?.code, "CLAUDE_SESSION_NOT_FOUND");
+      assert.equal(stale.structuredContent?.preflight?.sent, false);
+      assert.equal(received.length, 3);
+      const restarted = await send("auto", destinations[0].taskId);
       assert.equal(restarted.structuredContent?.receipt?.status, "reply_received", restarted.content?.[0]?.text);
       assert.equal(restarted.structuredContent.receipt.sessionId, destinations[0].sessionId);
       assert.equal(received.length, 4);
@@ -410,6 +414,57 @@ describe("Claude Desktop account switching", () => {
     } finally {
       await client.close();
       await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+    }
+  });
+});
+
+describe("Claude creation hardened roots", () => {
+  it("rejects an out-of-root sender or destination before opening the composer", async () => {
+    const home = fs.mkdtempSync(path.join(sandboxHome, "creation-roots-"));
+    const allowed = path.join(home, "allowed");
+    const forbidden = path.join(home, "forbidden");
+    const userData = path.join(home, "claude-user-data");
+    const codexHome = path.join(home, ".codex");
+    const rollouts = path.join(codexHome, "sessions", "2026", "09", "07");
+    for (const directory of [allowed, forbidden, userData, rollouts]) fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(userData, "config.json"), JSON.stringify({ lastKnownAccountUuid: "44444444-4444-4444-8444-444444444444", windowSizeWasSignedIn: true }));
+    const idToken = `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "fixture-user" })).toString("base64url")}.fixture`;
+    fs.writeFileSync(path.join(codexHome, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: "fixture-account", id_token: idToken } }));
+    const callerId = "22222222-2222-4222-8222-222222222222";
+    const turnId = "33333333-3333-4333-8333-333333333333";
+    const meta = { "x-codex-turn-metadata": { thread_id: callerId, turn_id: turnId, thread_source: "user", auto_review_enabled: false, node_repl_auto_review_required: false } };
+    const setSender = (cwd) => fs.writeFileSync(path.join(rollouts, `rollout-fixture-${callerId}.jsonl`), [
+      { type: "session_meta", payload: { id: callerId, originator: "Codex Desktop", source: "vscode", cwd } },
+      { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+      { type: "turn_context", payload: { turn_id: turnId, cwd, approval_policy: "never", approvals_reviewer: "user", permission_profile: { type: "disabled" }, sandbox_policy: { type: "danger-full-access" } } },
+    ].map(JSON.stringify).join("\n") + "\n");
+    setSender(allowed);
+    const client = new Client({ name: "creation-root-test", version: "1" });
+    const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: {
+      PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "", HOME: home, USERPROFILE: home,
+      APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"),
+      CODEX_HOME: codexHome, CLAUDE_DESKTOP_USER_DATA: userData, CODEX_NATIVE_RELAY_SOCKET: unavailableRelaySocket(home),
+      CODEX_BRIDGE_HARDENED: "1", CODEX_BRIDGE_ALLOWED_ROOTS: allowed, CODEX_BRIDGE_DESKTOP_TASKS: "1",
+      CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_REMAP: "0", CODEX_BRIDGE_AUTOSTART: "0",
+    }, stderr: "ignore" });
+    try {
+      await client.connect(transport);
+      const create = (cwd) => client.callTool({ name: "start_claude_session", arguments: { requestId: crypto.randomUUID(), cwd, prompt: "Must never open the composer" }, _meta: meta });
+      const destination = await create(forbidden);
+      assert.equal(destination.isError, true);
+      assert.match(destination.content[0].text, /Claude creation working directory is outside CODEX_BRIDGE_ALLOWED_ROOTS/);
+      setSender(forbidden);
+      const sender = await create(allowed);
+      assert.equal(sender.isError, true);
+      assert.match(sender.content[0].text, /Codex sender working directory is outside CODEX_BRIDGE_ALLOWED_ROOTS/);
+      setSender(allowed);
+      for (const name of ["read_claude_creation", "abandon_claude_creation"]) {
+        const unbound = await client.callTool({ name, arguments: { requestId: crypto.randomUUID() }, _meta: meta });
+        assert.equal(unbound.isError, true);
+        assert.match(unbound.content[0].text, /no original sender and recipient root binding/);
+      }
+    } finally {
+      await client.close();
     }
   });
 });

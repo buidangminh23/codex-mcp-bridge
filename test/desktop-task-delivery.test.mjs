@@ -7,7 +7,7 @@ import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "../src/thread-deliv
 import { DesktopTaskReceipts } from "../src/desktop-task-receipts.mjs";
 import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
 
-function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountContext } = {}) {
+function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountContext, captureResponse, readResponse, inspectResponse } = {}) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "desktop-receipt-delivery-")));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const cwd = path.join(directory, "project");
@@ -26,23 +26,142 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountCon
   const relay = { async requestDesktop(operation, args, options) {
     calls.push({ operation, args, options });
     const override = await dispatch?.({ operation, args, options, cwd, calls });
-    if (override !== undefined) return { result: override };
+    if (override !== undefined) return { result: override, executorThreadId: "executor-thread" };
     if (operation === "list_projects") return { result: { projects: [{ projectId: "project", projectKind: "local", hostId: "local", path: cwd, label: "Existing project" }] } };
     if (operation === "create_thread") return { result: { threadId: `task-${++creates}`, hostId: "local", firstTurn: { status: "accepted" } } };
     if (operation === "read_thread") {
       observedIds.add(args.threadId);
-      return { result: { thread: { id: args.threadId, hostId: "local", cwd, status, title: "Stable task" }, turns: [{ id: "turn", status: turnStatus }] } };
+      return { result: { thread: { id: args.threadId, hostId: "local", cwd, status, title: "Stable task" }, turns: [{ id: "turn", status: turnStatus }] }, executorThreadId: "executor-thread" };
     }
     if (operation === "list_threads") return { result: { pinnedThreads: [], threads: [...observedIds].map((id) => ({ id, kind: "codex", hostId: "local", cwd, projectId: "project" })) } };
     if (operation === "navigate_to_codex_page") return { result: { navigated: true } };
     throw new Error(`Unexpected operation ${operation}`);
   } };
   const receipts = new DesktopTaskReceipts({ directory: path.join(directory, "receipts") });
-  const createDelivery = () => new DesktopTaskDelivery({ relay, security, now, sleep, beforeRequest, accountContext, receipts: new DesktopTaskReceipts({ directory: receipts.directory }) });
+  const createDelivery = () => new DesktopTaskDelivery({ relay, security, now, sleep, beforeRequest, accountContext, captureResponse, readResponse, inspectResponse, receipts: new DesktopTaskReceipts({ directory: receipts.directory }) });
   return { directory, cwd, calls, registered, receipts, createDelivery, delivery: createDelivery(), setState(nextStatus, nextTurn) { status = nextStatus; turnStatus = nextTurn; } };
 }
 
 describe("Desktop creation receipts and deadlines", () => {
+  for (const outcome of ["unrelated", "matching"]) it(`uses only the exact dispatch-bound response instead of latest assistant text: ${outcome}`, async (t) => {
+    let reads = 0;
+    const accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
+    const f = fixture(t, {
+      accountContext: () => accounts,
+      readResponse: () => {
+        reads += 1;
+        return outcome === "unrelated" ? { status: "unavailable", reason: "Different submitted request", assistantItems: [], text: "", replySha256: null }
+          : { status: "completed", text: "Rollout final", assistantItems: [{ id: "assistant-item", text: "Rollout final" }], replySha256: "a".repeat(64), source: "codex_desktop_rollout" };
+      },
+      dispatch({ operation }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "new-turn", status: "completed" }, latestAssistantMessage: { turnId: "new-turn", phase: "final_answer", text: "API final" } }] };
+        if (operation === "read_thread") return { thread: { id: "task", hostId: "local", cwd: f.cwd }, turns: [{ id: "new-turn" }] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "original request", accountContext: { ...accounts }, watermark: { status: "available" },
+    } });
+    assert.equal(reads, 1);
+    assert.equal(result.text, outcome === "matching" ? "Rollout final" : "");
+    assert.equal(result.observationStatus, outcome === "matching" ? "completed" : "unavailable");
+    assert.deepEqual(result.assistantItems, outcome === "matching" ? [{ id: "assistant-item", text: "Rollout final" }] : []);
+    assert.equal(f.calls.some(call => ["send_message_to_thread", "create_thread"].includes(call.operation)), false);
+  });
+
+  it("marks a completed native turn with missing text as explicitly unavailable", async (t) => {
+    const f = fixture(t, { dispatch({ operation }) {
+      if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "new-turn", status: "completed" }, latestAssistantMessage: null }] };
+    } });
+    const result = await f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "old-turn" });
+    assert.equal(result.status, "completed");
+    assert.equal(result.observationStatus, "unavailable");
+    assert.equal(result.text, "");
+    assert.deepEqual(f.calls.map((call) => call.operation), ["wait_threads"]);
+  });
+
+  it("returns completed_no_reply only from the dispatch-bound exact turn", async (t) => {
+    const f = fixture(t, {
+      readResponse: () => ({ status: "completed_no_reply", text: "", assistantItems: [], replySha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", source: "codex_desktop_rollout" }),
+      dispatch({ operation }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "new-turn", status: "completed" }, latestAssistantMessage: { turnId: "old-turn", phase: "final_answer", text: "old reply" } }] };
+        if (operation === "read_thread") return { thread: { id: "task", hostId: "local", cwd: f.cwd }, turns: [{ id: "new-turn" }] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+    } });
+    assert.equal(result.responseStatus, "completed_no_reply");
+    assert.equal(result.text, "");
+    assert.deepEqual(result.assistantItems, []);
+  });
+
+  it("inspects one exact historical native turn with stable account and workspace checks", async (t) => {
+    const accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
+    let checks = 0;
+    const f = fixture(t, {
+      accountContext: () => ({ ...accounts }),
+      beforeRequest: () => { checks += 1; },
+      inspectResponse: ({ threadId, turnId, expectedCwd }) => {
+        assert.deepEqual({ threadId, turnId, expectedCwd }, { threadId: "task", turnId: "historic-turn", expectedCwd: f.cwd });
+        return { status: "completed", threadId, turnId, source: "codex_desktop_rollout", assistantItems: [{ id: "historic-item", text: "historic reply" }], text: "historic reply", replySha256: "c".repeat(64) };
+      },
+    });
+    const result = await f.delivery.inspectNativeTurn("task", "historic-turn");
+    assert.equal(result.text, "historic reply");
+    assert.deepEqual(result.assistantItems.map((item) => item.id), ["historic-item"]);
+    assert.ok(checks >= 5);
+    assert.deepEqual(f.calls.map((call) => call.operation), ["read_thread", "read_thread"]);
+  });
+
+  it("recovers a correlated final response after one native send and revalidates the account and task", async (t) => {
+    const accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
+    let checks = 0;
+    const f = fixture(t, {
+      accountContext: () => accounts,
+      beforeRequest: () => { checks += 1; },
+      captureResponse: ({ threadId, expectedCwd }) => ({ status: "available", threadId, cwd: expectedCwd, marker: "before-send" }),
+      readResponse: (binding) => {
+        assert.equal(binding.threadId, "task");
+        assert.equal(binding.turnId, "new-turn");
+        assert.equal(binding.previousTurnId, "old-turn");
+        assert.equal(binding.executorThreadId, "executor-thread");
+        assert.equal(binding.prompt, "exact prompt");
+        assert.equal(binding.watermark.marker, "before-send");
+        return { status: "completed", text: "Recovered final", turnId: "new-turn", assistantItems: [{ id: "assistant-item", text: "Recovered final" }], replySha256: "b".repeat(64), source: "codex_desktop_rollout" };
+      },
+      dispatch({ operation }) {
+        if (operation === "send_message_to_thread") return { threadId: "task", status: "accepted" };
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "new-turn", status: "completed" }, latestAssistantMessage: null }] };
+        if (operation === "read_thread") return { thread: { id: "task", hostId: "local", cwd: f.cwd, title: "Task" }, turns: [{ id: f.calls.some((call) => call.operation === "send_message_to_thread") ? "new-turn" : "old-turn" }] };
+      },
+    });
+    const delivered = await f.delivery.send({ threadId: "task", prompt: "exact prompt", cwd: f.cwd });
+    const result = await f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: delivered.previousTurnId, responseObservation: delivered.responseObservation });
+    assert.equal(result.text, "Recovered final");
+    assert.equal(result.observationStatus, "completed");
+    assert.deepEqual(result.assistantItems, [{ id: "assistant-item", text: "Recovered final" }]);
+    assert.equal(f.calls.filter((call) => call.operation === "send_message_to_thread").length, 1);
+    assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 0);
+    assert.deepEqual(f.calls.map((call) => call.operation), ["read_thread", "send_message_to_thread", "wait_threads", "read_thread"]);
+    assert.ok(checks >= 6);
+  });
+
+  it("withholds a local response when the original account changes during observation", async (t) => {
+    let accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
+    const f = fixture(t, {
+      accountContext: () => accounts,
+      beforeRequest: () => {},
+      readResponse: () => { accounts = { ...accounts, codex: "c".repeat(64) }; return { status: "completed", text: "must be withheld", turnId: "new-turn", assistantItems: [{ id: "assistant-item", text: "must be withheld" }] }; },
+      dispatch({ operation }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "new-turn", status: "completed" }, latestAssistantMessage: null }] };
+      },
+    });
+    await assert.rejects(f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "prompt",
+      accountContext: { ...accounts }, watermark: { status: "available" },
+    } }), /account changed/i);
+    assert.equal(f.calls.some((call) => ["send_message_to_thread", "create_thread"].includes(call.operation)), false);
+  });
   it("probes the account-bound endpoint for status and refuses readiness without verified accounts", async (t) => {
     let accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
     const f = fixture(t, { accountContext: () => accounts });

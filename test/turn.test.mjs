@@ -15,6 +15,7 @@ const turnModule = new URL("../src/turn.mjs", import.meta.url).href;
 function stubClient({ onRequest } = {}) {
   const threadListeners = new Map();
   const disconnectListeners = new Set();
+  let itemSequence = 0;
 
   return {
     threadListeners,
@@ -37,6 +38,7 @@ function stubClient({ onRequest } = {}) {
       return { turn: { id: "turn-1" } };
     },
     emit(threadId, method, params) {
+      if (method === "item/completed" && params?.item && !params.item.id) params = { ...params, item: { ...params.item, id: `item-${++itemSequence}` } };
       for (const listener of [...(threadListeners.get(threadId) ?? [])]) listener({ method, params });
     },
     drop() {
@@ -91,7 +93,7 @@ describe("runTurn", () => {
    * buffered until the id is known, and dropping that buffer loses the first
    * commands of every turn.
    */
-  it("replays notifications that arrive before the turn id is known", async () => {
+  it("replays exact-turn notifications that arrive before turn/start acknowledges", async () => {
     let release;
     const gate = new Promise((resolve) => {
       release = resolve;
@@ -107,7 +109,8 @@ describe("runTurn", () => {
     await new Promise((r) => globalThis.setImmediate(r));
     client.emit("t1", "item/completed", {
       threadId: "t1",
-      item: { type: "agentMessage", text: "early" },
+      turnId: "turn-1",
+      item: { id: "early-item", type: "agentMessage", text: "early" },
     });
     release();
     await new Promise((r) => globalThis.setImmediate(r));
@@ -138,6 +141,57 @@ describe("runTurn", () => {
     assert.equal(result.text, "mine");
   });
 
+  it("ignores late events from the previous turn and events carrying another thread id", async () => {
+    const client = stubClient();
+    const turn = runTurn(client, { threadId: "t1", input: [] });
+    await new Promise((r) => globalThis.setImmediate(r));
+    client.emit("t1", "item/completed", { threadId: "t1", turnId: "turn-old", item: { id: "old", type: "agentMessage", text: "old" } });
+    client.emit("t1", "item/completed", { threadId: "t2", turnId: "turn-1", item: { id: "other", type: "agentMessage", text: "other thread" } });
+    client.emit("t1", "item/completed", { threadId: "t1", turnId: "turn-1", item: { id: "mine", type: "agentMessage", text: "current" } });
+    client.emit("t1", "turn/completed", completed("t1").params);
+    const result = await turn;
+    assert.equal(result.text, "current");
+    assert.deepEqual(result.assistantItems, [{ id: "mine", text: "current" }]);
+  });
+
+  it("requires an exact turn id on item notifications after turn/start", async () => {
+    const client = stubClient();
+    const turn = runTurn(client, { threadId: "t1", input: [] });
+    await new Promise((r) => globalThis.setImmediate(r));
+    client.emit("t1", "item/completed", { threadId: "t1", item: { id: "unbound", type: "agentMessage", text: "must not bind" } });
+    client.emit("t1", "turn/completed", completed("t1").params);
+    const result = await turn;
+    assert.equal(result.text, "");
+    assert.deepEqual(result.assistantItems, []);
+  });
+
+  it("deduplicates identical item notifications and fails conflicting duplicates", async () => {
+    for (const conflicting of [false, true]) {
+      const client = stubClient();
+      const turn = runTurn(client, { threadId: "t1", input: [] });
+      await new Promise((r) => globalThis.setImmediate(r));
+      client.emit("t1", "item/completed", { threadId: "t1", turnId: "turn-1", item: { id: "same", type: "agentMessage", text: "once" } });
+      client.emit("t1", "item/completed", { threadId: "t1", turnId: "turn-1", item: { id: "same", type: "agentMessage", text: conflicting ? "changed" : "once" } });
+      if (!conflicting) client.emit("t1", "turn/completed", completed("t1").params);
+      const result = await turn;
+      assert.equal(result.status, conflicting ? "failed" : "completed");
+      assert.equal(result.text, conflicting ? "" : "once");
+    }
+  });
+
+  it("does not let an empty following turn inherit the previous reply", async () => {
+    const client = stubClient();
+    const first = runTurn(client, { threadId: "t1", input: [] });
+    await new Promise((r) => globalThis.setImmediate(r));
+    client.emit("t1", "item/completed", { threadId: "t1", turnId: "turn-1", item: { id: "first", type: "agentMessage", text: "first reply" } });
+    client.emit("t1", "turn/completed", completed("t1").params);
+    assert.equal((await first).text, "first reply");
+    const second = runTurn(client, { threadId: "t1", input: [] });
+    await new Promise((r) => globalThis.setImmediate(r));
+    client.emit("t1", "turn/completed", completed("t1").params);
+    assert.equal((await second).text, "");
+  });
+
   it("reports a timeout without cancelling the turn", async () => {
     const client = stubClient();
     const startedAt = Date.now();
@@ -145,6 +199,10 @@ describe("runTurn", () => {
     assert.equal(result.status, "timeout");
     assert.equal(result.turnId, "turn-1", "the turn id must survive so the caller can read or interrupt it");
     assert.ok(Date.now() - startedAt >= 100);
+    client.emit("t1", "item/completed", { threadId: "t1", turnId: "turn-1", item: { id: "late", type: "agentMessage", text: "late reply" } });
+    client.emit("t1", "turn/completed", completed("t1").params);
+    assert.equal(result.text, "");
+    assert.equal(client.threadListeners.size, 0, "late completion after timeout must have no pending consumer");
   });
 
   it("returns on deadline even when turn/start never acknowledges", async () => {
@@ -182,11 +240,25 @@ describe("runTurn", () => {
     assert.equal(client.disconnectListeners.size, 0);
   });
 
-  it("handles an already terminal turn returned directly by turn/start", async () => {
-    const client = stubClient({ onRequest: () => ({ turn: { id: "turn-1", status: "completed" } }) });
+  it("consumes exact assistant items from an already terminal turn/start response", async () => {
+    const client = stubClient({ onRequest: () => ({ turn: { id: "turn-1", status: "completed", items: [{ id: "terminal-item", type: "agentMessage", text: " terminal reply\r\n" }] } }) });
     const result = await runTurn(client, { threadId: "t1", input: [] });
     assert.equal(result.status, "completed");
     assert.equal(result.turnId, "turn-1");
+    assert.equal(result.text, " terminal reply\r\n");
+    assert.deepEqual(result.assistantItems, [{ id: "terminal-item", text: " terminal reply\r\n" }]);
+    assert.equal(result.responseStatus, "completed");
+  });
+
+  it("consumes and deduplicates exact assistant items carried by turn/completed", async () => {
+    const client = stubClient();
+    const turn = runTurn(client, { threadId: "t1", input: [] });
+    await new Promise((r) => globalThis.setImmediate(r));
+    client.emit("t1", "item/completed", { threadId: "t1", turnId: "turn-1", item: { id: "final-item", type: "agentMessage", text: "final" } });
+    client.emit("t1", "turn/completed", { threadId: "t1", turnId: "turn-1", turn: { id: "turn-1", status: "completed", items: [{ id: "final-item", type: "agentMessage", text: "final" }] } });
+    const result = await turn;
+    assert.equal(result.text, "final");
+    assert.deepEqual(result.assistantItems, [{ id: "final-item", text: "final" }]);
   });
 
   it("preserves the authorized thread and input when turn overrides are supplied", async () => {

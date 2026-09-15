@@ -1,9 +1,11 @@
+import crypto from "node:crypto";
+
 const TERMINAL_STATUSES = new Set(["completed", "interrupted", "failed"]);
 
 function summarizeItem(item) {
   switch (item?.type) {
     case "agentMessage":
-      return { kind: "agentMessage", text: item.text ?? "" };
+      return { kind: "agentMessage", id: item.id ?? null, text: item.text ?? "" };
     case "commandExecution":
       return {
         kind: "command",
@@ -32,9 +34,11 @@ function summarizeItem(item) {
  */
 export async function runTurn(client, { threadId, input, timeoutMs = 240000, turnOverrides = {} }) {
   const messages = [];
+  const assistantItems = [];
   const activity = [];
   const errors = [];
   const buffered = [];
+  const completedItems = new Map();
   let turnId = null;
   let settled = false;
   let resolveDone;
@@ -56,6 +60,7 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
   const process = (msg) => {
     if (settled) return;
     const params = msg.params ?? {};
+    if (params.threadId !== undefined && params.threadId !== threadId) return;
     if (turnId && params.turnId && params.turnId !== turnId) return;
 
     switch (msg.method) {
@@ -65,10 +70,25 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
         return;
       }
       case "item/completed": {
+        if (!turnId || params.turnId !== turnId) return;
         const summary = summarizeItem(params.item);
         if (!summary) return;
+        const itemId = params.item?.id;
+        if (typeof itemId !== "string" || !itemId.trim()) return;
+        const fingerprint = JSON.stringify(summary);
+        if (completedItems.has(itemId)) {
+          if (completedItems.get(itemId) !== fingerprint && !settled) {
+            settled = true;
+            resolveDone({ status: "failed", error: { message: `Conflicting duplicate item ${itemId}` } });
+          }
+          return;
+        }
+        completedItems.set(itemId, fingerprint);
         if (summary.kind === "agentMessage") {
-          if (summary.text.trim()) messages.push(summary.text);
+          if (summary.text.trim()) {
+            messages.push(summary.text);
+            assistantItems.push({ id: itemId, text: summary.text });
+          }
         } else {
           activity.push(summary);
         }
@@ -86,6 +106,9 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
         const turn = params.turn ?? {};
         if (turnId && turn.id && turn.id !== turnId) return;
         if (!TERMINAL_STATUSES.has(turn.status)) return;
+        if (Array.isArray(turn.items)) {
+          for (const item of turn.items) process({ method: "item/completed", params: { threadId, turnId, item } });
+        }
         if (settled) return;
         settled = true;
         resolveDone({ status: turn.status, error: turn.error ?? null, durationMs: turn.durationMs ?? null });
@@ -135,18 +158,27 @@ export async function runTurn(client, { threadId, input, timeoutMs = 240000, tur
         throw new Error("Codex app-server did not return a turn id for turn/start");
       }
       for (const msg of buffered.splice(0)) process(msg);
+      if (Array.isArray(start.started?.turn?.items)) {
+        for (const item of start.started.turn.items) process({ method: "item/completed", params: { threadId, turnId, item } });
+      }
       if (TERMINAL_STATUSES.has(start.started?.turn?.status)) {
         process({ method: "turn/completed", params: { turn: start.started.turn } });
       }
       outcome = await done;
     }
+    const completedReply = outcome.status === "completed";
+    const text = completedReply ? messages.join("\n\n") : "";
+    const returnedItems = completedReply ? assistantItems : [];
     return {
       threadId,
       turnId,
       status: outcome.status,
       error: outcome.error,
       durationMs: outcome.durationMs ?? null,
-      text: messages.join("\n\n").trim(),
+      text,
+      responseStatus: completedReply ? (returnedItems.length ? "completed" : "completed_no_reply") : "unavailable",
+      assistantItems: returnedItems,
+      replySha256: completedReply ? crypto.createHash("sha256").update(text.replace(/\r\n?/g, "\n").normalize("NFC"), "utf8").digest("hex") : null,
       activity,
       errors,
     };

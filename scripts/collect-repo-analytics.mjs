@@ -45,6 +45,11 @@ function traffic(data, key) {
   return { count: count(data.count), uniques: count(data.uniques), [key]: data[key].map(row => ({ timestamp: `${day(row.timestamp)}T00:00:00Z`, count: count(row.count), uniques: count(row.uniques) })) };
 }
 
+export function httpStatus(error) {
+  const match = /\(HTTP (\d{3})\)/.exec(`${error?.stderr ?? ''}\n${error?.message ?? ''}`);
+  return match ? Number(match[1]) : undefined;
+}
+
 async function github(endpoint, paginate = false) {
   const args = ['api', '--hostname', 'github.com', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', endpoint];
   if (paginate) args.push('--paginate', '--slurp');
@@ -79,7 +84,12 @@ export async function collectSources(options, { gh = github, fetcher = fetch, no
   };
   await Promise.all(Object.entries(jobs).map(async ([source, job]) => {
     try { snapshot[source] = await job(); }
-    catch { snapshot.errors.push({ source, message: source === 'npm' ? 'Request failed or response invalid. Check npm package, network, and npm API availability.' : 'Request failed or response invalid. Check gh authentication, repository permissions, network, and GitHub API limits.' }); }
+    catch (error) {
+      const entry = { source, message: source === 'npm' ? 'Request failed or response invalid. Check npm package, network, and npm API availability.' : 'Request failed or response invalid. Check gh authentication, repository permissions, network, and GitHub API limits.' };
+      const status = httpStatus(error);
+      if (status) entry.status = status;
+      snapshot.errors.push(entry);
+    }
   }));
   snapshot.errors.sort((a, b) => a.source.localeCompare(b.source));
   return snapshot;

@@ -21,6 +21,8 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     timeout-minutes: 10
+    outputs:
+      incomplete: ${{ steps.refresh.outcome == 'failure' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -37,6 +39,14 @@ jobs:
           path: public-analytics
       - uses: actions/deploy-pages@v4
         id: deployment
+
+  report:
+    needs: refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
       - name: Report incomplete collection
-        if: steps.refresh.outcome == 'failure'
-        run: exit 1
+        if: needs.refresh.outputs.incomplete == 'true'
+        run: |
+          echo "::error::One or more analytics sources were not refreshed; see the refresh job warnings. The Pages deployment itself succeeded with retained data."
+          exit 1

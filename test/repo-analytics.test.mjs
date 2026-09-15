@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { collectSources, mergeHistory, parseArgs, runCollection, defaultOutput } from '../scripts/collect-repo-analytics.mjs';
+import { collectSources, httpStatus, mergeHistory, parseArgs, runCollection, defaultOutput } from '../scripts/collect-repo-analytics.mjs';
 
 const options = { repo: 'owner/repo', package: '@owner/pkg' };
 
@@ -75,6 +75,14 @@ test('partial collection preserves same-day successful data and records actual s
   assert.equal(updated.snapshots[0].sourceCollectedAt.npm, partial.collectedAt);
   assert.deepEqual(updated.daily.views, history.daily.views);
   assert.throws(() => mergeHistory(history, { ...options, repo: 'different/repo' }, first), /mismatch/);
+});
+
+test('source failures keep the HTTP status without leaking the underlying message', async () => {
+  const forbidden = Object.assign(new Error('gh failed'), { stderr: 'gh: Resource not accessible by personal access token (HTTP 403)\n' });
+  const partial = await collectSources(options, dependencies({ gh: async (endpoint, paginate) => { if (endpoint.includes('/traffic/')) throw forbidden; return dependencies().gh(endpoint, paginate); } }));
+  assert.deepEqual(partial.errors.map(row => [row.source, row.status]), [['clones', 403], ['views', 403]]);
+  assert.ok(!JSON.stringify(partial).includes('Resource not accessible'));
+  assert.equal(httpStatus(new Error('offline')), undefined);
 });
 
 test('invalid counts or package identity become isolated source failures', async () => {

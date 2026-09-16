@@ -84,7 +84,7 @@ const server = new McpServer({ name: `vscode-${host}-bridge`, version: "0.1.0" }
 function tool(name, description, inputSchema, action) {
   server.registerTool(name, { description, inputSchema }, async (args, extra) => {
     try { return result(await action(args, await caller(extra?._meta), extra?._meta)); }
-    catch (error) { return result({ error: error.message, ...(error.msgId ? { msgId: error.msgId } : {}) }, true); }
+    catch (error) { return result({ error: error.message, ...(error.msgId ? { msgId: error.msgId } : {}), ...(error.delivery ? { delivery: error.delivery } : {}) }, true); }
   });
 }
 
@@ -149,6 +149,9 @@ if (host === "claude") {
       throw error;
     });
     deliveryOwners.set(receipt.msgId, sender.threadId);
+    if (!receipt.reply && ["held", "refused", "expired"].includes(receipt.delivery?.status)) {
+      throw Object.assign(new Error(`Claude returned ${receipt.delivery.status}: ${receipt.delivery.reason ?? "the message was not delivered to the conversation"}. Sender permission class: ${sender.mode}. This does not prove an approval control exists in the VS Code extension. Report the receipt to the user; do not resend, change permissions, or claim that the user can click an unverified approval button.`), { msgId: receipt.msgId, delivery: receipt.delivery });
+    }
     return { ...receipt, status: receipt.reply ? "reply_received" : receipt.delivery?.status ?? "sent_unconfirmed" };
   });
   tool("read_claude_vscode_delivery", "Inspect an earlier send without resending it.", { msgId: z.string() }, async ({ msgId }, sender) => {

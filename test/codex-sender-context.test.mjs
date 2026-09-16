@@ -39,6 +39,17 @@ it("does not infer calling identity from global environment or manual relay bind
   assert.equal(result.mode, null);
 });
 
+it("keeps VS Code caller verification separate from the default Desktop policy", () => {
+  const f = fixture();
+  assert.equal(f.read({ originator: "codex_vscode" }).status, "unavailable");
+  f.session.originator = "codex_vscode";
+  f.write();
+  assert.equal(f.read().status, "unavailable");
+  assert.equal(f.read({ originator: "codex_vscode" }).status, "verified");
+  f.metadata.turn_id = "00000000-0000-4000-8000-000000000000";
+  assert.equal(f.read({ originator: "codex_vscode" }).status, "unavailable");
+});
+
 it("rejects malformed host metadata and non-user sources", () => {
   for (const field of ["thread_id", "turn_id", "thread_source"]) {
     const f = fixture();

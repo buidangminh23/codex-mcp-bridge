@@ -29,7 +29,7 @@ function reviewFlag(metadata, field) {
   return "invalid";
 }
 
-function findRollout(sessions, threadId) {
+export function findRollout(sessions, threadId) {
   if (!fs.lstatSync(sessions).isDirectory()) throw new Error("The Codex sessions path is not a regular directory");
   const queue = [{ directory: sessions, depth: 0 }];
   const matches = [];
@@ -57,7 +57,7 @@ function findRollout(sessions, threadId) {
   return matches[0];
 }
 
-function readState(file, maxBytes) {
+export function readState(file, maxBytes) {
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
     const before = fs.fstatSync(descriptor);
@@ -120,7 +120,7 @@ function permissionClass(context, metadata) {
   throw new Error("The caller's effective approval policy is unsupported");
 }
 
-export function readCodexSenderContext(meta, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
+export function readCodexSenderContext(meta, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES, originator = "Codex Desktop" } = {}) {
   const metadata = object(meta) ? meta[METADATA_KEY] : undefined;
   if (!object(metadata) || typeof metadata.thread_id !== "string" || typeof metadata.turn_id !== "string" || !UUID.test(metadata.thread_id) || !UUID.test(metadata.turn_id)) return unavailable("This MCP call has no valid host-supplied Codex task and turn identity");
   const identity = { threadId: metadata.thread_id, turnId: metadata.turn_id,
@@ -134,7 +134,8 @@ export function readCodexSenderContext(meta, { env = process.env, maxRolloutByte
     const file = findRollout(sessions, identity.threadId);
     const state = readState(file, Math.min(MAX_ROLLOUT_BYTES, maxRolloutBytes));
     const { session, context, lifecycle } = state;
-    if (session?.id !== identity.threadId || session.originator !== "Codex Desktop" || session.source !== "vscode") throw new Error("The caller rollout does not confirm a root Codex Desktop task");
+    if (!["Codex Desktop", "codex_vscode"].includes(originator)) throw new Error("Unsupported calling host");
+    if (session?.id !== identity.threadId || session.originator !== originator || session.source !== "vscode") throw new Error(`The caller rollout does not confirm a root ${originator} task`);
     if (context?.turn_id !== identity.turnId || lifecycle?.turn_id !== identity.turnId || !STARTED.has(lifecycle?.type)) throw new Error("The calling turn is no longer the latest active Codex turn");
     if (typeof context.cwd !== "string" || !path.isAbsolute(context.cwd) || typeof session.cwd !== "string" || !path.isAbsolute(session.cwd)) throw new Error("The caller's workspace is missing or invalid");
     const cwd = fs.realpathSync.native(context.cwd);

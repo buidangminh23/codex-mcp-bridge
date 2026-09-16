@@ -27,13 +27,6 @@ if (ref.object.sha !== sha) throw new Error('Analytics publication changed durin
 const directory = path.resolve('public-analytics');
 await mkdir(directory, { recursive: true });
 for (const [name, content] of Object.entries(publicFiles(history, usage))) await writeFile(path.join(directory, name), content);
-const publishedTree = await githubApi(`repos/${repo}/git/trees/${sha}`);
-for (const name of ['desktop-demo.gif', 'desktop-demo.mp4']) {
-  const entry = publishedTree.tree.find(row => row.path === name && row.type === 'blob');
-  if (!entry) throw new Error(`Missing demo asset: ${name}`);
-  const blob = await githubApi(`repos/${repo}/git/blobs/${entry.sha}`);
-  await writeFile(path.join(directory, name), Buffer.from(blob.content, 'base64'));
-}
 console.log(`Published aggregate analytics: ${sha}`);
 for (const error of snapshot.errors) {
   const status = error.status ? ` (HTTP ${error.status})` : '';

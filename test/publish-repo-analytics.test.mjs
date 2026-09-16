@@ -61,22 +61,15 @@ test('existing branch publication is non-forced and concurrent update failure pr
   const gh = async (endpoint, options) => {
     calls.push({ endpoint, ...options });
     if (endpoint.endsWith('/git/ref/heads/analytics')) return { object: { sha: 'old-sha' } };
-    if (endpoint.endsWith('/git/trees/old-sha')) return { tree: [
-      { path: 'desktop-demo.gif', mode: '100644', type: 'blob', sha: 'gif-sha' },
-      { path: 'desktop-demo.mp4', mode: '100644', type: 'blob', sha: 'mp4-sha' },
-      { path: 'history.json', mode: '100644', type: 'blob', sha: 'private-sha' },
-    ] };
     if (options?.method === 'PATCH') throw new Error('concurrent update');
     return { sha: 'new-sha' };
   };
   await assert.rejects(publishAnalytics('owner/repo', publicFiles(history), gh), /concurrent update/);
   assert.deepEqual(calls.find(call => call.endpoint.endsWith('/git/commits')).body.parents, ['old-sha']);
   assert.deepEqual(calls.at(-1).body, { sha: 'new-sha', force: false });
+  assert.ok(!calls.some(call => call.endpoint.endsWith('/git/trees/old-sha')));
   const tree = calls.find(call => call.endpoint.endsWith('/git/trees')).body.tree;
-  assert.equal(tree.length, 6);
-  assert.equal(tree.find(row => row.path === 'desktop-demo.gif').sha, 'gif-sha');
-  assert.equal(tree.find(row => row.path === 'desktop-demo.mp4').sha, 'mp4-sha');
-  assert.ok(!tree.some(row => row.path === 'history.json')); 
+  assert.deepEqual(tree.map(row => row.path).sort(), Object.keys(publicFiles(history)).sort());
 });
 
 test('authentication failure cannot be mistaken for a missing analytics branch', async () => {

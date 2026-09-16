@@ -176,9 +176,7 @@ export async function publishAnalytics(repo, files, gh = githubApi) {
   let previous;
   try { previous = (await gh(`repos/${repo}/git/ref/heads/analytics`)).object.sha; }
   catch (error) { if (error.status !== 404) throw error; }
-  const existing = previous ? (await gh(`repos/${repo}/git/trees/${previous}`)).tree : [];
-  const media = existing.filter(row => row.type === 'blob' && row.mode === '100644' && ['desktop-demo.gif', 'desktop-demo.mp4'].includes(row.path)).map(({ path, mode, type, sha }) => ({ path, mode, type, sha }));
-  const tree = await gh(`repos/${repo}/git/trees`, { method: 'POST', body: { tree: [...media, ...Object.entries(files).map(([filename, content]) => ({ path: filename, mode: '100644', type: 'blob', content }))] } });
+  const tree = await gh(`repos/${repo}/git/trees`, { method: 'POST', body: { tree: Object.entries(files).map(([filename, content]) => ({ path: filename, mode: '100644', type: 'blob', content })) } });
   const commit = await gh(`repos/${repo}/git/commits`, { method: 'POST', body: { message: 'docs: refresh public aggregate analytics', tree: tree.sha, parents: previous ? [previous] : [] } });
   if (previous) await gh(`repos/${repo}/git/refs/heads/analytics`, { method: 'PATCH', body: { sha: commit.sha, force: false } });
   else await gh(`repos/${repo}/git/refs`, { method: 'POST', body: { ref: 'refs/heads/analytics', sha: commit.sha } });

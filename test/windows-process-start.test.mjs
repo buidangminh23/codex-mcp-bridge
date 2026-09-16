@@ -12,6 +12,14 @@ const saved={HOME:process.env.HOME,CODEX_BRIDGE_HARDENED:process.env.CODEX_BRIDG
 const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-process-identity-'));
 const registry=path.join(scratch,'.claude','sessions');
 const shell=path.join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
+/**
+ * The same cold PowerShell process-identity read that
+ * test/bridge-integration.test.mjs budgets, run here at import time while a
+ * second file shares the runner under --test-concurrency=2. Cold starts there
+ * were measured between 5s and 15s and a 15s ceiling failed a run at 15049ms,
+ * so this matches that file's 30s ceiling - about twice the worst measured
+ * start, sized to bound a hang rather than to police the 165ms it takes locally.
+ */
 const identity=windows?execFileSync(shell,['-NoProfile','-NonInteractive','-Command',`[System.Diagnostics.Process]::GetProcessById(${process.pid}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`],{windowsHide:true,timeout:30000}).toString().trim():'';
 const socket=`\\\\.\\pipe\\LOCAL\\bridge-identity-test-${process.pid}`;
 before(()=>{process.env.HOME=scratch;process.env.CODEX_BRIDGE_HARDENED='1';fs.mkdirSync(registry,{recursive:true});});

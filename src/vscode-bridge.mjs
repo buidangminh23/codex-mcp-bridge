@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { VSCodeIpc } from "./vscode-ipc.mjs";
+import { classifyClaudeDelivery, classifyCodexCompletion } from "./vscode-delivery.mjs";
 import { findRollout, readState, readCodexSenderContext } from "./codex-sender-context.mjs";
 import { readProcessAncestry } from "./claude-sender-context.mjs";
 import { listClaudeSessions, assertClaudeSessionCwd, assertClaudeSessionProcess, PeerEndpoint } from "./peer-protocol.mjs";
@@ -121,9 +122,9 @@ if (host === "claude") {
   });
   tool("read_codex_vscode_reply", "Read completion of the exact returned turn ID. A submission receipt alone does not prove completion.", { threadId: z.string(), turnId: z.string() }, async ({ threadId, turnId }, sender) => {
     const state = codexTask(threadId, sender.cwd);
-    if (state.lifecycle?.turn_id !== turnId || !["task_complete", "task_completed", "turn_complete", "turn_completed"].includes(state.lifecycle.type)) return { status: "pending_or_unavailable", threadId, turnId };
-    if (unresolved.get(threadId) === turnId) unresolved.delete(threadId);
-    return { status: "completed", threadId, turnId, text: state.lifecycle.last_agent_message ?? null };
+    const completion = classifyCodexCompletion(state.lifecycle, turnId);
+    if (["completed", "failed", "interrupted"].includes(completion.status) && unresolved.get(threadId) === turnId) unresolved.delete(threadId);
+    return { threadId, ...completion };
   });
 } else {
   tool("send_to_claude_vscode", "Send to the exact Claude Code VS Code session in this project. Never changes recipient permissions. Do not ask the recipient to call back while this synchronous request waits.", { sessionId: z.string(), message: z.string().min(1).max(50000), waitSec: z.number().int().min(0).max(45).default(30) }, async ({ sessionId, message, waitSec }, sender, meta) => {
@@ -149,10 +150,7 @@ if (host === "claude") {
       throw error;
     });
     deliveryOwners.set(receipt.msgId, sender.threadId);
-    if (!receipt.reply && ["held", "refused", "expired"].includes(receipt.delivery?.status)) {
-      throw Object.assign(new Error(`Claude returned ${receipt.delivery.status}: ${receipt.delivery.reason ?? "the message was not delivered to the conversation"}. Sender permission class: ${sender.mode}. This does not prove an approval control exists in the VS Code extension. Report the receipt to the user; do not resend, change permissions, or claim that the user can click an unverified approval button.`), { msgId: receipt.msgId, delivery: receipt.delivery });
-    }
-    return { ...receipt, status: receipt.reply ? "reply_received" : receipt.delivery?.status ?? "sent_unconfirmed" };
+    return classifyClaudeDelivery(receipt, sender.mode);
   });
   tool("read_claude_vscode_delivery", "Inspect an earlier send without resending it.", { msgId: z.string() }, async ({ msgId }, sender) => {
     if (deliveryOwners.get(msgId) !== sender.threadId) throw new Error("This receipt does not belong to the calling task");

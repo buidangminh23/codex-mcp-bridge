@@ -58,7 +58,11 @@ function run(shell, { before, beforeMetadata, after = "1.2.3", args = ["install"
 }
 
 for (const shell of ["bash", "zsh"]) {
-  const available = process.platform !== "win32" && spawnSync(shell, ["--version"], { timeout: 20000 }).status === 0;
+  // This probe runs at module load, so a hang blocks the whole file from loading rather than
+  // failing one test, and a timeout reads as an unavailable shell that silently skips the suite.
+  // The budget bounds that hang, it does not police speed: printing a shell version costs tens of
+  // milliseconds, and the sibling PowerShell probe already uses this ceiling for a heavier start.
+  const available = process.platform !== "win32" && spawnSync(shell, ["--version"], { timeout: 20_000 }).status === 0;
   describe(`${shell} npm installation footer`, { skip: !available && `${shell} is not available` }, () => {
     it("reports a first installation after npm's own final output", () => {
       const result = run(shell);

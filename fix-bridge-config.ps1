@@ -4,7 +4,10 @@ param(
     [string[]]$ConfigPath = @(
         (Join-Path $env:APPDATA 'Claude/claude_desktop_config.json'),
         (Join-Path $env:USERPROFILE '.claude.json')
-    )
+    ),
+    [scriptblock]$RunningProcesses = {
+        Get-CimInstance Win32_Process -Filter "Name='claude.exe'" -ErrorAction Stop
+    }
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,11 +55,25 @@ foreach ($file in $ConfigPath) {
 if ($found -eq 0) { throw 'No existing codex-bridge or codex-bridge-desktop entries found.' }
 foreach ($plan in $plans) {
     if (-not $PSCmdlet.ShouldProcess($plan.File, 'Repair bridge launcher while preserving access policy')) { continue }
-    $desktopConfig = if ($IsWindows) { Join-Path $env:APPDATA 'Claude/claude_desktop_config.json' }
-    if ($IsWindows -and $plan.File -eq [IO.Path]::GetFullPath($desktopConfig)) {
-        $desktop = Get-CimInstance Win32_Process -Filter "Name='claude.exe'" |
-            Where-Object { -not $_.ExecutablePath -or $_.ExecutablePath -match 'AnthropicClaude|[\\/]Claude[\\/]' }
-        if ($desktop) { throw 'Close Claude Desktop before repairing its configuration; it may overwrite edits on exit.' }
+    if ($IsWindows -or $PSBoundParameters.ContainsKey('RunningProcesses')) {
+        $desktopConfig = [IO.Path]::GetFullPath((Join-Path $env:APPDATA 'Claude/claude_desktop_config.json'))
+        $codeConfig = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.claude.json'))
+        $targetConfig = [IO.Path]::GetFullPath($plan.File)
+        if ($targetConfig -eq $desktopConfig -or $targetConfig -eq $codeConfig) {
+            $processes = @(& $RunningProcesses)
+            foreach ($process in $processes) {
+                $executablePath = $process.ExecutablePath
+                $unknown = [string]::IsNullOrWhiteSpace($executablePath)
+                $code = $executablePath -match 'claude-code|anthropic\.claude-code'
+                $desktop = -not $code -and $executablePath -match 'AnthropicClaude|WindowsApps[\\/]Claude_'
+                if ($targetConfig -eq $desktopConfig -and ($unknown -or $desktop)) {
+                    throw 'Close Claude Desktop before repairing its configuration; it may overwrite edits on exit.'
+                }
+                if ($targetConfig -eq $codeConfig -and ($unknown -or $code)) {
+                    throw 'Close Claude Code before repairing ~/.claude.json; it rewrites the file on exit.'
+                }
+            }
+        }
     }
     if ([IO.File]::ReadAllText($plan.File) -cne $plan.Original) { throw "Configuration changed during repair: $($plan.File)" }
     $suffix = [guid]::NewGuid().ToString('N')

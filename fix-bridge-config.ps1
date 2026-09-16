@@ -52,7 +52,7 @@ foreach ($file in $ConfigPath) {
 if ($found -eq 0) { throw 'No existing codex-bridge or codex-bridge-desktop entries found.' }
 foreach ($plan in $plans) {
     if (-not $PSCmdlet.ShouldProcess($plan.File, 'Repair bridge launcher while preserving access policy')) { continue }
-    $desktopConfig = Join-Path $env:APPDATA 'Claude/claude_desktop_config.json'
+    $desktopConfig = if ($IsWindows) { Join-Path $env:APPDATA 'Claude/claude_desktop_config.json' }
     if ($IsWindows -and $plan.File -eq [IO.Path]::GetFullPath($desktopConfig)) {
         $desktop = Get-CimInstance Win32_Process -Filter "Name='claude.exe'" |
             Where-Object { -not $_.ExecutablePath -or $_.ExecutablePath -match 'AnthropicClaude|[\\/]Claude[\\/]' }

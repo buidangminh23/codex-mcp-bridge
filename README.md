@@ -8,6 +8,14 @@ Send prompts and replies between **Claude and Codex**, keeping each conversation
 
 https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 
+## Release notifications
+
+To receive new release notifications, open [this repository](https://github.com/buidangminh23/codex-mcp-bridge), select **Watch → Custom → Releases**, then click **Apply**. Choose GitHub or email delivery in your [notification settings](https://github.com/settings/notifications).
+
+Starring the repository or downloading/installing a package does not subscribe you to release notifications. Notifications do not update your installed copy; follow the installation instructions to update.
+
+[View release notes](https://github.com/buidangminh23/codex-mcp-bridge/releases).
+
 ## Project statistics
 
 **[Open live dashboard — refreshes every 30 seconds](https://buidangminh23.github.io/codex-mcp-bridge/)**

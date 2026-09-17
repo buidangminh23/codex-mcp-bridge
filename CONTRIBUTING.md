@@ -126,3 +126,16 @@ codex app-server generate-json-schema --out /tmp/codex-schema
 `ServerRequest.json` lists every request the server sends to a client; each one
 needs a reply, and an unanswered method stalls the turn instead of raising an
 error.
+## GitHub Packages mirror
+
+The github-packages.yml workflow validates an existing version tag, runs npm ci
+and npm test, checks the version and changelog, then publishes under the GitHub
+owner scope @buidangminh23 using GITHUB_TOKEN with packages:write. Only the runner
+checkout metadata changes; the @minhspark package on npmjs.com stays unchanged.
+The repository URL associates the GitHub package with this repository.
+
+Push a version tag for future publications, or manually dispatch this workflow
+from main with an existing release tag. Published versions are not overwritten.
+The workflow verifies registry metadata and downloads the published package.
+After first publication, verify package visibility and repository association in
+GitHub settings; new packages default to private.

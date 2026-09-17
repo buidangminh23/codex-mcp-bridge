@@ -1,0 +1,55 @@
+name: GitHub Packages
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: github-packages-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+      - name: Validate tagged source
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          npm ci
+          npm test
+          test "$TAG" = "v$(node -p "require('./package.json').version")"
+          node scripts/release-notes.mjs "${TAG#v}" > "$RUNNER_TEMP/release-notes.md"
+      - name: Publish repository-linked GitHub package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          name="${GITHUB_REPOSITORY#*/}"
+          version=$(node -p "require('./package.json').version")
+          npm pkg set "name=@$owner/$name" "repository.url=git+https://github.com/$GITHUB_REPOSITORY.git"
+          npm pkg set "publishConfig.registry=https://npm.pkg.github.com"
+          if npm view "@$owner/$name@$version" version --registry=https://npm.pkg.github.com > /dev/null 2>&1; then
+            echo "@$owner/$name@$version already published"
+          else
+            npm publish --ignore-scripts --registry=https://npm.pkg.github.com
+          fi
+          test "$(npm view "@$owner/$name@$version" version --registry=https://npm.pkg.github.com)" = "$version"
+          npm pack "@$owner/$name@$version" --ignore-scripts --registry=https://npm.pkg.github.com --pack-destination "$RUNNER_TEMP"

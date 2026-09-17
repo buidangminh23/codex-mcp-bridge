@@ -18,6 +18,20 @@ https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 
 ## Installation
 
+### GitHub Packages
+
+The repository-linked copy is [@buidangminh23/codex-mcp-bridge](https://github.com/buidangminh23/codex-mcp-bridge/packages)
+on npm.pkg.github.com. The npmjs.com package remains @minhspark/codex-mcp-bridge.
+GitHub's npm registry requires authentication with a classic token with read:packages,
+even for public packages. Authenticate locally and never commit a token:
+
+```bash
+npm login --scope=@buidangminh23 --registry=https://npm.pkg.github.com --auth-type=legacy
+npm install -g @buidangminh23/codex-mcp-bridge --registry=https://npm.pkg.github.com
+```
+
+Then follow the platform registration and verification instructions below.
+
 [Windows](#windows-powershell) · [macOS](#macos-terminal) · [Linux / WSL](#linux--wsl-bash) · [Claude Code registration](#register-claude-code) · [Verify](#verify-the-installation) · [Troubleshooting](#troubleshooting)
 
 Choose the mode for the conversations you want to connect:

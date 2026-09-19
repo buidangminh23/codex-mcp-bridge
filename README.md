@@ -8,6 +8,14 @@ Send prompts and replies between **Claude and Codex**, keeping each conversation
 
 https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 
+## Release notifications
+
+To receive new release notifications, open [this repository](https://github.com/buidangminh23/codex-mcp-bridge), select **Watch → Custom → Releases**, then click **Apply**. Choose GitHub or email delivery in your [notification settings](https://github.com/settings/notifications).
+
+Starring the repository or downloading/installing a package does not subscribe you to release notifications. Notifications do not update your installed copy; follow the installation instructions to update.
+
+[View release notes](https://github.com/buidangminh23/codex-mcp-bridge/releases).
+
 ## Project statistics
 
 **[Open live dashboard — refreshes every 30 seconds](https://buidangminh23.github.io/codex-mcp-bridge/)**
@@ -17,6 +25,20 @@ https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 [Full statistics and daily history](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics) · [Public aggregate JSON](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/data.json) · [How these metrics work](#repository-analytics)
 
 ## Installation
+
+### GitHub Packages
+
+The repository-linked copy is [@buidangminh23/codex-mcp-bridge](https://github.com/buidangminh23/codex-mcp-bridge/packages)
+on npm.pkg.github.com. The npmjs.com package remains @minhspark/codex-mcp-bridge.
+GitHub's npm registry requires authentication with a classic token with read:packages,
+even for public packages. Authenticate locally and never commit a token:
+
+```bash
+npm login --scope=@buidangminh23 --registry=https://npm.pkg.github.com --auth-type=legacy
+npm install -g @buidangminh23/codex-mcp-bridge --registry=https://npm.pkg.github.com
+```
+
+Then follow the platform registration and verification instructions below.
 
 [Windows](#windows-powershell) · [macOS](#macos-terminal) · [Linux / WSL](#linux--wsl-bash) · [Claude Code registration](#register-claude-code) · [Verify](#verify-the-installation) · [Troubleshooting](#troubleshooting)
 

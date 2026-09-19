@@ -104,7 +104,11 @@ function readPeerToken(socket) {
     const identity = readPeerProcessIdentity(key);
     const hasIdentity = Object.hasOwn(key, "procStart") || (IS_WINDOWS && Object.hasOwn(key, "procStartFt"));
     if (!identity && (hasIdentity || (IS_WINDOWS && hardenedBridgeEnabled()))) throw new Error("Peer process identity missing or invalid");
-    if (identity && identity !== readProcessStart(candidates[0].pid)) throw new Error("Peer process identity changed");
+    if (identity) {
+      const current = readProcessStart(candidates[0].pid);
+      if (current === null) throw new Error("The live peer process identity could not be read; message was not sent. That failure is not itself evidence the process changed.");
+      if (identity !== current) throw new Error("Peer process identity changed");
+    }
     return key.peerToken;
   } catch {
     if (IS_WINDOWS) throw new Error("The destination inbox authentication key is missing or invalid; message was not sent");
@@ -123,21 +127,31 @@ export function readPeerProcessIdentity(entry, platform = process.platform) {
   return values[0];
 }
 
+const PROCESS_START_TIMEOUT_MS = 30000;
+
 /**
  * MCP servers are spawned with an empty PATH, so `ps` must be addressed by its
  * absolute path - a bare lookup throws ENOENT and takes the whole server down
- * before it can answer the client's initialize call. The timestamp only guards
- * against pid reuse, so an empty value is an acceptable fallback.
+ * before it can answer the client's initialize call.
+ *
+ * A failed read is reported as null rather than as an empty string, because
+ * the callers compare this against a recorded identity and an empty string
+ * silently compares as "changed". A cold PowerShell on a contended Windows
+ * runner has been measured in this repo between 5s and 15s, so the previous
+ * 3s ceiling turned ordinary slowness into a report that the peer process had
+ * been swapped - the alarming reading of the two, and the one that fails a
+ * send. The budget now matches what the suites already give their own
+ * identity reads.
  */
 function readProcessStart(pid) {
   try {
     if (IS_WINDOWS) {
       const shell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      return execFileSync(shell, ["-NoProfile", "-NonInteractive", "-Command", `[System.Diagnostics.Process]::GetProcessById(${Number(pid)}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`], { timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
+      return execFileSync(shell, ["-NoProfile", "-NonInteractive", "-Command", `[System.Diagnostics.Process]::GetProcessById(${Number(pid)}).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`], { timeout: PROCESS_START_TIMEOUT_MS, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
     }
-    return execFileSync(PS_BIN, ["-o", "lstart=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, timeout: 3000 }).toString().trim();
+    return execFileSync(PS_BIN, ["-o", "lstart=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, timeout: PROCESS_START_TIMEOUT_MS }).toString().trim();
   } catch {
-    return "";
+    return null;
   }
 }
 
@@ -251,10 +265,13 @@ export function assertClaudeSessionCwd(session, expectedCwd) {
 }
 
 export function assertClaudeSessionProcess(session) {
-  if (!session?.alive || typeof session.processStart !== "string" || !session.processStart ||
-      readProcessStart(session.pid) !== session.processStart) {
-    throw new Error("The live Claude process identity is missing or changed. No message was sent; reopen the existing Desktop task and inspect its session again.");
+  const changed = "The live Claude process identity is missing or changed. No message was sent; reopen the existing Desktop task and inspect its session again.";
+  if (!session?.alive || typeof session.processStart !== "string" || !session.processStart) throw new Error(changed);
+  const current = readProcessStart(session.pid);
+  if (current === null) {
+    throw new Error("The live Claude process identity could not be read, so this send was refused rather than sent unverified. That failure is not itself evidence the session changed; inspect the existing Desktop task before retrying.");
   }
+  if (current !== session.processStart) throw new Error(changed);
 }
 
 /**
@@ -462,7 +479,7 @@ export class PeerEndpoint {
 
   async #startOnce() {
     this.#sweepDeadBridges();
-    const procStart = readProcessStart(this.pid);
+    const procStart = readProcessStart(this.pid) ?? "";
     const peerToken = crypto.randomBytes(16).toString("hex");
     this.peerToken = peerToken;
     this.keyPath = peerKeyPath(this.pid, this.socketPath);

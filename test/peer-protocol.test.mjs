@@ -113,6 +113,17 @@ describe("peer process identity compatibility", () => {
     assert.throws(() => assertClaudeSessionProcess({ alive: true, pid: process.pid, processStart: null }), /identity is missing or changed/);
   });
 
+  /**
+   * Reading the identity can fail on its own - a cold PowerShell on a loaded
+   * machine used to exceed the reader's ceiling - and reporting that as a
+   * changed process tells the operator their session was swapped when it was
+   * not. The send is still refused either way; only the explanation differs.
+   */
+  it("separates an identity it could not read from one that changed", () => {
+    assert.throws(() => assertClaudeSessionProcess({ alive: true, pid: 0x7fffffff, processStart: identity }), /could not be read/);
+    assert.throws(() => assertClaudeSessionProcess({ alive: true, pid: process.pid, processStart: identity }), /identity is missing or changed/);
+  });
+
   it("rejects conflicting, malformed and imprecise Windows identities", () => {
     for (const value of [null, "", 134338619704142970, "0", "-1", "01", " 1", "1e17", "18446744073709551616", "Mon Sep 14 19:19:30 2026"]) {
       assert.throws(() => readPeerProcessIdentity({ procStart: value }, "win32"), /Invalid or conflicting/);

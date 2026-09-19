@@ -2,6 +2,14 @@
 
 [Quick start](README.md)
 
+### VS Code extension bridge (Windows preview)
+
+`src/vscode-bridge.mjs` connects existing Claude Code and Codex extension conversations inside VS Code. It is a separate MCP registration and does not replace the Desktop bridge. Start it with `node src/vscode-bridge.mjs claude` in Claude's MCP registry and `node src/vscode-bridge.mjs codex` in Codex's registry. Set `VSCODE_BRIDGE_ALLOWED_ROOTS` to explicit project directories, separated by semicolons. Reload the VS Code window after registering both servers.
+
+Both extension conversations must use the same project directory. Call `vscode_bridge_status` from the sending extension to discover the counterpart. Claude uses `send_to_codex_vscode` and `read_codex_vscode_reply`; Codex uses `send_to_claude_vscode` and `read_claude_vscode_delivery`. Codex delivery uses the existing owner's IPC endpoint and preserves that conversation's selected permissions. Claude delivery uses its authenticated peer inbox and respects its inbound policy. Desktop callers are rejected by this registration.
+
+This preview uses internal extension IPC and is currently Windows-only. A submission receipt is not a completed response. Inspect the exact turn or message receipt after a timeout; do not resend or restart the bridge to evade an unresolved delivery. Receipts are held in the current MCP process. Avoid nested calls back into a sender that is synchronously waiting for the recipient. Restricted Codex permission profiles are not yet supported by sender verification and fail closed. Live two-way validation is required after extension updates.
+
 ### Visible tasks in the correct Desktop project
 
 Install the native companion, choose an existing local project in Codex Desktop, and enable Desktop task delivery:

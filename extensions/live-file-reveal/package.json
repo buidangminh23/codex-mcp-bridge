@@ -1,0 +1,22 @@
+{
+  "name": "live-file-reveal",
+  "displayName": "Live File Reveal",
+  "description": "Reveal source files changed by external tools in the current VS Code workspace.",
+  "version": "0.1.0",
+  "publisher": "minhspark",
+  "engines": { "vscode": "^1.95.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.cjs",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/buidangminh23/codex-mcp-bridge" },
+  "contributes": {
+    "commands": [{ "command": "liveFileReveal.toggle", "title": "Live File Reveal: Toggle" }],
+    "configuration": {
+      "title": "Live File Reveal",
+      "properties": {
+        "liveFileReveal.enabled": { "type": "boolean", "default": true, "description": "Reveal externally changed source files without taking keyboard focus from chat." }
+      }
+    }
+  }
+}

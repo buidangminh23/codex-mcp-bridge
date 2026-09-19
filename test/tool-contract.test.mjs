@@ -62,6 +62,17 @@ const unavailableRelaySocket = (home) => process.platform === "win32"
  */
 const PROCESS_IDENTITY_TIMEOUT_MS = 30000;
 
+/**
+ * waitForReply resolves the moment the reply lands and this ceiling only stops
+ * a wedged peer from running to the CI job wall, so a generous budget costs a
+ * healthy run nothing. The 2s ceiling it replaces sat inside the runner's own
+ * noise band rather than outside it: windows-latest/24 failed desktop-reviewed
+ * at 7141ms while its healthy siblings on the same job measured 5.3-5.9s and
+ * this machine measures 4.1s, and a rerun of that exact commit passed. The
+ * timeout scenario keeps a short ceiling because expiring is what it asserts.
+ */
+const REPLY_WAIT_SEC = 30;
+
 describe("Claude message receipts", () => {
   for (const scenario of ["nowait", "timeout", "peer", "desktop", "desktop-legacy-identity", "desktop-busy", "desktop-unknown-mode", "desktop-mismatch", "desktop-mismatch-accepted", "desktop-inbound-hold", "desktop-prompting", "desktop-reviewed", "desktop-reviewed-held", "desktop-reviewed-refused", "held", "refused", "diagnostic"]) {
     it(`reports ${scenario} from the actual MCP transport`, async () => {
@@ -228,7 +239,7 @@ describe("Claude message receipts", () => {
           }
           assert.equal(status.structuredContent.sender.threadId, callerId);
         }
-        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: scenario === "nowait" ? 0 : 2 }, ...(desktop ? { _meta: meta } : {}) });
+        const result = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Test", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: scenario === "nowait" ? 0 : scenario === "timeout" ? 2 : REPLY_WAIT_SEC }, ...(desktop ? { _meta: meta } : {}) });
         if (mismatch || inboundHold) {
           assert.equal(result.isError, true);
           assert.equal(result.structuredContent.preflight.code, mismatch ? "CLAUDE_RECIPIENT_CLASS_MISMATCH" : "CLAUDE_RECIPIENT_INBOUND_POLICY");
@@ -261,7 +272,7 @@ describe("Claude message receipts", () => {
         } finally { clearTimeout(receiptTimer); }
         if (handlerError) throw handlerError;
         const expected = controlStatus ?? (desktop ? "reply_received" : { nowait: "sent_unconfirmed", timeout: "reply_timeout", peer: "reply_received", desktop: "reply_received", held: "held", refused: "refused" }[scenario]);
-        assert.equal(result.structuredContent.receipt.status, expected);
+        assert.equal(result.structuredContent.receipt.status, expected, `receipt ${JSON.stringify(result.structuredContent.receipt)} for ${result.content?.[0]?.text}`);
         assert.equal(Boolean(result.isError), scenario === "timeout" || Boolean(controlStatus));
         if (controlStatus) assert.match(result.content[0].text, /Claude Desktop declares no peer approval dialog/);
         if (controlStatus && desktop) assert.match(result.content[0].text, new RegExp(`Recipient task mode: ${recipientMode ?? "unknown"}${recipientClass ? ` \\(${recipientClass} class\\)` : ""}; this sender attested ${senderMode}\\.`));
@@ -397,7 +408,7 @@ describe("Claude Desktop account switching", () => {
         PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"), CODEX_NATIVE_RELAY_SOCKET: unavailableRelaySocket(home), CLAUDE_DESKTOP_USER_DATA: userData, CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_DESKTOP_TASKS: "1",
       }, stderr: "ignore" });
       await client.connect(transport);
-      const send = (target = "auto", expectedTaskId) => client.callTool({ name: "send_to_claude_session", arguments: { target, message: "Account routing test", expectedCwd: home, expectedTaskId, waitSec: 2 }, _meta: meta });
+      const send = (target = "auto", expectedTaskId) => client.callTool({ name: "send_to_claude_session", arguments: { target, message: "Account routing test", expectedCwd: home, expectedTaskId, waitSec: REPLY_WAIT_SEC }, _meta: meta });
       for (const index of [0, 1, 0]) {
         const destination = destinations[index];
         activate(destination);

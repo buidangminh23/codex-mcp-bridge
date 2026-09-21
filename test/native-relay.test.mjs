@@ -1874,17 +1874,55 @@ describe("native relay startup recovery", () => {
     }
   });
 
-  it("does not retry when no native pipe is configured", async () => {
+  it("rediscovers a native pipe that was absent during initial startup without dispatching messages", async () => {
+    let discoveries = 0;
+    let started = 0;
+    let requests = 0;
+    const native = await nativePipe(() => { requests += 1; });
+    const nativeTools = new NativeToolsClient({
+      env: {},
+      resolveSocketPath: async () => ++discoveries < 4 ? null : native.socketPath,
+    });
+    const logs = [];
+    const startup = startRelayWhenAvailable({
+      nativeTools,
+      relay: { start: async () => { started += 1; }, stop() {} },
+      retryDelayMs: 5,
+      maxRetryDelayMs: 10,
+      log: (message) => logs.push(message),
+    });
+    let timeout;
+    try {
+      await startup.firstAttempt;
+      assert.equal(started, 0);
+      assert.equal(nativeTools.hasDiscoveredSocket, false);
+      assert.equal(await Promise.race([
+        startup.ready,
+        new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("discovery recovery timed out")), 3000); }),
+      ]), true);
+      assert.equal(discoveries, 4);
+      assert.equal(started, 1);
+      assert.equal(requests, 0);
+      assert.deepEqual(logs.map((line) => Number(line.match(/retrying in (\d+)ms/)[1])), [5, 10, 10]);
+    } finally {
+      clearTimeout(timeout);
+      await startup.stop();
+      await native.close();
+    }
+  });
+
+  it("cancels rediscovery when the companion closes before any native pipe appears", async () => {
     let attempts = 0;
     const startup = startRelayWhenAvailable({
       nativeTools: { connect: async () => { attempts += 1; throw new Error("not configured"); }, close() {} },
       relay: { start: async () => assert.fail("must not start"), stop() {} },
-      retryDelayMs: 5,
+      retryDelayMs: 30,
     });
+    await startup.firstAttempt;
+    await startup.stop();
     assert.equal(await startup.ready, false);
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
     assert.equal(attempts, 1);
-    startup.stop();
   });
 
   it("cancels a scheduled retry when the companion closes", async () => {

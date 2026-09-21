@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep discovering the Codex Desktop native tools pipe when it is absent during companion startup. Retry with capped backoff until Desktop is ready or the companion closes, without sending user messages or requiring another task to restart the relay.
+
 ## [1.16.1] - 2026-09-15
 
 ### Changed

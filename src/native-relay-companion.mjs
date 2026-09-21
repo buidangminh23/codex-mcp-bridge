@@ -635,11 +635,6 @@ export function startRelayWhenAvailable({ nativeTools, relay, log: logFn = () =>
     } catch (err) {
       if (stopped) return;
       if (!nativeConnected) nativeTools.close();
-      if (!nativeTools.socketPath && !nativeTools.hasDiscoveredSocket) {
-        logFn(`native relay unavailable (${err.message})`);
-        resolveReady(false);
-        return;
-      }
       logFn(`native relay unavailable (${err.message}); retrying in ${delayMs}ms`);
       timer = globalThis.setTimeout(() => {
         timer = null;

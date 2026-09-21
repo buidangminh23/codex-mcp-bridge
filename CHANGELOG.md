@@ -4,9 +4,23 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-09-21
+
+### Added
+
+- Bridge existing Claude Code and Codex conversations inside VS Code on Windows, with same-project session checks and delivery receipts.
+- Mirror published releases to GitHub Packages alongside npm.
+
 ### Fixed
 
 - Keep discovering the Codex Desktop native tools pipe when it is absent during companion startup. Retry with capped backoff until Desktop is ready or the companion closes, without sending user messages or requiring another task to restart the relay.
+- Repair current bridge client configurations while refusing to overwrite changes from active client writers.
+- Distinguish unreadable process identity from a confirmed identity change during session validation.
+- Preserve hosted demo media and keep analytics Pages deployment working when analytics sources are incomplete.
+
+### Changed
+
+- Document release notification subscriptions and improve receipt test reliability under load.
 
 ## [1.16.1] - 2026-09-15
 

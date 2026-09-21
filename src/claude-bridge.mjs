@@ -25,7 +25,7 @@ import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.16.1";
+const VERSION = "1.17.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;

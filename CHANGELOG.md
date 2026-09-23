@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-09-23
+
+### Changed
+
+- Guide agents to write every cross-agent prompt in English with a fixed section order: Goal, Context, Task, Scope, Constraints, Done when, Reply format. The Codex, Claude and VS Code bridges share one definition in their server instructions, sending-tool descriptions and prompt fields, and text supplied by the user is still sent unchanged.
+
 ## [1.17.0] - 2026-09-21
 
 ### Added

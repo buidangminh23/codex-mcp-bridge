@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { buildFrame, parseFrame, peerKeyPath } from "../src/peer-protocol.mjs";
+import { AGENT_PROMPT_GUIDANCE, PROMPT_SECTIONS } from "../src/prompt-guidance.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -548,6 +549,10 @@ describe("Claude Desktop destination enforcement", () => {
 });
 
 async function listTools(entry) {
+  return (await inspectServer(entry)).tools;
+}
+
+async function inspectServer(entry) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(root, "src", entry)],
@@ -564,7 +569,7 @@ async function listTools(entry) {
   await client.connect(transport);
   try {
     const { tools } = await client.listTools();
-    return tools;
+    return { tools, instructions: client.getInstructions() ?? "" };
   } finally {
     await client.close();
   }
@@ -706,6 +711,38 @@ describe("claude-bridge tool contract", async () => {
   it("marks the tools that only read as read-only", () => {
     const readOnly = tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name);
     assert.deepEqual(readOnly.sort(), ["list_claude_sessions", "read_claude_creation", "read_claude_delivery", "read_claude_transcript"]);
+  });
+});
+
+/**
+ * Every message these bridges carry is a prompt one agent wrote for another.
+ * The sending tools must all describe the same English, sectioned shape, or a
+ * caller that reads only one of them writes a different kind of message.
+ */
+describe("agent prompt guidance", async () => {
+  const codex = await inspectServer("index.mjs");
+  const claude = await inspectServer("claude-bridge.mjs");
+
+  it("puts the prompt shape in both servers' instructions", () => {
+    assert.ok(codex.instructions.includes(AGENT_PROMPT_GUIDANCE), "codex-bridge instructions omit the prompt shape");
+    assert.ok(claude.instructions.includes(AGENT_PROMPT_GUIDANCE), "claude-bridge instructions omit the prompt shape");
+  });
+
+  it("names every section on every field that carries a prompt", () => {
+    const fields = [
+      [codex, "delegate_to_codex", "prompt"],
+      [codex, "send_to_codex_thread", "prompt"],
+      [codex, "start_codex_thread", "prompt"],
+      [claude, "send_to_claude_session", "message"],
+      [claude, "start_claude_session", "prompt"],
+    ];
+    for (const [server, name, field] of fields) {
+      const description = server.tools.find((t) => t.name === name)?.inputSchema.properties[field]?.description ?? "";
+      for (const section of PROMPT_SECTIONS) {
+        assert.ok(description.includes(section), `${name}.${field} does not name the ${section} section`);
+      }
+      assert.match(description, /English/, `${name}.${field} does not ask for English`);
+    }
   });
 });
 

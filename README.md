@@ -231,6 +231,22 @@ Example requests:
 
 Use the exact project directory and destination task. If several Claude sessions match, specify the task ID. A `reply_received` receipt confirms a reply; a timeout does not mean the task stopped, so inspect it before retrying.
 
+The sending tools ask agents to write each prompt in English with these sections, dropping any that do not apply: `Goal`, `Context`, `Task`, `Scope`, `Constraints`, `Done when`, `Reply format`. The first line names the sender, the project and the purpose. Text the user supplied is sent unchanged.
+
+```text
+[From Claude Code · my-app · edit coordination]
+
+## Goal
+Avoid conflicting edits while Claude Code patches `src/export.ps1`.
+
+## Task
+1. Do not modify `src/export.ps1` or `README.txt` until told otherwise.
+2. Write any unsaved edits to those files to disk now.
+
+## Reply format
+Exactly one line: `DONE — changed: <files>` or `DONE — no changes`.
+```
+
 ## Important behavior
 
 - Desktop mode uses the native relay and the apps' permissions; it does not fall back to an external app-server.

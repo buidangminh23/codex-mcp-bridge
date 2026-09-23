@@ -10,6 +10,7 @@ import { findRollout, readState, readCodexSenderContext } from "./codex-sender-c
 import { readProcessAncestry } from "./claude-sender-context.mjs";
 import { listClaudeSessions, assertClaudeSessionCwd, assertClaudeSessionProcess, PeerEndpoint } from "./peer-protocol.mjs";
 import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
+import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
 
 const host = process.argv[2];
 if (!["claude", "codex"].includes(host)) throw new Error("Specify the calling extension: claude or codex");
@@ -102,7 +103,7 @@ tool("vscode_bridge_status", "Verify this extension caller and list same-project
 });
 
 if (host === "claude") {
-  tool("send_to_codex_vscode", "Send to an existing Codex extension task in this project, preserving its selected permissions. Never retries or opens another app. Use read_codex_vscode_reply after submission.", { threadId: z.string(), message: z.string().min(1).max(50000) }, async ({ threadId, message }, sender, meta) => {
+  tool("send_to_codex_vscode", `Send to an existing Codex extension task in this project, preserving its selected permissions. Never retries or opens another app. Use read_codex_vscode_reply after submission. ${AGENT_PROMPT_GUIDANCE}`, { threadId: z.string(), message: z.string().min(1).max(50000).describe(PROMPT_FIELD_HINT) }, async ({ threadId, message }, sender, meta) => {
     if (unresolved.has(threadId)) throw new Error("An earlier send is unresolved. Read its reply before sending again.");
     const inspect = () => {
       const state = codexTask(threadId, sender.cwd);
@@ -127,7 +128,7 @@ if (host === "claude") {
     return { threadId, ...completion };
   });
 } else {
-  tool("send_to_claude_vscode", "Send to the exact Claude Code VS Code session in this project. Never changes recipient permissions. Do not ask the recipient to call back while this synchronous request waits.", { sessionId: z.string(), message: z.string().min(1).max(50000), waitSec: z.number().int().min(0).max(45).default(30) }, async ({ sessionId, message, waitSec }, sender, meta) => {
+  tool("send_to_claude_vscode", `Send to the exact Claude Code VS Code session in this project. Never changes recipient permissions. Do not ask the recipient to call back while this synchronous request waits. ${AGENT_PROMPT_GUIDANCE}`, { sessionId: z.string(), message: z.string().min(1).max(50000).describe(PROMPT_FIELD_HINT), waitSec: z.number().int().min(0).max(45).default(30) }, async ({ sessionId, message, waitSec }, sender, meta) => {
     const inspect = () => {
       const matches = listClaudeSessions().filter((session) => session.entrypoint === "claude-vscode" && session.sessionId === sessionId);
       if (matches.length !== 1) throw new Error("No unique live Claude Code VS Code session matches");

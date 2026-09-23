@@ -30,10 +30,11 @@ import { createRuntimeState } from "./runtime-state.mjs";
 import { assertRoutingReload, clientReloadReason, createReloadControl } from "./reload-control.mjs";
 import { accountIdentity, assertAccountIdentity, publicAccountState, readBridgeAccounts, requireBridgeAccounts } from "./bridge-account-context.mjs";
 import { assertClaudeSenderContext, readClaudeSenderContext, requireClaudeSenderContext } from "./claude-sender-context.mjs";
+import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.17.0";
+const VERSION = "1.18.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -345,7 +346,8 @@ const server = new McpServer(
       "requested cwd. With Desktop tasks enabled it assigns the exact saved project and starts visibly in " +
       "Codex Desktop using Desktop permissions. Otherwise it releases the bridge writer lock and opens the exact thread in " +
       "Codex Desktop. Use send_to_codex_thread only when an existing threadId is intentional; use " +
-      "list_codex_threads or read_codex_thread to inspect sessions and codex_bridge_status to inspect wiring.",
+      "list_codex_threads or read_codex_thread to inspect sessions and codex_bridge_status to inspect wiring. " +
+      AGENT_PROMPT_GUIDANCE,
   },
 );
 
@@ -400,7 +402,7 @@ registerTool(
       "return Codex's reply, and hand the session to Codex Desktop without leaving the bridge writer lock behind.",
     inputSchema: {
       cwd: z.string().describe("Absolute project directory where Codex must work"),
-      prompt: z.string().describe("The complete task Claude is delegating to Codex"),
+      prompt: z.string().describe(`The complete task Claude is delegating to Codex. ${PROMPT_FIELD_HINT}`),
       name: z.string().min(1).max(200).optional().describe("Optional Codex session title; otherwise one is derived from the prompt"),
       timeoutSec: z
         .number()
@@ -494,7 +496,7 @@ registerTool(
       "Do not close the task, create a replacement, or ask the user to copy the message manually.",
     inputSchema: {
       threadId: z.string().describe("Codex thread id (UUID) - get it from list_codex_threads"),
-      prompt: z.string().describe("The message to send to Codex, exactly as a user would type it"),
+      prompt: z.string().describe(`The message to send to Codex as a new user turn. ${PROMPT_FIELD_HINT}`),
       timeoutSec: z
         .number()
         .int()
@@ -703,7 +705,7 @@ registerTool(
     description: "Start a Codex task. In Desktop mode include the initial prompt to create and assign a visible task atomically; use delegate_to_codex to also wait for its reply.",
     inputSchema: {
       cwd: z.string().describe("Absolute working directory for the new Codex session"),
-      prompt: z.string().min(1).optional().describe("Initial task; required with CODEX_BRIDGE_DESKTOP_TASKS=1, starts immediately"),
+      prompt: z.string().min(1).optional().describe(`Initial task; required with CODEX_BRIDGE_DESKTOP_TASKS=1, starts immediately. ${PROMPT_FIELD_HINT}`),
       model: z.string().optional().describe("Model override, e.g. gpt-5.6-luna"),
       name: z.string().min(1).max(200).optional().describe("Optional title to show for the new Codex session"),
     },

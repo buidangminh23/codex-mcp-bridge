@@ -22,10 +22,11 @@ import { readClaudeAccountContext } from "./desktop-account-context.mjs";
 import { assertAccountIdentity, bindUnsolicitedClaudeMessageAccount, publicAccountState, readBridgeAccounts, requireBridgeAccounts, sameAccountIdentity } from "./bridge-account-context.mjs";
 import { resolveClaudeDesktopSession, sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
+import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.17.0";
+const VERSION = "1.18.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
@@ -261,7 +262,8 @@ const server = new McpServer(
       "The sender class follows the verified approval policy; automated review flags are reported but never change it. " +
       "A Desktop recipient whose settings refuse or hold inbound messages, or whose task metadata shows a different permission class without an explicit accept, is refused before sending, because Claude Desktop cannot show the approval dialog. " +
       "Never launch a CLI session or an external app-server as a substitute. A receipt confirms a reply, not visual verification in the app. " +
-      "A held receipt does not prove that Desktop exposes an approval button; verify the UI before asking the user to approve.",
+      "A held receipt does not prove that Desktop exposes an approval button; verify the UI before asking the user to approve. " +
+      AGENT_PROMPT_GUIDANCE,
   },
 );
 
@@ -280,7 +282,7 @@ registerTool(
     inputSchema: {
       requestId: z.string().describe("Stable UUID for this creation; reuse exactly when inspecting or retrying"),
       cwd: z.string().describe("Exact absolute directory of the existing Claude Desktop project"),
-      prompt: z.string().describe("Initial prompt for the NEW conversation; shown for user confirmation"),
+      prompt: z.string().describe(`Initial prompt for the NEW conversation; shown for user confirmation. ${PROMPT_FIELD_HINT}`),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
@@ -369,7 +371,7 @@ registerTool(
       "The sender's current permissions are verified per call; environment overrides and manual binding cannot bypass an unknown sender. It never creates a replacement session.",
     inputSchema: {
       target: z.string().describe("Use auto for current-account discovery in expectedCwd, an exact session identity, or new to prepare a separate Desktop conversation requiring user confirmation"),
-      message: z.string().describe("The message text to deliver"),
+      message: z.string().describe(`The message text to deliver. ${PROMPT_FIELD_HINT}`),
       expectedCwd: z.string().optional().describe("Exact absolute project directory independently verified by the caller; required in Desktop-only mode"),
       expectedTaskId: z.string().optional().describe("Exact native Claude Desktop task ID from list_claude_sessions; verify its title in the app before sending"),
       waitSec: z

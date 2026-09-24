@@ -501,6 +501,72 @@ describe("Claude creation hardened roots", () => {
 });
 
 describe("Claude Desktop destination enforcement", () => {
+  it("distinguishes Desktop metadata rejection from missing peers without exposing rejected identities", async () => {
+    const home = fs.mkdtempSync(path.join(sandboxHome, "discovery-"));
+    const registryDir = path.join(home, ".claude", "sessions");
+    const userData = path.join(home, "desktop-data");
+    const accountId = "44444444-4444-4444-8444-444444444444";
+    const taskId = "local_11111111-1111-4111-8111-111111111111";
+    const tasks = path.join(userData, "claude-code-sessions", accountId, "55555555-5555-4555-8555-555555555555");
+    fs.mkdirSync(registryDir, { recursive: true });
+    fs.mkdirSync(tasks, { recursive: true });
+    fs.writeFileSync(path.join(userData, "config.json"), JSON.stringify({ lastKnownAccountUuid: accountId, windowSizeWasSignedIn: true }));
+    const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\cc-msg-${crypto.randomBytes(16).toString("hex")}` : path.join(home, "peer.sock");
+    const registryFile = path.join(registryDir, `${process.pid}.json`);
+    fs.writeFileSync(registryFile, JSON.stringify({ pid: process.pid, name: "private-peer-name", sessionId: "private-peer-session", cwd: home, messagingSocketPath: socketPath, entrypoint: "claude-desktop" }));
+    const metadataFile = path.join(tasks, taskId + ".json");
+    const metadata = { sessionId: taskId, cliSessionId: "private-peer-session", title: "Private rejected task", cwd: home, isArchived: false };
+    fs.writeFileSync(metadataFile, "{");
+    let connections = 0;
+    const receiver = net.createServer((socket) => { connections += 1; socket.destroy(); });
+    await new Promise((resolve, reject) => { receiver.once("error", reject); receiver.listen(socketPath, resolve); });
+    const client = new Client({ name: "discovery-test", version: "1" });
+    const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: {
+      PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "", HOME: home, USERPROFILE: home,
+      APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"),
+      CODEX_HOME: path.join(home, ".codex"), CLAUDE_DESKTOP_USER_DATA: userData, CODEX_NATIVE_RELAY_SOCKET: unavailableRelaySocket(home),
+      CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_DESKTOP_TASKS: "1",
+    }, stderr: "ignore" });
+    try {
+      await client.connect(transport);
+      for (const includeDead of [false, true]) {
+        const listing = await client.callTool({ name: "list_claude_sessions", arguments: { expectedCwd: home, includeDead } });
+        assert.deepEqual(listing.structuredContent.sessions, []);
+        assert.equal(listing.structuredContent.discovery.candidateCount, 1);
+        assert.equal(listing.structuredContent.discovery.excluded[0].status, "mismatch");
+        assert.match(listing.content[0].text, /Found 1 registered Claude Desktop candidate/);
+        assert.match(listing.content[0].text, /metadata could not be read completely and consistently/);
+        assert.doesNotMatch(JSON.stringify(listing), /private-peer|Private rejected task|No live Claude Desktop session/);
+      }
+      const status = await client.callTool({ name: "claude_bridge_status", arguments: {} });
+      assert.equal(status.structuredContent.discovery.candidateCount, 1);
+      assert.equal(status.structuredContent.discovery.matchedCount, 0);
+      assert.equal(status.structuredContent.discovery.nonDesktopCount, 0);
+      assert.match(status.content[0].text, /0 non-Desktop session\(s\); 1 Desktop candidate\(s\) failed task verification/);
+      assert.doesNotMatch(JSON.stringify(status), /private-peer|Private rejected task|inactive-account/);
+      const wrongProject = await client.callTool({ name: "list_claude_sessions", arguments: { expectedCwd: path.dirname(home) } });
+      assert.equal(wrongProject.structuredContent.discovery.candidateCount, 0);
+      assert.deepEqual(wrongProject.structuredContent.discovery.excluded, []);
+      fs.writeFileSync(metadataFile, JSON.stringify({ ...metadata, isArchived: true }));
+      const archived = await client.callTool({ name: "list_claude_sessions", arguments: { expectedCwd: home } });
+      assert.match(archived.structuredContent.discovery.excluded[0].reason, /archived/);
+      assert.doesNotMatch(JSON.stringify(archived), /private-peer|Private rejected task/);
+      fs.writeFileSync(metadataFile, JSON.stringify(metadata));
+      const recovered = await client.callTool({ name: "list_claude_sessions", arguments: { expectedCwd: home } });
+      assert.equal(recovered.structuredContent.discovery.matchedCount, 1);
+      assert.deepEqual(recovered.structuredContent.discovery.excluded, []);
+      assert.equal(recovered.structuredContent.sessions[0].desktop.taskId, taskId);
+      fs.unlinkSync(registryFile);
+      const absent = await client.callTool({ name: "list_claude_sessions", arguments: { expectedCwd: home } });
+      assert.equal(absent.structuredContent.discovery.candidateCount, 0);
+      assert.match(absent.content[0].text, /No live Claude Desktop session/);
+      assert.equal(connections, 0);
+    } finally {
+      await client.close();
+      await new Promise((resolve) => receiver.close(resolve));
+    }
+  });
+
   for (const policySource of ["environment", "shared-config"]) {
     it(`refuses CLI delivery before connecting when Desktop mode comes from ${policySource}`, async () => {
       const home = fs.mkdtempSync(path.join(sandboxHome, "desktop-only-"));

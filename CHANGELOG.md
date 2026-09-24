@@ -4,6 +4,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Discover Claude Desktop sessions when accumulated task configuration exceeds 32 MiB. Retain only bounded identity fields and SHA-256 fingerprints while preserving account isolation, duplicate detection, and concurrent-change checks.
+- Report Desktop task verification failures separately from missing peer endpoints in session discovery and bridge status.
+
 ## [1.18.0] - 2026-09-23
 
 ### Changed

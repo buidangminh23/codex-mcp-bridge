@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,7 +8,7 @@ const ACCOUNT_ID = new RegExp(`^${UUID}$`, "i");
 const TASK_FILE = new RegExp(`^(local_${UUID})\\.json$`, "i");
 const MAX_ENTRIES = 8192;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+const MAX_IDENTITY_BYTES = 32 * 1024 * 1024;
 const VERSION_FIELDS = ["size", "mtimeMs", "ctimeMs", "ino", "dev"];
 
 const sameVersion = (left, right) => VERSION_FIELDS.every((field) => left[field] === right[field]);
@@ -69,18 +70,16 @@ function readMetadata(file, budget) {
   try {
     const before = fs.fstatSync(descriptor);
     if (!before.isFile() || before.size > MAX_FILE_BYTES) throw new Error("file limit");
-    budget.bytes += before.size;
-    if (budget.bytes > MAX_TOTAL_BYTES) throw new Error("total limit");
     const bytes = Buffer.alloc(before.size);
     if (fs.readSync(descriptor, bytes, 0, bytes.length, 0) !== bytes.length) throw new Error("short read");
     const after = fs.fstatSync(descriptor);
     const current = fs.lstatSync(file);
     if (!sameVersion(before, after) || current.isSymbolicLink() || !sameVersion(current, after)) throw new Error("metadata changed");
     budget.versions.set(file, current);
-    budget.contents.set(file, bytes);
+    budget.digests.set(file, createHash("sha256").update(bytes).digest("hex"));
     const data = JSON.parse(bytes.toString("utf8"));
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("invalid metadata");
-    return {
+    const record = {
       taskId: data.sessionId,
       fileTaskId: TASK_FILE.exec(path.basename(file))[1],
       cliSessionId: data.cliSessionId,
@@ -90,18 +89,14 @@ function readMetadata(file, budget) {
       isArchived: data.isArchived,
       permissionMode: data.permissionMode,
     };
+    budget.bytes += Buffer.byteLength(JSON.stringify(record));
+    if (budget.bytes > MAX_IDENTITY_BYTES) throw new Error("identity limit");
+    return record;
   } finally {
     fs.closeSync(descriptor);
   }
 }
 
-/**
- * Stat fields cannot prove a record is unchanged: a same-size rewrite inside
- * one filesystem timestamp tick (about 16 ms on Windows) keeps size, times
- * and inode identical. The final consistency pass therefore compares the
- * bytes themselves; the records are small JSON files, so the extra read is
- * cheap and the check is deterministic on every platform.
- */
 function rereadMetadata(file) {
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
@@ -109,7 +104,7 @@ function rereadMetadata(file) {
     if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error("file limit");
     const bytes = Buffer.alloc(stat.size);
     if (fs.readSync(descriptor, bytes, 0, bytes.length, 0) !== bytes.length) throw new Error("short read");
-    return bytes;
+    return createHash("sha256").update(bytes).digest("hex");
   } finally {
     fs.closeSync(descriptor);
   }
@@ -138,8 +133,14 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
     const directory = root ?? (account ? path.join(account.root, "claude-code-sessions") : sessionsRoot(platform, env));
     if (!fs.existsSync(directory)) return result("missing", "Claude Desktop task metadata is not available on this host.");
     records = readClaudeDesktopTasks({ platform, env, root, account });
-  } catch {
-    return result("mismatch", "Claude Desktop task metadata could not be read completely and consistently; no task identity is confirmed.");
+  } catch (error) {
+    const detail = {
+      "file limit": " A task metadata file exceeds the 4 MiB per-file limit.",
+      "identity limit": " Task identity fields exceed the 32 MiB retained-data limit.",
+      "scan limit": " The task directory exceeds the 8192-entry scan limit.",
+      "metadata changed": " Task metadata changed during inspection; retry discovery.",
+    }[error.message] ?? "";
+    return result("mismatch", `Claude Desktop task metadata could not be read completely and consistently; no task identity is confirmed.${detail}`);
   }
 
   const primary = records.filter((record) => record.cliSessionId === session.sessionId);
@@ -198,13 +199,13 @@ export function readClaudeDesktopTasks({ platform = process.platform, env = proc
   }
   const directory = root ?? (account ? path.join(account.root, "claude-code-sessions") : sessionsRoot(platform, env));
   const files = metadataFiles(directory, account?.accountId);
-  const budget = { bytes: 0, versions: new Map(), contents: new Map() };
+  const budget = { bytes: 0, versions: new Map(), digests: new Map() };
   const records = files.map((file) => readMetadata(file, budget));
   const currentFiles = metadataFiles(directory, account?.accountId);
   if (files.length !== currentFiles.length || files.some((file, index) => file !== currentFiles[index])) throw new Error("metadata changed");
   for (const file of files) {
     const current = fs.lstatSync(file);
-    if (!current.isFile() || !sameVersion(current, budget.versions.get(file)) || !rereadMetadata(file).equals(budget.contents.get(file))) throw new Error("metadata changed");
+    if (!current.isFile() || !sameVersion(current, budget.versions.get(file)) || rereadMetadata(file) !== budget.digests.get(file)) throw new Error("metadata changed");
   }
   return records;
 }

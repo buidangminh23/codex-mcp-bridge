@@ -164,6 +164,40 @@ function withDesktopContext(session, account = readClaudeAccountContext()) {
     ? { ...session, desktop: readClaudeDesktopContext(session, { account }), inbound: readClaudeInboundPolicy(session.cwd) } : session;
 }
 
+function inspectDiscovery(sessions, account, expectedCwd) {
+  const eligible = [];
+  const excluded = [];
+  let nonDesktopCount = 0;
+  let candidateCount = 0;
+  for (const session of sessions) {
+    if (rootPolicy.enabled && !rootPolicy.allows(session.cwd)) continue;
+    if (expectedCwd !== undefined) {
+      try { assertClaudeSessionCwd(session, expectedCwd); }
+      catch { continue; }
+    }
+    if (desktopOnly && session.entrypoint !== "claude-desktop") {
+      nonDesktopCount += 1;
+      continue;
+    }
+    candidateCount += 1;
+    const inspected = withDesktopContext(session, account);
+    if (!desktopOnly || inspected.desktop?.status === "matched") {
+      eligible.push(inspected);
+      continue;
+    }
+    const status = inspected.desktop?.status ?? "missing";
+    const reason = inspected.desktop?.reason ?? "The Desktop task identity could not be verified.";
+    const previous = excluded.find((entry) => entry.status === status && entry.reason === reason);
+    if (previous) previous.count += 1;
+    else excluded.push({ status, reason, count: 1 });
+  }
+  return { sessions: eligible, discovery: { candidateCount, matchedCount: eligible.length, nonDesktopCount, excluded } };
+}
+
+function discoveryDetails(discovery) {
+  return discovery.excluded.map((entry) => `Desktop task verification: ${entry.count} candidate(s) ${entry.status} - ${entry.reason}`);
+}
+
 function assertSessionRoot(session, label = "Claude session") {
   return rootPolicy.assert(session?.cwd, `${label} working directory`);
 }
@@ -340,17 +374,14 @@ registerTool(
       if (expectedCwd !== undefined) assertClaudeSessionCwd({ cwd: expectedCwd }, expectedCwd);
       const account = readClaudeAccountContext();
       if (desktopOnly && account.status !== "verified") return { ...textResult(`Claude account ${account.status}: ${account.reason} Sign in and retry discovery.`, true), structuredContent: { account: publicAccountState(account), sessions: [] } };
-      const sessions = listClaudeSessions({ includeDead: includeDead ?? false }).filter(
-        (s) => s.pid !== process.pid && (!desktopOnly || s.entrypoint === "claude-desktop"),
-      ).filter((session) => !rootPolicy.enabled || rootPolicy.allows(session.cwd)
-      ).filter((session) => {
-        if (expectedCwd === undefined) return true;
-        try { assertClaudeSessionCwd(session, expectedCwd); return true; }
-        catch { return false; }
-      }).map((session) => withDesktopContext(session, account)).filter((session) => !desktopOnly || session.desktop?.status === "matched");
-      if (!sessions.length) return textResult(desktopOnly ? missingDesktopSession : "No live Claude Code session found.");
-      return { ...textResult(`${sessions.length} Claude${desktopOnly ? " Desktop" : ""} session(s):\n\n${sessions.map(formatSessionRow).join("\n")}`),
-        structuredContent: { account: publicAccountState(account), sessions: sessions.map(({ socket, bridgeSessionId, ...session }) => session) } };
+      const { sessions, discovery } = inspectDiscovery(listClaudeSessions({ includeDead: includeDead ?? false }).filter((s) => s.pid !== process.pid), account, expectedCwd);
+      const summary = sessions.length
+        ? `${sessions.length} Claude${desktopOnly ? " Desktop" : ""} session(s):\n\n${sessions.map(formatSessionRow).join("\n")}`
+        : discovery.excluded.length
+          ? `Found ${discovery.candidateCount} registered Claude Desktop candidate(s) with messaging endpoints, but their Desktop task identities could not be verified. Delivery remains blocked.`
+          : desktopOnly ? missingDesktopSession : "No live Claude Code session found.";
+      return { ...textResult([summary, ...discoveryDetails(discovery)].join("\n")),
+        structuredContent: { account: publicAccountState(account), sessions: sessions.map(({ socket, bridgeSessionId, ...session }) => session), discovery } };
     } catch (err) {
       return failure(err);
     }
@@ -646,9 +677,7 @@ registerTool(
       await peer.start();
       const sessions = listClaudeSessions().filter((s) => s.pid !== process.pid);
       const accounts = readBridgeAccounts();
-      const eligible = sessions.filter((session) => !desktopOnly || session.entrypoint === "claude-desktop")
-        .filter((session) => !rootPolicy.enabled || rootPolicy.allows(session.cwd))
-        .filter((session) => !desktopOnly || withDesktopContext(session, accounts.claude).desktop?.status === "matched");
+      const { sessions: eligible, discovery } = inspectDiscovery(sessions, accounts.claude);
       const visibleInbox = peer.inbox.filter((record) => recordVisible(record, accounts));
       const visiblePending = [...peer.pendingMessages.keys()].filter((id) => readReceipt(id));
       const visibleForwarding = replyForwarder.status((record) => recordVisible(record, accounts));
@@ -666,7 +695,8 @@ registerTool(
         `Claude account: ${accounts.claude.status}${accounts.claude.fingerprint ? ` (${accounts.claude.fingerprint.slice(0, 12)})` : ` - ${accounts.claude.reason}`}`,
         `Codex account: ${accounts.codex.status}${accounts.codex.fingerprint ? ` (${accounts.codex.fingerprint.slice(0, 12)})` : ` - ${accounts.codex.reason}`}`,
         `live sessions: ${eligible.length}`,
-        ...(rootPolicy.enabled ? [] : [`excluded:      ${sessions.length - eligible.length} non-Desktop or inactive-account session(s)`]),
+        `excluded:      ${discovery.nonDesktopCount} non-Desktop session(s); ${discovery.candidateCount - eligible.length} Desktop candidate(s) failed task verification`,
+        ...discoveryDetails(discovery),
         `relay thread:  ${forwarding.threadId ?? "(none - use bind_codex_thread)"}`,
         `delivery:      ${delivery.describe()}`,
         `inbox:         ${visibleInbox.length} pending message(s)`,
@@ -676,7 +706,7 @@ registerTool(
       ];
       const state = runtime.status();
       lines.push(`runtime pid:   ${state.pid}`, `loaded source: ${state.revision}`, `disk source:   ${state.diskRevision ?? "unreadable"}`, `runtime state: ${state.current ? "current" : `STALE - ${state.reason}; reconnect this MCP server in the existing task`}`);
-      return { ...textResult(lines.join("\n"), !state.current), structuredContent: { runtime: state, accounts: { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) }, replyForwarding: visibleForwarding, ...(sender ? { sender } : {}) } };
+      return { ...textResult(lines.join("\n"), !state.current), structuredContent: { runtime: state, accounts: { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) }, discovery, replyForwarding: visibleForwarding, ...(sender ? { sender } : {}) } };
     } catch (err) {
       return failure(err);
     }

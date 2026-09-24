@@ -54,6 +54,21 @@ afterEach(() => {
 });
 
 describe("Claude Desktop task identity", () => {
+  it("discovers exact live identities when task history exceeds 32 MiB", () => {
+    writeTask();
+    const padding = "x".repeat(1024 * 1024);
+    for (let index = 0; index < 33; index += 1) {
+      const taskId = `local_88888888-8888-4888-8888-${String(index).padStart(12, "0")}`;
+      writeTask({ cliSessionId: `old-${index}`, bridgeSessionIds: [], isArchived: true, remoteMcpServersConfig: { padding } }, { taskId });
+    }
+    const tasks = readClaudeDesktopTasks({ root });
+    assert.equal(tasks.length, 34);
+    assert.ok(JSON.stringify(tasks).length < 32 * 1024);
+    assert.equal(resolve().status, "matched");
+    writeTask({}, { taskId: OTHER_TASK });
+    assert.equal(resolve().status, "ambiguous");
+  });
+
   it("lists an account-scoped baseline without leaking native task configuration", () => {
     writeTask({ remoteMcpServersConfig: { token: "must-never-appear" } });
     writeTask({}, { taskId: OTHER_TASK, account: OTHER_USER });
@@ -254,7 +269,19 @@ describe("Claude Desktop task identity", () => {
   it("bounds metadata reads", () => {
     const file = writeTask();
     fs.truncateSync(file, 4 * 1024 * 1024 + 1);
-    assert.equal(resolve().status, "mismatch");
+    const actual = resolve();
+    assert.equal(actual.status, "mismatch");
+    assert.match(actual.reason, /4 MiB per-file limit/);
+  });
+
+  it("bounds retained identity data independently of discarded task configuration", () => {
+    const title = "x".repeat(1024 * 1024);
+    for (let index = 0; index < 33; index += 1) {
+      const taskId = `local_88888888-8888-4888-8888-${String(index).padStart(12, "0")}`;
+      writeTask({ title }, { taskId });
+    }
+    assert.throws(() => readClaudeDesktopTasks({ root }), /identity limit/);
+    assert.match(resolve().reason, /32 MiB retained-data limit/);
   });
 
   it("rejects symbolic metadata files", (t) => {

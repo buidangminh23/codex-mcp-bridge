@@ -130,7 +130,7 @@ try {
     } elseif ($before.Status -eq 'missing') {
         Write-Host "Successfully installed: @minhspark/codex-mcp-bridge v$($after.Version)"
     } elseif ($before.Version -ceq $after.Version) {
-        Write-Host "Already up to date: @minhspark/codex-mcp-bridge v$($after.Version)"
+        Write-Host "Installation completed: @minhspark/codex-mcp-bridge v$($after.Version) (version unchanged)"
     } else {
         Write-Host "Successfully updated: @minhspark/codex-mcp-bridge v$($before.Version) -> v$($after.Version)"
     }

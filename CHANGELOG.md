@@ -6,6 +6,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Fixed
 
+- Report npm installation completion with an unchanged version instead of claiming the package is already up to date after a same-version reinstall.
 - Discover Claude Desktop sessions when accumulated task configuration exceeds 32 MiB. Retain only bounded identity fields and SHA-256 fingerprints while preserving account isolation, duplicate detection, and concurrent-change checks.
 - Report Desktop task verification failures separately from missing peer endpoints in session discovery and bridge status.
 

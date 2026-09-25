@@ -70,7 +70,7 @@ npm() {
     if [ -z "$bridge_after" ] || [ "$bridge_before_verified" -ne 1 ] || [ "$bridge_after_root" != "$bridge_root" ]; then
       printf 'Warning: npm completed, but the installed @minhspark/codex-mcp-bridge version could not be verified.\n' >&2
     elif [ "$bridge_after_root" = "$bridge_root" ] && [ "$bridge_after" = "$bridge_before" ]; then
-      printf 'Already up to date: @minhspark/codex-mcp-bridge v%s\n' "$bridge_after"
+      printf 'Installation completed: @minhspark/codex-mcp-bridge v%s (version unchanged)\n' "$bridge_after"
     elif [ "$bridge_after_root" = "$bridge_root" ] && [ -n "$bridge_before" ]; then
       printf 'Successfully updated: @minhspark/codex-mcp-bridge v%s -> v%s\n' "$bridge_before" "$bridge_after"
     else

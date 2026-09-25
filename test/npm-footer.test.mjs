@@ -27,7 +27,7 @@ for (const arg of args) {
 if (!dry && process.env.BRIDGE_AFTER) {
   fs.writeFileSync(process.env.BRIDGE_MANIFEST, process.env.BRIDGE_CORRUPT ? "broken" : JSON.stringify({name: "${packageName}", version: process.env.BRIDGE_AFTER}));
 }
-console.log("npm finished");
+console.log(process.env.BRIDGE_NATIVE_STDOUT || "npm finished");
 `;
 
 function run(shell, { before, beforeMetadata, after = "1.2.3", args = ["install", "-g", `${packageName}@latest`], env = {}, strict = false } = {}) {
@@ -76,7 +76,7 @@ for (const shell of ["bash", "zsh"]) {
     });
     it("reports an unchanged version on repeated installation", () => {
       const result = run(shell, { before: "1.2.3" });
-      assert.match(result.stdout, /Already up to date: .* v1\.2\.3\n$/);
+      assert.match(result.stdout, /Installation completed: .* v1\.2\.3 \(version unchanged\)\n$/);
       assert.equal(result.calls.filter((args) => args[0] === "install").length, 1);
     });
     it("preserves npm failure output and the exact exit code", () => {
@@ -88,8 +88,18 @@ for (const shell of ["bash", "zsh"]) {
     it("reports unchanged versions with nounset, errexit, and pipefail enabled", () => {
       const result = run(shell, { before: "1.2.3", strict: true });
       assert.equal(result.status, 0);
-      assert.equal(result.stdout, `npm finished\nAlready up to date: ${packageName} v1.2.3\n`);
+      assert.equal(result.stdout, `npm finished\nInstallation completed: ${packageName} v1.2.3 (version unchanged)\n`);
       assert.equal(result.stderr, "");
+    });
+    it("reports completion when npm replaces packages without changing the pinned version", () => {
+      const result = run(shell, {
+        before: "1.2.3",
+        args: ["install", "-g", `${packageName}@1.2.3`],
+        env: { BRIDGE_NATIVE_STDOUT: "changed 95 packages in 4s" },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, `changed 95 packages in 4s\nInstallation completed: ${packageName} v1.2.3 (version unchanged)\n`);
+      assert.doesNotMatch(result.stdout, /Already up to date|Successfully updated/);
     });
     it("preserves npm's failure status with strict shell options enabled", () => {
       const result = run(shell, { strict: true, env: { BRIDGE_FAILURE: "1" } });

@@ -182,12 +182,14 @@ npm install -g @minhspark/codex-mcp-bridge@latest
 | --- | --- |
 | No previous installation | `Successfully installed: @minhspark/codex-mcp-bridge v<version>` |
 | Version changed | `Successfully updated: @minhspark/codex-mcp-bridge v<before> -> v<after>` |
-| Same version after reinstalling | `Already up to date: @minhspark/codex-mcp-bridge v<version>` |
+| Same version after reinstalling | `Installation completed: @minhspark/codex-mcp-bridge v<version> (version unchanged)` |
 | npm failed | `Failed to install: ... (exit code <code>). See npm error above.` |
 | Dry run | `Dry run completed: ... (no changes applied).` |
 | Mode or installed metadata cannot be verified | A warning instead of a success claim |
 
 The footer runs after npm finishes and keeps npm's output and exit code. It supports `install`/`i`, explicit global installation, one bridge package, dry-run flags, common install booleans, and a single `--prefix`. Other commands, multiple packages, unknown options, and machine-readable or silent output modes pass through without a footer. Installing the package itself does not alter shell profiles. A successful install confirms files on disk; the app's bridge status separately confirms whether its supervisor has activated that version.
+
+An unchanged version does not mean npm skipped installation: it may still replace package files or dependencies and report `changed ... packages`. The footer compares installed versions; it does not independently check whether a pinned version is the latest registry release.
 
 **Clone it** — right if you intend to read, test or change the code:
 

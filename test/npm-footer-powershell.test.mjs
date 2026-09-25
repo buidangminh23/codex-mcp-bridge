@@ -149,7 +149,19 @@ describe("PowerShell npm installation footer", { skip: missingPwsh ? "pwsh is no
   });
 
   it("reports an unchanged version on a repeated installation", () => {
-    assertFooter(runFooter({ before: "1.13.2" }), `Already up to date: ${packageName} v1.13.2`);
+    assertFooter(runFooter({ before: "1.13.2" }), `Installation completed: ${packageName} v1.13.2 (version unchanged)`);
+  });
+
+  it("reports completion when npm replaces packages without changing the pinned version", () => {
+    const result = runFooter({
+      before: "1.13.2",
+      args: ["install", "-g", `${packageName}@1.13.2`],
+      env: { BRIDGE_FOOTER_NATIVE_STDOUT: "changed 95 packages in 4s" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.outcome, { success: true, code: 0 });
+    assert.equal(result.stdout.replaceAll("\r\n", "\n").trim(), `changed 95 packages in 4s\nInstallation completed: ${packageName} v1.13.2 (version unchanged)`);
+    assert.doesNotMatch(result.stdout, /Already up to date|Successfully updated/);
   });
 
   it("delegates an npm application as well as an npm.ps1 script", () => {

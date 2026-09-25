@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-09-25T13:49:35.211Z",
+  "updatedAt": "2026-09-25T18:38:28.733Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -4145,7 +4145,7 @@
       }
     },
     {
-      "collectedAt": "2026-09-25T13:49:35.211Z",
+      "collectedAt": "2026-09-25T18:38:28.733Z",
       "views": {
         "count": 329,
         "uniques": 127,
@@ -4304,17 +4304,9 @@
         "subscribers": 1
       },
       "npm": {
-        "start": "2026-08-23",
-        "end": "2026-09-21",
+        "start": "2026-08-25",
+        "end": "2026-09-23",
         "downloads": [
-          {
-            "day": "2026-08-23",
-            "downloads": 280
-          },
-          {
-            "day": "2026-08-24",
-            "downloads": 23
-          },
           {
             "day": "2026-08-25",
             "downloads": 18
@@ -4426,10 +4418,31 @@
           {
             "day": "2026-09-21",
             "downloads": 89
+          },
+          {
+            "day": "2026-09-22",
+            "downloads": 0
+          },
+          {
+            "day": "2026-09-23",
+            "downloads": 141
           }
         ]
       },
       "releases": [
+        {
+          "tag": "v1.18.1",
+          "assets": [
+            {
+              "name": "minhspark-codex-mcp-bridge-1.18.1.tgz",
+              "downloads": 1
+            },
+            {
+              "name": "SHA256SUMS.txt",
+              "downloads": 2
+            }
+          ]
+        },
         {
           "tag": "v1.18.0",
           "assets": []
@@ -4562,11 +4575,11 @@
         }
       ],
       "sourceCollectedAt": {
-        "views": "2026-09-25T13:49:35.211Z",
-        "clones": "2026-09-25T13:49:35.211Z",
-        "npm": "2026-09-25T13:49:35.211Z",
-        "repository": "2026-09-25T13:49:35.211Z",
-        "releases": "2026-09-25T13:49:35.211Z"
+        "views": "2026-09-25T18:38:28.733Z",
+        "clones": "2026-09-25T18:38:28.733Z",
+        "npm": "2026-09-25T18:38:28.733Z",
+        "repository": "2026-09-25T18:38:28.733Z",
+        "releases": "2026-09-25T18:38:28.733Z"
       }
     }
   ],
@@ -4887,11 +4900,17 @@
       },
       "2026-09-21": {
         "downloads": 89
+      },
+      "2026-09-22": {
+        "downloads": 0
+      },
+      "2026-09-23": {
+        "downloads": 141
       }
     }
   },
   "usage": {
-    "collectedAt": "2026-09-25T13:49:37Z",
+    "collectedAt": "2026-09-25T18:38:31Z",
     "active": {
       "day": 0,
       "week": 0,

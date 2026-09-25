@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.18.1] - 2026-09-25
+
 ### Fixed
 
 - Report npm installation completion with an unchanged version instead of claiming the package is already up to date after a same-version reinstall.

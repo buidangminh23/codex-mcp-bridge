@@ -389,6 +389,7 @@ describe("native dispatch parameters", () => {
     assert.equal(NATIVE_DISPATCH_METHOD, "tools/call");
     assert.deepEqual(first, {
       arguments: { threadId: "open-in-desktop", prompt: "hello" },
+      callerSource: "codex",
       callId: first.callId,
       namespace: "codex_app",
       threadId: "relay-1",
@@ -1007,6 +1008,17 @@ function nativeFrame(response) {
   return Buffer.concat([header, payload]);
 }
 
+function desktop26924Response(request, result = { success: true }) {
+  const params = request.params;
+  const keys = ["arguments", "callerSource", "callId", "namespace", "threadId", "tool", "turnId"];
+  const valid = request.jsonrpc === "2.0" && request.method === "tools/call" &&
+    params !== null && typeof params === "object" && !Array.isArray(params) &&
+    Object.keys(params).length === keys.length && keys.every((key) => Object.hasOwn(params, key)) &&
+    ["codex", "chatgpt"].includes(params.callerSource) && params.namespace === "codex_app" &&
+    ["callId", "threadId", "tool", "turnId"].every((key) => typeof params[key] === "string" && params[key].trim().length > 0);
+  return { jsonrpc: "2.0", id: request.id, ...(valid ? { result } : { error: { code: -32602, message: "Invalid app tool request" } }) };
+}
+
 async function nativePipe(onRequest, socketPath = tempSocket()) {
   const sockets = new Set();
   let connectionCount = 0;
@@ -1431,7 +1443,7 @@ describe("native tools pipe discovery", () => {
     }, `${prefix}-a`);
     const native = await nativePipe((request, socket) => {
       requests.push(request);
-      socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true, contentItems: [{ type: "inputText", text: JSON.stringify({ projects: [] }) }] } }));
+      socket.write(nativeFrame(desktop26924Response(request, { success: true, contentItems: [{ type: "inputText", text: JSON.stringify({ projects: [] }) }] })));
     }, `${prefix}-b`);
     try {
       const snapshot = modernSnapshot();
@@ -1442,6 +1454,7 @@ describe("native tools pipe discovery", () => {
       assert.equal(requests.length, 2);
       for (const request of requests) {
         assert.equal(request.method, "tools/call");
+        assert.equal(request.params.callerSource, "codex");
         assert.equal(request.params.tool, "list_projects");
         assert.equal(request.params.threadId, "existing-executor");
         assert.deepEqual(request.params.arguments, {});
@@ -1518,6 +1531,44 @@ describe("native tools pipe discovery", () => {
 });
 
 describe("native tools pipe protocol", () => {
+  it("satisfies Desktop 26.924 caller context for messages and project queries while rejecting legacy requests", async () => {
+    const requests = [];
+    const native = await nativePipe((request, socket) => {
+      requests.push(request);
+      socket.write(nativeFrame(desktop26924Response(request)));
+    });
+    const client = new NativeToolsClient({ env: {}, socketPath: native.socketPath });
+    try {
+      const params = nativeDispatchParams({ executorThreadId: "executor", targetThreadId: "target", message: "hello" });
+      delete params.callerSource;
+      const rejected = await new Promise((resolve, reject) => {
+        let buffer = Buffer.alloc(0);
+        const socket = net.connect(native.socketPath, () => socket.write(nativeFrame({ jsonrpc: "2.0", id: "legacy", method: "tools/call", params })));
+        socket.setTimeout(1000, () => socket.destroy(new Error("Legacy protocol response timed out")));
+        socket.on("error", reject);
+        socket.on("data", (chunk) => {
+          buffer = Buffer.concat([buffer, chunk]);
+          if (buffer.length < 4 || buffer.length < buffer.readUInt32LE(0) + 4) return;
+          socket.destroy();
+          resolve(JSON.parse(buffer.subarray(4).toString("utf8")));
+        });
+      });
+      assert.deepEqual(rejected.error, { code: -32602, message: "Invalid app tool request" });
+      assert.deepEqual(await client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "hello" }), { success: true });
+      assert.deepEqual(await client.dispatchDesktop({ executorThreadId: "executor", operation: "list_projects", arguments: {} }), { success: true });
+      assert.equal(requests.length, 3);
+      assert.deepEqual(requests.slice(1).map((request) => request.params.callerSource), ["codex", "codex"]);
+      assert.deepEqual(requests.slice(1).map((request) => request.params.threadId), ["executor", "executor"]);
+      assert.deepEqual(requests[1].params.arguments, { threadId: "target", prompt: "hello" });
+      assert.equal(requests[2].params.tool, "list_projects");
+      assert.deepEqual(requests[2].params.arguments, {});
+      assert.equal(client.pending.size, 0);
+    } finally {
+      client.close();
+      await native.close();
+    }
+  });
+
   it("discovers a native socket and completes a dispatch without an inherited pipe", async () => {
     const requests = [];
     let discoveries = 0;

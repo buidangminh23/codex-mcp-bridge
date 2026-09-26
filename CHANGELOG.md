@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Restore native relay compatibility with Codex Desktop 26.924 by including the required caller source in native tool requests, allowing pipe discovery and Desktop operations to recover automatically.
+
 ## [1.18.1] - 2026-09-25
 
 ### Fixed

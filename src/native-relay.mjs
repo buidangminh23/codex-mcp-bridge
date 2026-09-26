@@ -168,6 +168,7 @@ export function resolveRelayThreadId(env = process.env) {
 export function nativeDispatchParams({ executorThreadId, targetThreadId, message }) {
   return {
     arguments: { threadId: targetThreadId, prompt: message },
+    callerSource: "codex",
     callId: `codex-native-relay-${randomUUID()}`,
     namespace: "codex_app",
     threadId: executorThreadId,
@@ -246,6 +247,7 @@ export function nativeDesktopOperationParams({ executorThreadId, operation, argu
   validateDesktopOperation(operation, args);
   return {
     arguments: args,
+    callerSource: "codex",
     callId: `codex-native-relay-${randomUUID()}`,
     namespace: "codex_app",
     threadId: executorThreadId,

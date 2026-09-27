@@ -220,16 +220,23 @@ The registered supervisor should report auto-reload enabled. Next, list the inte
 
 | Direction | Tools |
 |---|---|
-| Claude → Codex | `list_codex_threads`, then `send_to_codex_thread` |
+| Continue unfinished Codex work | Verify the original `threadId`, then `send_to_codex_thread` |
 | Codex → Claude | `list_claude_sessions`, then `send_to_claude_session` |
-| Create a Codex task | `delegate_to_codex` with `cwd` and `prompt` |
+| Start independent Codex work | `delegate_to_codex` or `start_codex_thread` with `cwd`, initial `prompt`, and a fresh UUID `requestId` in Desktop mode |
 
 Example requests:
 
+- **In Claude:** “For each independent new task or feature, create a new Codex conversation and send the initial brief there. Continue unfinished work in its original conversation.”
 - **In Claude:** “Send this review request to my existing Codex task in this project and wait for its reply.”
 - **In Codex:** “Send this result to my Claude Desktop Code session in this project and confirm its reply.”
 
 Use the exact project directory and destination task. If several Claude sessions match, specify the task ID. A `reply_received` receipt confirms a reply; a timeout does not mean the task stopped, so inspect it before retrying.
+
+An explicit request for a new conversation, or standing user instructions such as the example above, authorizes creation for independent work. Keep fixes, clarifications and results for unfinished work in its original conversation. A completed assistant turn does not by itself mean the whole task is finished; matching a project or finding a recent task does not make it the right destination for new work.
+
+In Desktop mode, generate a fresh UUID `requestId` for each independent task and retain it on every retry of that creation. Different request IDs create separate tasks even with the same directory, title and prompt. The same ID recovers the original receipt after a bridge restart; an edited title or prompt is not resent. Continue that task with its returned `threadId`. Pending or uncertain creation remains blocked: inspect the original receipt/task instead of changing the ID to retry.
+
+For backward compatibility, calls without `requestId` retain the previous deduplication by directory and explicit title (or exact prompt when no title is supplied). They can return an older task with the same title. Use a fresh request ID for independent new work; keep the old call shape when recovering an earlier legacy creation. Legacy app-server mode rejects `requestId` before creating anything because durable creation deduplication is only supported through Desktop native delivery.
 
 The sending tools ask agents to write each prompt in English with these sections, dropping any that do not apply: `Goal`, `Context`, `Task`, `Scope`, `Constraints`, `Done when`, `Reply format`. The first line names the sender, the project and the purpose. Text the user supplied is sent unchanged.
 

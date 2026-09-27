@@ -169,12 +169,12 @@ function threadNameFor({ cwd, prompt, name }) {
   );
 }
 
-async function delegateDesktopTask({ cwd, prompt, name, model, effort, timeoutSec, openInApp, waitForReply = true }) {
+async function delegateDesktopTask({ cwd, prompt, name, requestId, model, effort, timeoutSec, openInApp, waitForReply = true }) {
   const deadline = desktopOperation.getStore()?.deadline ?? Date.now() + Math.min((timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS);
   const workspace = resolveWorkspacePath(cwd);
   const created = await desktopTasks.create({
     cwd: workspace.path, prompt, name: threadNameFor({ cwd: workspace.path, prompt, name }),
-    dedupeName: name ?? "", model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, deadline,
+    dedupeName: name ?? "", requestId, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, deadline,
   });
   const notes = [];
   if (workspace.note) notes.push(workspace.note);
@@ -188,6 +188,7 @@ async function delegateDesktopTask({ cwd, prompt, name, model, effort, timeoutSe
   }
   const lines = [
     created.reused ? "Reused the existing Codex Desktop task; the prompt was not resent" : "Delegated through Codex Desktop", `threadId: ${created.threadId}`, `name: ${created.name}`,
+    ...(requestId ? [`requestId: ${requestId}`] : []),
     `cwd: ${created.cwd}`,
     ...(created.projectAssignmentStatus === "unverified"
       ? [`expected projectId: ${created.expectedProjectId}`, `expected project: ${created.expectedProjectName ?? "(unnamed)"}`, "project assignment: unverified", created.projectAssignmentNote]
@@ -195,7 +196,7 @@ async function delegateDesktopTask({ cwd, prompt, name, model, effort, timeoutSe
     "permissions: Codex Desktop settings; no external app-server writer",
     ...(created.promptChanged ? [created.projectAssignmentStatus === "unverified"
       ? "The edited brief was not sent. Inspect this task's project assignment before continuing it."
-      : "The edited brief was not sent. Use send_to_codex_thread with this threadId for a continuation, or a distinct title for separate work."] : []), ...notes,
+      : "The edited brief was not sent. Continue the same unfinished work with send_to_codex_thread and this threadId. For independent new work, create a task with a fresh requestId; never change requestId merely to retry uncertain delivery."] : []), ...notes,
   ];
   if (created.projectAssignmentStatus === "unverified") return textResult([...lines, "status: existing task retained; project assignment needs inspection"].join("\n"));
   if (!waitForReply) return textResult([...lines, created.reused ? "status: existing task; read it to check its current progress" : "status: accepted; the task is running in Desktop"].join("\n"));
@@ -341,9 +342,12 @@ const server = new McpServer(
   { name: "codex-bridge", version: VERSION },
   {
     instructions:
-      "Bridge Claude work into Codex. Prefer an existing task: inspect its exact threadId and project, then use send_to_codex_thread. " +
-      "Only use delegate_to_codex or start_codex_thread when the user explicitly requests a new task at the " +
-      "requested cwd. With Desktop tasks enabled it assigns the exact saved project and starts visibly in " +
+      "Bridge Claude work into Codex. When the user requests a new conversation or has given standing authorization to create one for each independent task, " +
+      "use delegate_to_codex or start_codex_thread with the initial prompt and a fresh requestId for each independent task or feature in Desktop mode, even in the same project. " +
+      "In legacy app-server mode, use delegate_to_codex with the initial prompt and omit requestId; durable creation deduplication is unavailable there. " +
+      "Reuse that requestId only for retries of that creation. Continue unfinished work, fixes, clarifications, and results in its verified original threadId with send_to_codex_thread. " +
+      "A completed turn alone does not mean the task is finished. Do not choose an old task merely because its project matches or it was recently active. " +
+      "Without authorization to create a new conversation, ask before creating it. With Desktop tasks enabled it assigns the exact saved project and starts visibly in " +
       "Codex Desktop using Desktop permissions. Otherwise it releases the bridge writer lock and opens the exact thread in " +
       "Codex Desktop. Use send_to_codex_thread only when an existing threadId is intentional; use " +
       "list_codex_threads or read_codex_thread to inspect sessions and codex_bridge_status to inspect wiring. " +
@@ -399,9 +403,12 @@ registerTool(
     title: "Delegate work to a new Codex session",
     description:
       "Create a named Codex session at the requested project directory, send Claude's prompt into it, " +
-      "return Codex's reply, and hand the session to Codex Desktop without leaving the bridge writer lock behind.",
+      "return Codex's reply, and hand the session to Codex Desktop without leaving the bridge writer lock behind. " +
+      "Use for independent new work when the user explicitly or through standing instructions authorizes new conversations. " +
+      "In Desktop mode, supply a fresh requestId per independent task and keep it on retries; omit requestId in legacy app-server mode. Use send_to_codex_thread for unfinished work.",
     inputSchema: {
       cwd: z.string().describe("Absolute project directory where Codex must work"),
+      requestId: z.string().uuid().optional().describe("Desktop creation identity: fresh UUID for each independent new task; retain exactly on retries. Omitting it preserves legacy title/prompt deduplication and can return an older task. Not supported in legacy app-server mode."),
       prompt: z.string().describe(`The complete task Claude is delegating to Codex. ${PROMPT_FIELD_HINT}`),
       name: z.string().min(1).max(200).optional().describe("Optional Codex session title; otherwise one is derived from the prompt"),
       timeoutSec: z
@@ -432,12 +439,13 @@ registerTool(
       openWorldHint: true,
     },
   },
-  async ({ cwd, prompt, name, timeoutSec, model, effort, openInApp, releaseAfterTurn }) => {
+  async ({ cwd, prompt, name, requestId, timeoutSec, model, effort, openInApp, releaseAfterTurn }) => {
     const shouldOpen = openInApp ?? DEFAULT_OPEN_IN_APP;
     const shouldRelease = releaseAfterTurn ?? DEFAULT_RELEASE_AFTER_TURN;
     const notes = [];
     try {
-      if (desktopTasksEnabled) return await delegateDesktopTask({ cwd, prompt, name, model, effort, timeoutSec, openInApp });
+      if (desktopTasksEnabled) return await delegateDesktopTask({ cwd, prompt, name, requestId, model, effort, timeoutSec, openInApp });
+      if (requestId !== undefined) throw new Error("Creation requestId requires Desktop native delivery; legacy app-server mode cannot safely deduplicate this request. No task was created.");
       const created = await createCodexThread({ cwd, prompt, name, model });
       if (created.workspace.note) notes.push(created.workspace.note);
       if (shouldOpen && !shouldRelease) {
@@ -490,6 +498,7 @@ registerTool(
     title: "Send a prompt to a Codex thread",
     description:
       "Send a prompt as a new user turn inside an existing Codex thread and wait for Codex to answer. " +
+      "Use only for the same unfinished task, including follow-up fixes, clarifications, or results; independent new work belongs in a new conversation when authorized. " +
       "The thread keeps its full history, cwd and model. Use list_codex_threads first if you do not know the threadId. " +
       "Desktop-owned tasks must use Desktop native delivery; an open task is a valid destination. " +
       "If legacy delivery reports an active writer, inspect codex_bridge_status and repair the native relay/configuration. " +
@@ -702,9 +711,10 @@ registerTool(
   "start_codex_thread",
   {
     title: "Start a new Codex thread",
-    description: "Start a Codex task. In Desktop mode include the initial prompt to create and assign a visible task atomically; use delegate_to_codex to also wait for its reply.",
+    description: "Start a new Codex task when the user explicitly or through standing instructions authorizes a new conversation for independent work. In Desktop mode include the initial prompt and a fresh requestId to create and assign a visible task atomically; keep requestId unchanged on retries. Continue unfinished work with send_to_codex_thread and its original threadId. Use delegate_to_codex to also wait for its reply.",
     inputSchema: {
       cwd: z.string().describe("Absolute working directory for the new Codex session"),
+      requestId: z.string().uuid().optional().describe("Desktop creation identity: fresh UUID per independent task, same UUID on retries. Omit only for legacy title/prompt deduplication. Not supported in legacy app-server mode."),
       prompt: z.string().min(1).optional().describe(`Initial task; required with CODEX_BRIDGE_DESKTOP_TASKS=1, starts immediately. ${PROMPT_FIELD_HINT}`),
       model: z.string().optional().describe("Model override, e.g. gpt-5.6-luna"),
       name: z.string().min(1).max(200).optional().describe("Optional title to show for the new Codex session"),
@@ -716,12 +726,13 @@ registerTool(
       openWorldHint: true,
     },
   },
-  async ({ cwd, model, name, prompt }) => {
+  async ({ cwd, model, name, prompt, requestId }) => {
     try {
       if (desktopTasksEnabled) {
         if (!prompt?.trim()) throw new Error("Desktop task creation requires the initial prompt. Use delegate_to_codex, or pass prompt to start_codex_thread. No task was created.");
-        return await delegateDesktopTask({ cwd, model, name, prompt, waitForReply: false });
+        return await delegateDesktopTask({ cwd, model, name, prompt, requestId, waitForReply: false });
       }
+      if (requestId !== undefined) throw new Error("Creation requestId requires Desktop native delivery; legacy app-server mode cannot safely deduplicate this request. No task was created.");
       if (prompt) throw new Error("Use delegate_to_codex to send an initial prompt in app-server mode.");
       const created = await createCodexThread({ cwd, model, name });
       return textResult(

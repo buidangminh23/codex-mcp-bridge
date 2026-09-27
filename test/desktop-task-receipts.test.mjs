@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs/promises";
@@ -38,6 +39,20 @@ function child(code, args, { longLived = false } = {}) {
 }
 
 describe("durable Desktop task creation receipts", () => {
+  it("separates explicit request identities from titles and legacy keys and persists the request", async () => {
+    const { store } = fixture();
+    const requestId = randomUUID();
+    const args = { cwd: sandbox, prompt: "Initial brief", name: "Feature", requestId };
+    const identity = store.key(args);
+    assert.equal(store.key({ ...args, name: "Changed title", prompt: "Edited retry", requestId: requestId.toUpperCase() }).key, identity.key);
+    assert.notEqual(store.key({ ...args, requestId: randomUUID() }).key, identity.key);
+    assert.notEqual(store.key({ ...args, requestId: undefined }).key, identity.key);
+    await store.write(identity.key, { version: 1, ...identity, cwd: sandbox, name: args.name, state: "pending", startedAt: Date.now() });
+    assert.equal((await new DesktopTaskReceipts({ directory: store.directory }).read(identity.key)).requestId, requestId);
+    for (const invalid of ["", "not-a-uuid", null, 123]) assert.throws(() => store.key({ ...args, requestId: invalid }), /requestId must be a stable UUID/);
+    await assert.rejects(store.write(identity.key, { version: 1, ...identity, requestId: randomUUID(), cwd: sandbox, state: "pending", startedAt: Date.now() }), /unsafe or corrupt/);
+  });
+
   it("keys exact prompts and normalized explicit names without storing prompt text", async () => {
     const { store, key, receipt } = fixture();
     assert.notEqual(store.key({ cwd: sandbox, prompt: "one" }).key, store.key({ cwd: sandbox, prompt: "one " }).key);

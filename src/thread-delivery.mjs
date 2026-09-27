@@ -197,12 +197,12 @@ export class DesktopTaskDelivery {
     return { projectId: project.projectId, projectName: project.label, projectAssignmentStatus: "verified" };
   }
 
-  async create({ cwd, prompt, name, dedupeName = name, model, effort, deadline = this.now() + DESKTOP_TOOL_BUDGET_MS }) {
+  async create({ cwd, prompt, name, dedupeName = name, requestId, model, effort, deadline = this.now() + DESKTOP_TOOL_BUDGET_MS }) {
     this.security.assertCwd(cwd);
     cwd = realpathSync.native(cwd);
     this.security.assertCwd(cwd);
     dedupeName = dedupeName?.normalize("NFC").trim().replace(/\s+/g, " ") || undefined;
-    const identity = this.receipts.key({ cwd, prompt, name: dedupeName });
+    const identity = this.receipts.key({ cwd, prompt, name: dedupeName, requestId });
     const accountContext = this.accountContext?.();
     if (this.accountContext && !accountContext) throw new Error("Desktop creation requires the original verified account context.");
     const options = { cwd, promptHash: identity.promptHash, deadline, accountContext };

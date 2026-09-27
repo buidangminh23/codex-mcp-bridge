@@ -5,11 +5,15 @@ import path from "node:path";
 import { homeDir } from "./platform.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
-const FIELDS = new Set(["version", "key", "cwd", "promptHash", "state", "startedAt", "threadId", "projectId", "projectName", "name", "accountContext"]);
+const REQUEST_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+const FIELDS = new Set(["version", "key", "cwd", "promptHash", "state", "startedAt", "threadId", "projectId", "projectName", "name", "accountContext", "requestId"]);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const normalizedName = (name) => name?.normalize("NFC").trim().replace(/\s+/g, " ");
 const canonicalCwd = (cwd) => process.platform === "win32" ? path.normalize(cwd).toLowerCase() : path.normalize(cwd);
 const nonemptyString = (value) => typeof value === "string" && value.trim().length > 0 && value.length <= 8192 && !/[\u0000-\u001f]/.test(value);
+const receiptKey = ({ cwd, name, promptHash, requestId }) => digest(JSON.stringify(requestId
+  ? [canonicalCwd(cwd), "request", requestId.toLowerCase()]
+  : [canonicalCwd(cwd), normalizedName(name) || promptHash]));
 
 function assertKey(key) {
   if (typeof key !== "string" || !HASH.test(key)) throw new Error("Invalid Desktop task receipt key; refusing unsafe filesystem access.");
@@ -23,6 +27,7 @@ function validateReceipt(key, receipt) {
   const valid = receipt && typeof receipt === "object" && !Array.isArray(receipt)
     && Object.keys(receipt).every((field) => FIELDS.has(field))
     && receipt.version === 1 && receipt.key === key && HASH.test(receipt.promptHash)
+    && (receipt.requestId === undefined || typeof receipt.requestId === "string" && REQUEST_ID.test(receipt.requestId))
     && nonemptyString(receipt.cwd) && path.isAbsolute(receipt.cwd)
     && ["pending", "unknown", "known"].includes(receipt.state)
     && Number.isSafeInteger(receipt.startedAt) && receipt.startedAt >= 0
@@ -31,7 +36,7 @@ function validateReceipt(key, receipt) {
     && ["threadId", "projectId", "projectName", "name"].every((field) => receipt[field] === undefined || nonemptyString(receipt[field]))
     && (receipt.state !== "known" || nonemptyString(receipt.threadId));
   if (!valid) throw unsafeReceipt(key);
-  const expected = digest(JSON.stringify([canonicalCwd(receipt.cwd), normalizedName(receipt.name) || receipt.promptHash]));
+  const expected = receiptKey(receipt);
   if (expected !== key) throw unsafeReceipt(key);
   return receipt;
 }
@@ -41,12 +46,15 @@ export class DesktopTaskReceipts {
     this.directory = path.resolve(directory);
   }
 
-  key({ cwd, prompt, name }) {
+  key({ cwd, prompt, name, requestId }) {
     if (!nonemptyString(cwd) || !path.isAbsolute(cwd) || typeof prompt !== "string" || (name !== undefined && typeof name !== "string")) {
       throw new Error("Desktop task receipts require an absolute validated cwd, a prompt string, and an optional name string.");
     }
+    if (requestId !== undefined && (typeof requestId !== "string" || !REQUEST_ID.test(requestId))) {
+      throw new Error("Desktop task creation requestId must be a stable UUID; use a fresh UUID only for independent new work.");
+    }
     const promptHash = digest(prompt);
-    return { key: digest(JSON.stringify([canonicalCwd(cwd), normalizedName(name) || promptHash])), promptHash };
+    return { key: receiptKey({ cwd, name, promptHash, requestId }), promptHash, ...(requestId ? { requestId: requestId.toLowerCase() } : {}) };
   }
 
   async ensureDirectory(create = false) {

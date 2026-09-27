@@ -723,6 +723,30 @@ describe("codex-bridge tool contract", async () => {
     assert.deepEqual(tools.map((t) => t.name).sort(), [...CODEX_TOOLS].sort());
   });
 
+  it("refuses explicit creation identities in legacy mode before contacting an app-server", async () => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(root, "src", "index.mjs")],
+      env: {
+        PATH: process.env.PATH ?? "", HOME: sandboxHome, USERPROFILE: sandboxHome,
+        CODEX_HOME: path.join(sandboxHome, ".codex"), CODEX_BRIDGE_DESKTOP_TASKS: "0",
+        CODEX_APP_SERVER_URL: "ws://127.0.0.1:9", CODEX_BRIDGE_AUTOSTART: "0",
+      },
+      stderr: "ignore",
+    });
+    const client = new Client({ name: "creation-identity-contract", version: "1" });
+    try {
+      await client.connect(transport);
+      for (const name of ["delegate_to_codex", "start_codex_thread"]) {
+        const result = await client.callTool({ name, arguments: { cwd: sandboxHome, prompt: "Must not dispatch", requestId: crypto.randomUUID() } });
+        assert.equal(result.isError, true);
+        assert.match(result.content[0].text, /requestId requires Desktop native delivery.*No task was created/);
+      }
+    } finally {
+      await client.close();
+    }
+  });
+
   for (const name of CODEX_TOOLS) {
     it(`${name} is annotated and described`, () => {
       const tool = tools.find((t) => t.name === name);
@@ -788,6 +812,22 @@ describe("claude-bridge tool contract", async () => {
 describe("agent prompt guidance", async () => {
   const codex = await inspectServer("index.mjs");
   const claude = await inspectServer("claude-bridge.mjs");
+
+  it("routes authorized independent work to new conversations and unfinished work to its original task", () => {
+    assert.match(codex.instructions, /standing authorization/);
+    assert.match(codex.instructions, /fresh requestId for each independent task/);
+    assert.match(codex.instructions, /In legacy app-server mode, use delegate_to_codex with the initial prompt and omit requestId/);
+    assert.match(codex.instructions, /original threadId with send_to_codex_thread/);
+    assert.match(codex.instructions, /completed turn alone does not mean the task is finished/);
+    assert.doesNotMatch(codex.instructions, /Prefer an existing task/);
+    for (const name of ["delegate_to_codex", "start_codex_thread"]) {
+      const tool = codex.tools.find((entry) => entry.name === name);
+      assert.equal(tool.inputSchema.properties.requestId.format, "uuid");
+      assert.match(tool.inputSchema.properties.requestId.description, /retries/);
+      assert.match(tool.description, /standing instructions/);
+    }
+    assert.match(codex.tools.find((entry) => entry.name === "send_to_codex_thread").description, /same unfinished task/);
+  });
 
   it("puts the prompt shape in both servers' instructions", () => {
     assert.ok(codex.instructions.includes(AGENT_PROMPT_GUIDANCE), "codex-bridge instructions omit the prompt shape");

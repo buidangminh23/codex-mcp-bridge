@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -43,6 +44,63 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountCon
 }
 
 describe("Desktop creation receipts and deadlines", () => {
+  it("creates independent requests with identical project, title and prompt in different tasks", async (t) => {
+    const f = fixture(t);
+    const args = { cwd: f.cwd, name: "New feature", prompt: "Implement the requested feature" };
+    const first = await f.delivery.create({ ...args, requestId: randomUUID() });
+    const second = await f.delivery.create({ ...args, requestId: randomUUID() });
+    assert.notEqual(first.threadId, second.threadId);
+    assert.deepEqual(f.calls.filter((call) => call.operation === "create_thread").map((call) => call.args.prompt), [args.prompt, args.prompt]);
+    assert.equal(f.calls.some((call) => call.operation === "send_message_to_thread"), false);
+  });
+
+  it("reuses an explicit creation request after restart even when its title and brief change", async (t) => {
+    const f = fixture(t);
+    const args = { cwd: f.cwd, name: "Feature", prompt: "Initial brief", requestId: randomUUID() };
+    const first = await f.delivery.create(args);
+    f.setState("idle", "completed");
+    const retried = await f.createDelivery().create({ ...args, name: "Renamed feature", prompt: "Edited brief" });
+    assert.equal(retried.threadId, first.threadId);
+    assert.equal(retried.reused, true);
+    assert.equal(retried.promptChanged, true);
+    assert.equal((await f.receipts.read(f.receipts.key(args).key)).requestId, args.requestId);
+    assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+    assert.equal(f.calls.some((call) => call.operation === "send_message_to_thread"), false);
+  });
+
+  it("keeps explicit requests blocked after an uncertain creation across restart and edited retries", async (t) => {
+    const f = fixture(t, { dispatch({ operation }) { if (operation === "create_thread") throw new Error("Lost acknowledgement"); } });
+    const args = { cwd: f.cwd, name: "Feature", prompt: "Initial brief", requestId: randomUUID() };
+    await assert.rejects(f.delivery.create(args), /Do not resend/);
+    await assert.rejects(f.createDelivery().create({ ...args, name: "New title", prompt: "Edited brief" }), /earlier Desktop creation is unknown/);
+    assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+  });
+
+  it("creates a fresh explicit request alongside a legacy receipt without changing that receipt", async (t) => {
+    const f = fixture(t);
+    const args = { cwd: f.cwd, name: "Feature", prompt: "Initial brief" };
+    const legacy = await f.delivery.create(args);
+    const fresh = await f.delivery.create({ ...args, requestId: randomUUID() });
+    assert.notEqual(fresh.threadId, legacy.threadId);
+    assert.equal((await f.createDelivery().create(args)).threadId, legacy.threadId);
+    assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 2);
+  });
+
+  it("sends unfinished follow-up work only to its original task after another task is created", async (t) => {
+    const f = fixture(t, { captureResponse: () => ({ status: "unavailable" }), dispatch({ operation, args }) {
+      if (operation === "send_message_to_thread") return { threadId: args.threadId, status: "accepted" };
+    } });
+    const args = { cwd: f.cwd, name: "Feature", prompt: "Initial brief" };
+    const original = await f.delivery.create({ ...args, requestId: randomUUID() });
+    await f.delivery.create({ ...args, requestId: randomUUID() });
+    const sent = await f.delivery.send({ threadId: original.threadId, cwd: f.cwd, prompt: "Finish the remaining checks" });
+    assert.equal(sent.threadId, original.threadId);
+    assert.deepEqual(f.calls.filter((call) => call.operation === "send_message_to_thread").map((call) => call.args), [
+      { threadId: original.threadId, prompt: "Finish the remaining checks" },
+    ]);
+    assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 2);
+  });
+
   for (const outcome of ["unrelated", "matching"]) it(`uses only the exact dispatch-bound response instead of latest assistant text: ${outcome}`, async (t) => {
     let reads = 0;
     const accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };

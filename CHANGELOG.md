@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Recognize `codex_work_desktop` as a local Desktop sender while retaining exact host task/turn, workspace, and lifecycle checks (#84). Its permission profile is classified like that of any other Codex Desktop task, including the managed sandboxes supported since 1.19.0 (#83). Claude's inbound policy and permission parity checks are unchanged.
+
 ## [1.19.0] - 2026-09-29
 
 ### Added

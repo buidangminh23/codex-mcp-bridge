@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, it } from "node:test";
 import { readCodexSenderContext } from "../src/codex-sender-context.mjs";
+import { assertRecipientClass } from "../src/recipient-preflight.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-sender-"));
 const threadId = "01a076a7-655a-75b3-aa49-265988838275";
@@ -26,6 +27,134 @@ function fixture() {
   write();
   return { home, directory, file, metadata, session, context, lifecycle, records, write, read };
 }
+
+function workDesktopFixture() {
+  const f = fixture();
+  f.session.originator = "codex_work_desktop";
+  f.metadata.auto_review_enabled = true;
+  f.metadata.node_repl_auto_review_required = true;
+  Object.assign(f.context, {
+    approval_policy: "on-request",
+    approvals_reviewer: "auto_review",
+    permission_profile: {
+      type: "managed",
+      file_system: { type: "restricted", entries: [
+        { path: { type: "special", value: { kind: "root" } }, access: "read" },
+        { path: { type: "path", path: f.home }, access: "write" },
+        { path: { type: "special", value: { kind: "slash_tmp" } }, access: "write" },
+        { path: { type: "special", value: { kind: "tmpdir" } }, access: "write" },
+        { path: { type: "path", path: path.join(f.home, ".git") }, access: "read", missing_path_behavior: "skip" },
+      ] },
+      network: "restricted",
+    },
+    sandbox_policy: {
+      type: "workspace-write", writable_roots: [f.home], network_access: false,
+      exclude_tmpdir_env_var: false, exclude_slash_tmp: false,
+    },
+  });
+  f.write();
+  return f;
+}
+
+it("recognizes local Work Desktop without accepting web, CLI, or extension origins", () => {
+  for (const originator of ["Codex Desktop", "codex_work_desktop"]) {
+    const f = fixture();
+    f.session.originator = originator;
+    f.write();
+    assert.equal(f.read().status, "verified");
+    assert.equal(f.read({ originator: "codex_vscode" }).status, "unavailable");
+  }
+  for (const originator of ["codex_work_web", "codex_cli_rs", "codex_vscode", "Codex Desktop unknown"]) {
+    const f = workDesktopFixture();
+    f.session.originator = originator;
+    f.write();
+    assert.equal(f.read().status, "unavailable", originator);
+  }
+});
+
+it("verifies the observed managed Desktop shape as prompting and preserves review evidence", () => {
+  for (const originator of ["Codex Desktop", "codex_work_desktop"]) {
+    for (const reviewer of ["user", "auto_review"]) {
+      for (const policy of ["on-request", "on-failure", "untrusted"]) {
+        const f = workDesktopFixture();
+        f.session.originator = originator;
+        f.context.approvals_reviewer = reviewer;
+        f.context.approval_policy = policy;
+        f.write();
+        const result = f.read();
+        assert.equal(result.status, "verified", result.reason);
+        assert.equal(result.mode, "prompting");
+        assert.equal(result.approvalPolicy, policy);
+        assert.deepEqual(result.review, { autoReview: "enabled", nodeReplReview: "enabled" });
+      }
+    }
+  }
+});
+
+it("keeps managed Work Desktop senders in the prompting class, including never and granular approvals", () => {
+  for (const policy of ["never", { granular: { sandbox_approval: true, rules: true, mcp_elicitations: false } }]) {
+    const f = workDesktopFixture();
+    f.context.approval_policy = policy;
+    f.metadata.sandbox_mode = "danger-full-access";
+    f.write();
+    const result = f.read();
+    assert.equal(result.status, "verified", result.reason);
+    assert.equal(result.mode, "prompting");
+  }
+});
+
+it("fails closed for malformed Work Desktop review evidence and unsupported managed shapes", () => {
+  const changes = [
+    f => { delete f.metadata.auto_review_enabled; },
+    f => { f.metadata.node_repl_auto_review_required = "true"; },
+    f => { f.context.approvals_reviewer = "unknown"; },
+    f => { f.context.permission_profile.extra = true; },
+    f => { f.context.permission_profile.file_system.type = "unrestricted"; },
+    f => { f.context.permission_profile.file_system.entries[0].access = "allow"; },
+    f => { f.context.permission_profile.file_system.entries[0].access = "write"; },
+    f => { f.context.permission_profile.file_system.entries[1].extra = true; },
+    f => { f.context.permission_profile.file_system.entries[4].missing_path_behavior = "allow"; },
+    f => { f.context.sandbox_policy.type = "danger-full-access"; },
+    f => { f.context.approval_policy = { granular: {} }; },
+  ];
+  for (const change of changes) {
+    const f = workDesktopFixture();
+    change(f);
+    f.write();
+    const result = f.read();
+    assert.equal(result.status, "unavailable", String(change));
+    assert.equal(result.mode, null);
+  }
+});
+
+it("keeps active-turn, workspace, and identity checks for managed Work Desktop callers", () => {
+  for (const change of [
+    f => { f.session.id = otherId; },
+    f => { f.session.source = "cli"; },
+    f => { f.metadata.thread_source = "subagent"; },
+    f => { f.metadata.turn_id = otherId; },
+    f => { f.context.cwd = root; },
+    f => { f.lifecycle.type = "task_complete"; },
+  ]) {
+    const f = workDesktopFixture();
+    change(f);
+    f.write();
+    assert.equal(f.read().status, "unavailable", String(change));
+  }
+});
+
+it("preserves recipient parity and explicit hold/refuse for a verified managed sender", () => {
+  const sender = workDesktopFixture().read();
+  assert.equal(sender.status, "verified");
+  const recipient = { desktop: { title: "Test", permissionMode: "default", permissionClass: "prompting" } };
+  assert.doesNotThrow(() => assertRecipientClass(recipient, sender));
+  assert.throws(() => assertRecipientClass({ desktop: { ...recipient.desktop, permissionMode: "bypassPermissions", permissionClass: "bypass" } }, sender),
+    error => error.preflight?.code === "CLAUDE_RECIPIENT_CLASS_MISMATCH" && error.preflight.sent === false);
+  for (const value of ["hold", "refuse"]) {
+    assert.throws(() => assertRecipientClass({ ...recipient, inbound: { value, source: "managed" } }, sender),
+      error => error.preflight?.code === "CLAUDE_RECIPIENT_INBOUND_POLICY" && error.preflight.sent === false);
+  }
+});
 
 it("verifies only the exact active Desktop caller's effective disabled permissions", () => {
   const f = fixture();

@@ -449,6 +449,8 @@ Claude Desktop disables the CLI-native `SendMessage` tool. For Desktop targets, 
 
 In Desktop-only mode, the sender is resolved separately for every MCP call. Codex supplies `x-codex-turn-metadata` with the calling task and turn IDs; the bridge matches them to one active, local Codex Desktop rollout and reads its effective permission profile and approval settings. The diagnostic `sandbox_mode` label is never used to authorize a send. Missing or invalid host review flags, a completed or superseded turn, or an unsupported permission profile blocks sending before any message bytes are written. Status distinguishes enabled, disabled, missing, and invalid review flags. Do not supply fabricated MCP metadata or use another process to make a blocked send succeed.
 
+Desktop sender verification accepts the exact local originators `Codex Desktop` and `codex_work_desktop`, with source `vscode`. This does not include `codex_work_web`, CLI callers, subagents, or the separate VS Code extension registration. The task ID, active turn, and unchanged canonical workspace must still match. Changing a chat's folder does not bypass the existing workspace identity check.
+
 The class answers the question Claude's parity gate asks: does the sender bypass permission checks? Claude puts only `bypassPermissions` in that class and counts `dontAsk` (deny without asking) and `auto` (a classifier approves) as prompting. Two Codex permission shapes are supported:
 
 - **Full access**: an explicitly disabled permission profile with a matching `danger-full-access` sandbox and a `user` approval reviewer. With `approval_policy: never` it maps to `bypass`; with `on-request`, `on-failure`, or `untrusted` it maps to `prompting`.

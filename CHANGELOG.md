@@ -9,6 +9,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Recognize `codex_work_desktop` as a local Desktop sender while retaining exact host task/turn, workspace, and lifecycle checks (#84). Its permission profile is classified like that of any other Codex Desktop task, including the managed sandboxes supported since 1.19.0 (#83). Claude's inbound policy and permission parity checks are unchanged.
 - Read completed native replies from `codex_work_desktop` tasks and correlate both raw and XML-escaped Desktop dispatch envelopes to the exact sent prompt (#84). Task, workspace, turn, executor, and pre-send watermark checks remain required for automatic reply observation.
 - Preserve confirmed native send acceptance when the overall response deadline expires (#84). The timeout does not release the underlying operation's thread lock, retry a prompt, or turn an unconfirmed send into a successful delivery.
+- Avoid a Windows Node 24.13.0 native crash when preparing supervisor and MCP contract test fixtures from a Unicode checkout path by awaiting asynchronous directory copies (#84).
 
 ## [1.19.0] - 2026-09-29
 

@@ -79,7 +79,7 @@ export class DesktopTaskDelivery {
     }
   }
 
-  async withThread(threadId, operation, { deadline } = {}) {
+  async withThread(threadId, operation, { deadline, onDeadline } = {}) {
     const previous = this.threadOperations.get(threadId) ?? Promise.resolve();
     let expired = false;
     const current = previous.catch(() => {}).then(() => {
@@ -98,6 +98,10 @@ export class DesktopTaskDelivery {
           reject(new Error("The Desktop response deadline elapsed. A previous operation may still be running; inspect the existing task before sending anything again."));
         }, Math.max(1, deadline - this.now()));
       })]);
+    } catch (error) {
+      // Preserve confirmed dispatch state while the underlying operation retains its lock.
+      if (expired && onDeadline) return onDeadline(error);
+      throw error;
     } finally {
       clearTimeout(timer);
     }

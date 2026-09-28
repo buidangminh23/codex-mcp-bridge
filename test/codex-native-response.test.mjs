@@ -57,6 +57,58 @@ function fixture(t) {
 }
 
 describe("native Codex response observation", () => {
+  it("captures and reads exact final replies from both native Desktop origins", (t) => {
+    for (const originator of ["Codex Desktop", "codex_work_desktop"]) {
+      const f = fixture(t);
+      f.session.payload.originator = originator;
+      fs.writeFileSync(f.file, line(f.session));
+      const watermark = f.capture();
+      assert.equal(watermark.status, "available", originator);
+      f.append(f.turn());
+      const observed = f.read(watermark);
+      const inspected = inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env });
+      assert.equal(observed.status, "completed");
+      assert.equal(observed.text, "Received safely");
+      assert.equal(inspected.status, "completed");
+      assert.deepEqual(observed.assistantItems, inspected.assistantItems);
+      assert.equal(observed.replySha256, inspected.replySha256);
+    }
+  });
+
+  it("does not extend response observation to web, CLI, extension or unknown origins", (t) => {
+    for (const originator of ["codex_work_web", "codex_cli_rs", "codex_vscode", "codex_work_desktop_unknown", "Codex Desktop unknown", null]) {
+      const f = fixture(t);
+      f.session.payload.originator = originator;
+      fs.writeFileSync(f.file, line(f.session));
+      assert.equal(f.capture().status, "unavailable");
+      f.append(f.turn());
+      assert.equal(inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env }).status, "unavailable");
+    }
+  });
+
+  it("retains session, workspace and source checks for Work Desktop response observation", (t) => {
+    for (const patch of [{ id: EXECUTOR_ID }, { source: "cli" }, { source: "web" }, { cwd: os.tmpdir() }]) {
+      const f = fixture(t);
+      Object.assign(f.session.payload, { originator: "codex_work_desktop" }, patch);
+      fs.writeFileSync(f.file, line(f.session));
+      assert.equal(f.capture().status, "unavailable");
+      f.append(f.turn());
+      assert.equal(inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env }).status, "unavailable");
+    }
+  });
+
+  it("keeps Work Desktop final replies bound to their exact dispatch and new turn", (t) => {
+    const f = fixture(t);
+    f.session.payload.originator = "codex_work_desktop";
+    fs.writeFileSync(f.file, line(f.session));
+    const watermark = f.capture();
+    f.append(f.turn());
+    assert.equal(f.read(watermark, { prompt: "unrelated prompt" }).status, "unavailable");
+    assert.equal(f.read(watermark, { executorThreadId: PREVIOUS_TURN_ID }).status, "unavailable");
+    assert.equal(f.read(watermark, { previousTurnId: TURN_ID }).status, "unavailable");
+    assert.equal(f.read(watermark).status, "completed");
+  });
+
   it("inspects the authoritative assistant item for one exact completed turn", (t) => {
     const f = fixture(t);
     const records = f.turn();
@@ -112,6 +164,17 @@ describe("native Codex response observation", () => {
     f.append(f.turn());
     const watermark = f.capture();
     assert.equal(f.read(watermark).status, "unavailable");
+  });
+
+  it("matches the exact XML-escaped native dispatch without confusing literal entities", (t) => {
+    const prompt = "Return <integer> & retain literal &lt;integer&gt;";
+    const encoded = "Return &lt;integer&gt; &amp; retain literal &amp;lt;integer&amp;gt;";
+    const f = fixture(t);
+    const watermark = f.capture();
+    f.append(f.turn({ prompt: encoded }));
+    assert.equal(f.read(watermark, { prompt }).status, "completed");
+    assert.equal(f.read(watermark, { prompt: "Return <integer> & retain literal <integer>" }).status, "unavailable");
+    assert.equal(f.read(watermark, { prompt, executorThreadId: PREVIOUS_TURN_ID }).status, "unavailable");
   });
 
   it("reports an exact completed turn with zero final assistant items", (t) => {

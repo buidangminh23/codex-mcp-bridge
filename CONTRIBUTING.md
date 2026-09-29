@@ -32,6 +32,15 @@ npm run check     # boots the bridge against a real app-server and lists threads
 Linux, macOS and Windows. It works against a fake app-server and a throwaway `HOME`, so
 it is the one to run on every commit.
 
+On Windows, run `node --test --test-concurrency=2`, matching CI. The named-pipe
+security integration tests execute the checked-in `src/windows-pipe-acl.ps1`
+with Windows PowerShell 5.1. That host must already permit the local script
+under the operator's execution policy; a PowerShell 7 policy does not establish
+this prerequisite. If script execution is restricted, the tests must fail
+closed, not skip the ACL checks or retry with `Bypass`. Inspect the effective
+policy in Windows PowerShell and follow the machine's approved policy before
+rerunning. POSIX-only skips on Windows are expected.
+
 `npm run smoke` sends real turns to Codex and spends quota — run it when the
 change touches turn handling, not on every commit.
 

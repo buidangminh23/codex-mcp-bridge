@@ -583,4 +583,51 @@ describe("Desktop creation receipts and deadlines", () => {
     await Promise.all([first, third]);
     assert.deepEqual(calls, ["first", "third"]);
   });
+
+  it("preserves a confirmed delivery at the deadline without releasing its operation lock", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const f = fixture(t, { now: () => 0 });
+    let release;
+    let accepted = false;
+    let nextRan = false;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const first = f.delivery.withThread("task", async () => {
+      accepted = true;
+      await gate;
+    }, {
+      deadline: 20,
+      onDeadline(error) {
+        if (!accepted) throw error;
+        return { deliveryStatus: "accepted", status: "timeout" };
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    t.mock.timers.tick(20);
+    assert.deepEqual(await first, { deliveryStatus: "accepted", status: "timeout" });
+    const next = f.delivery.withThread("task", () => { nextRan = true; });
+    assert.equal(nextRan, false);
+    release();
+    await next;
+    assert.equal(nextRan, true);
+  });
+
+  it("keeps an unconfirmed deadline as an error and does not run expired queued sends", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const f = fixture(t, { now: () => 0 });
+    let release;
+    let dispatched = false;
+    const first = f.delivery.withThread("task", () => new Promise((resolve) => { release = resolve; }));
+    const queued = f.delivery.withThread("task", () => { dispatched = true; }, {
+      deadline: 20,
+      onDeadline(error) { throw error; },
+    });
+    const rejected = assert.rejects(queued, /Desktop response deadline elapsed/);
+    t.mock.timers.tick(20);
+    await rejected;
+    release();
+    await first;
+    await f.delivery.withThread("task", () => {});
+    assert.equal(dispatched, false);
+  });
 });

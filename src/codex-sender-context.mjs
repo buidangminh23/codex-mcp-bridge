@@ -9,6 +9,7 @@ const STARTED = new Set(["task_started", "turn_started"]);
 const MAX_ROLLOUT_BYTES = 64 * 1024 * 1024;
 const MAX_ENTRIES = 100000;
 const MAX_DIRECTORIES = 4096;
+const DESKTOP_ORIGINATORS = new Set(["Codex Desktop", "codex_work_desktop"]);
 const PROMPTING_POLICIES = new Set(["on-request", "on-failure", "untrusted"]);
 const GRANULAR_CATEGORIES = ["sandbox_approval", "rules", "mcp_elicitations"];
 const MANAGED_REVIEWERS = new Set(["user", "auto_review"]);
@@ -213,7 +214,9 @@ export function readCodexSenderContext(meta, { env = process.env, maxRolloutByte
     const state = readState(file, Math.min(MAX_ROLLOUT_BYTES, maxRolloutBytes));
     const { session, context, lifecycle } = state;
     if (!["Codex Desktop", "codex_vscode"].includes(originator)) throw new Error("Unsupported calling host");
-    if (session?.id !== identity.threadId || session.originator !== originator || session.source !== "vscode") throw new Error(`The caller rollout does not confirm a root ${originator} task`);
+    const desktop = originator === "Codex Desktop";
+    const matchesOriginator = desktop ? DESKTOP_ORIGINATORS.has(session?.originator) : session?.originator === originator;
+    if (session?.id !== identity.threadId || !matchesOriginator || session.source !== "vscode") throw new Error(`The caller rollout does not confirm a root ${originator} task`);
     if (context?.turn_id !== identity.turnId || lifecycle?.turn_id !== identity.turnId || !STARTED.has(lifecycle?.type)) throw new Error("The calling turn is no longer the latest active Codex turn");
     if (typeof context.cwd !== "string" || !path.isAbsolute(context.cwd) || typeof session.cwd !== "string" || !path.isAbsolute(session.cwd)) throw new Error("The caller's workspace is missing or invalid");
     const cwd = fs.realpathSync.native(context.cwd);

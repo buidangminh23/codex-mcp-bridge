@@ -8,6 +8,7 @@ const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
 const MAX_ENTRIES = 100000;
 const MAX_DIRECTORIES = 4096;
 const MAX_REPLY_BYTES = 1024 * 1024;
+const DESKTOP_ORIGINATORS = new Set(["Codex Desktop", "codex_work_desktop"]);
 const COMPLETED = new Set(["task_complete", "task_completed", "turn_complete", "turn_completed"]);
 const STARTED = new Set(["task_started", "turn_started"]);
 const FAILED = new Set(["task_aborted", "turn_aborted", "task_failed", "turn_failed"]);
@@ -155,12 +156,14 @@ function validateSession(records, threadId, expectedCwd) {
   const sessions = records.filter(({ record }) => record.type === "session_meta").map(({ record }) => record.payload);
   if (sessions.length !== 1) throw new Error("The Codex rollout has ambiguous session identity");
   const session = sessions[0];
-  if (session.id !== threadId || session.originator !== "Codex Desktop" || session.source !== "vscode") throw new Error("The rollout does not confirm the exact native Codex Desktop task");
+  if (session.id !== threadId || !DESKTOP_ORIGINATORS.has(session.originator) || session.source !== "vscode") throw new Error("The rollout does not confirm the exact native Codex Desktop task");
   if (canonicalDirectory(session.cwd, "The rollout workspace") !== expectedCwd) throw new Error("The rollout workspace does not match the selected native task");
 }
 
-function delegationOutput(executorThreadId, prompt) {
-  return `<codex_delegation>\n  <source_thread_id>${executorThreadId}</source_thread_id>\n  <input>${prompt}</input>\n</codex_delegation>`;
+function delegationOutputs(executorThreadId, prompt) {
+  const escaped = prompt.replace(/[&<>]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character]);
+  // Older Desktop rollouts stored raw text; current builds escape XML text content.
+  return [prompt, escaped].map((text) => `<codex_delegation>\n  <source_thread_id>${executorThreadId}</source_thread_id>\n  <input>${text}</input>\n</codex_delegation>`);
 }
 
 function normalizedText(value) {
@@ -214,7 +217,7 @@ function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch } 
   if (requireDispatch) {
     const dispatches = turns.filter(({ record }) => record.type === "response_item" && record.payload.type === "function_call_output" &&
       record.payload.namespace === "codex_app" && record.payload.name === "send_message_to_thread");
-    if (dispatches.length !== 1 || dispatches[0].record.payload.output !== requireDispatch.output ||
+    if (dispatches.length !== 1 || !requireDispatch.outputs.includes(dispatches[0].record.payload.output) ||
         contexts[0].start >= dispatches[0].start || dispatches[0].start >= completions[0].start) {
       throw new Error("The newly observed turn is not correlated to the exact native dispatch");
     }
@@ -324,7 +327,7 @@ export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, 
     validateSession(records, threadId, cwd);
     const tail = records.filter(({ start }) => start >= watermark.size);
     const inspected = inspectTurnRecords(tail, threadId, turnId, cwd, {
-      requireDispatch: { output: delegationOutput(executorThreadId, prompt) },
+      requireDispatch: { outputs: delegationOutputs(executorThreadId, prompt) },
     });
     return { ...inspected, observationStatus: inspected.status };
   } catch (error) {

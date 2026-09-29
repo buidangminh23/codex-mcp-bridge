@@ -538,6 +538,7 @@ registerTool(
   },
   async ({ threadId, prompt, timeoutSec, cwd, model, effort, name, openInApp, releaseAfterTurn }) => {
     const deadline = desktopTasksEnabled ? desktopOperation.getStore()?.deadline ?? Date.now() + Math.min((timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS) : undefined;
+    let acceptedDelivery;
     return (desktopTasksEnabled ? desktopTasks : client).withThread(threadId, async () => {
       const notes = [];
       const shouldOpen = openInApp ?? DEFAULT_OPEN_IN_APP;
@@ -547,6 +548,7 @@ registerTool(
           const workspace = cwd ? resolveWorkspacePath(cwd) : null;
           if (workspace) security.assertCwd(workspace.path);
           const delivered = await desktopTasks.send({ threadId, prompt, cwd: workspace?.path, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, name, deadline });
+          acceptedDelivery = delivered;
           notes.push("sent through Codex Desktop; no external app-server writer", `cwd: ${delivered.cwd}`);
           if (shouldOpen) {
             try {
@@ -617,7 +619,16 @@ registerTool(
       } catch (err) {
         return failure(err);
       }
-    }, { deadline }).catch(failure);
+    }, {
+      deadline,
+      onDeadline(error) {
+        if (!acceptedDelivery) throw error;
+        return {
+          ...textResult(`sent through Codex Desktop; no external app-server writer\ncwd: ${acceptedDelivery.cwd}\nthreadId: ${threadId}\nstatus: timeout\nTask was accepted; the response deadline elapsed before a completed reply was observed. Inspect the existing task; do not resend.`),
+          structuredContent: { threadId, deliveryStatus: "accepted", status: "timeout", responseStatus: "unavailable" },
+        };
+      },
+    }).catch(failure);
   },
 );
 

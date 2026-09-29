@@ -652,7 +652,8 @@ describe("Loaded MCP runtime freshness", () => {
   for (const entry of ["claude-bridge.mjs", "index.mjs"]) {
     it(`blocks sends from ${entry} after a source update until reconnect`, async () => {
       const directory = fs.mkdtempSync(path.join(sandboxHome, "runtime-"));
-      fs.cpSync(path.join(root, "src"), path.join(directory, "src"), { recursive: true });
+      // Avoid the Windows cpSync native crash on Unicode paths in Node 24.13.0.
+      await fs.promises.cp(path.join(root, "src"), path.join(directory, "src"), { recursive: true });
       fs.copyFileSync(path.join(root, "package.json"), path.join(directory, "package.json"));
       fs.symlinkSync(path.join(root, "node_modules"), path.join(directory, "node_modules"), process.platform === "win32" ? "junction" : "dir");
       const client = new Client({ name: "runtime-test", version: "1" });

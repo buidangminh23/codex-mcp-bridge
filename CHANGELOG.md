@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.19.1] - 2026-09-29
+
 ### Fixed
 
 - Recognize `codex_work_desktop` as a local Desktop sender while retaining exact host task/turn, workspace, and lifecycle checks (#84). Its permission profile is classified like that of any other Codex Desktop task, including the managed sandboxes supported since 1.19.0 (#83). Claude's inbound policy and permission parity checks are unchanged.
@@ -11,6 +13,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Preserve confirmed native send acceptance when the overall response deadline expires (#84). The timeout does not release the underlying operation's thread lock, retry a prompt, or turn an unconfirmed send into a successful delivery.
 - Avoid a Windows Node 24.13.0 native crash when preparing supervisor and MCP contract test fixtures from a Unicode checkout path by awaiting asynchronous directory copies (#84).
 - Stop refusing Claude → Codex callers on Windows because Windows PowerShell started slowly (#42). The caller check reads the process ancestry in a fresh Windows PowerShell that first compiles its Toolhelp helper, and the five-second fail-closed deadline covered that startup as well as the read. On a cold or contended machine the startup alone has taken 5 to 15 seconds: CI refused callers with `INSPECTION_TIMEOUT` before the script had begun (5,036 ms) and while the helper was still compiling (5,017 ms), although the read itself takes about 60 ms. The helper now reports when it is ready, and the five-second deadline starts there. Getting ready has its own 25-second ceiling, so a whole read still ends within the 30 seconds the bridge gives its other PowerShell identity reads. Either expiry still refuses the caller, and a slow start is reported as `INSPECTOR_START_TIMEOUT`. The helper also writes its JSON itself, so the timed read no longer loads PowerShell's JSON serializer.
+- Lock `ip-address` at 10.7.2 for development installs (#87). 10.5.0 misclassified IPv6 link-local and NAT64 local-use addresses. The bridge's stdio servers never load the rate-limiting code that uses it, and the published package ships no lockfile, so installs from npm resolve their own versions.
 
 ## [1.19.0] - 2026-09-29
 

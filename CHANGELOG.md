@@ -4,9 +4,20 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-09-29
+
+### Added
+
+- Give each independent Codex Desktop task its own creation identity with an optional `requestId` UUID on `delegate_to_codex` and `start_codex_thread` (#82). Creation receipts were keyed by directory and title, or by the exact prompt when no title was given, so a second independent task with the same title returned the earlier task and its brief was never sent. A fresh `requestId` creates a separate task even with the same directory, title and prompt, and retrying with the same ID recovers the original receipt after a bridge restart without resending the prompt. Calls without `requestId` keep the previous deduplication. Legacy app-server mode rejects `requestId` before creating anything, because it cannot deduplicate creations durably.
+
+### Changed
+
+- Guide agents to open a new Codex conversation for each independent task when the user asks for one or has given standing instructions to, and to continue unfinished work, fixes and results in the task's original thread (#82). The server instructions, tool descriptions and README previously told agents to prefer an existing task and to create one only on an explicit request.
+
 ### Fixed
 
 - Verify Codex → Claude Desktop senders that run inside a Codex-managed sandbox (#83). Codex Desktop 26.924 starts ordinary tasks with a `managed` permission profile, a `workspace-write` sandbox, and a `granular` approval policy, and its permission selector may offer only **Ask for approval** and **Approve for me**; the bridge accepted only the disabled full-access profile, so every send from such a task stopped with `CODEX_SENDER_CONTEXT_UNVERIFIED`. A managed profile whose file system is restricted now attests `prompting` with a `user` or `auto_review` reviewer and any approval policy, matching Claude, which counts `dontAsk` and `auto` as prompting; it can never attest `bypass`, which still requires Full access with `approval_policy: never`. The bridge still fails closed when the managed file system is unrestricted, grants write access to the file-system root, a literal root path, a glob, or an unrecognised special path, or has any unrecognised shape. A granular policy is reported as a stable `granular(<allowed categories>)` label, and `claude_bridge_status` shows the sender's permission profile and approval reviewer, which a queued send now also pins. A class mismatch against a Claude task in `bypassPermissions` names the Full access requirement.
+- Retry removing an integration test's temporary home on Windows while the bridge and the PowerShell probes it started are still exiting (#86). They keep that directory as their working directory after the SDK's close() sends SIGKILL, so the removal failed a Windows CI run with `EPERM`.
 
 ## [1.18.2] - 2026-09-26
 

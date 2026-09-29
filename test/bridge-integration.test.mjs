@@ -68,8 +68,8 @@ function fixtureRelayServer({ home, socketPath, ...options }) {
  * cold start survivable.
  *
  * The budget is the fixture's, not the product's: src/claude-sender-context.mjs
- * keeps the five-second production deadline and test/claude-sender-context.mjs
- * asserts it.
+ * gives the helper 25s to start and the read itself five seconds, and
+ * test/claude-sender-context.test.mjs asserts both.
  */
 let callerProcessIdentityPromise = null;
 

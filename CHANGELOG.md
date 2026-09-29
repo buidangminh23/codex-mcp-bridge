@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop refusing Claude → Codex callers on Windows because Windows PowerShell started slowly (#42). The caller check reads the process ancestry in a fresh Windows PowerShell that first compiles its Toolhelp helper, and the five-second fail-closed deadline covered that startup as well as the read. On a cold or contended machine the startup alone has taken 5 to 15 seconds: CI refused callers with `INSPECTION_TIMEOUT` before the script had begun (5,036 ms) and while the helper was still compiling (5,017 ms), although the read itself takes about 60 ms. The helper now reports when it is ready, and the five-second deadline starts there. Getting ready has its own 25-second ceiling, so a whole read still ends within the 30 seconds the bridge gives its other PowerShell identity reads. Either expiry still refuses the caller, and a slow start is reported as `INSPECTOR_START_TIMEOUT`. The helper also writes its JSON itself, so the timed read no longer loads PowerShell's JSON serializer.
+
 ## [1.19.0] - 2026-09-29
 
 ### Added

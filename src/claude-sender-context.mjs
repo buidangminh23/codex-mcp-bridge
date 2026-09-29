@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { listClaudeSessions } from "./peer-protocol.mjs";
@@ -6,12 +6,35 @@ import { readClaudeDesktopContext } from "./claude-desktop-context.mjs";
 
 const execute = promisify(execFile);
 const MAX_ANCESTORS = 8;
+const INSPECTION_OUTPUT_LIMIT = 16384;
+
+/**
+ * The five-second deadline is what keeps the caller check fail-closed: a read
+ * that cannot answer in time leaves the caller unverified. On Windows the read
+ * runs in a fresh Windows PowerShell that must first compile its Toolhelp
+ * helper, and the deadline used to cover that startup too. Starting is the
+ * machine's cost, not the read's: CI refused callers with INSPECTION_TIMEOUT
+ * both before the script had begun (5,036ms) and while the helper was still
+ * compiling (5,017ms), a cold start here has been measured between 5s and 15s,
+ * and the read itself takes milliseconds once the helper exists.
+ *
+ * The helper therefore reports on stderr when it is ready, and the five-second
+ * deadline starts there. Getting ready has its own ceiling, so a whole read
+ * still ends within the 30s the bridge gives its other PowerShell identity
+ * reads (peer-protocol.mjs). Either expiry kills the process and refuses the
+ * caller; nothing is read before the helper is ready, so the wait adds no
+ * staleness.
+ */
+const INSPECTION_TIMEOUT_MS = 5000;
+const INSPECTOR_START_TIMEOUT_MS = 25000;
+const INSPECTOR_READY_MARKER = "BRIDGE_ANCESTRY_READY";
 const WINDOWS_ANCESTRY_SOURCE = `
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
 
 public static class ClaudeProcessAncestry {
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -83,6 +106,17 @@ public static class ClaudeProcessAncestry {
     }
     return rows.ToArray();
   }
+
+  public static string ReadJson(uint firstPid, int limit) {
+    var json = new StringBuilder("[");
+    foreach (var row in Read(firstPid, limit)) {
+      if (json.Length > 1) json.Append(',');
+      json.Append(@"{""pid"":").Append(row.pid.ToString(CultureInfo.InvariantCulture))
+        .Append(@",""parentPid"":").Append(row.parentPid.ToString(CultureInfo.InvariantCulture))
+        .Append(@",""processStart"":""").Append(row.processStart).Append(@"""}");
+    }
+    return json.Append(']').ToString();
+  }
 }`;
 
 function parseWindowsAncestry(stdout, parentPid, limit) {
@@ -105,26 +139,77 @@ function parseWindowsAncestry(stdout, parentPid, limit) {
   return rows;
 }
 
-export async function readProcessAncestry({ parentPid = process.ppid, platform = process.platform, maxDepth = MAX_ANCESTORS, run = execute } = {}) {
+/**
+ * Runs a process the way execFile does - the same stdout and stderr strings,
+ * maxBuffer limit, and exit-code and spawn errors - except that `timeout`
+ * starts once `readyMarker` appears on stderr, and `startupTimeout` bounds the
+ * time before it. An expiry kills the process and rejects with ETIMEDOUT and
+ * the phase that ran out. The result also carries the pid, readyAfterMs and
+ * elapsedMs so tests can report where the time went.
+ */
+export function runProcessInspector(command, args, { timeout, startupTimeout, readyMarker, maxBuffer = Infinity, windowsHide = true } = {}) {
+  return new Promise((resolve, reject) => {
+    const started = performance.now();
+    const child = spawn(command, args, { windowsHide, stdio: ["ignore", "pipe", "pipe"] });
+    const output = { stdout: [], stderr: [] };
+    const size = { stdout: 0, stderr: 0 };
+    let readyAfterMs = null;
+    let settled = false;
+    let timer;
+    const text = (stream) => Buffer.concat(output[stream]).toString("utf8");
+    const settle = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error && child.pid !== undefined && child.exitCode === null && child.signalCode === null) child.kill();
+      const result = { stdout: text("stdout"), stderr: text("stderr"), pid: child.pid, readyAfterMs, elapsedMs: Math.round(performance.now() - started) };
+      if (error) reject(Object.assign(error, result));
+      else resolve(result);
+    };
+    const arm = (phase, ms) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => settle(Object.assign(new Error(`Process inspection ${phase} deadline elapsed`), { code: "ETIMEDOUT", phase, killed: true, signal: "SIGTERM" })), ms);
+    };
+    if (readyMarker) arm("startup", startupTimeout);
+    else arm("inspection", timeout);
+    for (const stream of ["stdout", "stderr"]) {
+      child[stream].on("data", (chunk) => {
+        if (settled) return;
+        output[stream].push(chunk);
+        size[stream] += chunk.length;
+        if (size[stream] > maxBuffer) return settle(Object.assign(new RangeError(`${stream} maxBuffer length exceeded`), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }));
+        if (stream === "stderr" && readyMarker && readyAfterMs === null && text("stderr").includes(readyMarker)) {
+          readyAfterMs = Math.round(performance.now() - started);
+          arm("inspection", timeout);
+        }
+      });
+    }
+    child.on("error", settle);
+    child.on("close", (code, signal) => settle(code === 0 ? null : Object.assign(new Error(`Process inspection exited with ${signal ?? code}`), { code, signal })));
+  });
+}
+
+export async function readProcessAncestry({ parentPid = process.ppid, platform = process.platform, maxDepth = MAX_ANCESTORS, run } = {}) {
   if (!Number.isSafeInteger(parentPid) || parentPid <= 0 || parentPid > 0xffffffff) return [];
   const limit = Number.isInteger(maxDepth) && maxDepth > 0 ? Math.min(maxDepth, MAX_ANCESTORS) : MAX_ANCESTORS;
-  const options = { timeout: 5000, maxBuffer: 16384, windowsHide: true };
   if (platform === "win32") {
     const shell = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const script = `$ErrorActionPreference='Stop'; $PSModuleAutoLoadingPreference='None'; Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop; Add-Type -TypeDefinition @'\n${WINDOWS_ANCESTRY_SOURCE}\n'@\nConvertTo-Json -InputObject @([ClaudeProcessAncestry]::Read(${parentPid},${limit})) -Compress`;
-    const { stdout } = await run(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], options);
+    const script = `$ErrorActionPreference='Stop'; $PSModuleAutoLoadingPreference='None'; Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop; Add-Type -TypeDefinition @'\n${WINDOWS_ANCESTRY_SOURCE}\n'@\n[Console]::Error.WriteLine('${INSPECTOR_READY_MARKER}')\n[Console]::Out.Write([ClaudeProcessAncestry]::ReadJson(${parentPid},${limit}))`;
+    const { stdout } = await (run ?? runProcessInspector)(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+      timeout: INSPECTION_TIMEOUT_MS, startupTimeout: INSPECTOR_START_TIMEOUT_MS, readyMarker: INSPECTOR_READY_MARKER, maxBuffer: INSPECTION_OUTPUT_LIMIT, windowsHide: true,
+    });
     return parseWindowsAncestry(stdout, parentPid, limit);
   }
   const rows = [];
   const seen = new Set();
   let next = parentPid;
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + INSPECTION_TIMEOUT_MS;
   while (next > 0 && !seen.has(next) && rows.length < limit) {
     seen.add(next);
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error("process inspection deadline elapsed");
-    const { stdout } = await run("/bin/ps", ["-p", String(next), "-o", "pid=,ppid=,lstart="], {
-      ...options, timeout: remaining, env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+    const { stdout } = await (run ?? execute)("/bin/ps", ["-p", String(next), "-o", "pid=,ppid=,lstart="], {
+      timeout: remaining, maxBuffer: INSPECTION_OUTPUT_LIMIT, windowsHide: true, env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
     });
     const match = stdout.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
     if (!match) break;
@@ -140,6 +225,7 @@ function senderResult(status, reason, values = {}) {
 }
 
 function senderFailureCode(error) {
+  if (error?.code === "ETIMEDOUT" && error.phase === "startup") return "INSPECTOR_START_TIMEOUT";
   if (error?.code === "ETIMEDOUT" || (error?.killed && ["SIGTERM", "SIGKILL"].includes(error.signal))) return "INSPECTION_TIMEOUT";
   if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return "OUTPUT_LIMIT";
   if (["ENOENT", "EACCES", "EPERM"].includes(error?.code)) return error.code;

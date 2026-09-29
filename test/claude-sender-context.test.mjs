@@ -6,10 +6,11 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { describe, it } from "node:test";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { assertClaudeSenderContext, readClaudeSenderContext, readProcessAncestry, requireClaudeSenderContext } from "../src/claude-sender-context.mjs";
+import { assertClaudeSenderContext, readClaudeSenderContext, readProcessAncestry, requireClaudeSenderContext, runProcessInspector } from "../src/claude-sender-context.mjs";
 
 const accountA = { status: "verified", accountId: "account-a", fingerprint: "a".repeat(64) };
 const accountB = { status: "verified", accountId: "account-b", fingerprint: "b".repeat(64) };
+const PRODUCTION_INSPECTION = { timeout: 5000, startupTimeout: 25000, readyMarker: "BRIDGE_ANCESTRY_READY", maxBuffer: 16384, windowsHide: true };
 
 describe("bounded Windows native process ancestry", () => {
   const rows = [
@@ -17,7 +18,7 @@ describe("bounded Windows native process ancestry", () => {
     { pid: 100, parentPid: 0, processStart: "133000000000000000" },
   ];
 
-  it("uses one hidden Toolhelp snapshot and native creation times within the existing deadline", async () => {
+  it("uses one hidden Toolhelp snapshot and native creation times, timing only the read against the five-second deadline", async () => {
     const calls = [];
     const actual = await readProcessAncestry({ platform: "win32", parentPid: 200, maxDepth: 100,
       run: async (...args) => { calls.push(args); return { stdout: JSON.stringify(rows) }; },
@@ -33,9 +34,9 @@ describe("bounded Windows native process ancestry", () => {
     assert.match(script, /Process32FirstW/);
     assert.match(script, /GetProcessTimes/);
     assert.match(script, /OpenProcess\(0x1000, false, next\)/);
-    assert.match(script, /\[ClaudeProcessAncestry\]::Read\(200,8\)/);
-    assert.doesNotMatch(script, /Get-CimInstance|Get-WmiObject|Win32_Process|CommandLine|GetEnvironmentVariable/);
-    assert.deepEqual(options, { timeout: 5000, maxBuffer: 16384, windowsHide: true });
+    assert.match(script, /'@\n\[Console\]::Error\.WriteLine\('BRIDGE_ANCESTRY_READY'\)\n\[Console\]::Out\.Write\(\[ClaudeProcessAncestry\]::ReadJson\(200,8\)\)$/);
+    assert.doesNotMatch(script, /Get-CimInstance|Get-WmiObject|Win32_Process|CommandLine|GetEnvironmentVariable|ConvertTo-Json/);
+    assert.deepEqual(options, PRODUCTION_INSPECTION);
   });
 
   it("does not execute a shell for invalid native process IDs", async () => {
@@ -66,26 +67,26 @@ describe("bounded Windows native process ancestry", () => {
     assert.deepEqual(await readProcessAncestry({ platform: "win32", parentPid: 200, run: async () => ({ stdout: "[]" }) }), []);
   });
 
-  it("matches the live OS parent and stable FILETIME identity across cold Windows fixture snapshots", { skip: process.platform !== "win32", timeout: 35000 }, async (t) => {
-    const execute = promisify(execFile);
-    const runFixtureSnapshot = (command, args, options) => {
-      assert.equal(options.timeout, 5000);
-      return execute(command, args, { ...options, timeout: 15000 });
+  it("matches the live OS parent and stable FILETIME identity within the production deadlines on a cold Windows host", { skip: process.platform !== "win32", timeout: 70000 }, async (t) => {
+    const timings = [];
+    const runProduction = async (command, args, options) => {
+      assert.deepEqual(options, PRODUCTION_INSPECTION);
+      const result = await runProcessInspector(command, args, options);
+      timings.push(`ready=${result.readyAfterMs}ms read=${result.elapsedMs - result.readyAfterMs}ms`);
+      return result;
     };
-    const started = performance.now();
-    const direct = await readProcessAncestry({ parentPid: process.pid, maxDepth: 1, run: runFixtureSnapshot });
-    const firstMs = Math.round(performance.now() - started);
-    const full = await readProcessAncestry({ parentPid: process.pid, run: runFixtureSnapshot });
+    const direct = await readProcessAncestry({ parentPid: process.pid, maxDepth: 1, run: runProduction });
+    const full = await readProcessAncestry({ parentPid: process.pid, run: runProduction });
     assert.equal(direct.length, 1);
     assert.ok(full.length > 0 && full.length <= 8);
     assert.deepEqual(full[0], direct[0]);
     assert.equal(direct[0].pid, process.pid);
     assert.equal(direct[0].parentPid, process.ppid);
     assert.match(direct[0].processStart, /^[1-9]\d{16,18}$/);
-    t.diagnostic(`Native snapshot durations: direct=${firstMs}ms, full=${Math.round(performance.now() - started) - firstMs}ms`);
+    t.diagnostic(`Native snapshot durations: direct ${timings[0]}, full ${timings[1]}`);
   });
 
-  it("verifies the caller under MCP's sanitized Windows environment and fresh fixture profile", { skip: process.platform !== "win32", timeout: 20000 }, async (t) => {
+  it("verifies the caller under MCP's sanitized Windows environment and fresh fixture profile", { skip: process.platform !== "win32", timeout: 90000 }, async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "claude-caller-mcp-env-"));
     try {
       const env = { ...getDefaultEnvironment(), PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "",
@@ -96,15 +97,14 @@ describe("bounded Windows native process ancestry", () => {
       fs.mkdirSync(accountRoot, { recursive: true });
       fs.mkdirSync(env.CODEX_HOME, { recursive: true });
       async function inspectChildCaller(moduleUrl) {
-        const { readClaudeSenderContext, readProcessAncestry } = await import(moduleUrl);
-        const { execFile } = await import("node:child_process");
-        const { promisify } = await import("node:util");
-        const execute = promisify(execFile);
+        const { readClaudeSenderContext, readProcessAncestry, runProcessInspector } = await import(moduleUrl);
         const started = performance.now();
         let lastStage = "not_started";
-        const collectStage = (stderr) => {
-          const markers = [...String(stderr ?? "").matchAll(/BRIDGE_ANCESTRY_STAGE:(started|utility_imported|compiled|snapshot|serialized)/g)];
+        let readyAfterMs = null;
+        const collectStage = (outcome) => {
+          const markers = [...String(outcome?.stderr ?? "").matchAll(/BRIDGE_ANCESTRY_STAGE:(started|utility_imported|compiled|snapshot|serialized)/g)];
           lastStage = markers.at(-1)?.[1] ?? "not_started";
+          readyAfterMs = outcome?.readyAfterMs ?? null;
         };
         const sender = await readClaudeSenderContext({
           account: { status: "verified", fingerprint: "a".repeat(64) },
@@ -115,23 +115,23 @@ describe("bounded Windows native process ancestry", () => {
             script = script.replace("$ErrorActionPreference='Stop';", "$ErrorActionPreference='Stop'; [Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:started');")
               .replace("Add-Type -TypeDefinition", "[Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:utility_imported'); Add-Type -TypeDefinition")
               .replace("\n'@\n", "\n'@\n[Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:compiled');\n")
-              .replace(/ConvertTo-Json -InputObject @\((.+)\) -Compress$/, (_match, nativeRead) => `$ancestryRows=@(${nativeRead}); [Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:snapshot'); ConvertTo-Json -InputObject $ancestryRows -Compress; [Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:serialized')`);
+              .replace(/\[Console\]::Out\.Write\((.+)\)$/, (_match, nativeRead) => `$ancestryJson=${nativeRead}; [Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:snapshot'); [Console]::Out.Write($ancestryJson); [Console]::Error.WriteLine('BRIDGE_ANCESTRY_STAGE:serialized')`);
             try {
-              const result = await execute(shell, [...args.slice(0, -1), Buffer.from(script, "utf16le").toString("base64")], execution);
-              collectStage(result.stderr);
+              const result = await runProcessInspector(shell, [...args.slice(0, -1), Buffer.from(script, "utf16le").toString("base64")], execution);
+              collectStage(result);
               return result;
             } catch (error) {
-              collectStage(error.stderr);
+              collectStage(error);
               throw error;
             }
           } }),
         });
-        console.log(JSON.stringify({ status: sender.status, diagnostic: sender.diagnostic, lastStage,
+        console.log(JSON.stringify({ status: sender.status, diagnostic: sender.diagnostic, lastStage, readyAfterMs,
           expectedParent: sender.pid === process.ppid, elapsedMs: Math.round(performance.now() - started) }));
       }
       const source = `(${inspectChildCaller.toString()})(${JSON.stringify(new URL("../src/claude-sender-context.mjs", import.meta.url).href)})`;
       const inspectEnvironment = async (environment) => {
-        const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source], { cwd: home, env: environment, windowsHide: true, timeout: 8000, maxBuffer: 16384 });
+        const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source], { cwd: home, env: environment, windowsHide: true, timeout: 40000, maxBuffer: 16384 });
         return JSON.parse(stdout);
       };
       const result = await inspectEnvironment(env);
@@ -149,6 +149,62 @@ describe("bounded Windows native process ancestry", () => {
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("process inspector deadlines", () => {
+  const MARKER = "INSPECTOR_TEST_READY";
+  const node = (source) => [process.execPath, ["-e", source]];
+  const running = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error.code === "EPERM";
+    }
+  };
+  const exited = async (pid) => {
+    for (let attempt = 0; attempt < 100 && running(pid); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    return !running(pid);
+  };
+  const rejection = (promise) => promise.then(() => assert.fail("The inspector should have been refused"), (error) => error);
+
+  it("starts the read deadline when the helper reports ready, so a slow start is not reported as a slow read", async () => {
+    const [command, args] = node(`setTimeout(() => { process.stderr.write("${MARKER}\\n"); process.stdout.write("[]"); }, 2500)`);
+    const result = await runProcessInspector(command, args, { timeout: 2000, startupTimeout: 30000, readyMarker: MARKER, maxBuffer: 16384 });
+    assert.equal(result.stdout, "[]");
+    assert.ok(result.readyAfterMs >= 2400 && result.elapsedMs > 2000, JSON.stringify(result));
+  });
+
+  it("fails closed and stops the helper when it does not report ready in time", async () => {
+    const [command, args] = node("setTimeout(() => {}, 60000)");
+    const error = await rejection(runProcessInspector(command, args, { timeout: 5000, startupTimeout: 500, readyMarker: MARKER }));
+    assert.equal(error.code, "ETIMEDOUT");
+    assert.equal(error.phase, "startup");
+    assert.equal(error.readyAfterMs, null);
+    assert.ok(await exited(error.pid), "The helper must not outlive its startup deadline");
+  });
+
+  it("fails closed and stops the helper when the read outlives its deadline after ready", async () => {
+    const [command, args] = node(`process.stderr.write("${MARKER}\\n"); setTimeout(() => {}, 60000)`);
+    const error = await rejection(runProcessInspector(command, args, { timeout: 500, startupTimeout: 30000, readyMarker: MARKER }));
+    assert.equal(error.code, "ETIMEDOUT");
+    assert.equal(error.phase, "inspection");
+    assert.notEqual(error.readyAfterMs, null);
+    assert.ok(await exited(error.pid), "The helper must not outlive its read deadline");
+  });
+
+  it("reports exits, missing programs and oversized output the way execFile does", async () => {
+    const [command, exitArgs] = node("process.exit(3)");
+    const exit = await rejection(runProcessInspector(command, exitArgs, { timeout: 30000, maxBuffer: 16384 }));
+    assert.equal(exit.code, 3);
+    assert.equal(exit.signal, null);
+    const missing = await rejection(runProcessInspector(path.join(os.tmpdir(), "missing-process-inspector.exe"), [], { timeout: 30000 }));
+    assert.equal(missing.code, "ENOENT");
+    const [, noisyArgs] = node(`process.stdout.write("x".repeat(20000)); setTimeout(() => {}, 60000)`);
+    const noisy = await rejection(runProcessInspector(command, noisyArgs, { timeout: 30000, maxBuffer: 16384 }));
+    assert.equal(noisy.code, "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
+    assert.ok(await exited(noisy.pid), "The helper must not outlive an output overflow");
   });
 });
 
@@ -229,7 +285,8 @@ describe("Claude Desktop caller account and process binding", () => {
     const f = fixture();
     for (const [fields, expected] of [
       [{ killed: true, signal: "SIGTERM", code: null }, "INSPECTION_TIMEOUT"],
-      [{ code: "ETIMEDOUT" }, "INSPECTION_TIMEOUT"], [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }, "OUTPUT_LIMIT"],
+      [{ code: "ETIMEDOUT" }, "INSPECTION_TIMEOUT"], [{ code: "ETIMEDOUT", phase: "inspection" }, "INSPECTION_TIMEOUT"],
+      [{ code: "ETIMEDOUT", phase: "startup" }, "INSPECTOR_START_TIMEOUT"], [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }, "OUTPUT_LIMIT"],
       [{ code: "ENOENT" }, "ENOENT"], [{ code: "EPERM" }, "EPERM"], [{ code: 1 }, "NATIVE_EXIT"],
       [{ code: "PRIVATE_ERROR_TOKEN" }, "UNAVAILABLE"],
     ]) {

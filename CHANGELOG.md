@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Changed
+
+- Write the `analytics` branch with the `Repository analytics` workflow's own token. Its hourly commits were pushed with `ANALYTICS_TOKEN`, a personal token, so they were attributed to the repository owner and GitHub showed the owner an "analytics had recent pushes" banner with a "Compare & pull request" button after every run. The commits now come from `github-actions[bot]`. `ANALYTICS_TOKEN` only reads GitHub traffic and no longer needs write access (fine-grained: Administration read).
+
 ## [1.19.2] - 2026-09-29
 
 ### Fixed

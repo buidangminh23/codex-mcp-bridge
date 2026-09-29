@@ -150,11 +150,19 @@ export function publicFiles(history, usage) {
   return { 'dashboard.svg': renderPublicDashboard(data), 'README.md': readme.replace('![Repository dashboard]', `[Live dashboard · refreshes every 30 seconds](${pagesUrl})\n\n![Repository dashboard]`), 'data.json': `${JSON.stringify(data, null, 2)}\n`, 'index.html': renderLiveDashboard(data) };
 }
 
-export function githubApi(endpoint, { method = 'GET', body } = {}) {
+export function githubEnvironment(token, env = process.env) {
+  return token ? { ...env, GH_TOKEN: token } : env;
+}
+
+export function githubClient(token, api = githubApi) {
+  return token ? (endpoint, options = {}) => api(endpoint, { ...options, token }) : api;
+}
+
+export function githubApi(endpoint, { method = 'GET', body, token } = {}) {
   return new Promise((resolve, reject) => {
     const args = ['api', '--hostname', 'github.com', '--method', method, endpoint];
     if (body) args.push('--input', '-');
-    const child = spawn('gh', args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn('gh', args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: githubEnvironment(token) });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => child.kill(), 60000);

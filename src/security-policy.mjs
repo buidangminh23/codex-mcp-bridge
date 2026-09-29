@@ -211,11 +211,13 @@ export class BridgeSecurityPolicy {
   }
 
   summary() {
+    const projectPolicy = this.hardenedRoots.mode === "project-policy" ? this.hardenedRoots.status() : null;
     return {
       authorizedThreads: this.allowedThreadIds.size + this.ownedThreadIds.size,
       allowAllThreads: this.allowAllThreads,
-      allowedRoots: this.allowAllRoots ? [ALLOW_ALL_ROOTS] : this.allowedRoots,
-      allowAllRoots: this.allowAllRoots,
+      allowedRoots: projectPolicy ? (projectPolicy.error ? [] : this.hardenedRoots.roots) : this.allowAllRoots ? [ALLOW_ALL_ROOTS] : this.allowedRoots,
+      allowAllRoots: projectPolicy ? false : this.allowAllRoots,
+      ...(projectPolicy ? { projectPolicy } : {}),
       threadPolicy: this.threadPolicy,
       approvalPolicy: this.approvalPolicy,
       sandbox: this.sandbox,

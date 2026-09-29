@@ -7,3 +7,4 @@ node_modules/
 /desktop-demo.mp4
 .agentgate/
 receipt*.json
+/extensions/*.mcpb

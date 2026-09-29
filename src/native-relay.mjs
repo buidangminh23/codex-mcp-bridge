@@ -540,7 +540,10 @@ export async function resolveNativeToolsPipePath({
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
       try {
-        if (await probeWindowsPipe(candidate, { env, timeoutMs: Math.min(750, remaining) })) return candidate;
+        // Cold Desktop metadata reads can take over a second. Keep the shared
+        // seven-second discovery budget, but do not reject a valid endpoint
+        // merely because its first read exceeds the old 750ms probe window.
+        if (await probeWindowsPipe(candidate, { env, timeoutMs: Math.min(3000, remaining) })) return candidate;
       } catch {}
     }
     return null;

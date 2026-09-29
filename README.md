@@ -1,5 +1,7 @@
 # codex-mcp-bridge
 
+Local Desktop handoff guides (Chinese): [daily workflow](docs/日常交接速查.md), [new-machine setup and permissions](docs/换机安装与默认权限.md), and [new-session directory verification](docs/新会话目录核验.md).
+
 [![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
 [![CI](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge)](LICENSE)
@@ -194,6 +196,8 @@ These examples allow projects under the current user's home. For projects elsewh
 
 ### Verify the installation
 
+For Desktop project onboarding, both MCP entry points expose `inspect_bridge_project` (read-only) and `prepare_bridge_project` (user-selected workspace trust plus shared messaging grant). Setup preserves unrelated settings, backs up changes, respects revocations, and resolves registered worktrees to their primary repository. It does not approve tools or claim live connectivity. `CODEX_BRIDGE_PROJECT_POLICY` must explicitly name the shared policy. See [project onboarding and independent optional native settings integration](docs/项目接入说明.md). `node scripts/bridge-projects.mjs register-manager` registers the optional card-extension native settings integration; the bridge never depends on that extension.
+
 Check registration from a terminal; on Windows use `codex.exe` if `codex` resolves to a blocked PowerShell shim:
 
 ```bash
@@ -221,6 +225,7 @@ The registered supervisor should report auto-reload enabled. Next, list the inte
 | Direction | Tools |
 |---|---|
 | Continue unfinished Codex work | Verify the original `threadId`, then `send_to_codex_thread` |
+| Receive a reply after a Desktop send times out | `wait_codex_reply` with the original `deliveryId`; repeat bounded waits without sending again |
 | Codex → Claude | `list_claude_sessions`, then `send_to_claude_session` |
 | Start independent Codex work | `delegate_to_codex` or `start_codex_thread` with `cwd`, initial `prompt`, and a fresh UUID `requestId` in Desktop mode |
 
@@ -231,6 +236,8 @@ Example requests:
 - **In Codex:** “Send this result to my Claude Desktop Code session in this project and confirm its reply.”
 
 Use the exact project directory and destination task. If several Claude sessions match, specify the task ID. A `reply_received` receipt confirms a reply; a timeout does not mean the task stopped, so inspect it before retrying.
+
+Desktop `send_to_codex_thread` keeps each call bounded to at most 40 seconds, including preflight and dispatch. Once accepted it returns a durable `deliveryId`. On `nextAction=wait_codex_reply`, the receiving agent should continue with that read-only tool until completion, a verification error, a request for user input, or cancellation. Reuse the same ID after reconnecting; do not resend the prompt. The receipt retains the exact pre-send observation binding and original sender/accounts; it does not grant access, and current project permissions are checked again. This is automatic continuation across bounded tool calls, not an unattended push service after Claude stops running. Receipts are stored under the configured Codex home in `bridge-reply-receipts` and include the dispatched prompt for correlation; keep them private. Creation tools still use their separate creation receipts and existing inspection flow.
 
 An explicit request for a new conversation, or standing user instructions such as the example above, authorizes creation for independent work. Keep fixes, clarifications and results for unfinished work in its original conversation. A completed assistant turn does not by itself mean the whole task is finished; matching a project or finding a recent task does not make it the right destination for new work.
 
@@ -312,6 +319,7 @@ Start with `codex doctor` for Codex installation problems and `claude doctor` fo
 |---|---|
 | `codex binary not found`, `ENOENT`, or Windows `EINVAL` during registration | Locate the actual executable. Set `CODEX_EXE` before rerunning the installer: PowerShell `$env:CODEX_EXE = (Get-Command codex.exe).Source`; macOS/Linux `export CODEX_EXE="$(command -v codex)"`. On Windows, do not point it at `codex.ps1` or `codex.cmd`. |
 | Tools appear in Claude Desktop but not in its Code task | Complete the separate [Claude Code registration](#register-claude-code), then reconnect `/mcp` in that Code session. |
+| `This MCP process has no registered Claude Desktop Code session in its parent ancestry` | The shared Desktop entry may not belong to the calling Code task. Register the bridge in the intended existing Code project under a distinct name, such as `codex-bridge-code`, retaining its access settings. Check that `CODEX_BRIDGE_ALLOWED_ROOTS` includes the intended authorized target project; copied test registrations may still allow only test directories. Reload that task's MCP configuration. In the tested Windows Desktop version, View > Reload was insufficient: fully exit and reopen Claude after active work is stopped, then reopen the same task. Verify the dedicated entry and a new proactive send; receiving a reply to a Codex-originated message alone does not establish proactive sending. |
 | Installer refuses an entry with custom access/timeout settings | Keep those settings. Update only the existing entry's `command` and `args` to the values printed by the installer, then reconnect. |
 | Desktop task still reports `app-server` | Rerun `codex-mcp-bridge-install --desktop-tasks`; set `CODEX_BRIDGE_DESKTOP_TASKS=1` in the separate Claude Code registration too. Refresh the reverse registration with the same setting and reconnect the actual sending task. |
 | Relay is installed but unavailable | Open Codex Desktop and reconnect `codex-native-relay`. Check `codex mcp get codex-native-relay` and the in-task `native_relay_status`; a registered entry alone is insufficient. |
@@ -383,6 +391,27 @@ WHERE day >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - 29;
 ```
 
 ## Development
+
+### Shared project scope for Desktop Code conversations
+
+For a source installation used by both desktops, set `CODEX_BRIDGE_PROJECT_POLICY` to the same absolute JSON file in both bridge entries. The opt-in policy is read on every operation. `bridge-projects` defaults to `~/.config/GptClaudeBridge/projects.json`; prefer a shared home-directory path over Windows AppData, whose view can differ between packaged applications.
+
+```sh
+bridge-projects allow-parent /absolute/projects
+bridge-projects allow-project /absolute/other-repository
+bridge-projects check /absolute/other-repository
+bridge-projects revoke /absolute/other-repository
+```
+
+A parent grant covers new projects inside it and their registered Git worktrees. A project grant covers that repository's registered worktrees even outside the parent. Canonical directory identities and Git's worktree registry are checked; a copied `.git` pointer does not establish membership. Explicit revocation takes precedence and applies to subsequent operations without restarting either bridge. It does not cancel work already dispatched. Missing or invalid policy files fail closed. This opt-in policy cannot replace the hardened profile's pinned roots.
+
+Claude Code needs its own user-level `codex-bridge` process, whose ancestry identifies the sending Code session. A generic shared Desktop MCP process cannot supply that identity. `codex-bridge-code-install --policy /absolute/projects.json` previews migration of an existing supervised installation; `--apply --clients-stopped` backs up and writes it. Customized entries are refused for review. Synchronize the same entry in any external configuration manager such as CC Switch. `--check` diagnoses duplicate/shared registrations. Reconnect clients after changing registration; subsequent project-policy changes need no reconnect.
+
+Run `codex_bridge_status` in the actual Claude Code conversation with the intended `cwd`. It reports sender, target scope and relay readiness independently. A generic command-line connectivity check can report a reachable relay while returning nonzero because no Code caller was verified. Validate both a Codex-originated round trip and a Claude-originated round trip; neither proves the other. Account and sender permission checks remain mandatory. Client upgrades can still require compatibility updates.
+
+The Chinese source-checkout guide is [项目接入说明](docs/项目接入说明.md).
+
+Automatic handoff requires both user authorization for the collaboration and permission to use the messaging tools; a card extension's project grant does not approve this bridge. After explicitly opting in, run `node scripts/configure-message-automation.mjs --apply --approve-message-automation` once. It backs up Claude user settings, adds only the exact `send_to_codex_thread` and `wait_codex_reply` tool permissions, and installs scoped collaboration guidance in `~/.claude/rules/gpt-claude-bridge.md`. Without flags it previews; `--check` verifies the files. Existing conflicting ask/deny rules are refused, not removed. It does not approve shell/file operations, expand projects, change modes, or override host safeguards. A running conversation can require a one-time user acknowledgment of standing authorization; do not disguise peer messages as user consent. Validate consecutive real handoffs after setup, not just connectivity. `readiness.readyScope` explicitly excludes host tool permission evaluation.
 
 ```bash
 npm ci

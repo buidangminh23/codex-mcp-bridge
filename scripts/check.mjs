@@ -11,6 +11,7 @@ const bridgeEnvNames = [
   "CODEX_APP_SERVER_URL",
   "CODEX_BIN",
   "CODEX_BRIDGE_ALLOWED_ROOTS",
+  "CODEX_BRIDGE_PROJECT_POLICY",
   "CODEX_BRIDGE_ALLOWED_THREADS",
   "CODEX_BRIDGE_APPROVAL",
   "CODEX_BRIDGE_AUTO_APPROVE_ACK",
@@ -46,7 +47,7 @@ try {
   const listed = await client.callTool(desktopTasksConfigured()
     ? { name: "codex_bridge_status", arguments: {} }
     : { name: "list_codex_threads", arguments: { limit: 3 } });
-  console.log(listed.content[0].text.slice(0, 600));
+  console.log(listed.content[0].text);
   if (listed.isError) process.exitCode = 1;
 } catch (err) {
   console.error(err.message);

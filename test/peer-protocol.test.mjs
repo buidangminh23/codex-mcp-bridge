@@ -411,6 +411,43 @@ describe("peer endpoint", () => {
     assert.equal(readTranscriptReply("reply", "unused", "request"), null);
   });
 
+  it("waits through a native background-task continuation instead of returning its interim end_turn", () => {
+    const dir = path.join(projectsDir, "background-replies");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "background.jsonl");
+    const root = { uuid: "request", message: { role: "user", content: "do the whole task" } };
+    const call = { uuid: "call", parentUuid: "request", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { run_in_background: true } }] } };
+    const result = { uuid: "result", parentUuid: "call", toolUseResult: { backgroundTaskId: "bg-1" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "running" }] } };
+    const interim = { uuid: "interim", parentUuid: "result", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "waiting for the child" }] } };
+    const notification = { uuid: "notification", parentUuid: "interim", origin: { kind: "task-notification", producer: "session-task" }, promptSource: "system", turnOrigin: "task_notification", message: { role: "user", content: "<task-notification>\n<task-id>bg-1</task-id>\n<tool-use-id>tool-1</tool-use-id>\n<status>completed</status>\n</task-notification>" } };
+    const final = { uuid: "final", parentUuid: "notification", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "full report" }] } };
+    const write = (rows) => fs.writeFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
+    const initial = [root, call, result, interim];
+    write(initial);
+    assert.equal(readTranscriptReply("background", "unused", "request"), null);
+    write([...initial, notification]);
+    assert.equal(readTranscriptReply("background", "unused", "request"), null);
+    write([...initial, notification, final]);
+    assert.equal(readTranscriptReply("background", "unused", "request")?.text, "full report");
+    for (const bad of [
+      { ...notification, origin: undefined },
+      { ...notification, origin: { kind: "peer", msg_id: "other" } },
+      { ...notification, promptSource: "user" },
+      { ...notification, turnOrigin: undefined },
+      { ...notification, message: { ...notification.message, content: notification.message.content.replace("bg-1", "bg-other") } },
+      { ...notification, message: { ...notification.message, content: notification.message.content.replace("tool-1", "tool-other") } },
+      { ...notification, message: { ...notification.message, content: notification.message.content.replace("completed", "running") } },
+    ]) {
+      write([...initial, bad, final]);
+      assert.equal(readTranscriptReply("background", "unused", "request"), null, "unrelated or spoofed notifications cannot claim a reply");
+    }
+    const human = { uuid: "human", parentUuid: "interim", message: { role: "user", content: "another task" } };
+    write([...initial, human, { ...notification, parentUuid: "human" }, final]);
+    assert.equal(readTranscriptReply("background", "unused", "request"), null, "a human command still separates turns");
+    write([...initial, { ...notification, uuid: "unrelated-branch" }, { ...final, parentUuid: "interim" }]);
+    assert.equal(readTranscriptReply("background", "unused", "request"), null, "completion on another branch must not release this branch");
+  });
+
   /**
    * A message that arrives while the recipient is mid-turn is absorbed into
    * that turn: Claude Code records it as a queued_command attachment under a

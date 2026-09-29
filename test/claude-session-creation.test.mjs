@@ -40,6 +40,9 @@ describe("Claude native new session lifecycle", () => {
     const result = await creation.start(args);
     assert.equal(result.status, "awaiting_user");
     assert.equal(result.promptSubmitted, false);
+    assert.equal(result.submissionStatus, "not_observed");
+    assert.equal(result.directoryVerification.expectedCwd, "/project");
+    assert.equal(result.directoryVerification.verified, false);
     const url = new URL(state.opened[0]);
     assert.equal(url.protocol, "claude:");
     assert.equal(url.host, "code");
@@ -59,6 +62,8 @@ describe("Claude native new session lifecycle", () => {
     assert.equal(result.sessionId, "new-cli");
     assert.equal(result.taskId, "new-task");
     assert.equal(result.title, "New native task");
+    assert.equal(result.submissionStatus, "observed");
+    assert.equal(result.directoryVerification, undefined);
   });
 
   it("rejects reopened old tasks including archived and previously disconnected tasks", async () => {

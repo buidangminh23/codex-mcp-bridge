@@ -8,6 +8,7 @@ import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "../src/thread-deliv
 import { DesktopTaskReceipts } from "../src/desktop-task-receipts.mjs";
 import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
 import { captureCodexRolloutWatermark } from "../src/codex-native-response.mjs";
+import { createProjectScope, editProjectGrant, updateProjectPolicy } from "../src/project-scope.mjs";
 
 function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountContext, captureResponse, readResponse, inspectResponse } = {}) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "desktop-receipt-delivery-")));
@@ -45,6 +46,27 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountCon
 }
 
 describe("Desktop creation receipts and deadlines", () => {
+  for (const operation of ["create_thread", "send_message_to_thread"]) {
+    it(`rechecks live project revocation immediately before ${operation} writes`, async (t) => {
+      let sent = false;
+      const f = fixture(t, { async dispatch({ operation: actual, options }) {
+        if (actual !== operation) return;
+        updateProjectPolicy(file, (policy) => editProjectGrant(policy, "revoke", f.cwd));
+        await options.beforeSend();
+        sent = true;
+        throw new Error("must not send");
+      } });
+      const file = path.join(f.directory, "scope.json");
+      updateProjectPolicy(file, (policy) => editProjectGrant(policy, "allow-project", f.cwd));
+      f.delivery.security.hardenedRoots = createProjectScope(file);
+      const call = operation === "create_thread"
+        ? f.delivery.create({ cwd: f.cwd, name: "test", prompt: "test" })
+        : f.delivery.send({ threadId: "task-test", cwd: f.cwd, prompt: "test" });
+      await assert.rejects(call, /revoked/);
+      assert.equal(sent, false);
+    });
+  }
+
   it("keeps rollout history local and sends only the explicitly requested prompt", async (t) => {
     const threadId = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
     const oldTurnId = "01a087dd-d587-76c3-93c3-60c16bc08542";

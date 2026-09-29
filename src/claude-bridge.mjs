@@ -23,6 +23,7 @@ import { assertAccountIdentity, bindUnsolicitedClaudeMessageAccount, publicAccou
 import { resolveClaudeDesktopSession, sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
+import { registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -319,6 +320,13 @@ function registerTool(name, definition, handler) {
     catch (error) { return failure(error); }
   });
 }
+
+registerProjectOnboardingTools(registerTool, { beforePrepare: async (extra) => {
+  runtime.assertCurrent();
+  if (!desktopOnly) throw new Error("Project onboarding requires a verified Desktop caller");
+  await assertSender(extra?._meta);
+  requireBridgeAccounts(readBridgeAccounts());
+} });
 
 registerTool(
   "start_claude_session",
@@ -695,6 +703,7 @@ registerTool(
       const visiblePending = [...peer.pendingMessages.keys()].filter((id) => readReceipt(id));
       const visibleForwarding = replyForwarder.status((record) => recordVisible(record, accounts));
       const sender = desktopOnly ? await readSender(extra?._meta) : null;
+      const projectPolicy = rootPolicy.status?.(sender?.status === "verified" ? sender.cwd : undefined);
       const lines = [
         `platform:      ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
         `bridge:        claude-bridge ${VERSION}`,
@@ -706,6 +715,7 @@ registerTool(
         ...(sender?.permissionProfile ? [`sender permission profile: ${sender.permissionProfile}`, `sender approval reviewer: ${sender.approvalsReviewer}`] : []),
         ...(sender?.review ? [`sender auto review: ${sender.review.autoReview}`, `sender Node REPL review: ${sender.review.nodeReplReview}`] : []),
         `session policy: ${desktopOnly ? "desktop-only" : "all Claude Code entrypoints"}`,
+        ...(projectPolicy ? [`project policy: ${projectPolicy.file}; ${projectPolicy.error ?? `${projectPolicy.grants} grants, ${projectPolicy.denies} revocations; live per operation`}`] : []),
         `Claude account: ${accounts.claude.status}${accounts.claude.fingerprint ? ` (${accounts.claude.fingerprint.slice(0, 12)})` : ` - ${accounts.claude.reason}`}`,
         `Codex account: ${accounts.codex.status}${accounts.codex.fingerprint ? ` (${accounts.codex.fingerprint.slice(0, 12)})` : ` - ${accounts.codex.reason}`}`,
         `live sessions: ${eligible.length}`,
@@ -720,7 +730,7 @@ registerTool(
       ];
       const state = runtime.status();
       lines.push(`runtime pid:   ${state.pid}`, `loaded source: ${state.revision}`, `disk source:   ${state.diskRevision ?? "unreadable"}`, `runtime state: ${state.current ? "current" : `STALE - ${state.reason}; reconnect this MCP server in the existing task`}`);
-      return { ...textResult(lines.join("\n"), !state.current), structuredContent: { runtime: state, accounts: { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) }, discovery, replyForwarding: visibleForwarding, ...(sender ? { sender } : {}) } };
+      return { ...textResult(lines.join("\n"), !state.current || Boolean(projectPolicy?.error)), structuredContent: { runtime: state, accounts: { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) }, discovery, replyForwarding: visibleForwarding, ...(projectPolicy ? { projectPolicy } : {}), ...(sender ? { sender } : {}) } };
     } catch (err) {
       return failure(err);
     }

@@ -46,7 +46,15 @@ function matchesInitialMessage(text, expected) {
 }
 
 function receipt(request) {
-  return structuredClone({ requestId: request.requestId, status: request.status, cwd: request.cwd, promptSubmitted: request.status === "created" || request.submissionObserved === true, reason: request.reason, ...(request.observedCwd ? { observedCwd: request.observedCwd } : {}), ...(request.sessionId ? { sessionId: request.sessionId, taskId: request.taskId, title: request.title } : {}) });
+  const submitted = request.status === "created" || request.submissionObserved === true;
+  return structuredClone({ requestId: request.requestId, status: request.status, cwd: request.cwd,
+    // false means no verified observation, not proof that Desktop did not submit.
+    promptSubmitted: submitted, submissionStatus: submitted ? "observed" : "not_observed",
+    reason: request.reason, ...(request.observedCwd ? { observedCwd: request.observedCwd } : {}), ...(request.sessionId ? { sessionId: request.sessionId, taskId: request.taskId, title: request.title } : {}),
+    ...(PENDING.has(request.status) ? { directoryVerification: {
+      required: true, expectedCwd: request.cwd, verified: false,
+      detail: "The prefilled folder chip is not evidence of the actual session directory. Claude Desktop may create a No folder scratch session. An unobserved submission may be outside the authorized discovery scope; do not expand scope or resend to find it. Inspect Desktop before taking further action. For a fresh setup, prefer the intended project's sidebar New session button, verify the actual cwd with a read-only bootstrap, then dispatch work to the verified task. Do not replace a pending request without explicit cancellation.",
+    } } : {}) });
 }
 
 export class ClaudeSessionCreation {
@@ -126,7 +134,7 @@ export class ClaudeSessionCreation {
     try {
       await this.open(url);
       request.status = "awaiting_user";
-      request.reason = "Claude Desktop was asked to prefill a new session. Confirm the folder if prompted and press Send; no prompt has been submitted by the bridge.";
+      request.reason = "Claude Desktop was asked to prefill a new session; the bridge did not press Send. The folder chip alone does not confirm the actual directory. Verify the created task's cwd before dispatching work; absence of a discovered task does not prove that the prompt was not submitted.";
     } catch {
       request.reason = "The Desktop launcher failed or returned an uncertain outcome. This request will not be launched again; inspect it to check whether the session was created.";
     }

@@ -382,17 +382,47 @@ export function readTranscriptReply(sessionId, cwd, msgId) {
   }
   if (roots.length !== 1) return null;
   const { entry: root, absorbed } = roots[0];
-  const descendants = new Set();
+  const descendants = new Map();
+  const backgroundCalls = new Map();
   for (const entry of entries) {
-    if (entry === root) { descendants.add(entry.uuid); continue; }
+    if (entry === root) { descendants.set(entry.uuid, new Map()); continue; }
     if (!descendants.has(entry.parentUuid)) continue;
     if (entry.type === "attachment" && entry.attachment?.type === "queued_command") continue;
     const role = entry.message?.role;
     const content = entry.message?.content;
-    if (role === "user" && !(Array.isArray(content) && content.length > 0 && content.every((part) => part?.type === "tool_result"))) continue;
+    const outstanding = new Map(descendants.get(entry.parentUuid));
+    const toolResults = Array.isArray(content) && content.length > 0 && content.every((part) => part?.type === "tool_result");
+    if (role === "user" && !toolResults) {
+      // A background command can end one model turn, then resume it through a
+      // native task notification. Only that correlated system event may cross
+      // the user-message boundary; pasted notification text is never enough.
+      if (entry.origin?.kind !== "task-notification" || entry.origin.producer !== "session-task"
+        || entry.promptSource !== "system" || entry.turnOrigin !== "task_notification"
+        || typeof content !== "string" || !/^<task-notification>\s[\s\S]*<\/task-notification>$/.test(content.trim())) continue;
+      const field = (name) => {
+        const matches = [...content.matchAll(new RegExp(`<${name}>([^<>]+)</${name}>`, "g"))];
+        return matches.length === 1 ? matches[0][1] : null;
+      };
+      const taskId = field("task-id");
+      if (!outstanding.has(taskId) || outstanding.get(taskId) !== field("tool-use-id")
+        || !["completed", "failed", "killed"].includes(field("status"))) continue;
+      outstanding.delete(taskId);
+    }
     if (typeof entry.uuid !== "string" || !entry.uuid.trim()) continue;
-    descendants.add(entry.uuid);
+    if (role === "assistant" && Array.isArray(content)) {
+      for (const part of content) {
+        if (part?.type === "tool_use" && ["Bash", "PowerShell"].includes(part.name)
+          && typeof part.id === "string") backgroundCalls.set(part.id, entry.uuid);
+      }
+    }
+    const taskId = entry.toolUseResult?.backgroundTaskId;
+    if (role === "user" && toolResults && typeof taskId === "string" && /^[\w-]{1,128}$/.test(taskId)) {
+      const matches = content.filter((part) => !part.is_error && backgroundCalls.get(part.tool_use_id) === entry.parentUuid);
+      if (matches.length === 1) outstanding.set(taskId, matches[0].tool_use_id);
+    }
+    descendants.set(entry.uuid, outstanding);
     if (role !== "assistant" || !["end_turn", "stop_sequence"].includes(entry.message.stop_reason)) continue;
+    if (outstanding.size > 0) continue;
     const text = Array.isArray(content) ? content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n") : typeof content === "string" ? content : "";
     if (text.trim()) return { text: text.trim(), msgId: entry.uuid, source: "transcript", inReplyTo: msgId, absorbed };
   }

@@ -175,7 +175,7 @@ function creationReceipts(home) {
 }
 
 describe("Desktop task MCP integration", () => {
-  it("returns the same exact assistant item and hash from send and authoritative turn read", async () => {
+  for (const resume of [false, true]) it(resume ? "continues a timed-out send after MCP restart with the same reply and no duplicate dispatch" : "returns the same exact assistant item and hash from send and authoritative turn read", async () => {
     const threadId = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
     const turnId = "01a08812-f472-7f43-8f9b-1137e61f6d32";
     const previousTurnId = "01a087dd-d587-76c3-93c3-60c16bc08542";
@@ -187,18 +187,33 @@ describe("Desktop task MCP integration", () => {
     const calls = [];
     let relay;
     let sent = false;
+    let completed = !resume;
     const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
     const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-integrity-${randomUUID()}` : path.join(socketRoot, "d.sock");
     try {
-      await withBridge(() => { throw new Error("Desktop integrity test must not reach an external app-server"); }, async ({ client }) => {
-        const sentResult = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId, prompt, openInApp: false } });
+      await withBridge(() => { throw new Error("Desktop integrity test must not reach an external app-server"); }, async ({ client, home, env }) => {
+        let sentResult = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId, prompt, openInApp: false, ...(resume ? { timeoutSec: 10 } : {}) } });
+        if (resume) {
+          assert.equal(sentResult.isError, undefined);
+          assert.equal(sentResult.structuredContent.deliveryStatus, "accepted");
+          assert.equal(sentResult.structuredContent.status, "timeout");
+          assert.equal(sentResult.structuredContent.nextAction, "wait_codex_reply");
+          const { deliveryId } = sentResult.structuredContent;
+          assert.ok(deliveryId);
+          await client.close();
+          completed = true;
+          const restarted = await additionalBridgeProcess({ home, env });
+          try {
+            sentResult = await restarted.client.callTool({ name: "wait_codex_reply", arguments: { deliveryId } });
+            assert.equal(sentResult.structuredContent.deliveryId, deliveryId);
+            assert.equal(sentResult.structuredContent.nextAction, "none");
+          } finally { await restarted.client.close(); }
+        }
         assert.equal(sentResult.isError, undefined);
         assert.match(sentResult.content[0].text, new RegExp(itemId));
         assert.match(sentResult.content[0].text, new RegExp(expectedHash));
         assert.match(sentResult.content[0].text, /exact fixture reply/);
-        const readResult = await client.callTool({ name: "read_codex_thread", arguments: { threadId, turnId } });
-        assert.equal(readResult.isError, undefined);
-        const authoritative = JSON.parse(readResult.content[0].text);
+        const authoritative = resume ? sentResult.structuredContent : JSON.parse((await client.callTool({ name: "read_codex_thread", arguments: { threadId, turnId } })).content[0].text);
         assert.equal(authoritative.status, "completed");
         assert.deepEqual(authoritative.assistantItems, [{ id: itemId, text: reply }]);
         assert.equal(authoritative.replySha256, expectedHash);
@@ -223,7 +238,7 @@ describe("Desktop task MCP integration", () => {
             append({ type: "response_item", payload: { type: "message", id: itemId, role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: reply }], internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
             append({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId } });
             result = { threadId, status: "accepted" };
-          } else if (operation === "wait_threads") result = { polls: [{ thread: { id: threadId, hostId: "local", status: { type: "idle" } }, latestTurn: { id: turnId, status: "completed" }, latestAssistantMessage: { turnId: previousTurnId, phase: "final_answer", text: "must not be used" } }] };
+          } else if (operation === "wait_threads") result = { polls: [{ thread: { id: threadId, hostId: "local", status: { type: completed ? "idle" : "active" } }, latestTurn: { id: turnId, status: completed ? "completed" : "inProgress" }, latestAssistantMessage: { turnId: previousTurnId, phase: "final_answer", text: "must not be used" } }] };
           else throw new Error(`Unexpected operation ${operation}`);
           return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
         } });
@@ -293,7 +308,9 @@ describe("Desktop task MCP integration", () => {
     }, async ({ client, home, desktopFixture }) => {
       fs.unlinkSync(desktopFixture.registryFile);
       const status = await client.callTool({ name: "codex_bridge_status", arguments: {} });
-      assert.equal(status.isError, undefined);
+      assert.equal(status.isError, true);
+      assert.equal(status.structuredContent.readiness.ready, false);
+      assert.ok(status.structuredContent.readiness.issues.some((issue) => issue.code === "SENDER_UNVERIFIED"));
       const mutation = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home, prompt: "Blocked generic caller" } });
       assert.equal(mutation.isError, true);
       assert.match(mutation.content[0].text, /no registered Claude Desktop Code session/);
@@ -755,7 +772,7 @@ function runCheck(env) {
 }
 
 describe("check command exit status", () => {
-  it("checks Desktop connectivity without requiring a Claude caller or listing private tasks", async () => {
+  it("reports Desktop connectivity but marks an unverified Claude caller as not ready without listing private tasks", async () => {
     let relay;
     const operations = [];
     const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-check-native-"));
@@ -764,7 +781,7 @@ describe("check command exit status", () => {
       await withBridge(() => assert.fail("Desktop check contacted the legacy app-server"), async ({ env, desktopFixture, server }) => {
         fs.rmSync(desktopFixture.registryFile);
         const result = await runCheck(env);
-        assert.equal(result.code, 0, result.output);
+        assert.equal(result.code, 1, result.output);
         assert.match(result.output, /native relay:.*available/);
         assert.deepEqual(operations, ["list_projects"]);
         assert.equal(server.connections, 0);

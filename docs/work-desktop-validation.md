@@ -34,6 +34,14 @@ The standard `scripts/check.mjs` health check also passed with the existing Desk
 
 Raw transcripts, account identifiers, task IDs, and machine-specific paths remain outside the published repository.
 
+## Existing-project proactive-send follow-up (2026-09-29)
+
+A separate existing production-project conversation could reply to Codex-originated messages but could not proactively list or message Codex through its shared Desktop MCP entry. Its caller ancestry was unverified. Adding a distinct project-local `codex-bridge-code` registration resolved the caller error after a full Claude restart and reopening the same task. View > Reload alone left the original Code process and its MCP server list unchanged on this Windows installation.
+
+The copied registration initially retained only the earlier test workspace roots. Target list/read correctly refused the production project, and no reverse test message was sent. Adding that one user-authorized project directory to the dedicated registration, preserving the other controls, and restarting loaded the intended scope.
+
+The final live test verified the original Claude task and the exact idle Codex target, then made one `send_to_codex_thread` call. That call directly returned a completed turn, the exact requested test token, an assistant item ID and a reply SHA-256 in nine seconds. The saved original tool result and an independent Codex turn snapshot matched; the independent read did not supply a missing reply. No retry, replacement conversation, production-file edit, or sender-verification bypass was used. The send result reported opening the target in Codex Desktop, so this check does not establish a focus-free notification workflow.
+
 ## Windows full-suite follow-up
 
 The two abrupt test-process exits were reproduced with a minimal directory

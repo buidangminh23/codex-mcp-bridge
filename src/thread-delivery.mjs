@@ -62,15 +62,19 @@ export class DesktopTaskDelivery {
     this.threadOperations = new Map();
   }
 
-  async request(operation, args, { deadline, includeRelayContext = false } = {}) {
+  async request(operation, args, { deadline, includeRelayContext = false, scopeBinding } = {}) {
     try {
       await this.beforeRequest?.({ operation, args });
+      if (scopeBinding) this.security.hardenedRoots.recheck(scopeBinding);
       const remaining = deadline === undefined ? undefined : deadline - this.now();
       if (remaining !== undefined && remaining <= 0) throw new Error("The bridge's response deadline has elapsed; this operation was not sent");
       const accountContext = this.accountContext?.();
       const response = await this.relay.requestDesktop(operation, args, {
         ...(remaining === undefined ? {} : { timeoutMs: remaining }),
-        ...(this.beforeRequest ? { beforeSend: () => this.beforeRequest({ operation, args, phase: "write" }) } : {}),
+        ...((this.beforeRequest || scopeBinding) ? { beforeSend: async () => {
+          await this.beforeRequest?.({ operation, args, phase: "write" });
+          if (scopeBinding) this.security.hardenedRoots.recheck(scopeBinding);
+        } } : {}),
         ...(accountContext ? { accountContext } : {}),
       });
       return includeRelayContext ? { result: response.result, executorThreadId: response.executorThreadId } : response.result;
@@ -205,6 +209,7 @@ export class DesktopTaskDelivery {
     this.security.assertCwd(cwd);
     cwd = realpathSync.native(cwd);
     this.security.assertCwd(cwd);
+    const scopeBinding = this.security.hardenedRoots?.mode === "project-policy" ? this.security.hardenedRoots.capture(cwd) : undefined;
     dedupeName = dedupeName?.normalize("NFC").trim().replace(/\s+/g, " ") || undefined;
     const identity = this.receipts.key({ cwd, prompt, name: dedupeName, requestId });
     const accountContext = this.accountContext?.();
@@ -228,7 +233,7 @@ export class DesktopTaskDelivery {
           prompt, title: name,
           target: { type: "project", projectId: project.projectId, environment: { type: "local" } },
           ...(model ? { model } : {}), ...(effort ? { thinking: effort } : {}),
-        }, { deadline });
+        }, { deadline, scopeBinding });
         const confirmedId = response?.threadId ?? response?.conversationId;
         threadId = confirmedId;
         if (!threadId && (response?.status === "outcome-unknown" || response?.firstTurn?.status === "outcome-unknown")) threadId = response?.clientThreadId;
@@ -259,7 +264,8 @@ export class DesktopTaskDelivery {
 
   async send({ threadId, prompt, cwd, model, effort, name, deadline }) {
     const inspected = await this.inspect(threadId, cwd, { deadline });
-    if (name) await this.request("set_thread_title", { threadId, title: name.trim().slice(0, 200) }, { deadline });
+    const scopeBinding = this.security.hardenedRoots?.mode === "project-policy" ? this.security.hardenedRoots.capture(inspected.thread.cwd) : undefined;
+    if (name) await this.request("set_thread_title", { threadId, title: name.trim().slice(0, 200) }, { deadline, scopeBinding });
     const expectedCwd = realpathSync.native(inspected.thread.cwd);
     const accountContext = this.accountContext?.();
     const watermark = this.captureResponse({ threadId, expectedCwd, desktopEvidence: inspected });
@@ -267,7 +273,7 @@ export class DesktopTaskDelivery {
       threadId, prompt,
       ...(model ? { model } : {}),
       ...(effort ? { thinking: effort } : {}),
-    }, { deadline, includeRelayContext: true });
+    }, { deadline, includeRelayContext: true, scopeBinding });
     const response = envelope.result;
     if (response?.threadId !== threadId || response?.success === false || response?.isError === true ||
         (response?.status !== undefined && !["accepted", "sent"].includes(response.status)) ||

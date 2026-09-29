@@ -25,6 +25,8 @@
     "codex-mcp-bridge": "src/codex-bridge-launcher.mjs",
     "claude-mcp-bridge": "src/claude-bridge-launcher.mjs",
     "codex-mcp-bridge-install": "scripts/install-claude-desktop.mjs",
+    "codex-bridge-code-install": "scripts/install-claude-code.mjs",
+    "bridge-projects": "scripts/bridge-projects.mjs",
     "claude-mcp-bridge-install": "scripts/install-codex-mcp.mjs",
     "codex-native-relay": "src/native-relay-launcher.mjs",
     "codex-native-relay-install": "scripts/install-native-relay.mjs",
@@ -35,7 +37,11 @@
     "scripts",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "docs/日常交接速查.md",
+    "docs/换机安装与默认权限.md",
+    "docs/新会话目录核验.md",
+    "docs/项目接入说明.md"
   ],
   "publishConfig": {
     "access": "public"

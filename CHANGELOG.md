@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.19.2] - 2026-09-29
+
 ### Fixed
 
 - Start both bridges from project-local npm installations. When npm hoists the bridge's dependencies into the project's `node_modules`, the package has no `node_modules` of its own, and preparing the immutable runtime failed with `ENOENT` (`scandir …node_modules`) since 1.15.0; only global installs, which keep a nested `node_modules`, started. The runtime now copies the dependency tree Node resolves from the package (hoisted, nested, scoped, aliased, linked and peer dependencies) and nothing else from the project, so it stays isolated from later installation changes. Its revision also covers the project's npm lock, so an `npm install` that changes those dependencies reloads the bridge.

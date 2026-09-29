@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Verify Codex → Claude Desktop senders that run inside a Codex-managed sandbox (#83). Codex Desktop 26.924 starts ordinary tasks with a `managed` permission profile, a `workspace-write` sandbox, and a `granular` approval policy, and its permission selector may offer only **Ask for approval** and **Approve for me**; the bridge accepted only the disabled full-access profile, so every send from such a task stopped with `CODEX_SENDER_CONTEXT_UNVERIFIED`. A managed profile whose file system is restricted now attests `prompting` with a `user` or `auto_review` reviewer and any approval policy, matching Claude, which counts `dontAsk` and `auto` as prompting; it can never attest `bypass`, which still requires Full access with `approval_policy: never`. The bridge still fails closed when the managed file system is unrestricted, grants write access to the file-system root, a literal root path, a glob, or an unrecognised special path, or has any unrecognised shape. A granular policy is reported as a stable `granular(<allowed categories>)` label, and `claude_bridge_status` shows the sender's permission profile and approval reviewer, which a queued send now also pins. A class mismatch against a Claude task in `bypassPermissions` names the Full access requirement.
+
 ## [1.18.2] - 2026-09-26
 
 ### Fixed

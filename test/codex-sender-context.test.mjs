@@ -29,7 +29,155 @@ function fixture() {
 
 it("verifies only the exact active Desktop caller's effective disabled permissions", () => {
   const f = fixture();
-  assert.deepEqual(f.read(), { status: "verified", threadId, turnId, mode: "bypass", cwd: fs.realpathSync.native(f.home), source: f.file, review: { autoReview: "disabled", nodeReplReview: "disabled" }, approvalPolicy: "never", reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" });
+  assert.deepEqual(f.read(), { status: "verified", threadId, turnId, mode: "bypass", cwd: fs.realpathSync.native(f.home), source: f.file, review: { autoReview: "disabled", nodeReplReview: "disabled" }, approvalPolicy: "never", permissionProfile: "disabled", approvalsReviewer: "user", reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" });
+});
+
+const GRANULAR = { granular: { sandbox_approval: true, rules: true, skill_approval: true, request_permissions: true, mcp_elicitations: true } };
+const GRANULAR_LABEL = "granular(mcp_elicitations,request_permissions,rules,sandbox_approval,skill_approval)";
+
+/**
+ * The shape a new "Ask for approval" task records on Codex Desktop 26.924
+ * (issue #83): a managed profile whose restricted file system can write only
+ * the workspace and temporary directories, granular approvals, a user reviewer.
+ */
+function managedFixture({ approvalPolicy = GRANULAR, reviewer = "user", sandbox = "workspace-write", network = "restricted" } = {}) {
+  const f = fixture();
+  f.context.approval_policy = structuredClone(approvalPolicy);
+  f.context.approvals_reviewer = reviewer;
+  f.context.permission_profile = { type: "managed", file_system: { type: "restricted", entries: [
+    { path: { type: "special", value: { kind: "root" } }, access: "read" },
+    ...(sandbox === "workspace-write" ? [
+      { path: { type: "path", path: f.home }, access: "write" },
+      { path: { type: "special", value: { kind: "slash_tmp" } }, access: "write" },
+      { path: { type: "special", value: { kind: "tmpdir" } }, access: "write" },
+      { path: { type: "path", path: path.join(f.home, ".git") }, access: "read", missing_path_behavior: "skip" },
+    ] : []),
+  ] }, network };
+  f.context.active_permission_profile = { id: sandbox === "workspace-write" ? ":workspace" : ":read-only" };
+  f.context.sandbox_policy = sandbox === "workspace-write"
+    ? { type: "workspace-write", network_access: network === "enabled", exclude_tmpdir_env_var: false, exclude_slash_tmp: false }
+    : { type: "read-only" };
+  f.write();
+  return f;
+}
+
+it("classifies the Codex Desktop 26.924 managed workspace sandbox with granular approvals as prompting", () => {
+  const f = managedFixture();
+  const result = f.read();
+  assert.equal(result.status, "verified", result.reason);
+  assert.equal(result.mode, "prompting");
+  assert.equal(result.approvalPolicy, GRANULAR_LABEL);
+  assert.equal(result.permissionProfile, "managed");
+  assert.equal(result.approvalsReviewer, "user");
+  assert.equal(JSON.stringify(f.read()), JSON.stringify(result), "Two reads of one turn must compare equal before a queued send is written");
+});
+
+/**
+ * Claude counts dontAsk (deny without asking) and auto (a classifier
+ * approves) as prompting, so a task inside a restricting Codex sandbox is
+ * prompting whether it never asks or its escalations go to the auto_review
+ * subagent. Nothing about a managed sandbox may ever attest bypass.
+ */
+it("keeps every restricting managed sandbox in the prompting class, whatever its approval policy or reviewer", () => {
+  const policies = [
+    ["never", "never"], ["on-request", "on-request"], ["on-failure", "on-failure"], ["untrusted", "untrusted"], [GRANULAR, GRANULAR_LABEL],
+    [{ granular: { sandbox_approval: false, rules: false, skill_approval: false, request_permissions: false, mcp_elicitations: false } }, "granular()"],
+    [{ granular: { sandbox_approval: true, rules: false, mcp_elicitations: true } }, "granular(mcp_elicitations,sandbox_approval)"],
+  ];
+  for (const [approvalPolicy, label] of policies) {
+    for (const reviewer of ["user", "auto_review"]) {
+      const result = managedFixture({ approvalPolicy, reviewer }).read();
+      assert.equal(result.status, "verified", `${label} ${reviewer}: ${result.reason}`);
+      assert.equal(result.mode, "prompting", `${label} ${reviewer}`);
+      assert.equal(result.approvalPolicy, label);
+      assert.equal(result.approvalsReviewer, reviewer);
+    }
+  }
+  for (const options of [{ sandbox: "read-only" }, { network: "enabled" }, { sandbox: "read-only", approvalPolicy: "never", reviewer: "auto_review" }]) {
+    const result = managedFixture(options).read();
+    assert.equal(result.status, "verified", `${JSON.stringify(options)}: ${result.reason}`);
+    assert.equal(result.mode, "prompting");
+  }
+});
+
+it("ignores unrecognised read and deny targets in a managed sandbox, as Codex does", () => {
+  const f = managedFixture();
+  f.context.permission_profile.file_system.glob_scan_max_depth = 3;
+  f.context.permission_profile.file_system.entries.push(
+    { path: { type: "special", value: { kind: "unknown", path: ":future" } }, access: "read" },
+    { path: { type: "special", value: { kind: "home" } }, access: "deny" },
+    { path: { type: "glob_pattern", pattern: "**/*.pem" }, access: "none" },
+  );
+  f.write();
+  const result = f.read();
+  assert.equal(result.status, "verified", result.reason);
+  assert.equal(result.mode, "prompting");
+});
+
+it("fails closed on a managed profile that is unrestricted, writable everywhere, or malformed", () => {
+  const entries = (f) => f.context.permission_profile.file_system.entries;
+  const unrestricted = /leaves the file system unrestricted/;
+  const broad = /grants write access beyond specific directories/;
+  const entry = /unsupported file-system entry/;
+  const fileSystem = /managed file-system sandbox is unsupported/;
+  const profile = /managed permission profile is unsupported/;
+  const legacy = /does not match its managed permission profile/;
+  const reviewer = /approval reviewer is unverified/;
+  const policy = /approval policy is unsupported/;
+  const cases = {
+    "unrestricted file system": [unrestricted, (f) => { f.context.permission_profile.file_system = { type: "unrestricted" }; }],
+    "root write": [broad, (f) => { entries(f).push({ path: { type: "special", value: { kind: "root" } }, access: "write" }); }],
+    "POSIX root path write": [broad, (f) => { entries(f).push({ path: { type: "path", path: "/" }, access: "write" }); }],
+    "drive root path write": [broad, (f) => { entries(f).push({ path: { type: "path", path: "C:\\" }, access: "write" }); }],
+    "dot-segment root path write": [broad, (f) => { entries(f).push({ path: { type: "path", path: [f.home, ...Array(16).fill("..")].join(path.sep) }, access: "write" }); }],
+    "share root path write": [broad, (f) => { entries(f).push({ path: { type: "path", path: "\\\\server\\share" }, access: "write" }); }],
+    "extended share root path write": [broad, (f) => { entries(f).push({ path: { type: "path", path: "\\\\?\\UNC\\server\\share\\" }, access: "write" }); }],
+    "root URI write": [broad, (f) => { entries(f).push({ path: { type: "path", path: "file:///" }, access: "write" }); }],
+    "drive root URI write": [broad, (f) => { entries(f).push({ path: { type: "path", path: "file:///C:/" }, access: "write" }); }],
+    "glob write": [broad, (f) => { entries(f).push({ path: { type: "glob_pattern", pattern: "**" }, access: "write" }); }],
+    "unknown special write": [broad, (f) => { entries(f).push({ path: { type: "special", value: { kind: "unknown", path: ":home" } }, access: "write" }); }],
+    "future special write": [broad, (f) => { entries(f).push({ path: { type: "special", value: { kind: "home" } }, access: "write" }); }],
+    "unknown access": [entry, (f) => { entries(f)[1].access = "execute"; }],
+    "unknown path type": [entry, (f) => { entries(f)[1].path = { type: "volume", path: f.home }; }],
+    "extra entry field": [entry, (f) => { entries(f)[1].recursive = true; }],
+    "extra path field": [entry, (f) => { entries(f)[1].path.escalated = true; }],
+    "unknown missing path behavior": [entry, (f) => { entries(f)[4].missing_path_behavior = "create"; }],
+    "entries not a list": [fileSystem, (f) => { f.context.permission_profile.file_system.entries = {}; }],
+    "extra file-system field": [fileSystem, (f) => { f.context.permission_profile.file_system.escalation = "auto"; }],
+    "invalid glob depth": [fileSystem, (f) => { f.context.permission_profile.file_system.glob_scan_max_depth = 0; }],
+    "extra profile field": [profile, (f) => { f.context.permission_profile.extra = true; }],
+    "unknown network": [profile, (f) => { f.context.permission_profile.network = "proxied"; }],
+    "full-access legacy sandbox": [legacy, (f) => { f.context.sandbox_policy = { type: "danger-full-access" }; }],
+    "external legacy sandbox": [legacy, (f) => { f.context.sandbox_policy = { type: "external-sandbox", network_access: "restricted" }; }],
+    "missing legacy sandbox": [legacy, (f) => { delete f.context.sandbox_policy; }],
+    "missing reviewer": [reviewer, (f) => { delete f.context.approvals_reviewer; }],
+    "legacy reviewer spelling": [reviewer, (f) => { f.context.approvals_reviewer = "guardian_subagent"; }],
+    "unknown reviewer": [reviewer, (f) => { f.context.approvals_reviewer = "admin"; }],
+    "unknown approval policy": [policy, (f) => { f.context.approval_policy = "on-demand"; }],
+    "granular without a required category": [policy, (f) => { delete f.context.approval_policy.granular.rules; }],
+    "granular with a non-boolean category": [policy, (f) => { f.context.approval_policy.granular.rules = "true"; }],
+    "granular with an extra wrapper field": [policy, (f) => { f.context.approval_policy.never = true; }],
+    "empty granular": [policy, (f) => { f.context.approval_policy = { granular: {} }; }],
+  };
+  for (const [name, [reason, change]] of Object.entries(cases)) {
+    const f = managedFixture();
+    change(f);
+    f.write();
+    const result = f.read();
+    assert.equal(result.status, "unavailable", name);
+    assert.equal(result.mode, null, name);
+    assert.match(result.reason, reason, name);
+  }
+});
+
+it("still requires a user reviewer and a string approval policy for full access", () => {
+  for (const change of [(f) => { f.context.approvals_reviewer = "auto_review"; }, (f) => { f.context.approval_policy = structuredClone(GRANULAR); }]) {
+    const f = fixture();
+    change(f);
+    f.write();
+    assert.equal(f.read().status, "unavailable");
+    assert.equal(f.read().mode, null);
+  }
 });
 
 it("does not infer calling identity from global environment or manual relay binding", () => {

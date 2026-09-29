@@ -482,7 +482,8 @@ registerTool(
               rootPolicy.recheck(scopeBindings.sender, "Codex sender working directory");
               rootPolicy.recheck(scopeBindings.recipient, "Claude recipient working directory");
             }
-            if (active.threadId !== sender.threadId || active.turnId !== sender.turnId || active.cwd !== sender.cwd || active.mode !== sender.mode || active.approvalPolicy !== sender.approvalPolicy || JSON.stringify(active.review) !== JSON.stringify(sender.review)) {
+            if (active.threadId !== sender.threadId || active.turnId !== sender.turnId || active.cwd !== sender.cwd || active.mode !== sender.mode || active.approvalPolicy !== sender.approvalPolicy
+                || active.permissionProfile !== sender.permissionProfile || active.approvalsReviewer !== sender.approvalsReviewer || JSON.stringify(active.review) !== JSON.stringify(sender.review)) {
               throw preflightFailure("CODEX_SENDER_CONTEXT_CHANGED", "The sender's active turn or permissions changed while this message was queued.");
             }
             assertRecipientClass(refreshed, active);
@@ -690,6 +691,7 @@ registerTool(
         `sender mode:   ${sender?.mode ?? (desktopOnly ? "unverified - Desktop sends blocked" : peer.permissionMode ?? "unknown")}`,
         ...(sender ? [`sender context: ${sender.status} (${sender.source ?? "unavailable"})`, `sender task: ${sender.threadId ?? "unknown"}`, `sender turn: ${sender.turnId ?? "unknown"}`, ...(sender.reason ? [`sender detail: ${sender.reason}`] : [])] : []),
         ...(sender?.approvalPolicy ? [`sender approval policy: ${sender.approvalPolicy}`] : []),
+        ...(sender?.permissionProfile ? [`sender permission profile: ${sender.permissionProfile}`, `sender approval reviewer: ${sender.approvalsReviewer}`] : []),
         ...(sender?.review ? [`sender auto review: ${sender.review.autoReview}`, `sender Node REPL review: ${sender.review.nodeReplReview}`] : []),
         `session policy: ${desktopOnly ? "desktop-only" : "all Claude Code entrypoints"}`,
         `Claude account: ${accounts.claude.status}${accounts.claude.fingerprint ? ` (${accounts.claude.fingerprint.slice(0, 12)})` : ` - ${accounts.claude.reason}`}`,

@@ -2,11 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { scanRollout } from "./rollout-reader.mjs";
+import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable } from "./rollout-segments.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
-const MAX_ENTRIES = 100000;
-const MAX_DIRECTORIES = 4096;
 const MAX_REPLY_BYTES = 1024 * 1024;
 const DESKTOP_ORIGINATORS = new Set(["Codex Desktop", "codex_work_desktop"]);
 const COMPLETED = new Set(["task_complete", "task_completed", "turn_complete", "turn_completed"]);
@@ -36,37 +36,9 @@ function configuredSessions(env) {
   return canonicalSessions;
 }
 
-function findRollout(threadId, env) {
-  if (!UUID.test(threadId)) throw new Error("The Codex task identity is invalid");
+function findRollouts(threadId, env) {
   const sessions = configuredSessions(env);
-  const queue = [{ directory: sessions, depth: 0 }];
-  const matches = [];
-  let entries = 0;
-  let directories = 0;
-  while (queue.length) {
-    const { directory, depth } = queue.pop();
-    if (++directories > MAX_DIRECTORIES) throw new Error("The bounded Codex sessions scan exceeded its directory limit");
-    const children = fs.readdirSync(directory, { withFileTypes: true });
-    entries += children.length;
-    if (entries > MAX_ENTRIES) throw new Error("The bounded Codex sessions scan exceeded its entry limit");
-    for (const child of children) {
-      const candidate = path.join(directory, child.name);
-      if (depth < 3 && (depth === 0 ? /^\d{4}$/ : /^\d{2}$/).test(child.name)) {
-        if (child.isSymbolicLink()) throw new Error("The Codex sessions scan encountered a linked date directory");
-        if (child.isDirectory()) {
-          const resolved = fs.realpathSync.native(candidate);
-          const relative = path.relative(sessions, resolved);
-          if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("A Codex date directory escapes the sessions path");
-          queue.push({ directory: resolved, depth: depth + 1 });
-        }
-      }
-      if (depth === 3 && child.name.startsWith("rollout-") && child.name.endsWith(`-${threadId}.jsonl`)) matches.push(candidate);
-    }
-  }
-  if (matches.length !== 1) throw new Error(matches.length ? "Multiple rollouts match the Codex task" : "No rollout matches the Codex task");
-  const status = fs.lstatSync(matches[0]);
-  if (!status.isFile() || status.isSymbolicLink()) throw new Error("The Codex rollout is not a regular file");
-  return { file: matches[0], sessions };
+  return findRolloutSegments(sessions, threadId).map((file) => ({ file, sessions }));
 }
 
 function pathIdentity(candidate, kind) {
@@ -100,49 +72,49 @@ function samePathBoundary(expected, current) {
       entry.path === current.ancestors[index].path && entry.dev === current.ancestors[index].dev && entry.ino === current.ancestors[index].ino);
 }
 
-function readStable(found, maxBytes) {
-  const { file, sessions } = found;
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ROLLOUT_BYTES) throw new Error("The Codex rollout read limit is invalid");
-  const beforeBoundary = capturePathBoundary(file, sessions);
-  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-  try {
-    const before = fs.fstatSync(descriptor);
-    if (before.dev !== beforeBoundary.file.dev || before.ino !== beforeBoundary.file.ino) throw new Error("The Codex rollout changed while opening");
-    if (!before.isFile() || before.size === 0 || before.size > maxBytes) throw new Error("The Codex rollout is empty or exceeds the bounded read limit");
-    const data = Buffer.alloc(before.size);
-    let offset = 0;
-    while (offset < data.length) {
-      const count = fs.readSync(descriptor, data, offset, data.length - offset, offset);
-      if (!count) throw new Error("The Codex rollout changed while reading");
-      offset += count;
+function readStable(found, maxBytes, { threadId, turnId, afterOffset = 0, prefixSize } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try { return readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize }); }
+    catch (error) {
+      if (attempt >= 2 || !/changed while (reading|opening)|incomplete final record/.test(error.message)) throw error;
     }
-    const after = fs.fstatSync(descriptor);
-    const afterBoundary = capturePathBoundary(file, sessions);
-    if (!samePathBoundary(beforeBoundary, afterBoundary) || before.size !== after.size || before.mtimeMs !== after.mtimeMs ||
-        before.ctimeMs !== after.ctimeMs || before.ino !== after.ino || before.dev !== after.dev ||
-        before.ino !== afterBoundary.file.ino || before.dev !== afterBoundary.file.dev) throw new Error("The Codex rollout changed while reading");
-    if (data.at(-1) !== 0x0a) throw new Error("The Codex rollout has an incomplete final record");
-    return { data, identity: { dev: before.dev, ino: before.ino } };
-  } finally {
-    fs.closeSync(descriptor);
   }
 }
 
-function parseRecords(data) {
+function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize }) {
+  const { file, sessions } = found;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ROLLOUT_BYTES) throw new Error("The Codex rollout read limit is invalid");
+  const beforeBoundary = capturePathBoundary(file, sessions);
   const records = [];
-  let offset = 0;
-  while (offset < data.length) {
-    const newline = data.indexOf(0x0a, offset);
-    if (newline < 0) throw new Error("The Codex rollout has an incomplete final record");
-    const raw = data.subarray(offset, newline).toString("utf8");
-    const start = offset;
-    offset = newline + 1;
-    if (!raw) continue;
-    const record = JSON.parse(raw);
-    if (!object(record) || !object(record.payload)) throw new Error("The Codex rollout contains an invalid record");
-    records.push({ record, start });
+  const digest = crypto.createHash("sha256");
+  let session, latestContext, retainedBytes = 0, turnBeforeWatermark = false;
+  const snapshot = scanRollout(file, {
+    maxRecordBytes: maxBytes,
+    onChunk(chunk, offset) {
+      // Verify every byte of the pre-send prefix without keeping it in memory.
+      const length = prefixSize === undefined ? chunk.length : Math.max(0, Math.min(chunk.length, prefixSize - offset));
+      if (length) digest.update(chunk.subarray(0, length));
+    },
+    onRecord(record, start, bytes) {
+      if (record.type === "session_meta") {
+        if (session) throw new Error("The Codex rollout has ambiguous session identity");
+        session = record.payload;
+      }
+      if (record.type === "turn_context") latestContext = record.payload;
+      const entry = { record, start };
+      if (turnId && recordBelongsToTurn(entry, threadId, turnId)) {
+        if (start < afterOffset) { turnBeforeWatermark = true; return; }
+        retainedBytes += bytes;
+        if (retainedBytes > maxBytes) throw new Error(`The selected native turn exceeds the ${maxBytes}-byte retained-record limit`);
+        records.push(entry);
+      }
+    },
+  });
+  const afterBoundary = capturePathBoundary(file, sessions);
+  if (!samePathBoundary(beforeBoundary, afterBoundary) || snapshot.identity.dev !== beforeBoundary.file.dev || snapshot.identity.ino !== beforeBoundary.file.ino) {
+    throw new Error("The Codex rollout changed while reading");
   }
-  return records;
+  return { ...snapshot, file, sessions, records, retainedBytes, session, latestContext, turnBeforeWatermark, prefixSha256: digest.digest("hex") };
 }
 
 function canonicalDirectory(value, label) {
@@ -152,12 +124,26 @@ function canonicalDirectory(value, label) {
   return fs.realpathSync.native(value);
 }
 
-function validateSession(records, threadId, expectedCwd) {
-  const sessions = records.filter(({ record }) => record.type === "session_meta").map(({ record }) => record.payload);
-  if (sessions.length !== 1) throw new Error("The Codex rollout has ambiguous session identity");
-  const session = sessions[0];
-  if (session.id !== threadId || !DESKTOP_ORIGINATORS.has(session.originator) || session.source !== "vscode") throw new Error("The rollout does not confirm the exact native Codex Desktop task");
-  if (canonicalDirectory(session.cwd, "The rollout workspace") !== expectedCwd) throw new Error("The rollout workspace does not match the selected native task");
+function validateIdentity({ session }, threadId, expectedCwd, desktopEvidence) {
+  if (!session) throw new Error("The Codex rollout is missing its session identity");
+  const desktop = DESKTOP_ORIGINATORS.has(session.originator) && session.source === "vscode";
+  const adopted = isLegacyCliSession(session) && confirmsDesktopTask(desktopEvidence, threadId, expectedCwd);
+  if (session.id !== threadId || (!desktop && !adopted)) throw new Error("The rollout does not confirm the exact native Codex Desktop task");
+  if (typeof session.cwd !== "string" || !path.isAbsolute(session.cwd)) throw new Error("The original rollout workspace is missing or invalid");
+}
+
+function validateSession(snapshot, threadId, expectedCwd, desktopEvidence) {
+  validateIdentity(snapshot, threadId, expectedCwd, desktopEvidence);
+  // Current cwd comes from independently inspected native Desktop metadata.
+  if (canonicalDirectory(snapshot.latestContext ? snapshot.latestContext.cwd : snapshot.session.cwd, "The rollout workspace") !== expectedCwd) throw new Error("The rollout workspace does not match the selected native task");
+}
+
+function uniqueTurn(snapshots) {
+  const selected = snapshots.filter((snapshot) => snapshot.records.length);
+  if (selected.length !== 1) throw new Error(selected.length
+    ? "The native turn spans multiple rollout segments or has ambiguous copies; response withheld"
+    : "No rollout segment contains the selected native turn");
+  return selected[0];
 }
 
 function delegationOutputs(executorThreadId, prompt) {
@@ -274,42 +260,46 @@ function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch } 
   };
 }
 
-export function captureCodexRolloutWatermark({ threadId, expectedCwd }, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
+export function captureCodexRolloutWatermark({ threadId, expectedCwd, desktopEvidence }, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
   try {
     const cwd = canonicalDirectory(expectedCwd, "The selected native task workspace");
-    const found = findRollout(threadId, env);
-    const snapshot = readStable(found, maxRolloutBytes);
-    const records = parseRecords(snapshot.data);
-    validateSession(records, threadId, cwd);
-    return {
-      status: "available",
-      threadId,
-      cwd,
-      file: found.file,
-      size: snapshot.data.length,
-      prefixSha256: crypto.createHash("sha256").update(snapshot.data).digest("hex"),
-      identity: snapshot.identity,
-    };
+    const snapshots = findRollouts(threadId, env).map((found) => ({ ...found, ...readStable(found, maxRolloutBytes) }));
+    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
+    for (const snapshot of snapshots) validateIdentity(snapshot, threadId, cwd, desktopEvidence);
+    const matches = snapshots.length === 1 ? snapshots : snapshots.filter((snapshot) =>
+      desktopEvidence?.latestTurnId && snapshot.latestContext?.turn_id === desktopEvidence.latestTurnId);
+    if (matches.length !== 1) throw new Error("Multiple rollouts require an unambiguous current native Desktop turn");
+    const selected = matches[0];
+    validateSession(selected, threadId, cwd, desktopEvidence);
+    const mark = ({ file, size, prefixSha256, identity }) => ({ file, size, prefixSha256, identity });
+    return { status: "available", threadId, cwd, ...mark(selected), segments: snapshots.map(mark) };
   } catch (error) {
     return unavailable(error);
   }
 }
 
-export function inspectCodexNativeTurn({ threadId, turnId, expectedCwd }, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
+export function inspectCodexNativeTurn({ threadId, turnId, expectedCwd, desktopEvidence }, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
   try {
     if (!UUID.test(threadId) || !UUID.test(turnId)) throw new Error("The native turn identity is invalid");
     const cwd = canonicalDirectory(expectedCwd, "The selected native task workspace");
-    const found = findRollout(threadId, env);
-    const snapshot = readStable(found, maxRolloutBytes);
-    const records = parseRecords(snapshot.data);
-    validateSession(records, threadId, cwd);
-    return inspectTurnRecords(records, threadId, turnId, cwd);
+    let retainedBytes = 0;
+    const snapshots = findRollouts(threadId, env).map((found) => {
+      const snapshot = readStable(found, maxRolloutBytes, { threadId, turnId });
+      retainedBytes += snapshot.retainedBytes;
+      if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
+      return snapshot;
+    });
+    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
+    for (const snapshot of snapshots) validateIdentity(snapshot, threadId, cwd, desktopEvidence);
+    const selected = uniqueTurn(snapshots);
+    validateSession(selected, threadId, cwd, desktopEvidence);
+    return inspectTurnRecords(selected.records, threadId, turnId, cwd);
   } catch (error) {
     return { ...unavailable(error), threadId, turnId, source: "codex_desktop_rollout", assistantItems: [], text: "", replySha256: null };
   }
 }
 
-export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, expectedCwd, executorThreadId, prompt, watermark }, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
+export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, expectedCwd, executorThreadId, prompt, watermark, desktopEvidence }, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
   try {
     if (!UUID.test(threadId) || !UUID.test(turnId) || !UUID.test(executorThreadId)) throw new Error("The native response identity is invalid");
     if (turnId === previousTurnId) throw new Error("The observed turn was already present before dispatch");
@@ -317,16 +307,31 @@ export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, 
     if (!object(watermark) || watermark.status !== "available" || watermark.threadId !== threadId) throw new Error("No trusted pre-send rollout watermark is available");
     const cwd = canonicalDirectory(expectedCwd, "The selected native task workspace");
     if (watermark.cwd !== cwd) throw new Error("The selected native task workspace changed after dispatch");
-    const found = findRollout(threadId, env);
-    if (found.file !== watermark.file) throw new Error("The selected native task rollout changed after dispatch");
-    const snapshot = readStable(found, maxRolloutBytes);
-    if (snapshot.identity.dev !== watermark.identity?.dev || snapshot.identity.ino !== watermark.identity?.ino || snapshot.data.length < watermark.size) throw new Error("The selected native task rollout identity changed after dispatch");
-    const prefix = snapshot.data.subarray(0, watermark.size);
-    if (crypto.createHash("sha256").update(prefix).digest("hex") !== watermark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
-    const records = parseRecords(snapshot.data);
-    validateSession(records, threadId, cwd);
-    const tail = records.filter(({ start }) => start >= watermark.size);
-    const inspected = inspectTurnRecords(tail, threadId, turnId, cwd, {
+    const marks = watermark.segments ?? [watermark];
+    if (!Array.isArray(marks) || !marks.length || marks.length > 64
+        || new Set(marks.map((mark) => mark.file)).size !== marks.length
+        || !marks.some((mark) => mark.file === watermark.file && mark.size === watermark.size && mark.prefixSha256 === watermark.prefixSha256)) throw new Error("The pre-send segment watermarks are invalid");
+    for (const mark of marks) if (!Number.isSafeInteger(mark.size) || mark.size < 1) throw new Error("The pre-send rollout watermark size is invalid");
+    const found = findRollouts(threadId, env);
+    if (marks.some((mark) => !found.some(({ file }) => file === mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
+    let retainedBytes = 0;
+    const snapshots = found.map((entry) => {
+      const mark = marks.find(({ file }) => file === entry.file);
+      const snapshot = readStable(entry, maxRolloutBytes, { threadId, turnId, afterOffset: mark?.size ?? 0, prefixSize: mark?.size });
+      retainedBytes += snapshot.retainedBytes;
+      if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
+      if (mark) {
+        if (snapshot.identity.dev !== mark.identity?.dev || snapshot.identity.ino !== mark.identity?.ino || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
+        if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
+      }
+      if (snapshot.turnBeforeWatermark) throw new Error("The observed turn was already present before dispatch");
+      validateIdentity(snapshot, threadId, cwd, desktopEvidence);
+      return snapshot;
+    });
+    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
+    const selected = uniqueTurn(snapshots);
+    validateSession(selected, threadId, cwd, desktopEvidence);
+    const inspected = inspectTurnRecords(selected.records, threadId, turnId, cwd, {
       requireDispatch: { outputs: delegationOutputs(executorThreadId, prompt) },
     });
     return { ...inspected, observationStatus: inspected.status };

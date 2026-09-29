@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "../src/thread-delivery.mjs";
 import { DesktopTaskReceipts } from "../src/desktop-task-receipts.mjs";
 import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
+import { captureCodexRolloutWatermark } from "../src/codex-native-response.mjs";
 
 function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountContext, captureResponse, readResponse, inspectResponse } = {}) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "desktop-receipt-delivery-")));
@@ -44,6 +45,33 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountCon
 }
 
 describe("Desktop creation receipts and deadlines", () => {
+  it("keeps rollout history local and sends only the explicitly requested prompt", async (t) => {
+    const threadId = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
+    const oldTurnId = "01a087dd-d587-76c3-93c3-60c16bc08542";
+    const secret = "HISTORICAL_CONTEXT_MUST_NEVER_BE_SENT";
+    const f = fixture(t, {
+      captureResponse: (args) => captureCodexRolloutWatermark(args, { env: { CODEX_HOME: path.join(f.directory, "codex") } }),
+      dispatch({ operation, args }) {
+        if (operation === "read_thread") return { thread: { id: threadId, kind: "codex", hostId: "local", cwd: f.cwd }, turns: [{ id: oldTurnId }] };
+        if (operation === "send_message_to_thread") {
+          assert.deepEqual(args, { threadId, prompt: "Only this handoff" });
+          return { threadId, status: "accepted" };
+        }
+      },
+    });
+    const directory = path.join(f.directory, "codex", "sessions", "2026", "09", "29");
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, `rollout-2026-09-29T00-00-00-${threadId}.jsonl`), [
+      { type: "session_meta", payload: { id: threadId, originator: "codex-tui", source: "cli", cwd: f.cwd } },
+      { type: "response_item", payload: { text: secret } },
+      { type: "turn_context", payload: { turn_id: oldTurnId, cwd: f.cwd } },
+    ].map((record) => JSON.stringify(record) + "\n").join(""));
+    const delivered = await f.delivery.send({ threadId, cwd: f.cwd, prompt: "Only this handoff" });
+    assert.equal(delivered.responseObservation.watermark.status, "available");
+    assert.equal(JSON.stringify(f.calls).includes(secret), false);
+    assert.equal(JSON.stringify(delivered).includes(secret), false);
+  });
+
   it("creates independent requests with identical project, title and prompt in different tasks", async (t) => {
     const f = fixture(t);
     const args = { cwd: f.cwd, name: "New feature", prompt: "Implement the requested feature" };
@@ -200,7 +228,7 @@ describe("Desktop creation receipts and deadlines", () => {
     assert.deepEqual(result.assistantItems, [{ id: "assistant-item", text: "Recovered final" }]);
     assert.equal(f.calls.filter((call) => call.operation === "send_message_to_thread").length, 1);
     assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 0);
-    assert.deepEqual(f.calls.map((call) => call.operation), ["read_thread", "send_message_to_thread", "wait_threads", "read_thread"]);
+    assert.deepEqual(f.calls.map((call) => call.operation), ["read_thread", "send_message_to_thread", "wait_threads", "read_thread", "read_thread"]);
     assert.ok(checks >= 6);
   });
 
@@ -211,6 +239,7 @@ describe("Desktop creation receipts and deadlines", () => {
       beforeRequest: () => {},
       readResponse: () => { accounts = { ...accounts, codex: "c".repeat(64) }; return { status: "completed", text: "must be withheld", turnId: "new-turn", assistantItems: [{ id: "assistant-item", text: "must be withheld" }] }; },
       dispatch({ operation }) {
+        if (operation === "read_thread") return { thread: { id: "task", hostId: "local", cwd: f.cwd }, turns: [{ id: "new-turn" }] };
         if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "new-turn", status: "completed" }, latestAssistantMessage: null }] };
       },
     });

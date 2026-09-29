@@ -262,7 +262,7 @@ export class DesktopTaskDelivery {
     if (name) await this.request("set_thread_title", { threadId, title: name.trim().slice(0, 200) }, { deadline });
     const expectedCwd = realpathSync.native(inspected.thread.cwd);
     const accountContext = this.accountContext?.();
-    const watermark = this.captureResponse({ threadId, expectedCwd });
+    const watermark = this.captureResponse({ threadId, expectedCwd, desktopEvidence: inspected });
     const envelope = await this.request("send_message_to_thread", {
       threadId, prompt,
       ...(model ? { model } : {}),
@@ -305,7 +305,9 @@ export class DesktopTaskDelivery {
       if (realpathSync.native(expectedCwd) !== expectedCwd) throw new Error("The selected native task workspace changed while its response was being observed");
     };
     await recheck();
-    const observed = this.readResponse({ ...responseObservation, threadId, turnId });
+    const initial = await this.inspect(threadId, expectedCwd, { deadline });
+    if (initial.latestTurnId !== turnId) throw new Error("The selected native task changed before its response could be read; reply content was withheld");
+    const observed = this.readResponse({ ...responseObservation, threadId, turnId, desktopEvidence: initial });
     await recheck();
     const inspected = await this.inspect(threadId, expectedCwd, { deadline });
     if (inspected.latestTurnId !== turnId) throw new Error("The selected native task changed before its response could be confirmed; reply content was withheld");
@@ -326,7 +328,7 @@ export class DesktopTaskDelivery {
       if (realpathSync.native(expectedCwd) !== expectedCwd) throw new Error("The selected native task workspace changed while its turn was being inspected");
     };
     await recheck();
-    const result = this.inspectResponse({ threadId, turnId, expectedCwd });
+    const result = this.inspectResponse({ threadId, turnId, expectedCwd, desktopEvidence: initial });
     await recheck();
     await this.inspect(threadId, expectedCwd, { deadline });
     await recheck();

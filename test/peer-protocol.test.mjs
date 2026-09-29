@@ -828,6 +828,48 @@ describe("peer endpoint", () => {
     }
   });
 
+  for (const expire of [false, true]) it(`separates connected sender verification from transport timeouts (expire=${expire})`, async (t) => {
+    const destination = isWindows ? namedPipePath() : path.join(sandbox, `slow-verification-${expire}.sock`);
+    const received = [];
+    let closed;
+    const disconnected = new Promise((resolve) => { closed = resolve; });
+    const receiver = net.createServer((socket) => {
+      socket.on("data", (data) => received.push(data.toString()));
+      socket.on("close", closed);
+    });
+    await new Promise((resolve) => receiver.listen(destination, resolve));
+    writeSession("slow-verification", { pid: process.pid, messagingSocketPath: destination, cwd: sandbox });
+    fs.writeFileSync(peerKeyPath(process.pid, destination), JSON.stringify({ peerToken: "d".repeat(32) }));
+    let checks = 0, release;
+    const nativeTimeout = globalThis.setTimeout;
+    if (expire) t.mock.method(globalThis, "setTimeout", (fn, ms, ...args) => nativeTimeout(fn, ms === 30000 ? 20 : ms, ...args));
+    try {
+      const sending = endpoint.sendAndWait(destination, "single verified message", {
+        timeoutMs: 0,
+        beforeSend: async () => {
+          if (++checks !== 3) return;
+          if (expire) await new Promise((resolve) => { release = resolve; });
+          else await new Promise((resolve) => nativeTimeout(resolve, 2200));
+        },
+      });
+      if (expire) {
+        await assert.rejects(sending, (error) => error.code === "PEER_VERIFY_TIMEOUT" && !error.deliveryUncertain);
+        release();
+      } else await sending;
+      await disconnected;
+      await yieldToEvents();
+      const frames = received.join("").split("\n").filter(Boolean).map(JSON.parse);
+      assert.equal(frames.filter((frame) => frame.type !== "auth").length, expire ? 0 : 1);
+      assert.equal(checks, 3, "A connected verification must not be retried");
+      if (expire) assert.equal(endpoint.unconfirmedReplies.has(destination), false);
+    } finally {
+      release?.();
+      await new Promise((resolve) => receiver.close(resolve));
+      fs.rmSync(path.join(sessionsDir, "slow-verification.json"));
+      fs.rmSync(peerKeyPath(process.pid, destination));
+    }
+  });
+
   it("continues a peer queue after sending fails", async (t) => {
     t.mock.method(endpoint, "send", async (targetSocket, text) => {
       if (text === "fail") throw new Error("send failed");

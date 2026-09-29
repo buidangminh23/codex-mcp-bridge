@@ -167,6 +167,7 @@ function isProcessAlive(pid) {
 const SESSION_READ_ATTEMPTS = 3;
 const PEER_SEND_ATTEMPTS = 3;
 const PEER_CONNECT_TIMEOUT_MS = 2000;
+const PEER_VERIFY_TIMEOUT_MS = 30000;
 const PEER_RETRY_DELAY_MS = 75;
 const RETRYABLE_PEER_ERRORS = new Set(["ECONNREFUSED", "ECONNRESET", "ENOENT", "EPIPE", "ENOTFOUND", "ETIMEDOUT"]);
 
@@ -719,12 +720,16 @@ export class PeerEndpoint {
           let connected = false;
           let writeStarted = false;
           let settled = false;
-          const timer = globalThis.setTimeout(() => {
-            const error = new Error("timed out connecting to " + targetSocket);
-            error.code = "ETIMEDOUT";
-            finish(error);
-            client.destroy();
-          }, PEER_CONNECT_TIMEOUT_MS);
+          let timer;
+          const armTimeout = (phase, duration) => {
+            globalThis.clearTimeout(timer);
+            timer = globalThis.setTimeout(() => {
+              const error = new Error(`timed out ${phase} ${targetSocket}`);
+              error.code = phase === "verifying sender for" ? "PEER_VERIFY_TIMEOUT" : "ETIMEDOUT";
+              finish(error);
+              client.destroy();
+            }, duration);
+          };
           const finish = (error) => {
             if (settled) return;
             settled = true;
@@ -736,11 +741,17 @@ export class PeerEndpoint {
               resolve();
             }
           };
+          armTimeout("connecting to", PEER_CONNECT_TIMEOUT_MS);
           client.once("connect", async () => {
             connected = true;
+            // An established connection must not time out while a long rollout
+            // and native ownership are being verified. Keep a separate bound;
+            // a late verification result still cannot write after settlement.
+            armTimeout("verifying sender for", PEER_VERIFY_TIMEOUT_MS);
             try {
               await beforeSend?.();
               if (settled) return;
+              armTimeout("writing to", PEER_CONNECT_TIMEOUT_MS);
               writeStarted = true;
               client.write(line, (error) => {
                 if (error) {

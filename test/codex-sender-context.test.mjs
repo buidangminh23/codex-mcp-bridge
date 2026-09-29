@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, it } from "node:test";
-import { readCodexSenderContext } from "../src/codex-sender-context.mjs";
+import { readCodexSenderContext, resolveCodexSenderContext } from "../src/codex-sender-context.mjs";
 import { assertRecipientClass } from "../src/recipient-preflight.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-sender-"));
@@ -55,6 +55,57 @@ function workDesktopFixture() {
   f.write();
   return f;
 }
+
+it("selects the exact active turn in a continuation, regardless of file timestamps", () => {
+  const f = managedFixture();
+  const continued = f.file.replace(".jsonl", `_${otherId}.jsonl`);
+  fs.copyFileSync(f.file, continued);
+  f.context.turn_id = otherId;
+  f.lifecycle.turn_id = otherId;
+  f.lifecycle.type = "task_complete";
+  f.write();
+  fs.utimesSync(f.file, new Date(), new Date(Date.now() + 86400000));
+  const result = f.read();
+  assert.equal(result.status, "verified", result.reason);
+  assert.equal(result.source, continued);
+  fs.copyFileSync(continued, f.file);
+  assert.match(f.read().reason, /Multiple rollout segments/);
+});
+
+it("requires live native ownership for an adopted CLI task and rechecks permissions after inspection", async () => {
+  const f = managedFixture();
+  Object.assign(f.session, { originator: "codex-tui", source: "cli" });
+  f.write();
+  const evidence = { thread: { id: threadId, kind: "codex", hostId: "local", cwd: f.home }, latestTurnId: turnId };
+  const resolve = (inspectDesktopTask) => resolveCodexSenderContext({ "x-codex-turn-metadata": f.metadata }, { env: { HOME: f.home }, inspectDesktopTask });
+  assert.equal(f.read().status, "unavailable");
+  assert.equal((await resolve(async () => evidence)).mode, "prompting");
+  for (const changed of [
+    { ...evidence, latestTurnId: otherId },
+    { ...evidence, thread: { ...evidence.thread, id: otherId } },
+    { ...evidence, thread: { ...evidence.thread, hostId: "remote" } },
+    { ...evidence, thread: { ...evidence.thread, kind: "chatgpt" } },
+    { ...evidence, thread: { ...evidence.thread, cwd: root } },
+  ]) assert.equal((await resolve(async () => changed)).status, "unavailable");
+  assert.equal((await resolve(async () => { throw new Error("relay unavailable"); })).status, "unavailable");
+  assert.equal((await resolve(async () => {
+    f.lifecycle.type = "task_complete"; f.write(); return evidence;
+  })).status, "unavailable");
+  f.lifecycle.type = "task_started"; f.write();
+  assert.equal((await resolve(async () => {
+    f.context.approval_policy = "never"; f.write(); return evidence;
+  })).status, "unavailable");
+});
+
+it("does not consult Desktop adoption for malformed metadata or unknown origins", async () => {
+  const f = managedFixture();
+  f.session.originator = "unknown"; f.write();
+  let calls = 0;
+  const inspectDesktopTask = async () => { calls++; return {}; };
+  assert.equal((await resolveCodexSenderContext({ "x-codex-turn-metadata": f.metadata }, { env: { HOME: f.home }, inspectDesktopTask })).status, "unavailable");
+  assert.equal((await resolveCodexSenderContext({}, { env: { HOME: f.home }, inspectDesktopTask })).status, "unavailable");
+  assert.equal(calls, 0);
+});
 
 it("recognizes local Work Desktop without accepting web, CLI, or extension origins", () => {
   for (const originator of ["Codex Desktop", "codex_work_desktop"]) {
@@ -133,7 +184,7 @@ it("keeps active-turn, workspace, and identity checks for managed Work Desktop c
     f => { f.session.source = "cli"; },
     f => { f.metadata.thread_source = "subagent"; },
     f => { f.metadata.turn_id = otherId; },
-    f => { f.context.cwd = root; },
+    f => { f.context.cwd = path.join(root, "missing-workspace"); },
     f => { f.lifecycle.type = "task_complete"; },
   ]) {
     const f = workDesktopFixture();
@@ -465,11 +516,28 @@ it("rejects finished, aborted, and superseded callers even when the earlier turn
   assert.equal(f.read().status, "unavailable");
 });
 
-it("rejects a changed workspace and missing lifecycle evidence", () => {
+it("uses the active Desktop workspace after migration without requiring the original directory", () => {
+  for (const create of [fixture, managedFixture]) {
+    const f = create();
+    f.session.cwd = path.join(f.home, "removed-original-workspace");
+    f.context.cwd = root;
+    f.write();
+    const result = f.read();
+    assert.equal(result.status, "verified", result.reason);
+    assert.equal(result.cwd, fs.realpathSync.native(root));
+    assert.equal(result.mode, create === managedFixture ? "prompting" : "bypass");
+    f.metadata.turn_id = otherId;
+    assert.equal(f.read().status, "unavailable");
+  }
+});
+
+it("keeps VS Code's same-project restriction and rejects missing lifecycle evidence", () => {
   const f = fixture();
+  f.session.originator = "codex_vscode";
   f.context.cwd = root;
   f.write();
-  assert.equal(f.read().status, "unavailable");
+  assert.equal(f.read({ originator: "codex_vscode" }).status, "unavailable");
+  f.session.originator = "Codex Desktop";
   f.context.cwd = f.home;
   f.records.splice(1, 1);
   f.write();
@@ -499,13 +567,39 @@ it("rejects linked rollout files and linked session directories", { skip: proces
   assert.equal(g.read().status, "unavailable");
 });
 
-it("fails closed on partial, malformed, empty, and oversized rollout files", () => {
+it("fails closed on partial, malformed, empty, and oversized individual records", () => {
   const f = fixture();
   assert.equal(f.read({ maxRolloutBytes: 1 }).status, "unavailable");
   for (const contents of ["", "{", "{broken}\n", fs.readFileSync(f.file, "utf8").trimEnd()]) {
     fs.writeFileSync(f.file, contents);
     assert.equal(f.read().status, "unavailable");
   }
+});
+
+it("verifies a history beyond 64 MiB and still checks records in its middle", () => {
+  const f = managedFixture();
+  const row = JSON.stringify({ type: "response_item", payload: { content: "x".repeat(1024 * 1024) } }) + "\n";
+  for (let i = 0; i < 65; i++) fs.appendFileSync(f.file, row);
+  assert.ok(fs.statSync(f.file).size > 64 * 1024 * 1024);
+  assert.equal(f.read().status, "verified");
+  // A completion after a large history must not be hidden by a stale state cache.
+  fs.appendFileSync(f.file, JSON.stringify({ type: "event_msg", payload: { ...f.lifecycle, type: "task_complete" } }) + "\n");
+  assert.equal(f.read().status, "unavailable");
+  // Duplicate identities are rejected anywhere, including beyond the old cap.
+  fs.appendFileSync(f.file, JSON.stringify({ type: "session_meta", payload: f.session }) + "\n" + row);
+  assert.match(f.read().reason, /repeats its session identity/);
+});
+
+it("uses a per-record budget rather than a cumulative file limit", () => {
+  const f = fixture();
+  for (let i = 0; i < 30; i++) f.records.push({ type: "response_item", payload: { content: "x".repeat(512) } });
+  f.write();
+  assert.equal(f.read({ maxRolloutBytes: 1024 }).status, "verified");
+  f.records.push({ type: "response_item", payload: { content: "x".repeat(1024) } });
+  f.write();
+  assert.match(f.read({ maxRolloutBytes: 1024 }).reason, /per-record read limit/);
+  fs.writeFileSync(f.file, "");
+  assert.match(f.read().reason, /empty \(0 bytes\)/);
 });
 
 it("supports an explicit absolute Codex home and ignores unrelated conversation contents", () => {

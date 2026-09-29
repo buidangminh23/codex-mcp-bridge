@@ -20,7 +20,7 @@ No uncertain message was resent. A failed earlier reverse test was recovered sep
 
 Claude used a project-local MCP registration with a distinct name. The original shared Desktop registration did not have the Code session ancestry required to authorize a Claude sender; the caller-identity check correctly rejected it. The dedicated registration retained the same bridge implementation and access settings, and its process ancestry was verified under the intended Code session.
 
-The live checks cover the observed account, client setup, fixed-directory tasks, and short final replies. They do not validate migrated historical conversations, every Desktop version, or long tasks beyond the response budget. The unchanged-workspace check remains in force. No sender or recipient permission checks were disabled for acceptance.
+The live checks cover the observed account, client setup, fixed-directory tasks, and short final replies. They do not validate migrated historical conversations, every Desktop version, or long tasks beyond the response budget. At that validation point, the unchanged-workspace check remained in force. The later [long-rollout repair](long-rollout-validation.md) records the revised Desktop workspace and continuation checks separately. No sender or recipient permission checks were disabled for acceptance.
 
 ## Reproducible regression checks
 

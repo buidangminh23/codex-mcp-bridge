@@ -252,7 +252,7 @@ describe("Desktop task MCP integration", () => {
       assert.match(result.content[0].text, /assistant response unavailable.*do not resend/i);
       assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, 1);
       assert.equal(calls.includes("create_thread"), false);
-      assert.deepEqual(calls, ["read_thread", "send_message_to_thread", "wait_threads", "read_thread"]);
+      assert.deepEqual(calls, ["read_thread", "send_message_to_thread", "wait_threads", "read_thread", "read_thread"]);
     });
   });
 

@@ -1,5 +1,7 @@
 # Work Desktop bridge validation
 
+> This record was made on the original branch on 2026-09-28. When the branch was rebased onto `main` on 2026-09-29, its own managed-profile rules were dropped. Managed sandboxes are now verified by the sender checks from #85, which also classify the managed Work Desktop shape below as prompting.
+
 Validated on Windows on 2026-09-28 with Node.js 24.13.0 and a fixed local project directory. Both participants were native Desktop conversations. The Codex sender used `codex_work_desktop` with a managed, network-restricted workspace and prompting approvals.
 
 ## Completed live checks

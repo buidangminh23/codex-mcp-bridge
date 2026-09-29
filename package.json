@@ -41,7 +41,8 @@
     "docs/日常交接速查.md",
     "docs/换机安装与默认权限.md",
     "docs/新会话目录核验.md",
-    "docs/项目接入说明.md"
+    "docs/项目接入说明.md",
+    "docs/交接入口.md"
   ],
   "publishConfig": {
     "access": "public"

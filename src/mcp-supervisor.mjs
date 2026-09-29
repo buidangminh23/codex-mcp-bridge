@@ -44,6 +44,7 @@ class Worker {
       env: { ...env, CODEX_BRIDGE_WORKER: "1", CODEX_BRIDGE_STAGED: "1" },
       stdio: ["pipe", "pipe", "pipe", "ipc"], serialization: "json",
     });
+    this.exited = new Promise((resolve) => this.process.once("exit", resolve));
     this.process.stderr.on("data", (data) => process.stderr.write(data));
     this.process.stdin.on("error", (error) => this.fail(error));
     this.process.on("error", (error) => this.fail(error));
@@ -110,13 +111,23 @@ class Worker {
 
   async stop() {
     this.retiring = true;
-    if (this.process.exitCode !== null || this.process.signalCode) return;
-    await new Promise((resolve) => {
-      const timer = setTimeout(() => { this.process.kill(); resolve(); }, 1000);
-      this.process.once("exit", () => { clearTimeout(timer); resolve(); });
+    if (this.stopping) return this.stopping;
+    this.stopping = (async () => {
+      let timer;
+      const wait = async (ms) => {
+        try {
+          return await Promise.race([this.exited.then(() => true), new Promise((resolve) => { timer = setTimeout(() => resolve(false), ms); })]);
+        } finally { clearTimeout(timer); }
+      };
       this.process.stdin.end();
       if (this.process.connected) this.process.disconnect();
-    });
+      if (await wait(6000)) return;
+      if (this.process.exitCode === null && this.process.signalCode === null) {
+        this.process.kill("SIGKILL");
+      }
+      if (!await wait(5000)) throw new Error(`Bridge worker ${this.process.pid} did not close after termination`);
+    })();
+    return this.stopping;
   }
 }
 
@@ -248,13 +259,16 @@ export async function runSupervisor(entry, options = {}) {
       reloads++;
       reason = null;
       if (JSON.stringify(catalog) !== JSON.stringify(oldCatalog)) output({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
-      await previous.stop();
+      await previous.stop().catch((error) => log(`retired ${entry} worker: ${error.message}`));
       workers.delete(previous);
       log(`activated ${entry} revision ${revision.slice(0, 12)}; client connection retained`);
     } catch (error) {
       reason = `Update deferred: ${error.message}`;
       retryAt = Date.now() + Math.max(pollMs, 5000);
-      if (candidate) { await candidate.stop(); workers.delete(candidate); }
+      if (candidate) {
+        await candidate.stop().catch((stopError) => log(`rejected ${entry} candidate: ${stopError.message}`));
+        workers.delete(candidate);
+      }
       if (quiesced && active === previous && !previous.closed) {
         try { await previous.control("resume"); }
         catch (resumeError) { failure = `Previous runtime could not resume: ${resumeError.message}`; }

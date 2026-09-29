@@ -163,10 +163,6 @@ describe("process inspector deadlines", () => {
       return error.code === "EPERM";
     }
   };
-  const exited = async (pid) => {
-    for (let attempt = 0; attempt < 100 && running(pid); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
-    return !running(pid);
-  };
   const rejection = (promise) => promise.then(() => assert.fail("The inspector should have been refused"), (error) => error);
 
   it("starts the read deadline when the helper reports ready, so a slow start is not reported as a slow read", async () => {
@@ -182,7 +178,7 @@ describe("process inspector deadlines", () => {
     assert.equal(error.code, "ETIMEDOUT");
     assert.equal(error.phase, "startup");
     assert.equal(error.readyAfterMs, null);
-    assert.ok(await exited(error.pid), "The helper must not outlive its startup deadline");
+    assert.equal(running(error.pid), false, "The timeout must await helper termination before returning");
   });
 
   it("fails closed and stops the helper when the read outlives its deadline after ready", async () => {
@@ -191,7 +187,7 @@ describe("process inspector deadlines", () => {
     assert.equal(error.code, "ETIMEDOUT");
     assert.equal(error.phase, "inspection");
     assert.notEqual(error.readyAfterMs, null);
-    assert.ok(await exited(error.pid), "The helper must not outlive its read deadline");
+    assert.equal(running(error.pid), false, "The timeout must await helper termination before returning");
   });
 
   it("reports exits, missing programs and oversized output the way execFile does", async () => {
@@ -204,7 +200,7 @@ describe("process inspector deadlines", () => {
     const [, noisyArgs] = node(`process.stdout.write("x".repeat(20000)); setTimeout(() => {}, 60000)`);
     const noisy = await rejection(runProcessInspector(command, noisyArgs, { timeout: 30000, maxBuffer: 16384 }));
     assert.equal(noisy.code, "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
-    assert.ok(await exited(noisy.pid), "The helper must not outlive an output overflow");
+    assert.equal(running(noisy.pid), false, "An output overflow must await helper termination before returning");
   });
 });
 

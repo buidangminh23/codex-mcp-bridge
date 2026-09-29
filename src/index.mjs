@@ -29,7 +29,7 @@ import { exitForVersionRequest } from "./cli-version.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
 import { assertRoutingReload, clientReloadReason, createReloadControl } from "./reload-control.mjs";
 import { accountIdentity, assertAccountIdentity, publicAccountState, readBridgeAccounts, requireBridgeAccounts } from "./bridge-account-context.mjs";
-import { assertClaudeSenderContext, readClaudeSenderContext, requireClaudeSenderContext } from "./claude-sender-context.mjs";
+import { assertClaudeSenderContext, readClaudeSenderContext, requireClaudeSenderContext, stopProcessInspectors } from "./claude-sender-context.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
 
 exitForVersionRequest(import.meta.url);
@@ -1011,5 +1011,13 @@ registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+let shutdownPromise;
+const shutdown = () => shutdownPromise ??= (async () => {
+  client?.close();
+  await server.close();
+  await stopProcessInspectors();
+})();
+process.stdin.once("end", () => { void shutdown().catch((error) => log(`shutdown failed: ${error.message}`)); });
+process.once("disconnect", () => { void shutdown().catch((error) => log(`shutdown failed: ${error.message}`)); });
 reload.listen();
 log(desktopTasksEnabled ? `ready on ${PLATFORM_LABEL} (Codex Desktop only; external app-server disabled)` : `ready on ${PLATFORM_LABEL} (app-server endpoint: ${client.url}, codex: ${client.codexBin})`);

@@ -7,6 +7,13 @@ import { readClaudeDesktopContext } from "./claude-desktop-context.mjs";
 const execute = promisify(execFile);
 const MAX_ANCESTORS = 8;
 const INSPECTION_OUTPUT_LIMIT = 16384;
+const activeInspectors = new Set();
+let inspectorsStopping = false;
+
+export async function stopProcessInspectors() {
+  inspectorsStopping = true;
+  await Promise.all([...activeInspectors].map((inspector) => inspector.stop()));
+}
 
 /**
  * The five-second deadline is what keeps the caller check fail-closed: a read
@@ -148,6 +155,7 @@ function parseWindowsAncestry(stdout, parentPid, limit) {
  * elapsedMs so tests can report where the time went.
  */
 export function runProcessInspector(command, args, { timeout, startupTimeout, readyMarker, maxBuffer = Infinity, windowsHide = true } = {}) {
+  if (inspectorsStopping) return Promise.reject(Object.assign(new Error("Process inspection is shutting down"), { code: "ABORT_ERR" }));
   return new Promise((resolve, reject) => {
     const started = performance.now();
     const child = spawn(command, args, { windowsHide, stdio: ["ignore", "pipe", "pipe"] });
@@ -156,36 +164,59 @@ export function runProcessInspector(command, args, { timeout, startupTimeout, re
     let readyAfterMs = null;
     let settled = false;
     let timer;
+    let failure;
+    let killTimer;
+    let closeTimer;
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
+    const inspector = { stop: () => {
+      fail(Object.assign(new Error("Process inspection cancelled during shutdown"), { code: "ABORT_ERR" }));
+      return closed.then((error) => { if (error) throw error; });
+    } };
+    activeInspectors.add(inspector);
     const text = (stream) => Buffer.concat(output[stream]).toString("utf8");
     const settle = (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (error && child.pid !== undefined && child.exitCode === null && child.signalCode === null) child.kill();
+      clearTimeout(killTimer);
+      clearTimeout(closeTimer);
+      activeInspectors.delete(inspector);
+      resolveClosed(error?.cleanupFailed ? error : null);
       const result = { stdout: text("stdout"), stderr: text("stderr"), pid: child.pid, readyAfterMs, elapsedMs: Math.round(performance.now() - started) };
       if (error) reject(Object.assign(error, result));
       else resolve(result);
     };
+    const fail = (error) => {
+      if (settled || failure) return;
+      failure = error;
+      clearTimeout(timer);
+      closeTimer = setTimeout(() => settle(Object.assign(failure, { cleanupFailed: true, message: `${failure.message}; helper ${child.pid} did not close within 5000 ms after termination` })), 5000);
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        killTimer = setTimeout(() => child.kill("SIGKILL"), 250);
+      }
+    };
     const arm = (phase, ms) => {
       clearTimeout(timer);
-      timer = setTimeout(() => settle(Object.assign(new Error(`Process inspection ${phase} deadline elapsed`), { code: "ETIMEDOUT", phase, killed: true, signal: "SIGTERM" })), ms);
+      timer = setTimeout(() => fail(Object.assign(new Error(`Process inspection ${phase} deadline elapsed`), { code: "ETIMEDOUT", phase, killed: true, signal: "SIGTERM" })), ms);
     };
     if (readyMarker) arm("startup", startupTimeout);
     else arm("inspection", timeout);
     for (const stream of ["stdout", "stderr"]) {
       child[stream].on("data", (chunk) => {
-        if (settled) return;
+        if (settled || failure) return;
         output[stream].push(chunk);
         size[stream] += chunk.length;
-        if (size[stream] > maxBuffer) return settle(Object.assign(new RangeError(`${stream} maxBuffer length exceeded`), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }));
+        if (size[stream] > maxBuffer) return fail(Object.assign(new RangeError(`${stream} maxBuffer length exceeded`), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }));
         if (stream === "stderr" && readyMarker && readyAfterMs === null && text("stderr").includes(readyMarker)) {
           readyAfterMs = Math.round(performance.now() - started);
           arm("inspection", timeout);
         }
       });
     }
-    child.on("error", settle);
-    child.on("close", (code, signal) => settle(code === 0 ? null : Object.assign(new Error(`Process inspection exited with ${signal ?? code}`), { code, signal })));
+    child.on("error", fail);
+    child.on("close", (code, signal) => settle(failure ?? (code === 0 ? null : Object.assign(new Error(`Process inspection exited with ${signal ?? code}`), { code, signal }))));
   });
 }
 

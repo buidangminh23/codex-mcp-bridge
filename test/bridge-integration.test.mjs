@@ -7,7 +7,7 @@ import { before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { OwnedStdioTransport } from "./helpers/owned-stdio-transport.mjs";
 import { startFakeAppServer } from "./helpers/fake-app-server.mjs";
 import { RelaySocketServer } from "../src/native-relay-companion.mjs";
 import { randomUUID } from "node:crypto";
@@ -20,17 +20,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execute = promisify(execFile);
 const CLAUDE_ACCOUNT_A = "11111111-1111-4111-8111-111111111111";
 const CLAUDE_ACCOUNT_B = "22222222-2222-4222-8222-222222222222";
-
-/**
- * The bridge runs with its temporary home as the working directory, and so
- * do the PowerShell probes it starts on Windows. The SDK's close() sends
- * SIGKILL without waiting for exit once its two 2 s grace periods pass, and
- * killing the bridge does not end a probe it started, so the home can still
- * be in use when cleanup starts. windows-latest/24 failed main with EPERM on
- * rm there (run 36551539660) while its Node 22 sibling passed. Retrying lets
- * the directory go once those processes have exited.
- */
-const TEMP_HOME_REMOVAL = { recursive: true, force: true, maxRetries: 12, retryDelay: 100 };
 
 function claudeFixtureRoot(home) {
   return process.platform === "darwin" ? path.join(home, "Library", "Application Support", "Claude")
@@ -117,6 +106,7 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-integration-"));
   let server;
   let client;
+  let transport;
   try {
     server = await startFakeAppServer({ onRequest: (message, reply) => onRequest(message, reply, home) });
     const env = {
@@ -129,7 +119,7 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
     };
     const desktopFixture = env.CODEX_BRIDGE_DESKTOP_TASKS === "1" ? await desktopCallerFixture(home, env) : null;
     client = new Client({ name: "bridge-integration", version: "1.0.0" });
-    const transport = new StdioClientTransport({
+    transport = new OwnedStdioTransport({
       command: process.execPath, args: [path.join(root, "src", "index.mjs")],
       cwd: home, env, stderr: "ignore",
     });
@@ -137,10 +127,11 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
     await run({ client, home, env, server, desktopFixture });
   } finally {
     try {
+      await server?.close();
       await client?.close();
     } finally {
-      await server?.close();
-      fs.rmSync(home, TEMP_HOME_REMOVAL);
+      await transport?.close();
+      fs.rmSync(home, { recursive: true, force: true });
     }
   }
 }
@@ -156,8 +147,9 @@ it("cleans up a temporary bridge when fixture initialization fails", async () =>
 
 async function additionalBridgeProcess({ home, env }) {
   const client = new Client({ name: "bridge-restart-integration", version: "1.0.0" });
-  const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "index.mjs")], cwd: home, env, stderr: "ignore" });
-  await client.connect(transport);
+  const transport = new OwnedStdioTransport({ command: process.execPath, args: [path.join(root, "src", "index.mjs")], cwd: home, env });
+  try { await client.connect(transport); }
+  catch (error) { await transport.close(); throw error; }
   return { client, pid: transport.pid };
 }
 

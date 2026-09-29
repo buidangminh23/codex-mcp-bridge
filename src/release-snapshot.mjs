@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 
 function digestFiles(root, files) {
   const hash = createHash("sha256");
@@ -49,14 +50,14 @@ function digestMetadata(cache) {
     }
   };
   return {
-    digest(directory, files) {
+    digest(directory, files, sources) {
       const previous = directories.get(directory) ?? load(directory);
       const records = new Map();
       const hash = createHash("sha256");
       if (previous.size !== files.length) dirty.add(directory);
       for (const file of files) {
         if (!safeRelativePath(file)) throw new Error(`Unsafe release file: ${file}`);
-        const fullPath = path.join(directory, file);
+        const fullPath = sources?.get(file) ?? path.join(directory, file);
         const before = fs.statSync(fullPath, { bigint: true });
         if (!before.isFile()) throw new Error(`Unsupported release file: ${file}`);
         const current = signature(before);
@@ -105,17 +106,93 @@ function digestMetadata(cache) {
   };
 }
 
-function inventory(root, prefix = "") {
+function inventory(root, prefix = "", omitModules = false) {
   const files = [];
   for (const entry of fs.readdirSync(path.join(root, prefix), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
     if (entry.name === ".bin") continue;
+    if (omitModules && !prefix && entry.name === "node_modules") continue;
     const relative = path.join(prefix, entry.name);
     const stat = entry.isSymbolicLink() ? fs.statSync(path.join(root, relative)) : entry;
-    if (stat.isDirectory()) files.push(...inventory(root, relative));
+    if (stat.isDirectory()) files.push(...inventory(root, relative, omitModules));
     else if (stat.isFile()) files.push(relative);
     else throw new Error(`Unsupported release file: ${relative}`);
   }
   return files;
+}
+
+const INSTALLATION_LOCKS = ".bridge-installation-locks.json";
+const dependencySearchPaths = (root, name) => createRequire(path.join(root, "package.json")).resolve.paths(name) ?? [];
+
+function installationLocks(root) {
+  const saved = path.join(root, INSTALLATION_LOCKS);
+  if (fs.existsSync(saved)) return fs.readFileSync(saved, "utf8");
+  const local = path.join(root, "node_modules");
+  const hashes = [];
+  for (const directory of dependencySearchPaths(root, "bridge-dependency-lock")) {
+    if (directory === local) continue;
+    const lock = path.join(directory, ".package-lock.json");
+    if (fs.existsSync(lock)) hashes.push(createHash("sha256").update(fs.readFileSync(lock)).digest("hex"));
+  }
+  return JSON.stringify(hashes);
+}
+
+function dependencyFiles(root) {
+  const files = new Map();
+  if (fs.existsSync(path.join(root, "node_modules"))) {
+    for (const file of inventory(root, "node_modules")) files.set(file, path.join(root, file));
+  }
+  const queue = [{ source: root, destination: "" }];
+  const visited = new Set();
+  const packageSources = new Map();
+  const packageAt = (directory) => {
+    if (packageSources.has(directory)) return packageSources.get(directory);
+    const manifest = files.get(path.join(directory, "package.json"));
+    if (!manifest) return null;
+    const source = fs.realpathSync.native(path.dirname(manifest));
+    packageSources.set(directory, source);
+    return source;
+  };
+  for (let index = 0; index < queue.length; index++) {
+    const { source, destination } = queue[index];
+    if (visited.has(destination)) continue;
+    visited.add(destination);
+    const manifest = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
+    const names = new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.optionalDependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})]);
+    for (const name of [...names].sort()) {
+      if (!/^(?:@[a-zA-Z0-9._~-]+\/)?[a-zA-Z0-9._~-]+$/.test(name) || name === "." || name === "..") throw new Error(`Unsafe dependency name: ${name}`);
+      let resolved;
+      for (const modules of dependencySearchPaths(source, name)) {
+        const candidate = path.join(modules, name);
+        if (fs.existsSync(path.join(candidate, "package.json"))) { resolved = fs.realpathSync.native(candidate); break; }
+      }
+      if (!resolved) {
+        if (Object.hasOwn(manifest.optionalDependencies ?? {}, name) || manifest.peerDependenciesMeta?.[name]?.optional) continue;
+        throw new Error(`Cannot resolve required dependency ${name} from ${source}`);
+      }
+      let placement;
+      let current = destination;
+      while (true) {
+        if (path.basename(current) !== "node_modules") {
+          const candidate = path.join(current, "node_modules", name);
+          const installed = packageAt(candidate);
+          if (installed) { if (installed === resolved) placement = candidate; break; }
+        }
+        if (!current) break;
+        const parent = path.dirname(current);
+        current = parent === "." ? "" : parent;
+      }
+      if (!placement) {
+        const hoisted = path.join("node_modules", name);
+        placement = packageAt(hoisted) ? path.join(destination, "node_modules", name) : hoisted;
+        const occupied = packageAt(placement);
+        if (occupied && occupied !== resolved) throw new Error(`Conflicting dependency resolution for ${name}`);
+        for (const file of inventory(resolved, "", true)) files.set(path.join(placement, file), path.join(resolved, file));
+        packageSources.set(placement, resolved);
+      }
+      queue.push({ source: resolved, destination: placement });
+    }
+  }
+  return new Map([...files].sort(([left], [right]) => left.localeCompare(right, "en")));
 }
 
 export function sourceRevision(root) {
@@ -123,7 +200,7 @@ export function sourceRevision(root) {
   for (const file of ["package-lock.json", "node_modules/.package-lock.json"]) {
     if (fs.existsSync(path.join(root, file))) files.push(file);
   }
-  return digestFiles(root, files);
+  return createHash("sha256").update(digestFiles(root, files)).update(installationLocks(root)).digest("hex");
 }
 
 export function snapshotRoot(env = process.env) {
@@ -153,31 +230,36 @@ export function createReleaseSnapshot(root, { cache = snapshotRoot(), expectedRe
   if (fs.lstatSync(cache).isSymbolicLink()) throw new Error("The runtime cache cannot be a symbolic link");
   cache = fs.realpathSync.native(cache);
   const metadata = digestMetadata(cache);
-  const dependencies = inventory(root, "node_modules");
-  const dependencyRevision = metadata.digest(root, dependencies);
+  const dependencies = dependencyFiles(root);
+  const dependencyRevision = metadata.digest(root, [...dependencies.keys()], dependencies);
   const key = createHash("sha256").update(expectedRevision).update(dependencyRevision).digest("hex");
   const target = path.join(cache, key);
   const validate = (directory) => {
     if (fs.lstatSync(directory).isSymbolicLink()) throw new Error("The release directory cannot be a symbolic link");
-    return sourceRevision(directory) === expectedRevision && metadata.digest(directory, inventory(directory, "node_modules")) === dependencyRevision;
+    return sourceRevision(directory) === expectedRevision && metadata.digest(directory, inventory(directory, "node_modules").sort((left, right) => left.localeCompare(right, "en"))) === dependencyRevision;
   };
   if (fs.existsSync(target)) {
     if (!validate(target)) throw new Error("An existing immutable runtime failed integrity verification");
-    if (sourceRevision(root) !== expectedRevision) throw new Error("The installation changed during snapshot verification");
+    const currentDependencies = dependencyFiles(root);
+    if (sourceRevision(root) !== expectedRevision || metadata.digest(root, [...currentDependencies.keys()], currentDependencies) !== dependencyRevision) {
+      throw new Error("The installation changed during snapshot verification");
+    }
     metadata.flush();
     return { directory: target, revision: expectedRevision, key };
   }
   const temporary = path.join(cache, `.preparing-${process.pid}-${randomUUID()}`);
   try {
     fs.mkdirSync(temporary, { mode: 0o700 });
-    const files = ["package.json", ...inventory(root, "src"), ...dependencies];
+    const files = ["package.json", ...inventory(root, "src"), ...dependencies.keys()];
     if (fs.existsSync(path.join(root, "package-lock.json"))) files.push("package-lock.json");
     const directories = new Set(["src", "node_modules", ...files.map((file) => path.dirname(file))]);
     for (const directory of directories) fs.mkdirSync(path.join(temporary, directory), { recursive: true, mode: 0o700 });
     for (const file of files) {
-      fs.copyFileSync(path.join(root, file), path.join(temporary, file), fs.constants.COPYFILE_FICLONE);
+      fs.copyFileSync(dependencies.get(file) ?? path.join(root, file), path.join(temporary, file), fs.constants.COPYFILE_FICLONE);
     }
-    if (sourceRevision(root) !== expectedRevision || metadata.digest(root, inventory(root, "node_modules")) !== dependencyRevision || !validate(temporary)) {
+    fs.writeFileSync(path.join(temporary, INSTALLATION_LOCKS), installationLocks(root), { flag: "wx", mode: 0o600 });
+    const currentDependencies = dependencyFiles(root);
+    if (sourceRevision(root) !== expectedRevision || metadata.digest(root, [...currentDependencies.keys()], currentDependencies) !== dependencyRevision || !validate(temporary)) {
       throw new Error("The installation changed while its immutable runtime was being prepared");
     }
     try {

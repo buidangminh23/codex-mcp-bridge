@@ -4,6 +4,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Start both bridges from project-local npm installations. When npm hoists the bridge's dependencies into the project's `node_modules`, the package has no `node_modules` of its own, and preparing the immutable runtime failed with `ENOENT` (`scandir …node_modules`) since 1.15.0; only global installs, which keep a nested `node_modules`, started. The runtime now copies the dependency tree Node resolves from the package (hoisted, nested, scoped, aliased, linked and peer dependencies) and nothing else from the project, so it stays isolated from later installation changes. Its revision also covers the project's npm lock, so an `npm install` that changes those dependencies reloads the bridge.
+- Stop the Codex bridge cleanly when its MCP client disconnects. The bridge ends the Windows PowerShell caller checks it started and waits for them to close, and the supervisor gives its worker up to 6 seconds to exit before stopping it. Before, the supervisor stopped the worker after 1 second without waiting, which left those checks running with the bridge's working directory in use. On Windows, deleting that directory right after a test closed its bridge then failed with `EPERM`; the tests no longer retry that deletion.
+
 ## [1.19.1] - 2026-09-29
 
 ### Fixed

@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -133,6 +133,32 @@ it("retains pending deliveries and waits until their original result is confirme
   const after = await eventually(api.call, value => value.structuredContent.version === "B", api.stderr);
   assert.deepEqual(after.structuredContent.records, ["pending-message"]);
   assert.equal(fs.readFileSync(fixture.ledger, "utf8"), "pending-message\n");
+});
+
+it("exits promptly once its MCP client closes stdin", async t => {
+  const fixture = installation(t);
+  const env = { ...process.env, CODEX_BRIDGE_RUNTIME_CACHE: path.join(fixture.root, "cache"), TEST_ENTRY: fixture.entry,
+    TEST_LEDGER: fixture.ledger, CODEX_HOME: path.join(fixture.root, ".codex") };
+  delete env.CODEX_BRIDGE_DESKTOP_TASKS;
+  const supervisor = spawn(process.execPath, [fixture.launcher], { env, windowsHide: true });
+  const closed = new Promise(resolve => supervisor.once("close", resolve));
+  t.after(async () => {
+    if (supervisor.exitCode === null && supervisor.signalCode === null) supervisor.kill();
+    await closed;
+    fixture.cleanup();
+  });
+  let output = "";
+  supervisor.stdout.on("data", data => { output += data; });
+  supervisor.stderr.resume();
+  supervisor.stdin.write(`${JSON.stringify({jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2025-06-18",capabilities:{},clientInfo:{name:"shutdown-test",version:"1"}}})}\n`);
+  const deadline = Date.now() + 12000;
+  while (!output.includes('"id":1') && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.match(output, /"id":1/);
+  const started = performance.now();
+  supervisor.stdin.end();
+  assert.equal(await closed, 0);
+  const elapsed = Math.round(performance.now() - started);
+  assert.ok(elapsed < 4000, `The supervisor exited ${elapsed} ms after its client closed stdin`);
 });
 
 for (const entry of ["index.mjs", "claude-bridge.mjs"]) {

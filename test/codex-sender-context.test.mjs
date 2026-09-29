@@ -92,8 +92,15 @@ it("requires live native ownership for an adopted CLI task and rechecks permissi
     f.lifecycle.type = "task_complete"; f.write(); return evidence;
   })).status, "unavailable");
   f.lifecycle.type = "task_started"; f.write();
-  assert.equal((await resolve(async () => {
+  // Upstream classifies a managed, restricting sandbox as prompting even when
+  // it never asks. Re-read that policy without confusing it with full access.
+  const never = await resolve(async () => {
     f.context.approval_policy = "never"; f.write(); return evidence;
+  });
+  assert.equal(never.mode, "prompting");
+  assert.equal(never.approvalPolicy, "never");
+  assert.equal((await resolve(async () => {
+    f.context.approvals_reviewer = "unverified-reviewer"; f.write(); return evidence;
   })).status, "unavailable");
 });
 

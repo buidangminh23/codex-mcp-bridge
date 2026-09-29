@@ -21,6 +21,17 @@ const execute = promisify(execFile);
 const CLAUDE_ACCOUNT_A = "11111111-1111-4111-8111-111111111111";
 const CLAUDE_ACCOUNT_B = "22222222-2222-4222-8222-222222222222";
 
+/**
+ * The bridge runs with its temporary home as the working directory, and so
+ * do the PowerShell probes it starts on Windows. The SDK's close() sends
+ * SIGKILL without waiting for exit once its two 2 s grace periods pass, and
+ * killing the bridge does not end a probe it started, so the home can still
+ * be in use when cleanup starts. windows-latest/24 failed main with EPERM on
+ * rm there (run 36551539660) while its Node 22 sibling passed. Retrying lets
+ * the directory go once those processes have exited.
+ */
+const TEMP_HOME_REMOVAL = { recursive: true, force: true, maxRetries: 12, retryDelay: 100 };
+
 function claudeFixtureRoot(home) {
   return process.platform === "darwin" ? path.join(home, "Library", "Application Support", "Claude")
     : process.platform === "win32" ? path.join(home, "AppData", "Roaming", "Claude") : path.join(home, ".config", "Claude");
@@ -129,7 +140,7 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
       await client?.close();
     } finally {
       await server?.close();
-      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(home, TEMP_HOME_REMOVAL);
     }
   }
 }

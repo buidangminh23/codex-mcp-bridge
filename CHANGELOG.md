@@ -8,6 +8,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 - Write the `analytics` branch with the `Repository analytics` workflow's own token. Its hourly commits were pushed with `ANALYTICS_TOKEN`, a personal token, so they were attributed to the repository owner and GitHub showed the owner an "analytics had recent pushes" banner with a "Compare & pull request" button after every run. The commits now come from `github-actions[bot]`. `ANALYTICS_TOKEN` only reads GitHub traffic and no longer needs write access (fine-grained: Administration read).
 
+### Fixed
+
+- Refuse Claude-to-Codex Desktop delivery into another project even when `send_to_codex_thread` omits `cwd` or supplies the recipient's directory. The bridge now compares the independently verified Claude caller with the destination before creation, rename, navigation and prompt delivery, and checks both directory/repository identities and the current native destination again at the socket write. Broad allowed roots and thread overrides cannot authorize a different project. Subfolders and registered worktrees of the same repository remain usable; drive/home repositories do not absorb unrelated projects. Blocked preflight calls report that no Desktop mutation was dispatched.
+
 ## [1.19.2] - 2026-09-29
 
 ### Fixed

@@ -57,7 +57,7 @@ const security = new BridgeSecurityPolicy();
 const desktopTasksEnabled = desktopTasksConfigured();
 const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
 const desktopOperation = new AsyncLocalStorage();
-const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts });
+const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts, senderContext: () => desktopOperation.getStore()?.caller });
 
 async function assertDesktopOperation(context, { verifyProcess = false } = {}) {
   if (!context || context.diagnostic) return;
@@ -77,7 +77,7 @@ async function beforeDesktopRequest({ operation, args, phase }) {
   if (!context) throw new Error("Desktop operations require a verified calling Code session.");
   const mutating = ["create_thread", "send_message_to_thread", "set_thread_title", "navigate_to_codex_page"].includes(operation);
   await assertDesktopOperation(context, { verifyProcess: mutating && phase === "write" });
-  if (mutating) {
+  if (mutating && phase === "dispatch") {
     context.dispatched = true;
     if (args.threadId) context.threadId = args.threadId;
   }
@@ -349,7 +349,8 @@ const server = new McpServer(
       "A completed turn alone does not mean the task is finished. Do not choose an old task merely because its project matches or it was recently active. " +
       "Without authorization to create a new conversation, ask before creating it. With Desktop tasks enabled it assigns the exact saved project and starts visibly in " +
       "Codex Desktop using Desktop permissions. Otherwise it releases the bridge writer lock and opens the exact thread in " +
-      "Codex Desktop. Use send_to_codex_thread only when an existing threadId is intentional; use " +
+      "Codex Desktop. Desktop creation and sends always require the verified calling Claude task and the Codex destination to belong to the same project, even when cwd is omitted. " +
+      "Use send_to_codex_thread only when an existing threadId is intentional; use " +
       "list_codex_threads or read_codex_thread to inspect sessions and codex_bridge_status to inspect wiring. " +
       AGENT_PROMPT_GUIDANCE,
   },
@@ -368,6 +369,7 @@ function registerTool(name, definition, handler) {
         result.content.push({ type: "text", text: `runtime pid: ${state.pid}\nloaded source: ${state.revision}\nruntime state: current` });
         result.structuredContent = { ...result.structuredContent, runtime: state };
         if (desktopTasksEnabled) {
+          result.structuredContent.projectScope = { enabled: true, policy: "verified-sender-same-project", match: "canonical-directory-or-git-repository", checkedBeforeMutation: true };
           result.structuredContent.accounts = { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) };
         }
         return result;
@@ -383,6 +385,9 @@ function registerTool(name, definition, handler) {
             await assertDesktopOperation(context);
             const result = await handler(...args);
             await assertDesktopOperation(context);
+            if (result.isError && !context.dispatched) {
+              result.structuredContent = { ...result.structuredContent, accountContext: context.accounts, operation: { state: "blocked", threadId: context.threadId ?? null } };
+            }
             return result;
           } catch (error) {
             return withheldDesktopResult(error, context);
@@ -513,7 +518,7 @@ registerTool(
         .max(3600)
         .optional()
         .describe("How long to observe the task (Desktop caps the entire call at 40s; the task continues and its threadId is returned)"),
-      cwd: z.string().optional().describe("Override the working directory for this turn"),
+      cwd: z.string().optional().describe("Expected destination directory; Desktop always checks the verified sender's project and cannot change the task's workspace"),
       model: z.string().optional().describe("Override the model for this turn"),
       effort: z
         .enum(["minimal", "low", "medium", "high", "xhigh", "ultra"])
@@ -950,6 +955,7 @@ registerTool(
         `bridge version: ${VERSION}`,
         `node:           ${process.version} at ${process.execPath}`,
         "desktop tasks:  enabled; Desktop permissions, exact saved project, immediate visibility",
+        "project scope:  verified Claude sender; same directory or Git repository, checked before each mutation",
         `native relay:   ${native.available ? "available; verified through Codex Desktop" : "unavailable"}`,
         `native endpoint: ${native.socketPath}`,
         ...(native.available ? [`local projects: ${native.localProjects}`] : [`reason: ${native.reason}`]),

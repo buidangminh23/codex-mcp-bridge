@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createProjectScope } from "./project-scope.mjs";
+import { createProjectScope } from "./project-policy.mjs";
 
 const enabled = (env) => env.CODEX_BRIDGE_HARDENED === "1";
 

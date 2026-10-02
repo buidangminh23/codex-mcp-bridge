@@ -2,7 +2,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
-import { createProjectScope, editProjectGrant, readProjectPolicy, updateProjectPolicy } from "../src/project-scope.mjs";
+import { createProjectScope, editProjectGrant, readProjectPolicy, updateProjectPolicy } from "../src/project-policy.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { inspectBridgeProject, prepareBridgeProject } from "../src/project-onboarding.mjs";
 import { registerProjectManager } from "../src/project-manager-registration.mjs";

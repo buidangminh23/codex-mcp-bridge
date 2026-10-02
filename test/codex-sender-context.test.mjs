@@ -125,7 +125,7 @@ it("verifies native agent-created Desktop tasks with their own live turn and per
   assert.equal(result.status, "verified", result.reason);
   assert.equal(result.threadId, threadId);
   assert.equal(result.mode, "prompting");
-  assert.equal(result.approvalPolicy, "on-request");
+  assert.equal(result.approvalPolicy, "granular(mcp_elicitations,request_permissions,rules,sandbox_approval,skill_approval)");
   for (const changed of [
     {},
     { ...evidence, latestTurnId: otherId },
@@ -139,8 +139,13 @@ it("verifies native agent-created Desktop tasks with their own live turn and per
     f.lifecycle.type = "task_complete"; f.write(); return evidence;
   })).status, "unavailable");
   f.lifecycle.type = "task_started"; f.write();
-  assert.equal((await resolve(async () => {
+  const never = await resolve(async () => {
     f.context.approval_policy = "never"; f.write(); return evidence;
+  });
+  assert.equal(never.mode, "prompting");
+  assert.equal(never.approvalPolicy, "never");
+  assert.equal((await resolve(async () => {
+    f.context.approvals_reviewer = "unverified-reviewer"; f.write(); return evidence;
   })).status, "unavailable");
 });
 

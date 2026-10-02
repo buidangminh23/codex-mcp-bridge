@@ -5,7 +5,7 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { claudeDesktopConfigPath } from "../src/platform.mjs";
 import { checkCodeRegistration, planCodeRegistration } from "../src/claude-code-registration.mjs";
-import { readProjectPolicy } from "../src/project-scope.mjs";
+import { readProjectPolicy } from "../src/project-policy.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 
 exitForVersionRequest(import.meta.url);

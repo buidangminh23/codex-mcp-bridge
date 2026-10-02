@@ -8,9 +8,9 @@ import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "../src/thread-deliv
 import { DesktopTaskReceipts } from "../src/desktop-task-receipts.mjs";
 import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
 import { captureCodexRolloutWatermark } from "../src/codex-native-response.mjs";
-import { createProjectScope, editProjectGrant, updateProjectPolicy } from "../src/project-scope.mjs";
+import { createProjectScope, editProjectGrant, updateProjectPolicy } from "../src/project-policy.mjs";
 
-function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountContext, captureResponse, readResponse, inspectResponse } = {}) {
+function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, beforeWrite, accountContext, senderContext, captureResponse, readResponse, inspectResponse } = {}) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "desktop-receipt-delivery-")));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const cwd = path.join(directory, "project");
@@ -27,6 +27,10 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountCon
     registerThread(id) { registered.push(id); },
   };
   const relay = { async requestDesktop(operation, args, options) {
+    if (senderContext) {
+      await beforeWrite?.({ operation, args });
+      await options.beforeSend?.();
+    }
     calls.push({ operation, args, options });
     const override = await dispatch?.({ operation, args, options, cwd, calls });
     if (override !== undefined) return { result: override, executorThreadId: "executor-thread" };
@@ -41,7 +45,7 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, accountCon
     throw new Error(`Unexpected operation ${operation}`);
   } };
   const receipts = new DesktopTaskReceipts({ directory: path.join(directory, "receipts") });
-  const createDelivery = () => new DesktopTaskDelivery({ relay, security, now, sleep, beforeRequest, accountContext, captureResponse, readResponse, inspectResponse, receipts: new DesktopTaskReceipts({ directory: receipts.directory }) });
+  const createDelivery = () => new DesktopTaskDelivery({ relay, security, now, sleep, beforeRequest, accountContext, senderContext, captureResponse, readResponse, inspectResponse, receipts: new DesktopTaskReceipts({ directory: receipts.directory }) });
   return { directory, cwd, calls, registered, receipts, createDelivery, delivery: createDelivery(), setState(nextStatus, nextTurn) { status = nextStatus; turnStatus = nextTurn; } };
 }
 
@@ -49,7 +53,7 @@ describe("Desktop creation receipts and deadlines", () => {
   for (const operation of ["create_thread", "send_message_to_thread"]) {
     it(`rechecks live project revocation immediately before ${operation} writes`, async (t) => {
       let sent = false;
-      const f = fixture(t, { async dispatch({ operation: actual, options }) {
+      const f = fixture(t, { senderContext: () => ({ status: "verified", cwd: f.cwd }), async dispatch({ operation: actual, options }) {
         if (actual !== operation) return;
         updateProjectPolicy(file, (policy) => editProjectGrant(policy, "revoke", f.cwd));
         await options.beforeSend();
@@ -92,6 +96,79 @@ describe("Desktop creation receipts and deadlines", () => {
     assert.equal(delivered.responseObservation.watermark.status, "available");
     assert.equal(JSON.stringify(f.calls).includes(secret), false);
     assert.equal(JSON.stringify(delivered).includes(secret), false);
+  });
+
+  for (const override of [undefined, "recipient"]) it(`blocks another project's sender before any mutation when cwd is ${override ?? "omitted"}`, async (t) => {
+    let senderCwd;
+    const f = fixture(t, { senderContext: () => ({ status: "verified", cwd: senderCwd }), dispatch({ operation, args }) {
+      if (operation === "set_thread_title") return { success: true };
+      if (operation === "send_message_to_thread") return { threadId: args.threadId, status: "accepted" };
+    } });
+    senderCwd = path.join(f.directory, "other-project");
+    fs.mkdirSync(senderCwd);
+    await assert.rejects(f.delivery.send({ threadId: "wrong-task", prompt: "Do not deliver", name: "Do not rename", ...(override ? { cwd: f.cwd } : {}) }), /project/i);
+    assert.equal(f.calls.some((call) => ["send_message_to_thread", "set_thread_title", "create_thread"].includes(call.operation)), false);
+  });
+
+  it("blocks project messages to a drive or filesystem root even when that root is allowed", async (t) => {
+    const f = fixture(t, { dispatch({ operation, args }) {
+      if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: path.parse(f.cwd).root } };
+      if (operation === "send_message_to_thread") return { threadId: args.threadId, status: "accepted" };
+    } });
+    const delivery = new DesktopTaskDelivery({ relay: f.delivery.relay, receipts: {}, security: new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: "*", CODEX_BRIDGE_ALLOWED_THREADS: "*" }), senderContext: () => ({ status: "verified", cwd: f.cwd }), captureResponse: () => ({ status: "unavailable" }) });
+    await assert.rejects(delivery.send({ threadId: "root-task", prompt: "Do not deliver" }), /project/i);
+    assert.equal(f.calls.some((call) => call.operation === "send_message_to_thread"), false);
+  });
+
+  it("blocks creation in another project before creating a receipt or a task", async (t) => {
+    let senderCwd;
+    const f = fixture(t, { senderContext: () => ({ status: "verified", cwd: senderCwd }) });
+    senderCwd = path.join(f.directory, "other-project");
+    fs.mkdirSync(senderCwd);
+    await assert.rejects(f.delivery.create({ cwd: f.cwd, prompt: "Do not create", requestId: randomUUID() }), /project/i);
+    assert.equal(f.calls.length, 0);
+    assert.equal(fs.existsSync(f.receipts.directory), false);
+  });
+
+  it("sends within the attested sender directory without an input cwd", async (t) => {
+    const f = fixture(t, { senderContext: () => ({ status: "verified", cwd: f.cwd }), captureResponse: () => ({ status: "unavailable" }), dispatch({ operation, args }) {
+      if (operation === "send_message_to_thread") return { threadId: args.threadId, status: "accepted" };
+    } });
+    const result = await f.delivery.send({ threadId: "correct-task", prompt: "Deliver once" });
+    assert.equal(result.threadId, "correct-task");
+    assert.equal(f.calls.filter((call) => call.operation === "send_message_to_thread").length, 1);
+  });
+
+  it("fails closed when the attested sender context is missing", async (t) => {
+    const f = fixture(t, { senderContext: () => undefined });
+    await assert.rejects(f.delivery.send({ threadId: "task", prompt: "Do not deliver" }), /unverified/i);
+    assert.equal(f.calls.some((call) => call.operation === "send_message_to_thread"), false);
+  });
+
+  it("rechecks the destination's actual workspace immediately before writing", async (t) => {
+    let moved = false;
+    const f = fixture(t, { senderContext: () => ({ status: "verified", cwd: f.cwd }), beforeWrite({ operation }) {
+      if (operation === "send_message_to_thread") moved = true;
+    }, dispatch({ operation, args }) {
+      if (operation === "read_thread" && moved) return { thread: { id: args.threadId, hostId: "local", cwd: path.join(f.directory, "other-project") } };
+      if (operation === "send_message_to_thread") return { threadId: args.threadId, status: "accepted" };
+    } });
+    fs.mkdirSync(path.join(f.directory, "other-project"));
+    await assert.rejects(f.delivery.send({ threadId: "task", prompt: "Do not deliver" }), /project/i);
+    assert.equal(f.calls.some((call) => call.operation === "send_message_to_thread"), false);
+  });
+
+  it("blocks a sender directory identity replaced after inspection", async (t) => {
+    const f = fixture(t, { senderContext: () => ({ status: "verified", cwd: f.cwd }), beforeWrite({ operation }) {
+      if (operation === "send_message_to_thread") {
+        fs.renameSync(f.cwd, `${f.cwd}-old`);
+        fs.mkdirSync(f.cwd);
+      }
+    }, dispatch({ operation, args }) {
+      if (operation === "send_message_to_thread") return { threadId: args.threadId, status: "accepted" };
+    } });
+    await assert.rejects(f.delivery.send({ threadId: "task", prompt: "Do not deliver" }), /project.*changed/i);
+    assert.equal(f.calls.some((call) => call.operation === "send_message_to_thread"), false);
   });
 
   it("creates independent requests with identical project, title and prompt in different tasks", async (t) => {

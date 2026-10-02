@@ -8,7 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { inspectBridgeProject, prepareBridgeProject, onboardingPaths } from "../src/project-onboarding.mjs";
 import { registerProjectOnboardingTools } from "../src/project-onboarding-tools.mjs";
-import { createProjectScope, editProjectGrant, updateProjectPolicy } from "../src/project-scope.mjs";
+import { createProjectScope, editProjectGrant, updateProjectPolicy } from "../src/project-policy.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 function fixture(t) {

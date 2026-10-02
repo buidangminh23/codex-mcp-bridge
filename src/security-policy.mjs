@@ -3,7 +3,7 @@ import path from "node:path";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 
 const APPROVAL_POLICIES = new Set(["untrusted", "on-failure", "on-request", "never"]);
-const SANDBOXES = new Set(["read-only", "workspace-write"]);
+const SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const THREAD_POLICIES = new Set(["owned", "roots"]);
 const ALLOW_ALL_ROOTS = "*";
 const ALLOW_ALL_THREADS = "*";
@@ -118,14 +118,15 @@ export class BridgeSecurityPolicy {
       throw new Error(`CODEX_BRIDGE_THREAD_POLICY must be owned or roots: ${this.threadPolicy}`);
     }
 
-    this.approvalPolicy = env.CODEX_BRIDGE_APPROVAL_POLICY ?? "on-request";
+    const fullAccess = env.CODEX_BRIDGE_ENFORCE_FULL_ACCESS === "1";
+    this.approvalPolicy = fullAccess ? "never" : env.CODEX_BRIDGE_APPROVAL_POLICY ?? "on-request";
     if (!APPROVAL_POLICIES.has(this.approvalPolicy)) {
       throw new Error(`Invalid CODEX_BRIDGE_APPROVAL_POLICY: ${this.approvalPolicy}`);
     }
 
-    this.sandbox = env.CODEX_BRIDGE_SANDBOX ?? "workspace-write";
+    this.sandbox = fullAccess ? "danger-full-access" : env.CODEX_BRIDGE_SANDBOX ?? "workspace-write";
     if (!SANDBOXES.has(this.sandbox)) {
-      throw new Error(`CODEX_BRIDGE_SANDBOX must be read-only or workspace-write: ${this.sandbox}`);
+      throw new Error(`CODEX_BRIDGE_SANDBOX must be read-only, workspace-write, or danger-full-access: ${this.sandbox}`);
     }
   }
 

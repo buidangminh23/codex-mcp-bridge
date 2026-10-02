@@ -4,6 +4,8 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import { DesktopTaskReceipts } from "./desktop-task-receipts.mjs";
 import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse } from "./codex-native-response.mjs";
+import { captureProjectScope, recheckProjectScope } from "./project-scope.mjs";
+import { requireClaudeSenderContext } from "./claude-sender-context.mjs";
 
 /**
  * Which backend puts a message into a Codex thread.
@@ -48,7 +50,7 @@ export function matchDesktopProject(projects, cwd, { canonicalize = realpathSync
 }
 
 export class DesktopTaskDelivery {
-  constructor({ relay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath(), accountSocketPath: accountRelaySocketPath() }), security, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, receipts = new DesktopTaskReceipts(), beforeRequest, accountContext, captureResponse = captureCodexRolloutWatermark, readResponse = readCodexNativeTurnResponse, inspectResponse = inspectCodexNativeTurn } = {}) {
+  constructor({ relay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath(), accountSocketPath: accountRelaySocketPath() }), security, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, receipts = new DesktopTaskReceipts(), beforeRequest, accountContext, senderContext, captureResponse = captureCodexRolloutWatermark, readResponse = readCodexNativeTurnResponse, inspectResponse = inspectCodexNativeTurn } = {}) {
     this.relay = relay;
     this.security = security;
     this.sleep = sleep;
@@ -56,29 +58,58 @@ export class DesktopTaskDelivery {
     this.receipts = receipts;
     this.beforeRequest = beforeRequest;
     this.accountContext = accountContext;
+    this.senderContext = senderContext;
     this.captureResponse = captureResponse;
     this.readResponse = readResponse;
     this.inspectResponse = inspectResponse;
     this.threadOperations = new Map();
   }
 
-  async request(operation, args, { deadline, includeRelayContext = false, scopeBinding } = {}) {
+  senderProjectScope(cwd) {
+    if (!this.senderContext) return null;
+    const sender = requireClaudeSenderContext(this.senderContext());
+    return captureProjectScope(sender.cwd, cwd);
+  }
+
+  async mutationProjectScope(operation, args, { deadline } = {}) {
+    if (!this.senderContext) return null;
+    if (operation === "create_thread") {
+      const listed = await this.request("list_projects", {}, { deadline });
+      const projects = listed?.projects?.filter((project) => project.projectId === args.target?.projectId && project.projectKind === "local" && project.hostId === "local");
+      if (projects?.length !== 1) throw new Error("Desktop did not confirm the destination project before creation");
+      this.security.assertCwd(projects[0].path);
+      return this.senderProjectScope(projects[0].path);
+    }
+    if (!["send_message_to_thread", "set_thread_title", "navigate_to_codex_page"].includes(operation)) return null;
+    const inspected = await this.inspect(args.threadId, undefined, { deadline });
+    return inspected.projectScope;
+  }
+
+  async request(operation, args, { deadline, includeRelayContext = false, scopeBinding, projectScope: expectedScope } = {}) {
     try {
       await this.beforeRequest?.({ operation, args });
       if (scopeBinding) this.security.hardenedRoots.recheck(scopeBinding);
+      const projectScope = expectedScope ?? await this.mutationProjectScope(operation, args, { deadline });
+      if (expectedScope) recheckProjectScope(expectedScope, this.senderProjectScope(expectedScope.recipient.input));
       const remaining = deadline === undefined ? undefined : deadline - this.now();
       if (remaining !== undefined && remaining <= 0) throw new Error("The bridge's response deadline has elapsed; this operation was not sent");
       const accountContext = this.accountContext?.();
       const response = await this.relay.requestDesktop(operation, args, {
         ...(remaining === undefined ? {} : { timeoutMs: remaining }),
-        ...((this.beforeRequest || scopeBinding) ? { beforeSend: async () => {
+        ...(this.beforeRequest || projectScope || scopeBinding ? { beforeSend: async () => {
           await this.beforeRequest?.({ operation, args, phase: "write" });
+          if (projectScope) {
+            recheckProjectScope(projectScope);
+            recheckProjectScope(projectScope, await this.mutationProjectScope(operation, args, { deadline }));
+          }
+          await this.beforeRequest?.({ operation, args, phase: "dispatch" });
           if (scopeBinding) this.security.hardenedRoots.recheck(scopeBinding);
         } } : {}),
         ...(accountContext ? { accountContext } : {}),
       });
       return includeRelayContext ? { result: response.result, executorThreadId: response.executorThreadId } : response.result;
     } catch (err) {
+      if (err.code?.startsWith("PROJECT_SCOPE_") || err.code === "CLAUDE_SENDER_CONTEXT_UNVERIFIED") throw err;
       throw new Error(`Codex Desktop operation ${operation} failed: ${err.message}. Desktop-only mode will not start or use an external app-server. Open Codex Desktop and reconnect its native relay, then inspect the existing task before retrying a send.`, { cause: err });
     }
   }
@@ -207,6 +238,7 @@ export class DesktopTaskDelivery {
 
   async create({ cwd, prompt, name, dedupeName = name, requestId, model, effort, deadline = this.now() + DESKTOP_TOOL_BUDGET_MS }) {
     this.security.assertCwd(cwd);
+    const projectScope = this.senderProjectScope(cwd);
     cwd = realpathSync.native(cwd);
     this.security.assertCwd(cwd);
     const scopeBinding = this.security.hardenedRoots?.mode === "project-policy" ? this.security.hardenedRoots.capture(cwd) : undefined;
@@ -233,7 +265,7 @@ export class DesktopTaskDelivery {
           prompt, title: name,
           target: { type: "project", projectId: project.projectId, environment: { type: "local" } },
           ...(model ? { model } : {}), ...(effort ? { thinking: effort } : {}),
-        }, { deadline, scopeBinding });
+        }, { deadline, projectScope, scopeBinding });
         const confirmedId = response?.threadId ?? response?.conversationId;
         threadId = confirmedId;
         if (!threadId && (response?.status === "outcome-unknown" || response?.firstTurn?.status === "outcome-unknown")) threadId = response?.clientThreadId;
@@ -256,16 +288,17 @@ export class DesktopTaskDelivery {
     if (thread?.id !== threadId || thread.hostId !== "local" || !thread.cwd) throw new Error("Desktop did not confirm the task's local workspace.");
     this.security.assertThread(threadId, thread.cwd);
     this.security.assertCwd(thread.cwd);
+    const projectScope = this.senderProjectScope(thread.cwd);
     if (cwd && path.relative(realpathSync.native(cwd), realpathSync.native(thread.cwd))) {
       throw new Error("Native Desktop delivery cannot change an existing task's workspace; create a new task at the requested cwd.");
     }
-    return { thread, latestTurnId: response.turns?.[0]?.id ?? null };
+    return { thread, latestTurnId: response.turns?.[0]?.id ?? null, projectScope };
   }
 
   async send({ threadId, prompt, cwd, model, effort, name, deadline }) {
     const inspected = await this.inspect(threadId, cwd, { deadline });
     const scopeBinding = this.security.hardenedRoots?.mode === "project-policy" ? this.security.hardenedRoots.capture(inspected.thread.cwd) : undefined;
-    if (name) await this.request("set_thread_title", { threadId, title: name.trim().slice(0, 200) }, { deadline, scopeBinding });
+    if (name) await this.request("set_thread_title", { threadId, title: name.trim().slice(0, 200) }, { deadline, projectScope: inspected.projectScope, scopeBinding });
     const expectedCwd = realpathSync.native(inspected.thread.cwd);
     const accountContext = this.accountContext?.();
     const watermark = this.captureResponse({ threadId, expectedCwd, desktopEvidence: inspected });
@@ -273,7 +306,7 @@ export class DesktopTaskDelivery {
       threadId, prompt,
       ...(model ? { model } : {}),
       ...(effort ? { thinking: effort } : {}),
-    }, { deadline, includeRelayContext: true, scopeBinding });
+    }, { deadline, includeRelayContext: true, projectScope: inspected.projectScope, scopeBinding });
     const response = envelope.result;
     if (response?.threadId !== threadId || response?.success === false || response?.isError === true ||
         (response?.status !== undefined && !["accepted", "sent"].includes(response.status)) ||

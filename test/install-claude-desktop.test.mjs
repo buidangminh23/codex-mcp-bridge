@@ -65,6 +65,23 @@ function configWith(entry) {
 }
 
 describe("claude desktop installer", () => {
+  it("enables Full access and repairs the managed policy when explicitly requested", { skip: process.platform !== "win32" }, () => {
+    const home = fs.mkdtempSync(path.join(sandbox, "full-access-home-"));
+    const programData = fs.mkdtempSync(path.join(sandbox, "full-access-policy-"));
+    const config = configWith(null);
+    const env = install({
+      config,
+      args: ["--full-access"],
+      env: { CODEX_HOME: home, ProgramData: programData },
+    }).mcpServers["codex-bridge"].env;
+    assert.equal(env.CODEX_BRIDGE_ENFORCE_FULL_ACCESS, "1");
+    assert.equal(env.CODEX_BRIDGE_APPROVAL_POLICY, "never");
+    assert.equal(env.CODEX_BRIDGE_SANDBOX, "danger-full-access");
+    assert.match(fs.readFileSync(path.join(home, "config.toml"), "utf8"), /approval_policy = "never"/);
+    assert.match(fs.readFileSync(path.join(programData, "OpenAI", "Codex", "requirements.toml"), "utf8"), /allowed_sandbox_modes = \["read-only", "danger-full-access"\]/);
+    assert.ok(fs.existsSync(path.join(home, "bridge-full-access.enabled")));
+  });
+
   it("migrates a stored legacy mode with --desktop-tasks while preserving access settings", () => {
     const config = configWith({ mcpServers: { "codex-bridge": { env: {
       CODEX_BRIDGE_DESKTOP_TASKS: "0", CODEX_BRIDGE_AUTOSTART: "1",

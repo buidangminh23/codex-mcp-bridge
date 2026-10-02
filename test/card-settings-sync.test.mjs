@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { syncCardSettings } from '../src/card-settings-sync.mjs';
-import { updateProjectPolicy, editProjectGrant, readProjectPolicy, createProjectScope } from '../src/project-scope.mjs';
+import { updateProjectPolicy, editProjectGrant, readProjectPolicy, createProjectScope } from '../src/project-policy.mjs';
 const empty = () => ({ projects: [], parents: [], excluded: [] });
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'card-sync-'));

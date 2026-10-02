@@ -1,133 +1,353 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
-import { test } from "node:test";
-import { createProjectScope, editProjectGrant, readProjectPolicy, updateProjectPolicy } from "../src/project-scope.mjs";
-import { createHardenedRootPolicy } from "../src/hardened-root-policy.mjs";
-import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
-import { bridgeReadiness } from "../src/bridge-readiness.mjs";
+import { describe, it } from "node:test";
+
+import { captureProjectScope, recheckProjectScope } from "../src/project-scope.mjs";
+
+const sourceUrl = new URL("../src/project-scope.mjs", import.meta.url).href;
+const linkType = process.platform === "win32" ? "junction" : "dir";
 
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-project-scope-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const parent = path.join(root, "projects");
-  fs.mkdirSync(parent);
-  const file = path.join(root, "policy.json");
-  updateProjectPolicy(file, () => {});
-  const edit = (action, directory) => updateProjectPolicy(file, (policy) => editProjectGrant(policy, action, directory));
-  const scope = createProjectScope(file);
-  return { root, parent, file, edit, scope };
-}
-function git(cwd, ...args) { return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", windowsHide: true, stdio: "pipe" }); }
-function repo(f, name = "案例项目") {
-  const main = path.join(f.parent, name);
-  fs.mkdirSync(main);
-  git(main, "init", "-b", "main");
-  git(main, "-c", "user.name=Bridge test", "-c", "user.email=bridge@example.invalid", "commit", "--allow-empty", "-m", "fixture");
-  const worktree = path.join(f.root, `outside-${name}`);
-  git(main, "worktree", "add", "--detach", worktree);
-  return { main, worktree };
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-project-scope-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 6, retryDelay: 50 }));
+  return root;
 }
 
-test("a new project and its registered outside worktree inherit an authorized parent without per-project configuration", (t) => {
-  const f = fixture(t);
-  f.edit("allow-parent", f.parent);
-  const { main, worktree } = repo(f);
-  assert.equal(f.scope.allows(main), true);
-  assert.equal(f.scope.allows(worktree), true);
-  assert.equal(f.scope.capture(worktree).authorizedBy.path, fs.realpathSync.native(f.parent));
-  const readiness = bridgeReadiness({ sender: { status: "verified", cwd: main }, scope: f.scope, targetCwd: worktree });
-  assert.equal(readiness.target.authorizedBy.path, fs.realpathSync.native(f.parent));
-  assert.equal(readiness.target.repository.path, fs.realpathSync.native(path.join(main, ".git")));
-  const security = new BridgeSecurityPolicy({ CODEX_BRIDGE_PROJECT_POLICY: f.file, CODEX_BRIDGE_ALLOWED_ROOTS: "", CODEX_BRIDGE_THREAD_POLICY: "roots" });
-  assert.equal(security.isThreadAuthorized("future-thread", worktree), true);
-  assert.equal(security.summary().allowAllRoots, false);
+function directory(root, name) {
+  const target = path.join(root, name);
+  fs.mkdirSync(target, { recursive: true });
+  return target;
+}
+
+function git(cwd, ...args) {
+  const env = { ...process.env };
+  for (const name of Object.keys(env)) if (name.startsWith("GIT_")) delete env[name];
+  Object.assign(env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(cwd, ".scope-empty-global-config"), GIT_TERMINAL_PROMPT: "0" });
+  return execFileSync("git", [
+    "-c", "user.name=Project Scope Tests",
+    "-c", "user.email=project-scope@example.invalid",
+    "-c", "commit.gpgsign=false",
+    "-c", "core.hooksPath=",
+    ...args,
+  ], { cwd, env, encoding: "utf8", stdio: "pipe", timeout: 30000 }).trim();
+}
+
+function repository(root, name = "repository") {
+  const target = directory(root, name);
+  git(target, "init", "--quiet", "--initial-branch=main");
+  fs.writeFileSync(path.join(target, "README.md"), "Project scope fixture\n");
+  git(target, "add", "--", "README.md");
+  git(target, "commit", "--quiet", "-m", "Create scope fixture");
+  return target;
+}
+
+function worktree(root, main, name = "linked worktree") {
+  const target = path.join(root, name);
+  git(main, "worktree", "add", "--quiet", "--detach", target, "HEAD");
+  const gitdir = path.resolve(target, git(target, "rev-parse", "--git-dir"));
+  return { target, gitdir };
+}
+
+function assertMismatch(sender, recipient) {
+  assert.throws(() => captureProjectScope(sender, recipient), { code: "PROJECT_SCOPE_MISMATCH" });
+}
+
+describe("project directory binding", () => {
+  it("permits the same existing directory without a repository", (t) => {
+    const project = directory(fixture(t), "project");
+    const scope = captureProjectScope(project, project);
+    assert.equal(scope.sender.path, fs.realpathSync.native(project));
+    assert.equal(scope.recipient.path, scope.sender.path);
+    assert.equal(scope.sender.identity, scope.recipient.identity);
+    assert.equal(scope.sender.repository, null);
+    assert.equal(scope.recipient.repository, null);
+    assert.deepEqual(recheckProjectScope(scope), scope);
+  });
+
+  it("canonicalizes a directory junction or symlink before comparing projects", (t) => {
+    const root = fixture(t);
+    const project = directory(root, "project with spaces");
+    const alias = path.join(root, "project alias");
+    fs.symlinkSync(project, alias, linkType);
+    const scope = captureProjectScope(alias, project);
+    assert.equal(scope.sender.input, alias);
+    assert.equal(scope.sender.path, fs.realpathSync.native(project));
+    assert.equal(scope.sender.identity, scope.recipient.identity);
+    assert.deepEqual(recheckProjectScope(scope), scope);
+  });
+
+  it("does not group unrelated directories by a shared parent", (t) => {
+    const root = fixture(t);
+    const sender = directory(root, "sender");
+    const recipient = directory(root, "recipient");
+    assertMismatch(sender, recipient);
+    assertMismatch(sender, root);
+    assertMismatch(root, recipient);
+  });
+
+  it("refuses filesystem-root and home targets for a repository task", (t) => {
+    const project = repository(fixture(t));
+    for (const target of [path.parse(project).root, os.homedir()]) {
+      assertMismatch(project, target);
+      assertMismatch(target, project);
+    }
+  });
+
+  it("fails closed for absent, non-string, blank and relative cwd values on either side", (t) => {
+    const project = directory(fixture(t), "project");
+    for (const invalid of [undefined, null, 23, {}, "", " ", ".", "relative/project"]) {
+      assert.throws(() => captureProjectScope(invalid, project), /absolute existing directory/);
+      assert.throws(() => captureProjectScope(project, invalid), /absolute existing directory/);
+    }
+  });
+
+  it("fails closed for missing directories and ordinary files on either side", (t) => {
+    const root = fixture(t);
+    const project = directory(root, "project");
+    const file = path.join(root, "ordinary-file");
+    fs.writeFileSync(file, "fixture");
+    for (const invalid of [path.join(root, "missing"), file]) {
+      assert.throws(() => captureProjectScope(invalid, project));
+      assert.throws(() => captureProjectScope(project, invalid));
+    }
+  });
 });
 
-test("granting an outside project once enables its main directory, worktree and future sessions", (t) => {
-  const f = fixture(t); const { main, worktree } = repo(f);
-  assert.equal(f.scope.allows(worktree), false);
-  f.edit("allow-project", worktree);
-  assert.equal(f.scope.allows(main), true);
-  assert.equal(f.scope.allows(worktree), true);
-  const reloaded = createProjectScope(f.file);
-  assert.equal(reloaded.allows(main), true);
+describe("nearest Git repository identity", () => {
+  it("permits a repository root and its descendants", (t) => {
+    const main = repository(fixture(t));
+    const nested = directory(main, "packages/backend/src");
+    const scope = captureProjectScope(main, nested);
+    assert.equal(scope.sender.repository.path, fs.realpathSync.native(path.join(main, ".git")));
+    assert.deepEqual(scope.sender.repository, scope.recipient.repository);
+    assert.deepEqual(recheckProjectScope(scope), scope);
+  });
+
+  it("permits separate package directories within one repository", (t) => {
+    const main = repository(fixture(t));
+    const sender = directory(main, "packages/backend");
+    const recipient = directory(main, "packages/frontend");
+    const scope = captureProjectScope(sender, recipient);
+    assert.notEqual(scope.sender.path, scope.recipient.path);
+    assert.equal(scope.sender.repository.identity, scope.recipient.repository.identity);
+    assert.deepEqual(recheckProjectScope(scope, captureProjectScope(sender, recipient)), scope);
+  });
+
+  it("permits a real linked worktree and its common repository", (t) => {
+    const root = fixture(t);
+    const main = repository(root);
+    const linked = worktree(root, main);
+    const scope = captureProjectScope(main, linked.target);
+    assert.equal(scope.sender.repository.path, fs.realpathSync.native(path.join(main, ".git")));
+    assert.deepEqual(scope.sender.repository, scope.recipient.repository);
+    assert.deepEqual(recheckProjectScope(scope), scope);
+  });
+
+  it("permits descendants in two registered worktrees", (t) => {
+    const root = fixture(t);
+    const main = repository(root);
+    const first = worktree(root, main, "first worktree");
+    const second = worktree(root, main, "second worktree");
+    const sender = directory(first.target, "packages/backend");
+    const recipient = directory(second.target, "packages/frontend");
+    const scope = captureProjectScope(sender, recipient);
+    assert.deepEqual(scope.sender.repository, scope.recipient.repository);
+    assert.deepEqual(recheckProjectScope(scope), scope);
+  });
+
+  it("does not treat separate clones with the same remote and commit as one project", (t) => {
+    const root = fixture(t);
+    const origin = repository(root, "origin");
+    const first = path.join(root, "first clone");
+    const second = path.join(root, "second clone");
+    git(root, "clone", "--quiet", "--no-hardlinks", origin, first);
+    git(root, "clone", "--quiet", "--no-hardlinks", origin, second);
+    assert.equal(git(first, "remote", "get-url", "origin"), git(second, "remote", "get-url", "origin"));
+    assert.equal(git(first, "rev-parse", "HEAD"), git(second, "rev-parse", "HEAD"));
+    assertMismatch(first, second);
+    assertMismatch(directory(first, "packages/backend"), directory(second, "packages/backend"));
+  });
+
+  it("keeps a nested independent repository separate from its parent project", (t) => {
+    const root = fixture(t);
+    const parent = repository(root);
+    const nested = repository(parent, "vendor/independent");
+    assertMismatch(parent, nested);
+    assertMismatch(directory(parent, "packages/backend"), directory(nested, "src"));
+  });
+
+  it("keeps a real submodule separate from its superproject", (t) => {
+    const root = fixture(t);
+    const dependency = repository(root, "dependency");
+    const parent = repository(root, "superproject");
+    git(parent, "-c", "protocol.file.allow=always", "submodule", "add", "--quiet", dependency, "vendor/dependency");
+    const submodule = path.join(parent, "vendor", "dependency");
+    assert.equal(fs.statSync(path.join(submodule, ".git")).isFile(), true);
+    assertMismatch(parent, submodule);
+    assertMismatch(directory(parent, "packages/backend"), directory(submodule, "src"));
+  });
+
+  it("does not use a home-directory Git marker to group descendant projects", (t) => {
+    const home = repository(fixture(t), "temporary home");
+    const sender = directory(home, "first project");
+    const recipient = directory(home, "second project");
+    const code = [
+      `import assert from "node:assert/strict";`,
+      `import os from "node:os";`,
+      `import { captureProjectScope } from ${JSON.stringify(sourceUrl)};`,
+      `assert.equal(os.homedir(), ${JSON.stringify(home)});`,
+      `assert.throws(() => captureProjectScope(${JSON.stringify(sender)}, ${JSON.stringify(recipient)}), { code: "PROJECT_SCOPE_MISMATCH" });`,
+      `assert.throws(() => captureProjectScope(${JSON.stringify(home)}, ${JSON.stringify(sender)}), { code: "PROJECT_SCOPE_MISMATCH" });`,
+      `assert.equal(captureProjectScope(${JSON.stringify(sender)}, ${JSON.stringify(sender)}).sender.repository, null);`,
+    ].join("\n");
+    execFileSync(process.execPath, ["--input-type=module", "--eval", code], {
+      env: { ...process.env, HOME: home, USERPROFILE: home },
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 30000,
+    });
+  });
 });
 
-test("revocation applies live to all worktrees and beats parent grants until explicit project reauthorization", (t) => {
-  const f = fixture(t); const { main, worktree } = repo(f);
-  f.edit("allow-parent", f.parent);
-  const binding = f.scope.capture(worktree);
-  f.edit("revoke", worktree);
-  assert.equal(f.scope.allows(main), false);
-  assert.throws(() => f.scope.recheck(binding), /revoked/);
-  f.edit("allow-parent", f.parent);
-  assert.equal(f.scope.allows(worktree), false);
-  f.edit("allow-project", main);
-  assert.equal(f.scope.allows(worktree), true);
+describe("project changes before delivery", () => {
+  it("refuses an alias retargeted to a different directory in the same repository", (t) => {
+    const root = fixture(t);
+    const main = repository(root);
+    const first = directory(main, "first package");
+    const second = directory(main, "second package");
+    const alias = path.join(root, "sender alias");
+    fs.symlinkSync(first, alias, linkType);
+    const scope = captureProjectScope(alias, main);
+    fs.unlinkSync(alias);
+    fs.symlinkSync(second, alias, linkType);
+    assert.throws(() => recheckProjectScope(scope), { code: "PROJECT_SCOPE_CHANGED" });
+  });
+
+  it("refuses both aliases retargeted together to an unrelated project", (t) => {
+    const root = fixture(t);
+    const first = directory(root, "first project");
+    const second = directory(root, "second project");
+    const alias = path.join(root, "project alias");
+    fs.symlinkSync(first, alias, linkType);
+    const scope = captureProjectScope(alias, alias);
+    fs.unlinkSync(alias);
+    fs.symlinkSync(second, alias, linkType);
+    assert.throws(() => recheckProjectScope(scope), { code: "PROJECT_SCOPE_CHANGED" });
+  });
+
+  for (const side of ["sender", "recipient"]) {
+    it(`refuses a replaced ${side} directory even when its path and common repository stay the same`, (t) => {
+      const main = repository(fixture(t));
+      const sender = directory(main, "sender");
+      const recipient = directory(main, "recipient");
+      const scope = captureProjectScope(sender, recipient);
+      const replaced = side === "sender" ? sender : recipient;
+      fs.renameSync(replaced, `${replaced}-previous`);
+      fs.mkdirSync(replaced);
+      assert.throws(() => recheckProjectScope(scope), {
+        code: "PROJECT_SCOPE_CHANGED",
+        message: `The ${side} project directory or repository changed before delivery. No message was sent.`,
+      });
+    });
+  }
+
+  it("refuses a replaced common Git directory even when the workspace directories stay the same", (t) => {
+    const main = repository(fixture(t));
+    const sender = directory(main, "sender");
+    const recipient = directory(main, "recipient");
+    const scope = captureProjectScope(sender, recipient);
+    const marker = path.join(main, ".git");
+    const previous = path.join(main, ".git-previous");
+    fs.renameSync(marker, previous);
+    fs.cpSync(previous, marker, { recursive: true });
+    assert.equal(git(main, "rev-parse", "HEAD"), git(previous, "rev-parse", "HEAD"));
+    assert.throws(() => recheckProjectScope(scope), { code: "PROJECT_SCOPE_CHANGED" });
+  });
+
+  it("fails closed when a bound project directory disappears", (t) => {
+    const root = fixture(t);
+    const project = directory(root, "project");
+    const scope = captureProjectScope(project, project);
+    fs.renameSync(project, path.join(root, "previous project"));
+    assert.throws(() => recheckProjectScope(scope), { code: "PROJECT_SCOPE_UNVERIFIED" });
+  });
+
+  it("refuses a newly introduced independent repository within a bound workspace", (t) => {
+    const main = repository(fixture(t));
+    const sender = directory(main, "sender");
+    const recipient = directory(main, "recipient");
+    const scope = captureProjectScope(sender, recipient);
+    git(recipient, "init", "--quiet", "--initial-branch=main");
+    assert.throws(() => recheckProjectScope(scope), { code: "PROJECT_SCOPE_MISMATCH" });
+  });
 });
 
-test("a forged git pointer cannot impersonate a registered worktree outside scope", (t) => {
-  const f = fixture(t); const { main, worktree } = repo(f);
-  f.edit("allow-project", main);
-  const fake = path.join(f.root, "forged"); fs.mkdirSync(fake);
-  fs.copyFileSync(path.join(worktree, ".git"), path.join(fake, ".git"));
-  assert.equal(f.scope.allows(fake), false);
-  assert.equal(f.scope.allows(f.root), false);
-});
+describe("malformed nearest repository metadata", () => {
+  for (const contents of ["not a Git marker", "gitdir: \n", "gitdir: missing-directory\n", "gitdir: ../one\ngitdir: ../two\n", "x".repeat(4097)]) {
+    it(`fails closed for a malformed nearest Git file of ${contents.length} bytes`, (t) => {
+      const main = repository(fixture(t));
+      const nested = directory(main, "nested project");
+      fs.writeFileSync(path.join(nested, ".git"), contents);
+      assert.throws(() => captureProjectScope(main, nested));
+      assert.throws(() => captureProjectScope(nested, main));
+      assert.throws(() => captureProjectScope(nested, nested));
+    });
+  }
 
-test("symlink escapes and similar directory prefixes do not inherit parent authorization", (t) => {
-  const f = fixture(t); f.edit("allow-parent", f.parent);
-  const outside = path.join(f.root, "projects-other"); fs.mkdirSync(outside);
-  fs.symlinkSync(outside, path.join(f.parent, "escape"), process.platform === "win32" ? "junction" : "dir");
-  assert.equal(f.scope.allows(outside), false);
-  assert.equal(f.scope.allows(path.join(f.parent, "escape")), false);
-});
+  it("fails closed for a nearest Git directory without repository metadata", (t) => {
+    const main = repository(fixture(t));
+    const malformed = directory(main, "malformed project");
+    directory(malformed, ".git");
+    const sender = directory(malformed, "sender");
+    const recipient = directory(malformed, "recipient");
+    assert.throws(() => captureProjectScope(sender, recipient));
+  });
 
-test("non-Git projects use directory scope and pending operations detect replacement", (t) => {
-  const f = fixture(t); f.edit("allow-project", f.parent);
-  const binding = f.scope.capture(f.parent);
-  fs.renameSync(f.parent, `${f.parent}-old`); fs.mkdirSync(f.parent);
-  assert.equal(f.scope.allows(f.parent), false);
-  assert.throws(() => f.scope.recheck(binding), /not authorized|replaced/);
-});
+  it("fails closed when a Git file points to an ordinary directory", (t) => {
+    const root = fixture(t);
+    const ordinary = directory(root, "ordinary metadata");
+    const sender = directory(root, "sender");
+    const recipient = directory(root, "recipient");
+    for (const project of [sender, recipient]) fs.writeFileSync(path.join(project, ".git"), `gitdir: ${ordinary}\n`);
+    assert.throws(() => captureProjectScope(sender, recipient));
+  });
 
-test("malformed, missing and oversized policy fail closed instead of falling back to legacy wildcard roots", (t) => {
-  const f = fixture(t); f.edit("allow-parent", f.parent);
-  const security = new BridgeSecurityPolicy({ CODEX_BRIDGE_PROJECT_POLICY: f.file, CODEX_BRIDGE_ALLOWED_ROOTS: "*" });
-  fs.writeFileSync(f.file, "{");
-  assert.equal(security.isCwdAuthorized(f.parent), false);
-  assert.throws(() => security.assertCwd(f.parent));
-  assert.ok(security.summary().projectPolicy.error);
-  fs.writeFileSync(f.file, " ".repeat(300000));
-  assert.throws(() => readProjectPolicy(f.file), /size limit/);
-  fs.rmSync(f.file);
-  assert.equal(security.isCwdAuthorized(f.parent), false);
-});
+  it("refuses a registered worktree whose backlink points at the main repository marker", (t) => {
+    const root = fixture(t);
+    const main = repository(root);
+    const linked = worktree(root, main);
+    fs.writeFileSync(path.join(linked.gitdir, "gitdir"), `${path.join(main, ".git")}\n`);
+    assert.throws(() => captureProjectScope(main, linked.target), /backlink does not match/);
+  });
 
-test("shared policy does not silently replace a hardened profile", (t) => {
-  const f = fixture(t);
-  assert.throws(() => createHardenedRootPolicy({ CODEX_BRIDGE_HARDENED: "1", CODEX_BRIDGE_PROJECT_POLICY: f.file }), /cannot replace/);
-});
+  it("refuses a copied worktree marker whose registered backlink belongs to another directory", (t) => {
+    const root = fixture(t);
+    const main = repository(root);
+    const linked = worktree(root, main);
+    const copied = directory(root, "copied worktree");
+    fs.copyFileSync(path.join(linked.target, ".git"), path.join(copied, ".git"));
+    assert.throws(() => captureProjectScope(main, copied), /backlink does not match/);
+  });
 
-test("scope policy writes are serialized, preserve the old file on errors, and keep backups", (t) => {
-  const f = fixture(t); const original = fs.readFileSync(f.file, "utf8");
-  fs.writeFileSync(`${f.file}.lock`, "");
-  assert.throws(() => f.edit("allow-parent", f.parent), /EEXIST/);
-  fs.rmSync(`${f.file}.lock`);
-  assert.throws(() => updateProjectPolicy(f.file, () => { throw new Error("abort"); }), /abort/);
-  assert.equal(fs.readFileSync(f.file, "utf8"), original);
-  f.edit("allow-parent", f.parent);
-  assert.ok(fs.readdirSync(f.root).some((name) => name.startsWith("policy.json.backup-")));
-});
+  it("refuses a forged commondir from outside the common repository worktrees directory", (t) => {
+    const root = fixture(t);
+    const main = repository(root);
+    const rogue = repository(root, "rogue repository");
+    fs.writeFileSync(path.join(rogue, ".git", "commondir"), `${path.join(main, ".git")}\n`);
+    const forged = directory(root, "forged worktree");
+    fs.writeFileSync(path.join(forged, ".git"), `gitdir: ${path.join(rogue, ".git")}\n`);
+    assert.throws(() => captureProjectScope(main, forged), /not registered/);
+  });
 
-test("readiness diagnoses unknown callers and out-of-scope targets before sending", (t) => {
-  const f = fixture(t); f.edit("allow-parent", f.parent);
-  const sender = { status: "verified", cwd: f.parent, taskId: "existing" };
-  assert.equal(bridgeReadiness({ sender, scope: f.scope, targetCwd: f.parent }).ready, true);
-  assert.equal(bridgeReadiness({ sender, scope: f.scope, targetCwd: f.parent }).readyScope, "transport-identity-and-project");
-  const bad = bridgeReadiness({ sender: { status: "unavailable", reason: "shared entry" }, scope: f.scope, targetCwd: f.root });
-  assert.deepEqual(bad.issues.map((issue) => issue.code), ["SENDER_UNVERIFIED", "TARGET_NOT_AUTHORIZED"]);
+  it("fails closed when a registered worktree backlink disappears before delivery", (t) => {
+    const root = fixture(t);
+    const main = repository(root);
+    const linked = worktree(root, main);
+    const scope = captureProjectScope(main, linked.target);
+    fs.renameSync(path.join(linked.gitdir, "gitdir"), path.join(linked.gitdir, "gitdir-previous"));
+    assert.throws(() => recheckProjectScope(scope), { code: "PROJECT_SCOPE_UNVERIFIED" });
+  });
 });

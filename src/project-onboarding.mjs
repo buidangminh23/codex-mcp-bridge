@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { directoryBinding, repositoryBinding, editProjectGrant, readProjectPolicy, createProjectScope } from "./project-scope.mjs";
+import { directoryBinding, repositoryBinding, editProjectGrant, readProjectPolicy, createProjectScope } from "./project-policy.mjs";
 
 const MAX_CONFIG_BYTES = 8 * 1024 * 1024;
 const object = value => value && typeof value === "object" && !Array.isArray(value);

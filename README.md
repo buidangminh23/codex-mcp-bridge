@@ -1,6 +1,6 @@
 # codex-mcp-bridge
 
-Local Desktop handoff guides (Chinese): [daily workflow](docs/日常交接速查.md), [new-machine setup and permissions](docs/换机安装与默认权限.md), and [new-session directory verification](docs/新会话目录核验.md).
+Local Desktop handoff guides: [daily workflow and directory verification](docs/daily-handoffs.md), [new-machine setup and permissions](docs/new-machine-setup.md), and [project onboarding](docs/project-onboarding.md).
 
 [![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
 [![CI](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml)
@@ -52,6 +52,10 @@ Choose the mode for the conversations you want to connect:
 | Linux / WSL | CLI / app-server | Signed-in Codex CLI and a running Claude Code CLI session |
 
 The bridge requires **Node.js 22+**; Node 24 LTS is a suitable starting point. If Node is already managed by a version manager, use that installation. Install the bridge under the same OS user as the clients. A global npm install does not require cloning this repository.
+
+To opt a machine you administer into **Full access + Never**, run `codex-mcp-bridge-install --full-access` when registering the bridge (`codex-mcp-bridge-install.cmd --full-access` in PowerShell). The installer sets global Codex defaults for old and new projects, repairs or creates the managed policy with both `read-only` and `danger-full-access`, and records the choice so the bridge can restore it if the files drift later. Windows UAC, macOS administrator authentication, or Linux polkit/sudo may be required for the system policy. Normal installation does not change Codex permissions. Run `codex doctor --summary --ascii` after setup; existing Desktop tasks may need to be reopened to load the new permissions.
+
+If the bridge is already registered, `codex-full-access` (`codex-full-access.cmd` in PowerShell) enables the same settings without replacing that registration. The bridge reads the saved choice when it starts.
 
 For Desktop mode, install [Codex Desktop](https://developers.openai.com/codex/app) and [Claude Desktop](https://claude.com/download), sign in, and save the intended local project in Codex Desktop. Open that same directory in Claude Desktop's Code tab. A normal Claude chat is not a Code session.
 
@@ -196,7 +200,7 @@ These examples allow projects under the current user's home. For projects elsewh
 
 ### Verify the installation
 
-For Desktop project onboarding, both MCP entry points expose `inspect_bridge_project` (read-only) and `prepare_bridge_project` (user-selected workspace trust plus shared messaging grant). Setup preserves unrelated settings, backs up changes, respects revocations, and resolves registered worktrees to their primary repository. It does not approve tools or claim live connectivity. `CODEX_BRIDGE_PROJECT_POLICY` must explicitly name the shared policy. See [project onboarding and independent optional native settings integration](docs/项目接入说明.md). `node scripts/bridge-projects.mjs register-manager` registers the optional card-extension native settings integration; the bridge never depends on that extension.
+For Desktop project onboarding, both MCP entry points expose `inspect_bridge_project` (read-only) and `prepare_bridge_project` (user-selected workspace trust plus shared messaging grant). Setup preserves unrelated settings, backs up changes, respects revocations, and resolves registered worktrees to their primary repository. It does not approve tools or claim live connectivity. `CODEX_BRIDGE_PROJECT_POLICY` must explicitly name the shared policy. See [project onboarding and independent optional native settings integration](docs/project-onboarding.md). `node scripts/bridge-projects.mjs register-card-settings` registers the optional card-extension native settings integration; the bridge never depends on that extension.
 
 Check registration from a terminal; on Windows use `codex.exe` if `codex` resolves to a blocked PowerShell shim:
 
@@ -317,6 +321,7 @@ Start with `codex doctor` for Codex installation problems and `claude doctor` fo
 
 | Error / symptom | Fix |
 |---|---|
+| Codex says `Organization settings could not be loaded`, or the bridge reports `INVALID_MANAGED_CONFIG` | On a machine you administer, rerun `codex-mcp-bridge-install --full-access` to repair the managed policy and global defaults. The policy must include `"read-only"` alongside `"danger-full-access"`; the former is required for Codex to load it, while the effective mode remains Full access. Complete any OS administrator prompt, then run `codex doctor --summary --ascii`. |
 | `codex binary not found`, `ENOENT`, or Windows `EINVAL` during registration | Locate the actual executable. Set `CODEX_EXE` before rerunning the installer: PowerShell `$env:CODEX_EXE = (Get-Command codex.exe).Source`; macOS/Linux `export CODEX_EXE="$(command -v codex)"`. On Windows, do not point it at `codex.ps1` or `codex.cmd`. |
 | Tools appear in Claude Desktop but not in its Code task | Complete the separate [Claude Code registration](#register-claude-code), then reconnect `/mcp` in that Code session. |
 | `This MCP process has no registered Claude Desktop Code session in its parent ancestry` | The shared Desktop entry may not belong to the calling Code task. Register the bridge in the intended existing Code project under a distinct name, such as `codex-bridge-code`, retaining its access settings. Check that `CODEX_BRIDGE_ALLOWED_ROOTS` includes the intended authorized target project; copied test registrations may still allow only test directories. Reload that task's MCP configuration. In the tested Windows Desktop version, View > Reload was insufficient: fully exit and reopen Claude after active work is stopped, then reopen the same task. Verify the dedicated entry and a new proactive send; receiving a reply to a Codex-originated message alone does not establish proactive sending. |
@@ -339,7 +344,7 @@ For unresolved failures, [open an issue](https://github.com/buidangminh23/codex-
 
 ## Repository analytics
 
-The live dashboard polls the aggregate API every 30 seconds. Installation counts reflect reports received by the server; this is not a count of currently online processes. Public GitHub/npm sources are refreshed with a short cache, but their own statistics may be delayed. GitHub Actions refreshes and archives statistics hourly through the `Repository analytics` workflow, including private GitHub traffic; scheduled runs may be delayed by GitHub. That workflow needs the `ANALYTICS_TOKEN` repository secret set to a token with push access to this repository (fine-grained: Contents read/write plus Administration read); the default workflow token cannot read GitHub traffic, so without it the views/clones sources are retained from the last successful run and the run is reported as incomplete while the Pages deployment still succeeds. The README image is a snapshot and may be cached by GitHub; open the live dashboard for automatic updates. Source timestamps show freshness; missing data is unavailable, not zero. Only aggregate figures are published. Installation IDs stay in the private database.
+The live dashboard polls the aggregate API every 30 seconds. Installation counts reflect reports received by the server; this is not a count of currently online processes. Public GitHub/npm sources are refreshed with a short cache, but their own statistics may be delayed. GitHub Actions refreshes and archives statistics hourly through the `Repository analytics` workflow, including private GitHub traffic; scheduled runs may be delayed by GitHub. That workflow reads GitHub traffic with the `ANALYTICS_TOKEN` repository secret, a token with push access to this repository (fine-grained: Administration read); the default workflow token cannot read GitHub traffic, so without it the views/clones sources are retained from the last successful run and the run is reported as incomplete while the Pages deployment still succeeds. The `analytics` branch is written with the workflow's own token, so its commits come from `github-actions[bot]` and `ANALYTICS_TOKEN` needs no write access. The README image is a snapshot and may be cached by GitHub; open the live dashboard for automatic updates. Source timestamps show freshness; missing data is unavailable, not zero. Only aggregate figures are published. Installation IDs stay in the private database.
 
 Repository owners can view [GitHub traffic](https://github.com/buidangminh23/codex-mcp-bridge/graphs/traffic) for recent views and clones. Downloads and clones include updates, reinstalls, and automation; they do not measure active users. GitHub traffic only covers the recent 14-day window, so collect it regularly to keep a longer history.
 
@@ -394,6 +399,8 @@ WHERE day >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - 29;
 
 ### Shared project scope for Desktop Code conversations
 
+See [Desktop handoff design and recovery](docs/desktop-handoff-design.md) for the failure cases, integration with current upstream, and validation limits.
+
 For a source installation used by both desktops, set `CODEX_BRIDGE_PROJECT_POLICY` to the same absolute JSON file in both bridge entries. The opt-in policy is read on every operation. `bridge-projects` defaults to `~/.config/GptClaudeBridge/projects.json`; prefer a shared home-directory path over Windows AppData, whose view can differ between packaged applications.
 
 ```sh
@@ -405,11 +412,13 @@ bridge-projects revoke /absolute/other-repository
 
 A parent grant covers new projects inside it and their registered Git worktrees. A project grant covers that repository's registered worktrees even outside the parent. Canonical directory identities and Git's worktree registry are checked; a copied `.git` pointer does not establish membership. Explicit revocation takes precedence and applies to subsequent operations without restarting either bridge. It does not cancel work already dispatched. Missing or invalid policy files fail closed. This opt-in policy cannot replace the hardened profile's pinned roots.
 
+Project grants do not replace upstream's same-project requirement for Claude-to-Codex delivery: the verified sender and destination must still share a directory or registered Git repository. Authorizing two unrelated projects does not permit sending between them.
+
 Claude Code needs its own user-level `codex-bridge` process, whose ancestry identifies the sending Code session. A generic shared Desktop MCP process cannot supply that identity. `codex-bridge-code-install --policy /absolute/projects.json` previews migration of an existing supervised installation; `--apply --clients-stopped` backs up and writes it. Customized entries are refused for review. Synchronize the same entry in any external configuration manager such as CC Switch. `--check` diagnoses duplicate/shared registrations. Reconnect clients after changing registration; subsequent project-policy changes need no reconnect.
 
 Run `codex_bridge_status` in the actual Claude Code conversation with the intended `cwd`. It reports sender, target scope and relay readiness independently. A generic command-line connectivity check can report a reachable relay while returning nonzero because no Code caller was verified. Validate both a Codex-originated round trip and a Claude-originated round trip; neither proves the other. Account and sender permission checks remain mandatory. Client upgrades can still require compatibility updates.
 
-The Chinese source-checkout guide is [项目接入说明](docs/项目接入说明.md).
+See the [project onboarding guide](docs/project-onboarding.md) for explicit setup and the optional settings adapter.
 
 Automatic handoff requires both user authorization for the collaboration and permission to use the messaging tools; a card extension's project grant does not approve this bridge. After explicitly opting in, run `node scripts/configure-message-automation.mjs --apply --approve-message-automation` once. It backs up Claude user settings, adds only the exact `send_to_codex_thread` and `wait_codex_reply` tool permissions, and installs scoped collaboration guidance in `~/.claude/rules/gpt-claude-bridge.md`. Without flags it previews; `--check` verifies the files. Existing conflicting ask/deny rules are refused, not removed. It does not approve shell/file operations, expand projects, change modes, or override host safeguards. A running conversation can require a one-time user acknowledgment of standing authorization; do not disguise peer messages as user consent. Validate consecutive real handoffs after setup, not just connectivity. `readiness.readyScope` explicitly excludes host tool permission evaluation.
 

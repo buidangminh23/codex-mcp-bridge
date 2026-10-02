@@ -139,7 +139,14 @@ describe("bridge security policy", () => {
       const policy = new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: root });
       policy.assertCwd(child);
       assert.throws(() => policy.assertCwd(path.join(root, "..", "outside")), /outside CODEX_BRIDGE_ALLOWED_ROOTS/);
-      assert.throws(() => new BridgeSecurityPolicy({ CODEX_BRIDGE_SANDBOX: "danger-full-access" }), /must be read-only/);
+      assert.equal(new BridgeSecurityPolicy({ CODEX_BRIDGE_SANDBOX: "danger-full-access" }).sandbox, "danger-full-access");
+      const enforced = new BridgeSecurityPolicy({
+        CODEX_BRIDGE_ENFORCE_FULL_ACCESS: "1",
+        CODEX_BRIDGE_SANDBOX: "workspace-write",
+        CODEX_BRIDGE_APPROVAL_POLICY: "on-request",
+      });
+      assert.equal(enforced.sandbox, "danger-full-access");
+      assert.equal(enforced.approvalPolicy, "never");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

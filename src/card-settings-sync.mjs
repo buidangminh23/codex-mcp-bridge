@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { scopeEntry, updateProjectPolicy } from './project-scope.mjs';
+import { scopeEntry, updateProjectPolicy } from './project-policy.mjs';
 
 const empty = () => ({ projects: [], parents: [], excluded: [] });
 const key = p => process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);

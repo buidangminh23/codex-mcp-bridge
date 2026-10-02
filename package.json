@@ -1,6 +1,6 @@
 {
   "name": "@minhspark/codex-mcp-bridge",
-  "version": "1.19.2",
+  "version": "1.19.6",
   "description": "Two-way MCP bridge between Claude and Codex: prompts into a live Codex thread, messages into a running Claude Code session.",
   "keywords": [
     "mcp",
@@ -30,7 +30,8 @@
     "claude-mcp-bridge-install": "scripts/install-codex-mcp.mjs",
     "codex-native-relay": "src/native-relay-launcher.mjs",
     "codex-native-relay-install": "scripts/install-native-relay.mjs",
-    "codex-npm-footer-install": "scripts/install-npm-footer.mjs"
+    "codex-npm-footer-install": "scripts/install-npm-footer.mjs",
+    "codex-full-access": "scripts/repair-codex-access.mjs"
   },
   "files": [
     "src",
@@ -38,11 +39,10 @@
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
-    "docs/日常交接速查.md",
-    "docs/换机安装与默认权限.md",
-    "docs/新会话目录核验.md",
-    "docs/项目接入说明.md",
-    "docs/交接入口.md"
+    "docs/daily-handoffs.md",
+    "docs/new-machine-setup.md",
+    "docs/project-onboarding.md",
+    "docs/desktop-handoff-design.md"
   ],
   "publishConfig": {
     "access": "public"

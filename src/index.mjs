@@ -23,6 +23,7 @@ import {
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
+import { enableCodexFullAccess, fullAccessEnabled } from "./codex-full-access.mjs";
 import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "./thread-delivery.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
@@ -32,12 +33,13 @@ import { accountIdentity, assertAccountIdentity, publicAccountState, readBridgeA
 import { assertClaudeSenderContext, readClaudeSenderContext, requireClaudeSenderContext, stopProcessInspectors } from "./claude-sender-context.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
 import { bridgeReadiness } from "./bridge-readiness.mjs";
+import { captureProjectScope } from "./project-scope.mjs";
 import { DesktopReplyReceipts } from "./desktop-reply-receipts.mjs";
 import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.19.2";
+const VERSION = "1.19.6";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -56,12 +58,23 @@ const DEFAULT_RELEASE_AFTER_TURN = process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN
   : IS_WINDOWS;
 const TERMINAL_TURN_STATUSES = new Set(["completed", "interrupted", "failed"]);
 const RELEASE_TURN_STATUSES = TERMINAL_TURN_STATUSES;
-const security = new BridgeSecurityPolicy();
+const enforceFullAccess = fullAccessEnabled();
+if (enforceFullAccess) {
+  try {
+    enableCodexFullAccess();
+  } catch (error) {
+    log(`Codex Full access repair failed: ${error.message}`);
+  }
+}
+const security = new BridgeSecurityPolicy({
+  ...process.env,
+  ...(enforceFullAccess ? { CODEX_BRIDGE_ENFORCE_FULL_ACCESS: "1" } : {}),
+});
 const desktopTasksEnabled = desktopTasksConfigured();
 const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
 const desktopOperation = new AsyncLocalStorage();
 const replyReceipts = new DesktopReplyReceipts();
-const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts });
+const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts, senderContext: () => desktopOperation.getStore()?.caller });
 
 async function assertDesktopOperation(context, { verifyProcess = false } = {}) {
   if (!context || context.diagnostic) return;
@@ -85,7 +98,7 @@ async function beforeDesktopRequest({ operation, args, phase }) {
   if (!context) throw new Error("Desktop operations require a verified calling Code session.");
   const mutating = ["create_thread", "send_message_to_thread", "set_thread_title", "navigate_to_codex_page"].includes(operation);
   await assertDesktopOperation(context, { verifyProcess: mutating && phase === "write" });
-  if (mutating) {
+  if (mutating && phase === "dispatch") {
     context.dispatched = true;
     if (args.threadId) context.threadId = args.threadId;
   }
@@ -367,7 +380,8 @@ const server = new McpServer(
       "A completed turn alone does not mean the task is finished. Do not choose an old task merely because its project matches or it was recently active. " +
       "Without authorization to create a new conversation, ask before creating it. With Desktop tasks enabled it assigns the exact saved project and starts visibly in " +
       "Codex Desktop using Desktop permissions. Otherwise it releases the bridge writer lock and opens the exact thread in " +
-      "Codex Desktop. Use send_to_codex_thread only when an existing threadId is intentional; use " +
+      "Codex Desktop. Desktop creation and sends always require the verified calling Claude task and the Codex destination to belong to the same project, even when cwd is omitted. " +
+      "Use send_to_codex_thread only when an existing threadId is intentional; use " +
       "list_codex_threads or read_codex_thread to inspect sessions and codex_bridge_status to inspect wiring. " +
       "When a Desktop send returns nextAction=wait_codex_reply, continue observing with that tool and the returned deliveryId until completion, user input is required, or the user stops the task. Never resend to obtain a reply. Each observation is bounded, and the receipt survives reconnection. " +
       AGENT_PROMPT_GUIDANCE,
@@ -387,6 +401,7 @@ function registerTool(name, definition, handler) {
         result.content.push({ type: "text", text: `runtime pid: ${state.pid}\nloaded source: ${state.revision}\nruntime state: current` });
         result.structuredContent = { ...result.structuredContent, runtime: state };
         if (desktopTasksEnabled) {
+          result.structuredContent.projectScope = { enabled: true, policy: "verified-sender-same-project", match: "canonical-directory-or-git-repository", checkedBeforeMutation: true };
           result.structuredContent.accounts = { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) };
         }
         return result;
@@ -402,6 +417,9 @@ function registerTool(name, definition, handler) {
             await assertDesktopOperation(context);
             const result = await handler(...args);
             await assertDesktopOperation(context);
+            if (result.isError && !context.dispatched) {
+              result.structuredContent = { ...result.structuredContent, accountContext: context.accounts, operation: { state: "blocked", threadId: context.threadId ?? null } };
+            }
             return result;
           } catch (error) {
             return withheldDesktopResult(error, context);
@@ -538,7 +556,7 @@ registerTool(
         .max(3600)
         .optional()
         .describe("How long to observe the task (Desktop caps the entire call at 40s; the task continues and its threadId is returned)"),
-      cwd: z.string().optional().describe("Override the working directory for this turn"),
+      cwd: z.string().optional().describe("Expected destination directory; Desktop always checks the verified sender's project and cannot change the task's workspace"),
       model: z.string().optional().describe("Override the model for this turn"),
       effort: z
         .enum(["minimal", "low", "medium", "high", "xhigh", "ultra"])
@@ -996,12 +1014,13 @@ registerTool(
     if (desktopTasksEnabled) {
       const native = await desktopTasks.status();
       const sender = await readClaudeSenderContext({ account: readBridgeAccounts().claude });
-      const readiness = bridgeReadiness({ sender, scope: security.hardenedRoots.mode === "project-policy" ? security.hardenedRoots : { assert: (candidate) => { security.assertCwd(candidate); return candidate; } }, targetCwd: cwd, nativeAvailable: native.available });
+      const readiness = bridgeReadiness({ sender, scope: security.hardenedRoots.mode === "project-policy" ? security.hardenedRoots : { assert: (candidate) => { security.assertCwd(candidate); return candidate; } }, targetCwd: cwd, nativeAvailable: native.available, verifyTargetProject: captureProjectScope });
       return { ...textResult([
         `platform:       ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
         `bridge version: ${VERSION}`,
         `node:           ${process.version} at ${process.execPath}`,
         "desktop tasks:  enabled; Desktop permissions, exact saved project, immediate visibility",
+        "project scope:  verified Claude sender; same directory or Git repository, checked before each mutation",
         `native relay:   ${native.available ? "available; verified through Codex Desktop" : "unavailable"}`,
         `native endpoint: ${native.socketPath}`,
         ...(native.available ? [`local projects: ${native.localProjects}`] : [`reason: ${native.reason}`]),
@@ -1013,7 +1032,7 @@ registerTool(
         ...(readiness.projectPolicy ? [`project policy: ${readiness.projectPolicy.file}; revision ${readiness.projectPolicy.revision ?? "unavailable"}; changes apply on the next operation`] : []),
         ...(readiness.target ? [`target: ${readiness.target.cwd}; authorized=${readiness.target.authorized}${readiness.target.authorizedBy ? `; via ${readiness.target.authorizedBy.kind} ${readiness.target.authorizedBy.path}` : ""}`] : []),
         ...readiness.issues.map((issue) => `${issue.code}: ${issue.detail ?? ""} ${issue.action}`),
-      ].join("\n"), !readiness.ready), structuredContent: { readiness } };
+      ].join("\n"), !readiness.ready), structuredContent: { readiness, projectScope: { enabled: true, policy: "verified-sender-same-project", match: "canonical-directory-or-git-repository", checkedBeforeMutation: true } } };
     }
     const up = await client.isServerUp();
     let liveThreads = null;

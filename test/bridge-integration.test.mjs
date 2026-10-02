@@ -98,8 +98,9 @@ async function desktopCallerFixture(home, env) {
   const tasks = path.join(accountRoot, "claude-code-sessions", CLAUDE_ACCOUNT_A, "33333333-3333-4333-8333-333333333333");
   fs.mkdirSync(tasks, { recursive: true });
   const taskId = "local_44444444-4444-4444-8444-444444444444";
-  fs.writeFileSync(path.join(tasks, `${taskId}.json`), JSON.stringify({ sessionId: taskId, cliSessionId: "fixture-caller", cwd: home, title: "Fixture caller", isArchived: false }));
-  return { setAccount, registryFile };
+  const taskFile = path.join(tasks, `${taskId}.json`);
+  fs.writeFileSync(taskFile, JSON.stringify({ sessionId: taskId, cliSessionId: "fixture-caller", cwd: home, title: "Fixture caller", isArchived: false }));
+  return { setAccount, registryFile, taskFile };
 }
 
 async function withBridge(onRequest, run, extraEnv = () => ({})) {
@@ -175,6 +176,90 @@ function creationReceipts(home) {
 }
 
 describe("Desktop task MCP integration", () => {
+  it("blocks omitted and spoofed cwd from an independently verified caller before send, rename, or navigation", async () => {
+    const calls = [];
+    await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {
+      calls.push(operation);
+      if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: path.join(home, "wrong-project") }, turns: [] };
+      throw new Error(`A blocked project reached mutation: ${operation}`);
+    }, async ({ client, home, server }) => {
+      const wrongCwd = path.join(home, "wrong-project");
+      fs.mkdirSync(wrongCwd);
+      for (const cwd of [undefined, wrongCwd]) {
+        const result = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "wrong-task", prompt: "Do not deliver", name: "Do not rename", openInApp: true, ...(cwd ? { cwd } : {}) } });
+        assert.equal(result.isError, true);
+        assert.match(result.content[0].text, /Project mismatch/);
+        assert.equal(result.structuredContent.operation.state, "blocked");
+        assert.doesNotMatch(result.content[0].text, /may already have been dispatched/);
+      }
+      assert.deepEqual(calls, ["read_thread", "read_thread"]);
+      assert.equal(server.connections, 0);
+    });
+  });
+
+  it("blocks both new-task tools outside the actual caller's project before receipt creation", async () => {
+    const calls = [];
+    await withDesktopReceiptBridge(async ({ operation }) => { calls.push(operation); throw new Error("No native call expected"); }, async ({ client, home, server }) => {
+      const cwd = path.join(home, "wrong-project");
+      fs.mkdirSync(cwd);
+      for (const name of ["start_codex_thread", "delegate_to_codex"]) {
+        const result = await client.callTool({ name, arguments: { cwd, prompt: "Do not create", requestId: randomUUID(), openInApp: true } });
+        assert.equal(result.isError, true);
+        assert.match(result.content[0].text, /Project mismatch/);
+        assert.equal(result.structuredContent.operation.state, "blocked");
+      }
+      assert.deepEqual(calls, []);
+      assert.equal(fs.existsSync(path.join(home, ".codex", "bridge-task-receipts")), false);
+      assert.equal(server.connections, 0);
+    });
+  });
+
+  it("rechecks a task moved after initial inspection at the native socket write", async () => {
+    const calls = [];
+    let reads = 0;
+    await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {
+      calls.push(operation);
+      if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: ++reads === 1 ? home : path.join(home, "wrong-project") }, turns: [] };
+      throw new Error(`A moved task reached mutation: ${operation}`);
+    }, async ({ client, home, server }) => {
+      fs.mkdirSync(path.join(home, "wrong-project"));
+      const result = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "moved-task", prompt: "Do not deliver", openInApp: false } });
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /Project mismatch/);
+      assert.equal(result.structuredContent.operation.state, "blocked");
+      assert.deepEqual(calls, ["read_thread", "read_thread"]);
+      assert.equal(server.connections, 0);
+    });
+  });
+
+  it("blocks a live caller whose Desktop project changes after destination inspection", async () => {
+    const calls = [];
+    let changeCaller;
+    await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {
+      calls.push(operation);
+      if (operation === "read_thread") {
+        changeCaller();
+        return { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [] };
+      }
+      throw new Error(`A changed caller reached mutation: ${operation}`);
+    }, async ({ client, home, desktopFixture, server }) => {
+      const cwd = path.join(home, "new-caller-project");
+      fs.mkdirSync(cwd);
+      changeCaller = () => {
+        for (const file of [desktopFixture.registryFile, desktopFixture.taskFile]) {
+          const record = JSON.parse(fs.readFileSync(file, "utf8"));
+          fs.writeFileSync(file, JSON.stringify({ ...record, cwd }));
+        }
+      };
+      const result = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "task", prompt: "Do not deliver", openInApp: false } });
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /calling Claude Desktop session or account changed/);
+      assert.equal(result.structuredContent.operation.state, "blocked");
+      assert.deepEqual(calls, ["read_thread"]);
+      assert.equal(server.connections, 0);
+    });
+  });
+
   for (const resume of [false, true]) it(resume ? "continues a timed-out send after MCP restart with the same reply and no duplicate dispatch" : "returns the same exact assistant item and hash from send and authoritative turn read", async () => {
     const threadId = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
     const turnId = "01a08812-f472-7f43-8f9b-1137e61f6d32";
@@ -267,7 +352,7 @@ describe("Desktop task MCP integration", () => {
       assert.match(result.content[0].text, /assistant response unavailable.*do not resend/i);
       assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, 1);
       assert.equal(calls.includes("create_thread"), false);
-      assert.deepEqual(calls, ["read_thread", "send_message_to_thread", "wait_threads", "read_thread", "read_thread"]);
+      assert.deepEqual(calls, ["read_thread", "read_thread", "send_message_to_thread", "wait_threads", "read_thread", "read_thread"]);
     });
   });
 
@@ -291,11 +376,11 @@ describe("Desktop task MCP integration", () => {
       assert.equal(reply.structuredContent.operation.threadId, "original-task");
       assert.doesNotMatch(JSON.stringify(reply), /PRIVATE_DELAYED_REPLY|No message was sent/);
       assert.match(reply.content[0].text, /may already have been dispatched/);
-      assert.deepEqual(calls, ["read_thread", "send_message_to_thread", "wait_threads"]);
+      assert.deepEqual(calls, ["read_thread", "read_thread", "send_message_to_thread", "wait_threads"]);
       const later = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "original-task", prompt: "Stale caller", openInApp: false } });
       assert.equal(later.isError, true);
       assert.match(later.content[0].text, /calling Claude Code session is not confirmed/);
-      assert.equal(calls.length, 3);
+      assert.equal(calls.length, 4);
     });
   });
 
@@ -311,6 +396,7 @@ describe("Desktop task MCP integration", () => {
       assert.equal(status.isError, true);
       assert.equal(status.structuredContent.readiness.ready, false);
       assert.ok(status.structuredContent.readiness.issues.some((issue) => issue.code === "SENDER_UNVERIFIED"));
+      assert.deepEqual(status.structuredContent.projectScope, { enabled: true, policy: "verified-sender-same-project", match: "canonical-directory-or-git-repository", checkedBeforeMutation: true });
       const mutation = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home, prompt: "Blocked generic caller" } });
       assert.equal(mutation.isError, true);
       assert.match(mutation.content[0].text, /no registered Claude Desktop Code session/);
@@ -370,7 +456,7 @@ describe("Desktop task MCP integration", () => {
         assert.match(retry.content[0].text, /threadId: shared-receipt-task/);
         assert.match(retry.content[0].text, /^projectId: receipt-project$/m);
         assert.match(retry.content[0].text, /^project assignment: verified in Desktop's current listing$/m);
-        assert.deepEqual(calls, ["list_projects", "create_thread", "read_thread", "list_projects", "list_threads", "read_thread", "list_projects", "list_threads"]);
+        assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread", "read_thread", "list_projects", "list_threads", "read_thread", "list_projects", "list_threads"]);
         assert.equal(server.connections, 0);
       } finally {
         releaseCreate();
@@ -405,7 +491,7 @@ describe("Desktop task MCP integration", () => {
         assert.match(text, /absent from Desktop's recent\/pinned listing/);
         assert.match(text, /^status: existing task retained; project assignment needs inspection$/m);
         assert.doesNotMatch(text, /^projectId:|^project:|project assignment: verified|status: completed/m);
-        assert.deepEqual(calls, ["list_projects", "create_thread", "read_thread", "list_projects", "list_threads"]);
+        assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread", "read_thread", "list_projects", "list_threads"]);
         assert.deepEqual(creationReceipts(home).map(({ state, threadId }) => ({ state, threadId })), [{ state: "known", threadId: "omitted-receipt-task" }]);
         assert.equal(server.connections, 0);
       } finally {
@@ -433,7 +519,7 @@ describe("Desktop task MCP integration", () => {
         const retry = await restarted.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Original brief with minor edits" } });
         assert.equal(retry.isError, true);
         assert.match(retry.content[0].text, /earlier Desktop creation is unknown.*Do not resend or create another task/);
-        assert.deepEqual(calls, ["list_projects", "create_thread"]);
+        assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread"]);
         assert.deepEqual(creationReceipts(home).map((receipt) => receipt.state), ["unknown"]);
         assert.equal(server.connections, 0);
       } finally {
@@ -481,7 +567,7 @@ describe("Desktop task MCP integration", () => {
           assert.match(retry.content[0].text, /Reused the existing Codex Desktop task/);
           assert.match(retry.content[0].text, /threadId: timeout-receipt-task/);
           assert.match(retry.content[0].text, /^project assignment: verified in Desktop's current listing$/m);
-          assert.deepEqual(calls, ["list_projects", "create_thread", "wait_threads", "read_thread", "list_projects", "list_threads"]);
+          assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread", "wait_threads", "read_thread", "list_projects", "list_threads"]);
           assert.equal(server.connections, 0);
         } finally {
           await restarted.client.close();
@@ -520,7 +606,7 @@ describe("Desktop task MCP integration", () => {
         const stopped = await client.callTool({ name: "stop_codex_app_server", arguments: {} });
         assert.equal(stopped.isError, undefined);
         assert.match(stopped.content[0].text, /left unchanged/);
-        assert.deepEqual(calls, ["list_projects", "list_threads", "read_thread", "read_thread", "read_thread", "navigate_to_codex_page"]);
+        assert.deepEqual(calls, ["list_projects", "list_threads", "read_thread", "read_thread", "read_thread", "read_thread", "read_thread", "navigate_to_codex_page"]);
         assert.equal(server.connections, 0);
       }, async (home) => {
         relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation }) => {
@@ -625,17 +711,18 @@ describe("Desktop task MCP integration", () => {
         assert.match(result.content[0].text, /opened in Codex Desktop while/);
         assert.match(result.content[0].text, /response observation: unavailable/);
         assert.doesNotMatch(result.content[0].text, /COMPLETE/);
-        assert.deepEqual(calls.map(([op]) => op), ["list_projects", "create_thread", "navigate_to_codex_page", "wait_threads"]);
+        assert.deepEqual(calls.map(([op]) => op), ["list_projects", "list_projects", "create_thread", "read_thread", "read_thread", "navigate_to_codex_page", "wait_threads"]);
         const empty = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home } });
         assert.equal(empty.isError, true);
         assert.match(empty.content[0].text, /No task was created/);
-        assert.equal(calls.length, 4);
+        assert.equal(calls.length, 7);
       }, async (home) => {
         relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
           calls.push([operation, args]);
           let result;
           if (operation === "list_projects") result = { projects: [{ projectId: "project-id", projectKind: "local", hostId: "local", path: home, label: "Test" }] };
           else if (operation === "create_thread") result = { threadId: "new-task", hostId: "local" };
+          else if (operation === "read_thread") result = { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [] };
           else if (operation === "navigate_to_codex_page") result = { navigated: true };
           else if (operation === "wait_threads") result = { polls: [{ thread: { id: "new-task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "turn", status: "completed" }, latestAssistantMessage: { turnId: "turn", phase: "final_answer", text: "COMPLETE" } }] };
           else throw new Error(`Unexpected operation ${operation}`);

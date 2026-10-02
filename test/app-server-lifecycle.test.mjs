@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { CodexAppServerClient } from "../src/app-server-client.mjs";
+import { CodexAppServerClient, readManagedRequirementsIssue } from "../src/app-server-client.mjs";
 import { runTurn } from "../src/turn.mjs";
 import { encodeFrame, startFakeAppServer } from "./helpers/fake-app-server.mjs";
 
@@ -28,6 +31,33 @@ async function fixture(options, action) {
 }
 
 describe("app-server request lifecycle", () => {
+  it("reports invalid managed sandbox modes before launching Codex", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "codex-managed-policy-"));
+    const requirementsPath = join(directory, "requirements.toml");
+    try {
+      writeFileSync(requirementsPath, 'allowed_sandbox_modes = ["danger-full-access"]\n');
+      const attempts = [];
+      const client = new CodexAppServerClient({
+        autoStart: true,
+        codexBin: process.execPath,
+        requirementsPath,
+        log: (message) => attempts.push(message),
+      });
+      client.isServerUp = async () => false;
+      await assert.rejects(() => client.connect(), (error) => {
+        assert.equal(error.code, "INVALID_MANAGED_CONFIG");
+        assert.match(error.message, /must include "read-only"/);
+        return true;
+      });
+      assert.equal(attempts.filter((message) => message.startsWith("connect attempt")).length, 1);
+
+      writeFileSync(requirementsPath, 'allowed_sandbox_modes = ["read-only", "danger-full-access"]\n');
+      assert.equal(readManagedRequirementsIssue(requirementsPath), null);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("cleans failed sends without an unhandled rejection or process exit", () => {
     const script = `
       import { CodexAppServerClient } from ${JSON.stringify(clientModule)};

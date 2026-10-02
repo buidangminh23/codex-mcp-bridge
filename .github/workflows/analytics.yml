@@ -33,6 +33,7 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.ANALYTICS_TOKEN || github.token }}
+          ANALYTICS_BRANCH_TOKEN: ${{ github.token }}
         run: node scripts/refresh-hosted-analytics.mjs
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.19.6] - 2026-10-02
+
+### Fixed
+
+- Make newly created Linux and macOS managed Codex policies readable by the account running Codex. Repair an existing valid policy that was created with restrictive file permissions, so Full access + Never works after administrator setup and remains repairable on later bridge starts.
+
 ## [1.19.5] - 2026-10-02
 
 ### Added

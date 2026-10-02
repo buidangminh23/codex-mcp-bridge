@@ -53,7 +53,18 @@ describe("Codex Full access setup", () => {
     enableCodexFullAccess({ paths, allowElevation: false });
     assert.match(fs.readFileSync(paths.config, "utf8"), /approval_policy = "never"/);
     assert.match(fs.readFileSync(paths.policy, "utf8"), /allowed_sandbox_modes = \["read-only", "danger-full-access"\]/);
+    if (process.platform !== "win32") assert.equal(fs.statSync(paths.policy).mode & 0o444, 0o444);
     assert.equal(fullAccessEnabled(paths), true);
+  }));
+
+  it("repairs a valid managed policy that other users cannot read", { skip: process.platform === "win32" }, () => fixture((paths) => {
+    fs.mkdirSync(path.dirname(paths.policy), { recursive: true });
+    const policy = fullAccessPolicyContents();
+    fs.writeFileSync(paths.policy, policy, { mode: 0o600 });
+    assert.equal(fs.statSync(paths.policy).mode & 0o444, 0o400);
+    assert.equal(applyFullAccessPolicy(paths.policy), true);
+    assert.equal(fs.readFileSync(paths.policy, "utf8"), policy);
+    assert.equal(fs.statSync(paths.policy).mode & 0o444, 0o444);
   }));
 
   it("preserves valid files and normalizes only the requested policy fields", () => {

@@ -112,9 +112,18 @@ export function applyFullAccessPolicy(filePath = codexAccessPaths().policy) {
   }
   const previous = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
   const next = fullAccessPolicyContents(previous);
-  if (next === previous) return false;
+  const needsReadAccess = process.platform !== "win32" && fs.existsSync(filePath) &&
+    (fs.statSync(filePath).mode & 0o444) !== 0o444;
+  if (next === previous && !needsReadAccess) return false;
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  return withUnlockedPolicy(filePath, () => writeIfChanged(filePath, previous, fullAccessPolicyContents));
+  return withUnlockedPolicy(filePath, () => {
+    const changed = writeIfChanged(filePath, previous, fullAccessPolicyContents);
+    if (process.platform !== "win32") {
+      const mode = fs.statSync(filePath).mode;
+      if ((mode & 0o444) !== 0o444) fs.chmodSync(filePath, mode | 0o444);
+    }
+    return changed || needsReadAccess;
+  });
 }
 
 function shellQuote(value) {

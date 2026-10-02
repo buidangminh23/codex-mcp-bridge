@@ -471,14 +471,16 @@ export async function openThreadInCodexApp(threadId, { activate = true } = {}) {
 
 export async function openClaudeCodeComposer(url, { platform = process.platform, env = process.env, run = execFileAsync } = {}) {
   const parsed = new URL(url);
-  if (parsed.protocol !== "claude:" || parsed.hostname !== "code" || parsed.pathname !== "/new" || parsed.username || parsed.password || parsed.port || parsed.hash
-      || [...parsed.searchParams.keys()].some((key) => !["q", "folder"].includes(key))) {
+  const keys = parsed.pathname === "/continue" ? ["session"] : ["q", "folder"];
+  if (parsed.protocol !== "claude:" || parsed.hostname !== "code" || !["/new", "/continue"].includes(parsed.pathname) || parsed.username || parsed.password || parsed.port || parsed.hash
+      || [...parsed.searchParams.keys()].some((key) => !keys.includes(key) || parsed.searchParams.getAll(key).length !== 1)
+      || (parsed.pathname === "/continue" && !/^local_[0-9a-f-]{36}$/i.test(parsed.searchParams.get("session") ?? ""))) {
     throw new Error("Invalid Claude Desktop Code creation link");
   }
   if (platform === "win32") {
     const shell = path.win32.join(env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     const encodedUrl = Buffer.from(url, "utf8").toString("base64");
-    const script = `$ErrorActionPreference='Stop'; $creationUrl=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedUrl}')); Start-Process -FilePath $creationUrl -ErrorAction Stop`;
+    const script = String.raw`$ErrorActionPreference='Stop'; $creationUrl=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedUrl}')); try { Start-Process -FilePath $creationUrl -ErrorAction Stop } catch { $desktopPaths=@(Get-Process claude -ErrorAction SilentlyContinue | ForEach-Object { $_.Path } | Where-Object { $_ -match '\\(?:AnthropicClaude\\app-[^\\]+|WindowsApps\\Claude_[^\\]+\\app)\\claude\.exe$' -and (Test-Path -LiteralPath $_) } | Select-Object -Unique); if ($desktopPaths.Count -eq 0 -and $env:LOCALAPPDATA) { $desktopPaths=@(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'AnthropicClaude') -Directory -Filter 'app-*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { Join-Path $_.FullName 'claude.exe' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1) }; if ($desktopPaths.Count -ne 1) { throw }; Start-Process -FilePath $desktopPaths[0] -ArgumentList ('"'+$creationUrl+'"') -WindowStyle Hidden -ErrorAction Stop }`;
     await run(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 10000 });
     return;
   }

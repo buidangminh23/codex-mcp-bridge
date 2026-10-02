@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Recover dormant Claude Desktop Code tasks by reopening their exact saved task ID before sending. Keep account, sender, project and recipient checks active throughout recovery; never substitute a CLI or another task.
+- On Windows, submit authorized new Desktop conversations after verifying the exact prompt and explicitly selecting the full native project path. A deep-link folder hint can otherwise create a scratch "No folder" session. Authorized workspace trust handles only the exact native project dialog. Preserve uncertain submission receipts without duplicate Send and track native helper changes during runtime reload.
+- Recover the Windows Claude URI launcher when an application update leaves the registered executable missing.
+
 ## [1.19.6] - 2026-10-02
 
 ### Fixed

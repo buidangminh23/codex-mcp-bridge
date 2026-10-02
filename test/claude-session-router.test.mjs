@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 
-import { resolveClaudeDesktopSession, sameClaudeDesktopRecipient } from "../src/claude-session-router.mjs";
+import { recoverClaudeDesktopSession, resolveClaudeDesktopSession, sameClaudeDesktopRecipient } from "../src/claude-session-router.mjs";
 
 const project = fs.mkdtempSync(path.join(os.tmpdir(), "claude-router-"));
 const otherProject = fs.mkdtempSync(path.join(os.tmpdir(), "claude-router-other-"));
@@ -39,6 +39,27 @@ function blocked(callback, code) {
 }
 
 describe("Claude Desktop session rediscovery", () => {
+  it("reopens only the exact dormant task and resolves its new live process", async () => {
+    const { args, sessions } = fixture();
+    let opened = 0;
+    const task = { taskId: "task-a", fileTaskId: "task-a", isArchived: false, cwd: project };
+    const result = await recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, { listTasks: async () => [task], listSessions: async () => sessions, beforeOpen: async () => {}, open: async (taskId) => { assert.equal(taskId, "task-a"); opened++; } });
+    assert.equal(result.session.sessionId, "cli-a");
+    assert.equal(opened, 1);
+  });
+
+  it("reports reconnecting without sending or selecting another saved task", async () => {
+    const { args } = fixture();
+    const task = { taskId: "task-a", fileTaskId: "task-a", isArchived: false, cwd: project };
+    const deps = { listTasks: async () => [task], listSessions: async () => [], beforeOpen: async () => {}, open: async () => {}, timeoutMs: 0 };
+    const result = await recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, deps);
+    assert.equal(result.recovery.status, "awaiting_session");
+    assert.equal(result.recovery.sent, false);
+    for (const tasks of [[], [task, task], [{ ...task, isArchived: true }], [{ ...task, fileTaskId: "other" }]]) {
+      await assert.rejects(recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, { ...deps, listTasks: async () => tasks, open: async () => assert.fail("must not open") }), (error) => error.preflight?.code === "CLAUDE_DESKTOP_TASK_UNVERIFIED");
+    }
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, { ...deps, beforeOpen: async () => { throw new Error("Sender changed"); }, open: async () => assert.fail("must not open") }), /Sender changed/);
+  });
   it("follows A to B to A without reusing the other account's lingering process", () => {
     const { args } = fixture();
     for (const accountId of ["account-a", "account-b", "account-a", "account-b", "account-a"]) {

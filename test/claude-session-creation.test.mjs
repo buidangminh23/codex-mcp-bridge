@@ -35,6 +35,52 @@ async function blocked(promise, code) {
 }
 
 describe("Claude native new session lifecycle", () => {
+  it("submits an authorized exact composer once, including concurrent and restored retries", async () => {
+    let submitted = 0;
+    let trusted = 0;
+    const { creation, state, dependencies, connect } = fixture({ trust: async ({ cwd }) => { assert.equal(cwd, "/project"); trusted++; return { status: "trusted" }; }, submit: async ({ prompt, cwd }) => { submitted++; assert.equal(cwd, "/project"); assert.match(prompt, new RegExp(id)); connect(); return { status: "submitted" }; } });
+    const [first, second] = await Promise.all([creation.start({ ...args, autoSubmit: true, trustProject: true }), creation.start({ ...args, autoSubmit: true, trustProject: true })]);
+    assert.equal(first.status, "created");
+    assert.deepEqual(second, first);
+    assert.equal(trusted, 1);
+    assert.equal(submitted, 1);
+    const restored = new ClaudeSessionCreation(dependencies);
+    restored.restoreState(creation.exportState());
+    assert.deepEqual(await restored.start({ ...args, autoSubmit: true }), first);
+    assert.equal(submitted, 1);
+    assert.equal(state.opened.length, 1);
+  });
+
+  it("retains uncertain submission without pressing Send again or claiming receipt", async () => {
+    let attempts = 0;
+    const { creation, dependencies } = fixture({ submit: async () => { attempts++; throw new Error("Lost UI acknowledgement"); } });
+    const receipt = await creation.start({ ...args, autoSubmit: true });
+    assert.equal(receipt.status, "submission_uncertain");
+    assert.equal(receipt.promptSubmitted, false);
+    const restored = new ClaudeSessionCreation(dependencies);
+    restored.restoreState(creation.exportState());
+    assert.deepEqual(await restored.start({ ...args, autoSubmit: true }), receipt);
+    assert.equal(attempts, 1);
+  });
+
+  it("never trusts or submits when project or account cannot be verified", async () => {
+    const { creation, state } = fixture({ trust: async () => assert.fail("must not trust"), submit: async () => assert.fail("must not submit") });
+    state.tasks = [];
+    await blocked(creation.start({ ...args, autoSubmit: true, trustProject: true }), "CLAUDE_CREATION_PROJECT_NOT_FOUND");
+    assert.equal(state.opened.length, 0);
+  });
+
+  it("retries an unsent trust blocker in the same composer without reopening or duplicating Send", async () => {
+    let allowTrust = false;
+    let submissions = 0;
+    const { creation, state, connect } = fixture({ trust: async () => ({ status: allowTrust ? "trusted" : "blocked", reason: "exact_trust_not_ready" }), submit: async () => { submissions++; connect(); return { status: "submitted" }; } });
+    assert.equal((await creation.start({ ...args, autoSubmit: true, trustProject: true })).status, "awaiting_user");
+    assert.equal(submissions, 0);
+    allowTrust = true;
+    assert.equal((await creation.start({ ...args, autoSubmit: true, trustProject: true })).status, "created");
+    assert.equal(submissions, 1);
+    assert.equal(state.opened.length, 1);
+  });
   it("opens only a prefilled native URI and awaits a real user submission", async () => {
     const { creation, state } = fixture();
     const result = await creation.start(args);
@@ -107,7 +153,13 @@ describe("Claude native new session lifecycle", () => {
     assert.equal(pending.observedCwd, "/scratch/No folder");
     assert.equal(pending.cwd, "/project");
     assert.equal(pending.taskId, "new-task");
-    await blocked(creation.start({ ...args, requestId: secondId, cwd: "/other" }), "CLAUDE_CREATION_PENDING");
+    state.tasks.push({ taskId: "new-task", cliSessionId: "new-cli", cwd: "/scratch/No folder", isArchived: false });
+    assert.deepEqual(await creation.start({ ...args, autoSubmit: true, trustProject: true }), pending);
+    const next = await creation.start({ ...args, requestId: secondId });
+    assert.equal(next.status, "awaiting_user");
+    assert.equal(state.opened.length, 2);
+    assert.equal(creation.exportState().requests[1].baseline.includes("new-task"), true);
+    assert.equal((await creation.inspect(secondId, args)).status, "awaiting_user");
     const restored = new ClaudeSessionCreation(dependencies);
     restored.restoreState(creation.exportState());
     assert.deepEqual(await restored.inspect(id, args), pending);

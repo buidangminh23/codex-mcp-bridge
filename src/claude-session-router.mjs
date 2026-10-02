@@ -1,5 +1,6 @@
 import { assertClaudeSessionCwd } from "./peer-protocol.mjs";
 import { preflightFailure } from "./recipient-preflight.mjs";
+import { setTimeout as delay } from "node:timers/promises";
 
 function assertCwd(session, expectedCwd) {
   try {
@@ -21,6 +22,36 @@ function uniqueLiveSessions(sessions) {
     if (!unique.has(identity)) unique.set(identity, session);
   }
   return [...unique.values()];
+}
+
+export async function recoverClaudeDesktopSession(args, { listTasks, listSessions, open, beforeOpen, sleep = delay, timeoutMs = 15000 }) {
+  try { return { session: resolveClaudeDesktopSession(args) }; }
+  catch (error) {
+    if (error.preflight?.code !== "CLAUDE_SESSION_NOT_FOUND" || args.target !== "auto" || !args.expectedTaskId) throw error;
+  }
+  const assertTask = async () => {
+    await beforeOpen();
+    const tasks = await listTasks();
+    if (!Array.isArray(tasks) || tasks.length > 8192) throw preflightFailure("CLAUDE_DESKTOP_TASK_UNVERIFIED", "Saved Desktop tasks cannot be verified.");
+    const matches = tasks.filter((task) => task.taskId === args.expectedTaskId);
+    if (matches.length !== 1 || matches[0].fileTaskId !== matches[0].taskId || matches[0].isArchived !== false) {
+      throw preflightFailure("CLAUDE_DESKTOP_TASK_UNVERIFIED", "The exact saved Desktop task is missing, archived, or ambiguous; no replacement was opened.");
+    }
+    assertCwd(matches[0], args.expectedCwd);
+    return matches[0];
+  };
+  const task = await assertTask();
+  try { await open(task.taskId); }
+  catch { return { recovery: { status: "launch_uncertain", sent: false, taskId: task.taskId, cwd: args.expectedCwd, reason: "The exact Desktop task could not be confirmed open. Inspect this task before retrying; no message was sent." } }; }
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    await assertTask();
+    try { return { session: resolveClaudeDesktopSession({ ...args, sessions: await listSessions() }) }; }
+    catch (error) { if (error.preflight?.code !== "CLAUDE_SESSION_NOT_FOUND") throw error; }
+    if (Date.now() >= deadline) break;
+    await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
+  }
+  return { recovery: { status: "awaiting_session", sent: false, taskId: task.taskId, cwd: args.expectedCwd, reason: "The exact saved task was opened in Claude Desktop and is reconnecting. Retry target auto with this expectedTaskId; no message has been sent." } };
 }
 
 export function sameClaudeDesktopRecipient(selected, current) {

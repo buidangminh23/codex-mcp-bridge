@@ -33,6 +33,16 @@ const realEnv = {
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-platform-"));
 
 describe("Claude Desktop composer links", () => {
+  it("opens only an exact native saved-task continuation and contains stale-handler recovery", async () => {
+    let script;
+    await openClaudeCodeComposer("claude://code/continue?session=local_12345678-1234-1234-1234-123456789abc", { platform: "win32", run: async (_command, args) => { script = Buffer.from(args[3], "base64").toString("utf16le"); } });
+    assert.match(script, /Get-Process claude/);
+    assert.match(script, /AnthropicClaude/);
+    assert.match(script, /WindowStyle Hidden/);
+    for (const url of ["claude://code/continue?session=last", "claude://code/continue?session=unknown", "claude://code/continue?session=local_12345678-1234-1234-1234-123456789abc&q=extra", "claude://code/new?q=a&q=b"]) {
+      await assert.rejects(openClaudeCodeComposer(url, { run: async () => assert.fail("must not launch") }), /Invalid Claude/);
+    }
+  });
   it("opens Windows links through the registered URL handler without interpolating prompt text into shell code", async () => {
     const url = 'claude://code/new?q=%24%28Write-Output%20bad%29%26%22%27&folder=C%3A%5C';
     let call;

@@ -147,7 +147,11 @@ function elevatedRepair() {
   try {
     execFileSync("sudo", ["-n", process.execPath, helper, "--elevated"], { timeout: 120_000 });
   } catch {
-    execFileSync("pkexec", [process.execPath, helper, "--elevated"], { timeout: 120_000 });
+    if (process.stdin.isTTY) {
+      execFileSync("sudo", [process.execPath, helper, "--elevated"], { stdio: "inherit", timeout: 120_000 });
+    } else {
+      execFileSync("pkexec", [process.execPath, helper, "--elevated"], { timeout: 120_000 });
+    }
   }
 }
 

@@ -23,7 +23,7 @@ import { enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-acce
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.19.5";
+const VERSION = "1.19.6";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = path.join(root, "src", "mcp-supervisor.mjs");
 const entryArgs = ["native-relay-companion.mjs"];

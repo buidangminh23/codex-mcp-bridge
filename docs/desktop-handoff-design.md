@@ -102,6 +102,12 @@ repeat of the installer, messaging-automation and repository-hygiene suites
 gave **28 passed, the same 2 timeouts**, after the final documentation/package
 and language-guidance edits. This is not a clean full-suite pass.
 
+A control run on untouched upstream `00730b6`, with freshly installed locked
+dependencies and only those two test names selected, reproduced **both**
+60-second timeouts (~125 seconds total). Thus the failures reproduce without
+this contribution on this machine; their underlying cause remains undiagnosed.
+No test deadline was increased and no failing case was skipped.
+
 `npm pack --dry-run --json --ignore-scripts` includes the English guides and
 excludes local acceptance artifacts. `git diff --check` passes. The standalone
 Desktop health check discovers tools and the existing native relay, then

@@ -35,3 +35,8 @@ for (const entry of entries) {
   if (before !== after) fs.writeFileSync(file, after);
   console.log(`${entry.split(path.sep).join("/")} VERSION -> ${version}`);
 }
+
+const manifestPath = path.join(root, ".codex-plugin", "plugin.json");
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+manifest.version = version;
+fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");

@@ -28,6 +28,46 @@ The image below is an hourly snapshot. Each metric shows its source time and rep
 
 ## Installation
 
+### ChatGPT plugin
+
+[Open Codex Bridge](https://codex-mcp-bridge.minhspark.chatgpt.site) to connect ChatGPT to **your own computer**. Each ChatGPT account pairs its own connector and can access only the local project directories selected during setup. Native Desktop mode supports Windows and macOS. Keep Codex Desktop and the connector running.
+
+Install Node.js 22+, sign in to Codex Desktop and Claude Desktop, and save the intended project in Codex Desktop. The connector pins both local account identities and stops if either account changes. Install the native relay using the platform instructions below, then pair:
+
+Windows PowerShell:
+
+```powershell
+npm.cmd install -g @minhspark/codex-mcp-bridge@latest
+codex-native-relay-install.cmd --desktop-tasks
+codex-sites-connector.cmd --pair --site https://codex-mcp-bridge.minhspark.chatgpt.site --roots "C:\Projects\YourProject"
+```
+
+macOS Terminal:
+
+```bash
+npm install -g @minhspark/codex-mcp-bridge@latest
+codex-native-relay-install --desktop-tasks
+codex-sites-connector --pair --site https://codex-mcp-bridge.minhspark.chatgpt.site --roots "$HOME/YourProject"
+```
+
+Open the pairing URL printed in the terminal, sign in with the ChatGPT account that will use the plugin, and choose **Connect this computer**. The Site owner can install its provisioned plugin from **Plugins → Personal → Created by you**. To restart an already paired connector, run `codex-sites-connector` (`codex-sites-connector.cmd` on Windows). To replace the paired computer, use **Disconnect existing computer** on a fresh pairing page first.
+
+The public MCP endpoint is `https://codex-mcp-bridge.minhspark.chatgpt.site/mcp`; it uses Sign in with ChatGPT. A plugin compatibility ZIP is attached to the [1.20.0 release](https://github.com/buidangminh23/codex-mcp-bridge/releases/tag/v1.20.0) for manual import in clients that support plugin packages. ChatGPT personal accounts cannot share their Sites-provisioned plugin directly by invitation or share link. A public directory listing requires verified developer identity and OpenAI review; this release does not claim directory approval. See [OpenAI's Sites plugin access rules](https://help.openai.com/en/articles/20001547-hosting-a-plugin-with-chatgpt-sites).
+
+Use a semicolon between multiple Windows roots or a colon on macOS. The relay's executor must belong to an allowed project. Credentials and operation receipts stay in the current OS user's private `~/.codex/sites-bridge` directory. The connector uses outbound HTTPS; no public port or tunnel is required.
+
+The plugin can list projects, read conversations, create an authorized task, and continue an existing task. Requests return an operation ID; read its result before sending more work. An uncertain send is never automatically repeated. Disconnecting blocks future dispatch and cancels queued work; tasks already sent to Desktop keep running. Linux/WSL users can use the existing CLI bridge below; the hosted connector requires native Codex Desktop.
+
+The hosted Worker source and database migrations are in `sites/codex-bridge`. A compatibility plugin manifest and workflow skill are included in the npm package and this repository.
+
+#### Hosted data
+
+The hosted service is operated by Bui Dang Minh and runs on OpenAI Sites. Sign in with ChatGPT supplies a Site-scoped user identifier; the Worker uses it to bind a connector and isolate each account's operation records. The Worker does not use profile names or email addresses. OpenAI handles sign-in and hosting independently.
+
+The database stores the account identifier, a connector identifier and token hash, connection timestamps, requested tool arguments (including task prompts), and the returned Desktop results. These records support polling and duplicate-send prevention. The service operator can access this database. Data is sent only to the paired computer and returned to the requesting account through the authenticated service. A local connector stores its credentials, account fingerprints and operation receipts in the OS user's private configuration directory.
+
+Requests expire for dispatch after two minutes. Expiry is not data deletion: operation records remain stored to preserve dispatch history. Disconnecting revokes the device token and cancels undispatched work; it does not erase operation history or stop tasks already running in Desktop. For deletion or privacy requests, contact the operator through the repository's support link, without posting private prompts, account credentials or conversation content in a public issue. No advertising or analytics collection is implemented by this hosted Worker.
+
 ### GitHub Packages
 
 The repository-linked copy is [@buidangminh23/codex-mcp-bridge](https://github.com/buidangminh23/codex-mcp-bridge/packages)

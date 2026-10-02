@@ -1,0 +1,15 @@
+{
+  "name": "codex-bridge-sites",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "db:generate": "drizzle-kit generate",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.4",
+    "drizzle-orm": "^0.44.5"
+  }
+}

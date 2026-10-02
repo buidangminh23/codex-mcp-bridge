@@ -6,4 +6,5 @@ node_modules/
 /desktop-demo.gif
 /desktop-demo.mp4
 .agentgate/
+.sites-runtime/
 receipt*.json

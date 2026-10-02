@@ -4,6 +4,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-10-03
+
+### Added
+
+- Codex MCP Bridge plugin package and a public Sites MCP server. Each account pairs its own computer; users can access only their paired connector and its allowed local projects. Public ChatGPT directory publication remains subject to developer verification and review.
+- Outbound HTTPS Desktop connector with account binding, private credentials, persistent operation receipts, and live pairing checks before sending work. Duplicate operation IDs cannot send the same prompt again; interrupted sends remain uncertain until inspected.
+- Hosted Worker source, D1 migrations, pairing UI, plugin compatibility manifest, workflow skill, and Windows/macOS setup instructions.
+
 ## [1.19.7] - 2026-10-02
 
 ### Fixed

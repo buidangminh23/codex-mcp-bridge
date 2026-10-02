@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.19.7] - 2026-10-02
+
 ### Fixed
 
 - Recover dormant Claude Desktop Code tasks by reopening their exact saved task ID before sending. Keep account, sender, project and recipient checks active throughout recovery; never substitute a CLI or another task.

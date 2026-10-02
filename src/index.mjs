@@ -35,7 +35,7 @@ import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs"
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.19.6";
+const VERSION = "1.19.7";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 

@@ -310,6 +310,7 @@ Start with `codex doctor` for Codex installation problems and `claude doctor` fo
 
 | Error / symptom | Fix |
 |---|---|
+| Codex says `Organization settings could not be loaded`, or the bridge reports `INVALID_MANAGED_CONFIG` | Check the managed `requirements.toml` at `%ProgramData%\OpenAI\Codex\requirements.toml` on Windows or `/etc/codex/requirements.toml` on macOS/Linux. If it defines `allowed_sandbox_modes`, the list must include `"read-only"` alongside any other allowed modes. Ask the machine administrator to correct it, then run `codex doctor --summary --ascii`. The bridge reports this error before trying to start an external app-server; it does not change managed policy. |
 | `codex binary not found`, `ENOENT`, or Windows `EINVAL` during registration | Locate the actual executable. Set `CODEX_EXE` before rerunning the installer: PowerShell `$env:CODEX_EXE = (Get-Command codex.exe).Source`; macOS/Linux `export CODEX_EXE="$(command -v codex)"`. On Windows, do not point it at `codex.ps1` or `codex.cmd`. |
 | Tools appear in Claude Desktop but not in its Code task | Complete the separate [Claude Code registration](#register-claude-code), then reconnect `/mcp` in that Code session. |
 | Installer refuses an entry with custom access/timeout settings | Keep those settings. Update only the existing entry's `command` and `args` to the values printed by the installer, then reconnect. |

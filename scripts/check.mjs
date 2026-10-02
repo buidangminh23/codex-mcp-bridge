@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readManagedRequirementsIssue } from "../src/app-server-client.mjs";
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,6 +41,8 @@ const transport = new StdioClientTransport({
 const client = new Client({ name: "bridge-check", version: "1.0.0" });
 
 try {
+  const managedIssue = readManagedRequirementsIssue();
+  if (managedIssue) throw new Error(managedIssue);
   await client.connect(transport);
   const tools = await client.listTools();
   console.log("tools:", tools.tools.map((t) => t.name).join(", "));

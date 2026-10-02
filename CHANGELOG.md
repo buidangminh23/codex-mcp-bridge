@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.19.4] - 2026-10-02
+
+### Fixed
+
+- Detect a managed Codex `requirements.toml` whose `allowed_sandbox_modes` omits `read-only` before auto-starting an external app-server. The bridge and `npm run check` now report the policy error directly instead of waiting for a generic connection failure; they do not edit the administrator-managed file.
+
 ## [1.19.3] - 2026-09-30
 
 ### Changed

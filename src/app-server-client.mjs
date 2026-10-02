@@ -1,4 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { PLATFORM_LABEL, resolveCodexBin, spawnEnv } from "./platform.mjs";
@@ -7,6 +9,24 @@ import { assertAllowedAppServerUrl } from "./security-policy.mjs";
 const DEFAULT_URL = "ws://127.0.0.1:8791";
 const CONNECT_ATTEMPTS = 2;
 const CONNECT_RETRY_DELAY_MS = 750;
+
+function managedRequirementsPath() {
+  return process.platform === "win32"
+    ? path.join(process.env.ProgramData ?? process.env.PROGRAMDATA ?? "C:\\ProgramData", "OpenAI", "Codex", "requirements.toml")
+    : "/etc/codex/requirements.toml";
+}
+
+export function readManagedRequirementsIssue(filePath = managedRequirementsPath()) {
+  let contents;
+  try {
+    contents = readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+  const sandboxModes = /^\s*allowed_sandbox_modes\s*=\s*\[([\s\S]*?)\]/m.exec(contents);
+  if (!sandboxModes || /["']read-only["']/.test(sandboxModes[1])) return null;
+  return `Codex managed requirements at ${filePath} are invalid: allowed_sandbox_modes must include "read-only". Ask the machine administrator to repair the policy, then run codex doctor. The bridge does not edit managed policy files.`;
+}
 
 export function parseListeningPids(output, port) {
   const suffix = `:${port}`;
@@ -81,6 +101,7 @@ export class CodexAppServerClient {
     this.url = options.url ?? process.env.CODEX_APP_SERVER_URL ?? DEFAULT_URL;
     assertAllowedAppServerUrl(this.url);
     this.codexBin = resolveCodexBin(options.codexBin);
+    this.requirementsPath = options.requirementsPath ?? managedRequirementsPath();
     this.autoStart = options.autoStart ?? process.env.CODEX_BRIDGE_AUTOSTART !== "0";
     this.log = options.log ?? (() => {});
     const requestedApproval = options.approval ?? process.env.CODEX_BRIDGE_APPROVAL ?? "deny";
@@ -119,6 +140,8 @@ export class CodexAppServerClient {
   }
 
   async startServer() {
+    const managedIssue = readManagedRequirementsIssue(this.requirementsPath);
+    if (managedIssue) throw new AppServerError(managedIssue, "INVALID_MANAGED_CONFIG");
     this.log(`starting shared app-server on ${PLATFORM_LABEL}: ${this.codexBin} app-server --listen ${this.url}`);
     const needsShell = /\.(cmd|bat)$/i.test(this.codexBin);
     const child = spawn(this.codexBin, ["app-server", "--listen", this.url], {
@@ -194,6 +217,7 @@ export class CodexAppServerClient {
           lastError = err;
           this.#assertConnectionEpoch(epoch);
           this.log(`connect attempt ${attempt}/${CONNECT_ATTEMPTS} failed: ${err.message}`);
+          if (err.code === "INVALID_MANAGED_CONFIG") throw err;
           if (attempt < CONNECT_ATTEMPTS) await delay(CONNECT_RETRY_DELAY_MS);
         }
       }

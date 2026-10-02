@@ -9,6 +9,8 @@ const number = value => Number.isSafeInteger(value) && value >= 0 ? value : null
 const date = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z)?$/.test(value) && Number.isFinite(Date.parse(value)) ? value : null;
 const numericFields = (value, keys) => Object.fromEntries(keys.map(key => [key, number(value?.[key])]));
 const format = value => value == null ? 'Unavailable' : value.toLocaleString('en-US');
+const displayTime = value => date(value) ? new Date(value).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'Unavailable';
+const staleAfter = 3 * 60 * 60 * 1000;
 
 function sanitizeSnapshot(snapshot) {
   const output = { collectedAt: date(snapshot.collectedAt) };
@@ -44,17 +46,19 @@ export function renderPublicDashboard(data) {
   const releases = latest('releases')?.releases;
   const assets = releases?.flatMap(release => release.assets.map(asset => ({ ...asset, tag: release.tag }))) || [];
   const sum = rows => rows?.every(row => row.downloads != null) ? rows.reduce((total, row) => total + row.downloads, 0) : null;
-  const window = (source, rows) => `${rows?.[0]?.timestamp?.slice(0, 10) || '?'} to ${rows?.at(-1)?.timestamp?.slice(0, 10) || '?'} UTC`;
+  const window = rows => rows?.length ? `${rows[0].timestamp?.slice(0, 10) || '?'} to ${rows.at(-1).timestamp?.slice(0, 10) || '?'} UTC` : 'Source window unavailable';
+  const sourceTime = source => latest(source)?.sourceCollectedAt?.[source];
+  const noReports = data.usage?.active.month === 0;
   const cards = [
-    ['GitHub views', views?.count, window('views', views?.views)], ['Unique visitors', views?.uniques, 'Distinct within GitHub window'], ['GitHub clones', clones?.count, window('clones', clones?.clones)],
-    ['Unique cloners', clones?.uniques, 'Distinct within GitHub window'], ['npm downloads', sum(npm?.downloads), npm ? `${npm.start} to ${npm.end} UTC` : 'Source unavailable'], ['Stars', repository?.stars, 'Current repository total'],
-    ['Forks', repository?.forks, 'Current repository total'], ['Subscribers', repository?.subscribers, 'Current repository total'], ['Release downloads', releases ? sum(assets) : null, 'Cumulative asset downloads'],
+    ['GitHub views', views?.count, window(views?.views), sourceTime('views')], ['Unique visitors', views?.uniques, window(views?.views), sourceTime('views')], ['GitHub clones', clones?.count, window(clones?.clones), sourceTime('clones')],
+    ['Unique cloners', clones?.uniques, window(clones?.clones), sourceTime('clones')], ['npm downloads', sum(npm?.downloads), npm ? `${npm.start} to ${npm.end} UTC` : 'Source unavailable', sourceTime('npm')], ['Stars', repository?.stars, 'Repository total at source time', sourceTime('repository')],
+    ['Forks', repository?.forks, 'Repository total at source time', sourceTime('repository')], ['Subscribers', repository?.subscribers, 'Repository total at source time', sourceTime('repository')], ['Release downloads', releases ? sum(assets) : null, 'Cumulative asset downloads', sourceTime('releases')],
   ];
-  if (data.usage) cards.push(['Active installations / day', data.usage.active.day, 'Consenting installations only'], ['Active installations / 7 days', data.usage.active.week, 'Distinct across the whole period'], ['Active installations / 30 days', data.usage.active.month, 'Distinct across the whole period']);
+  for (const [label, key] of [['Active installations / day', 'day'], ['Active installations / 7 days', 'week'], ['Active installations / 30 days', 'month']]) cards.push([label, data.usage?.active[key], noReports ? 'No opted-in reports in this period' : 'Consenting installations only', data.usage?.collectedAt]);
   const details = [
-    ['Release assets', ...assets.map(asset => `${asset.tag} / ${asset.name}: ${format(asset.downloads)}`)],
-    ['Operating systems / 30 days', ...(data.usage?.platforms || []).map(row => `${row.platform}: ${format(row.installations)}`)],
-    ['Versions / 30 days', ...(data.usage?.versions || []).map(row => `${row.version}: ${format(row.installations)}`)],
+    ['Release assets', ...(assets.length ? assets.map(asset => `${asset.tag} / ${asset.name}: ${format(asset.downloads)}`) : [releases ? 'No release assets' : 'Source unavailable'])],
+    ['Operating systems / 30 days', ...(data.usage?.platforms.length ? data.usage.platforms.map(row => `${row.platform}: ${format(row.installations)}`) : [noReports ? 'No opted-in reports in this period' : 'Source unavailable'])],
+    ['Versions / 30 days', ...(data.usage?.versions.length ? data.usage.versions.map(row => `${row.version}: ${format(row.installations)}`) : [noReports ? 'No opted-in reports in this period' : 'Source unavailable'])],
     ['Source freshness (UTC)', ...['views', 'clones', 'npm', 'repository', 'releases'].map(source => `${source}: ${latest(source)?.sourceCollectedAt?.[source] || 'Unavailable'}`), ...(data.usage ? [`usage: ${data.usage.collectedAt || 'Unavailable'}`] : [])],
   ];
   const wrap = (value, maximum) => {
@@ -73,18 +77,21 @@ export function renderPublicDashboard(data) {
   const body = [];
   let y = 48;
   for (const line of wrap(data.repo, 42)) { body.push(text(line, 32, y, 28, '#f4f7fd')); y += 36; }
-  for (const line of wrap(`Public aggregate analytics • Updated ${data.updatedAt || 'Unavailable'} (UTC)`, 65)) { body.push(text(line, 32, y)); y += 28; }
+  body.push(text('Public aggregate analytics · Hourly snapshot', 32, y)); y += 28;
+  body.push(text(`Generated: ${displayTime(data.updatedAt)}`, 32, y, 17)); y += 28;
   const cardTop = y + 12;
-  cards.forEach(([label, value, detail], index) => {
+  cards.forEach(([label, value, detail, time], index) => {
     const x = 32 + index % 2 * 390;
-    const top = cardTop + Math.floor(index / 2) * 176;
-    body.push(`<rect x="${x}" y="${top}" width="366" height="160" rx="12" fill="#18253b"/>`);
-    wrap(label, 28).forEach((line, row) => body.push(text(line, x + 16, top + 30 + row * 25, 22)));
+    const top = cardTop + Math.floor(index / 2) * 192;
+    body.push(`<rect x="${x}" y="${top}" width="366" height="176" rx="12" fill="#18253b"/>`);
+    wrap(label, 28).forEach((line, row) => body.push(text(line, x + 16, top + 30 + row * 25, 20)));
     body.push(text(format(value), x + 16, top + 103, 40, '#7ee5c0'));
-    wrap(detail, 43).forEach((line, row) => body.push(text(line, x + 16, top + 132 + row * 18, 15)));
+    wrap(detail, 43).forEach((line, row) => body.push(text(line, x + 16, top + 130 + row * 16, 14)));
+    const stale = date(time) && Date.parse(data.updatedAt) - Date.parse(time) > staleAfter;
+    body.push(text(`${stale ? 'Stale · ' : 'Source: '}${displayTime(time)}`, x + 16, top + 161, 13, stale ? '#ffcb80' : '#acbcd0'));
   });
-  y = cardTop + cardRows * 176 + 16;
-  for (const caveat of ['Downloads and clones are not people or active users. CI, updates and reinstalls count.', 'Daily unique counts must not be added across dates. Missing values are unavailable, not zero.', data.usage ? 'Usage covers opted-in installations only; one person may use multiple installations.' : 'Active installation metrics unavailable; no aggregate usage report supplied.']) {
+  y = cardTop + cardRows * 192 + 16;
+  for (const caveat of ['Snapshot freshness is relative to generation time. Open the live dashboard for current age.', 'Downloads and clones are not people or active users. CI, updates and reinstalls count.', 'Daily unique counts must not be added across dates. Missing values are unavailable, not zero.', data.usage ? 'Usage covers opted-in installations only; OS and version data require telemetry consent.' : 'Active installation metrics unavailable; no aggregate usage report supplied.']) {
     for (const line of wrap(caveat, 70)) { body.push(text(line, 32, y)); y += 28; }
     y += 8;
   }
@@ -104,36 +111,77 @@ export function renderLiveDashboard(data) {
   const initial = { usage: data.usage, repository: latest('repository') ? { ...latest('repository').repository, collectedAt: latest('repository').sourceCollectedAt.repository } : undefined, npm: npm ? { start: npm.npm.start, end: npm.npm.end, downloads: npm.npm.downloads.every(row => row.downloads != null) ? npm.npm.downloads.reduce((sum, row) => sum + row.downloads, 0) : null, collectedAt: npm.sourceCollectedAt.npm } : undefined, traffic: { views: latest('views')?.views, clones: latest('clones')?.clones, collectedAt: latest('views')?.sourceCollectedAt.views, viewsCollectedAt: latest('views')?.sourceCollectedAt.views, clonesCollectedAt: latest('clones')?.sourceCollectedAt.clones } };
   initial.releases = latest('releases')?.releases;
   initial.releasesCollectedAt = latest('releases')?.sourceCollectedAt.releases;
+  for (const source of ['views', 'clones']) {
+    const rows = initial.traffic[source]?.[source];
+    if (rows?.length) initial.traffic[source] = { ...initial.traffic[source], start: rows[0].timestamp?.slice(0, 10), end: rows.at(-1).timestamp?.slice(0, 10) };
+  }
   const serialized = JSON.stringify(initial).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://vdbwkowdggtcihixowxi.supabase.co; base-uri 'none'"><title>Live repository analytics</title><style>
 *{box-sizing:border-box}body{margin:0;background:#0d1626;color:#f4f7fd;font:17px/1.6 system-ui,sans-serif}main{max-width:1100px;margin:auto;padding:32px 20px}h1{font-size:32px;line-height:1.2}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin:24px 0}article,.panel{background:#18253b;border-radius:12px;padding:20px}h2{font-size:19px;margin:0 0 8px}strong{font-size:38px;color:#7ee5c0;display:block}small,.muted{color:#acbcd0;display:block;font-size:14px}a{color:#9bcaff}.stale{color:#ffcb80}.panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}ul{padding-left:20px}#status{min-height:28px}footer{margin:24px 0}</style></head><body><main><h1>${escapeXml(data.repo)}</h1><p>Live aggregate dashboard</p><p id="status" role="status">Loading current statistics…</p><p class="muted">Refreshes every 30 seconds while visible. GitHub and npm source data can be delayed; source timestamps appear on every card. Active installations include consenting installations only.</p><div class="cards" id="cards"></div><div class="panels"><section class="panel"><h2>Operating systems / 30 days</h2><ul id="platforms"></ul></section><section class="panel"><h2>Versions / 30 days</h2><ul id="versions"></ul></section></div><footer>Downloads and clones are not people. Never add daily unique counts across dates. Missing metrics are unavailable, not zero.<p><a href="https://github.com/${data.repo}/tree/analytics">Full archived daily history and release assets</a> · <a href="data.json">Aggregate JSON</a></p></footer></main><script>
 let state = ${serialized};
+let sourceErrors = new Set();
+let lastRefresh = null;
+let refreshFailed = false;
 const releasesPanel=document.createElement('section');releasesPanel.className='panel';const releasesTitle=document.createElement('h2');releasesTitle.textContent='Release assets';const releasesList=document.createElement('ul');releasesList.id='release-assets';releasesPanel.append(releasesTitle,releasesList);document.querySelector('.panels').append(releasesPanel);
 const format = value => Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString('en-US') : 'Unavailable';
-const timestamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : 'Unavailable';
+const validTime = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
+const timestamp = value => validTime(value) ? new Date(value).toISOString().slice(0,16).replace('T',' ')+' UTC' : 'Unavailable';
+const validCount = value => Number.isSafeInteger(value) && value >= 0;
+const stale = time => !validTime(time) || Date.now()-Date.parse(time)>10800000;
+const sourceWindow = metric => metric?.start && metric?.end ? metric.start+' to '+metric.end+' UTC' : 'Source window unavailable';
+function statusText() {
+  const old = ['usage','repository','npm'].filter(source => stale(state[source]?.collectedAt) || sourceErrors.has(source));
+  for(const source of ['views','clones']) if(stale(state.traffic?.[source+'CollectedAt'] || state.traffic?.collectedAt) || sourceErrors.has(source)) old.push(source);
+  if(stale(state.releasesCollectedAt) || sourceErrors.has('releases')) old.push('releases');
+  const status=document.getElementById('status');
+  status.className=refreshFailed || old.length?'stale':'';
+  status.textContent=refreshFailed?'Refresh failed — showing previously available values. Retrying in 30 seconds.':(old.length?'Some sources stale or unavailable: '+old.join(', ')+' · ':'')+(lastRefresh?'Last API refresh: '+timestamp(lastRefresh):'Showing archived snapshot; requesting current statistics…');
+}
 function render() {
   const u = state.usage || {}, r = state.repository || {}, n = state.npm || {}, t = state.traffic || {};
   const assets=Array.isArray(state.releases)?state.releases.flatMap(release=>(Array.isArray(release.assets)?release.assets:[]).map(asset=>({...asset,tag:release.tag}))):null;
   const releaseTotal=assets && assets.every(asset=>Number.isSafeInteger(asset.downloads)&&asset.downloads>=0)?assets.reduce((sum,asset)=>sum+asset.downloads,0):null;
-  const rows = [['Reporting installations / day',u.active?.day,u.collectedAt],['Reporting installations / 7 days',u.active?.week,u.collectedAt],['Reporting installations / 30 days',u.active?.month,u.collectedAt],['GitHub views',t.views?.count,t.viewsCollectedAt || t.collectedAt],['Unique visitors',t.views?.uniques,t.viewsCollectedAt || t.collectedAt],['GitHub clones',t.clones?.count,t.clonesCollectedAt || t.collectedAt],['Unique cloners',t.clones?.uniques,t.clonesCollectedAt || t.collectedAt],['npm downloads',n.downloads,n.collectedAt,n.start && n.end ? n.start+' to '+n.end+' UTC' : 'Source window unavailable'],['Stars',r.stars,r.collectedAt],['Forks',r.forks,r.collectedAt],['Subscribers',r.subscribers,r.collectedAt],['Release downloads',releaseTotal,state.releasesCollectedAt,'Cumulative asset downloads']];
-  document.getElementById('cards').replaceChildren(...rows.map(([label,value,time,detail]) => { const card=document.createElement('article'); const title=document.createElement('h2');title.textContent=label;const count=document.createElement('strong');count.textContent=format(value);const source=document.createElement('small');source.textContent='Source: '+timestamp(time);card.append(title,count,source);if(detail){const note=document.createElement('small');note.textContent=detail;card.append(note);}return card;}));
-  for(const [id,key] of [['platforms','platform'],['versions','version']]){const list=Array.isArray(u[id])?u[id]:[];document.getElementById(id).replaceChildren(...(list.length?list:[{}]).map(row=>{const item=document.createElement('li');item.textContent=row[key]?String(row[key])+': '+format(row.installations):'Unavailable';return item;}));}
+  const noReports=u.active?.month===0;
+  const usageNote=noReports?'No opted-in reports in this period':'Consenting installations only';
+  const rows = [['Reporting installations / day',u.active?.day,u.collectedAt,usageNote,'usage'],['Reporting installations / 7 days',u.active?.week,u.collectedAt,usageNote,'usage'],['Reporting installations / 30 days',u.active?.month,u.collectedAt,usageNote,'usage'],['GitHub views',t.views?.count,t.viewsCollectedAt || t.collectedAt,sourceWindow(t.views),'views'],['Unique visitors',t.views?.uniques,t.viewsCollectedAt || t.collectedAt,sourceWindow(t.views),'views'],['GitHub clones',t.clones?.count,t.clonesCollectedAt || t.collectedAt,sourceWindow(t.clones),'clones'],['Unique cloners',t.clones?.uniques,t.clonesCollectedAt || t.collectedAt,sourceWindow(t.clones),'clones'],['npm downloads',n.downloads,n.collectedAt,sourceWindow(n),'npm'],['Stars',r.stars,r.collectedAt,null,'repository'],['Forks',r.forks,r.collectedAt,null,'repository'],['Subscribers',r.subscribers,r.collectedAt,null,'repository'],['Release downloads',releaseTotal,state.releasesCollectedAt,'Cumulative asset downloads','releases']];
+  document.getElementById('cards').replaceChildren(...rows.map(([label,value,time,detail,key]) => { const card=document.createElement('article'); const title=document.createElement('h2');title.textContent=label;const count=document.createElement('strong');count.textContent=format(value);const source=document.createElement('small');const old=stale(time)||sourceErrors.has(key)||refreshFailed;source.className=old?'stale':'';source.textContent='Source: '+timestamp(time)+(old?' · Stale or unavailable':'');card.append(title,count,source);if(detail){const note=document.createElement('small');note.textContent=detail;card.append(note);}return card;}));
+  for(const [id,key] of [['platforms','platform'],['versions','version']]){const list=Array.isArray(u[id])?u[id]:[];document.getElementById(id).replaceChildren(...(list.length?list:[{}]).map(row=>{const item=document.createElement('li');item.textContent=row[key]?String(row[key])+': '+format(row.installations):noReports?'No opted-in reports in this period. OS and version data require telemetry consent.':'Unavailable — no valid usage breakdown received.';return item;}));const source=document.createElement('li');source.className=stale(u.collectedAt)||sourceErrors.has('usage')||refreshFailed?'stale':'muted';source.textContent='Source: '+timestamp(u.collectedAt)+(source.className==='stale'?' · Stale or unavailable':'');document.getElementById(id).append(source);}
   releasesList.replaceChildren(...(assets?.length?assets:[null]).map(asset=>{const item=document.createElement('li');item.textContent=asset?String(asset.tag)+' / '+String(asset.name)+': '+format(asset.downloads):assets?'No release assets':'Unavailable';return item;}));
+  statusText();
+}
+function mergeResponse(next) {
+  const errors=new Set(Array.isArray(next.errors)?next.errors.map(row=>row.source):[]);
+  for(const [source,fields] of [['repository',['stars','forks','subscribers']],['npm',['downloads']]]) {
+    const value=next[source];
+    if(value && validTime(value.collectedAt) && fields.every(key=>validCount(value[key]))) state[source]=value;
+    else errors.add(source);
+  }
+  const u=next.usage;
+  if(u && validTime(u.collectedAt) && ['day','week','month'].every(key=>validCount(u.active?.[key])) && ['daily','platforms','versions'].every(key=>Array.isArray(u[key]) && u[key].every(row=>row && typeof row==='object' && validCount(row.installations)))) state.usage=u;
+  else errors.add('usage');
+  state.traffic=state.traffic || {};
+  for(const source of ['views','clones']) {
+    const metric=next.traffic?.[source];
+    const time=next.traffic?.[source+'CollectedAt'] || next.traffic?.collectedAt || next.sourceCollectedAt?.[source];
+    if(metric && validCount(metric.count) && validCount(metric.uniques) && validTime(time)) {state.traffic[source]=metric;state.traffic[source+'CollectedAt']=time;}
+    else errors.add(source);
+  }
+  const time=next.releasesCollectedAt || next.sourceCollectedAt?.releases;
+  if(Array.isArray(next.releases) && validTime(time) && next.releases.every(row=>typeof row.tag==='string' && Array.isArray(row.assets) && row.assets.every(asset=>typeof asset.name==='string' && validCount(asset.downloads)))) {state.releases=next.releases;state.releasesCollectedAt=time;}
+  else errors.add('releases');
+  sourceErrors=errors;
 }
 let pending = false;
 async function refresh() {
   if(pending || document.hidden) return;
   pending=true;
-  const status=document.getElementById('status');
   try {
     const response=await fetch('https://vdbwkowdggtcihixowxi.supabase.co/functions/v1/bridge-stats',{headers:{apikey:'sb_publishable_2GIhGKL82wM8mN44L-Gzxw_Zgd-Vioh'},cache:'no-store',signal:AbortSignal.timeout(8000)});
     if(!response.ok) throw new Error('request failed');
     const next=await response.json();
-    if(!next || typeof next!=='object' || !next.collectedAt) throw new Error('invalid response');
-    for(const source of ['usage','repository','npm','traffic']){if(next[source] && typeof next[source]==='object') state[source]=next[source];}
-    if(Array.isArray(next.releases)){state.releases=next.releases;state.releasesCollectedAt=next.releasesCollectedAt || next.sourceCollectedAt?.releases || null;}
-    render();const partial=Array.isArray(next.errors)&&next.errors.length>0;status.className=partial?'stale':'';status.textContent=(partial?'Some sources stale · Last refresh: ':'Last refresh: ')+new Date().toISOString()+' · Source delays still apply';
-  }catch{status.className='stale';status.textContent='Refresh failed — showing previously available values. Retrying in 30 seconds.';}
+    if(!next || typeof next!=='object' || !validTime(next.collectedAt)) throw new Error('invalid response');
+    mergeResponse(next);lastRefresh=new Date().toISOString();refreshFailed=false;render();
+  }catch{refreshFailed=true;render();}
   finally{pending=false;}
 }
 render();void refresh();setInterval(()=>{void refresh();},30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden) void refresh();});

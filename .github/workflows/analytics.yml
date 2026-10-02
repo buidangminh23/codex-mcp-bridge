@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: repository-analytics
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -17,9 +17,6 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     timeout-minutes: 10
     outputs:
       incomplete: ${{ steps.refresh.outcome == 'failure' }}
@@ -38,6 +35,15 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: public-analytics
+
+  deploy:
+    needs: refresh
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 5
+    steps:
       - uses: actions/deploy-pages@v4
         id: deployment
 
@@ -49,5 +55,5 @@ jobs:
       - name: Report incomplete collection
         if: needs.refresh.outputs.incomplete == 'true'
         run: |
-          echo "::error::One or more analytics sources were not refreshed; see the refresh job warnings. The Pages deployment itself succeeded with retained data."
+          echo "::error::One or more analytics sources were not refreshed; see the refresh job warnings. The analytics branch retains the latest available data; Pages deployment is reported separately."
           exit 1

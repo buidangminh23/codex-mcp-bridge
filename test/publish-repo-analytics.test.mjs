@@ -95,3 +95,111 @@ test('live page script is syntactically valid and uses safe rendering with delay
   assert.ok(html.includes('Some sources stale'));
   assert.ok(files['README.md'].includes('https://owner.github.io/repo/'));
 });
+
+function liveHarness(data = history, report = usage) {
+  class Element {
+    children = [];
+    className = '';
+    text = '';
+    set textContent(value) { this.text = String(value); this.children = []; }
+    get textContent() { return this.text + this.children.map(child => child.textContent).join(' '); }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; this.text = ''; }
+  }
+  const elements = Object.fromEntries(['cards', 'status', 'platforms', 'versions', 'panels'].map(id => [id, new Element()]));
+  const clock = { now: Date.parse('2026-09-15T12:00:00Z') };
+  class ClockDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [clock.now])); }
+    static now() { return clock.now; }
+  }
+  let response = { ok: true, body: { collectedAt: '2026-09-15T12:00:00Z' } };
+  const context = vm.createContext({
+    document: { hidden: true, createElement: () => new Element(), getElementById: id => elements[id], querySelector: () => elements.panels, addEventListener() {} },
+    Date: ClockDate, AbortSignal, setInterval() {},
+    fetch: async () => { if (response instanceof Error) throw response; return { ok: response.ok, json: async () => response.body }; },
+  });
+  vm.runInContext(publicFiles(data, report)['index.html'].match(/<script>([\s\S]*)<\/script>/)[1], context);
+  return {
+    elements, clock,
+    card: label => elements.cards.children.find(card => card.children[0].textContent === label),
+    async poll(next, ok = true) {
+      response = next instanceof Error ? next : { ok, body: next };
+      context.document.hidden = false;
+      await vm.runInContext('refresh()', context);
+    },
+  };
+}
+
+test('live refresh updates healthy sources while retaining failed sources with their original dates', async () => {
+  const page = liveHarness();
+  await page.poll({ collectedAt: '2026-09-15T12:01:00Z',
+    repository: { stars: 20, forks: 8, subscribers: 0, collectedAt: '2026-09-15T12:01:00Z' },
+    traffic: { clones: { count: 0, uniques: 0, start: '2026-09-02', end: '2026-09-14' }, clonesCollectedAt: '2026-09-15T12:01:00Z' },
+    errors: [{ source: 'views' }, { source: 'usage' }],
+  });
+  assert.equal(page.card('Stars').children[1].textContent, '20');
+  assert.equal(page.card('Subscribers').children[1].textContent, '0');
+  assert.equal(page.card('GitHub views').children[1].textContent, '20');
+  assert.match(page.card('GitHub views').textContent, /2026-09-15 12:00 UTC.*Stale/);
+  assert.equal(page.card('GitHub clones').children[1].textContent, '0');
+  assert.match(page.card('GitHub clones').textContent, /2026-09-02 to 2026-09-14 UTC/);
+  assert.match(page.elements.status.textContent, /Some sources stale/);
+});
+
+test('empty opted-in usage is explained and real zeros are not shown as unavailable', async () => {
+  const page = liveHarness(history, { ...usage, active: { day: 0, week: 0, month: 0 }, daily: [], platforms: [], versions: [] });
+  assert.equal(page.card('Reporting installations / 30 days').children[1].textContent, '0');
+  assert.match(page.elements.platforms.textContent, /No opted-in reports.*telemetry consent/);
+  assert.match(page.elements.versions.textContent, /No opted-in reports/);
+  const absent = liveHarness(history, null);
+  assert.equal(absent.card('Reporting installations / 30 days').children[1].textContent, 'Unavailable');
+  assert.match(absent.elements.platforms.textContent, /Unavailable/);
+});
+
+test('polling old data cannot claim fresh source data and failures recover automatically', async () => {
+  const page = liveHarness();
+  page.clock.now += 4 * 60 * 60 * 1000;
+  await page.poll({ collectedAt: '2026-09-15T16:00:00Z', usage });
+  assert.match(page.card('GitHub views').textContent, /Stale or unavailable/);
+  assert.match(page.elements.status.textContent, /Some sources stale/);
+  await page.poll(new Error('offline'));
+  assert.match(page.elements.status.textContent, /Refresh failed/);
+  assert.equal(page.card('GitHub views').children[1].textContent, '20');
+  const time = '2026-09-15T16:00:00Z';
+  await page.poll({ collectedAt: time, usage: { ...usage, collectedAt: time },
+    repository: { stars: 0, forks: 0, subscribers: 0, collectedAt: time },
+    npm: { downloads: 0, start: '2026-08-15', end: '2026-09-14', collectedAt: time },
+    traffic: { views: { count: 0, uniques: 0, start: '2026-09-01', end: '2026-09-14' }, clones: { count: 0, uniques: 0, start: '2026-09-01', end: '2026-09-14' }, viewsCollectedAt: time, clonesCollectedAt: time },
+    releases: [], releasesCollectedAt: time,
+  });
+  assert.equal(page.elements.status.className, '');
+  assert.match(page.elements.status.textContent, /^Last API refresh:/);
+  assert.equal(page.card('GitHub views').children[1].textContent, '0');
+  assert.equal(page.card('Release downloads').children[1].textContent, '0');
+});
+
+test('malformed source updates and unavailable responses cannot erase last-good values', async () => {
+  const page = liveHarness();
+  await page.poll({ collectedAt: '2026-09-15T12:01:00Z',
+    repository: { stars: -1, forks: 0, subscribers: 0, collectedAt: '2026-09-15T12:01:00Z' },
+    traffic: { views: { count: '999', uniques: 9 }, viewsCollectedAt: '2026-09-15T12:01:00Z' },
+    usage: { ...usage, platforms: [null] },
+  });
+  assert.equal(page.card('Stars').children[1].textContent, '10');
+  assert.equal(page.card('GitHub views').children[1].textContent, '20');
+  assert.equal(page.card('Reporting installations / 30 days').children[1].textContent, '3');
+  await page.poll({ collectedAt: '2026-09-15T12:02:00Z' }, false);
+  assert.match(page.elements.status.textContent, /Refresh failed/);
+  assert.equal(page.card('Stars').children[1].textContent, '10');
+});
+
+test('snapshot labels generation and individual source age without breaking UTC onto a separate line', () => {
+  const old = structuredClone(history);
+  old.updatedAt = '2026-09-15T16:00:00Z';
+  const svg = publicFiles(old, { ...usage, active: { day: 0, week: 0, month: 0 }, daily: [], platforms: [], versions: [] })['dashboard.svg'];
+  assert.ok(svg.includes('Generated: 2026-09-15 16:00 UTC'));
+  assert.ok(svg.includes('Stale · 2026-09-15 12:00 UTC'));
+  assert.ok(svg.includes('No opted-in reports in this period'));
+  assert.ok(svg.includes('Snapshot freshness is relative to generation time.'));
+  assert.ok(!svg.includes('>(UTC)</text>'));
+});

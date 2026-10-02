@@ -23,6 +23,7 @@ import {
 } from "./platform.mjs";
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
+import { fullAccessEnabled } from "./codex-full-access.mjs";
 import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "./thread-delivery.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
@@ -53,7 +54,10 @@ const DEFAULT_RELEASE_AFTER_TURN = process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN
   : IS_WINDOWS;
 const TERMINAL_TURN_STATUSES = new Set(["completed", "interrupted", "failed"]);
 const RELEASE_TURN_STATUSES = TERMINAL_TURN_STATUSES;
-const security = new BridgeSecurityPolicy();
+const security = new BridgeSecurityPolicy({
+  ...process.env,
+  ...(fullAccessEnabled() ? { CODEX_BRIDGE_ENFORCE_FULL_ACCESS: "1" } : {}),
+});
 const desktopTasksEnabled = desktopTasksConfigured();
 const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
 const desktopOperation = new AsyncLocalStorage();

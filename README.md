@@ -53,6 +53,8 @@ The bridge requires **Node.js 22+**; Node 24 LTS is a suitable starting point. I
 
 To opt a machine you administer into **Full access + Never**, run `codex-mcp-bridge-install --full-access` when registering the bridge (`codex-mcp-bridge-install.cmd --full-access` in PowerShell). The installer sets global Codex defaults for old and new projects, repairs or creates the managed policy with both `read-only` and `danger-full-access`, and records the choice so the bridge can restore it if the files drift later. Windows UAC, macOS administrator authentication, or Linux polkit/sudo may be required for the system policy. Normal installation does not change Codex permissions. Run `codex doctor --summary --ascii` after setup; existing Desktop tasks may need to be reopened to load the new permissions.
 
+If the bridge is already registered, `codex-full-access` (`codex-full-access.cmd` in PowerShell) enables the same settings without replacing that registration. The bridge reads the saved choice when it starts.
+
 For Desktop mode, install [Codex Desktop](https://developers.openai.com/codex/app) and [Claude Desktop](https://claude.com/download), sign in, and save the intended local project in Codex Desktop. Open that same directory in Claude Desktop's Code tab. A normal Claude chat is not a Code session.
 
 ### Windows (PowerShell)

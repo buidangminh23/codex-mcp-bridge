@@ -107,6 +107,9 @@ function withUnlockedPolicy(filePath, action) {
 }
 
 export function applyFullAccessPolicy(filePath = codexAccessPaths().policy) {
+  if (fs.existsSync(filePath) && fs.lstatSync(filePath).isSymbolicLink()) {
+    throw new Error(`Refusing to rewrite a symbolic-link managed policy: ${filePath}`);
+  }
   const previous = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
   const next = fullAccessPolicyContents(previous);
   if (next === previous) return false;

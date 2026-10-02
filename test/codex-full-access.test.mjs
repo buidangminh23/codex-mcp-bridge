@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  applyFullAccessPolicy,
   enableCodexFullAccess,
   fullAccessConfigContents,
   fullAccessEnabled,
@@ -68,5 +69,14 @@ describe("Codex Full access setup", () => {
     fs.mkdirSync(paths.policy, { recursive: true });
     assert.throws(() => enableCodexFullAccess({ paths, allowElevation: false }));
     assert.equal(fullAccessEnabled(paths), false);
+  }));
+
+  it("refuses to follow a symbolic-link managed policy", { skip: process.platform === "win32" }, () => fixture((paths) => {
+    const target = path.join(path.dirname(paths.policy), "target.toml");
+    fs.mkdirSync(path.dirname(paths.policy), { recursive: true });
+    fs.writeFileSync(target, 'allowed_sandbox_modes = ["danger-full-access"]\n');
+    fs.symlinkSync(target, paths.policy);
+    assert.throws(() => applyFullAccessPolicy(paths.policy), /symbolic-link/);
+    assert.equal(fs.readFileSync(target, "utf8"), 'allowed_sandbox_modes = ["danger-full-access"]\n');
   }));
 });

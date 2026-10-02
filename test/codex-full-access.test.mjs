@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -78,5 +79,26 @@ describe("Codex Full access setup", () => {
     fs.symlinkSync(target, paths.policy);
     assert.throws(() => applyFullAccessPolicy(paths.policy), /symbolic-link/);
     assert.equal(fs.readFileSync(target, "utf8"), 'allowed_sandbox_modes = ["danger-full-access"]\n');
+  }));
+
+  it("restores saved access when a Desktop bridge process starts", { skip: process.platform !== "win32" }, () => fixture((paths) => {
+    fs.mkdirSync(path.dirname(paths.marker), { recursive: true });
+    fs.writeFileSync(paths.marker, "enabled\n");
+    const programData = path.join(path.dirname(paths.policy), "program-data");
+    const result = spawnSync(process.execPath, [path.resolve("src/index.mjs")], {
+      env: {
+        ...process.env,
+        CODEX_HOME: path.dirname(paths.config),
+        ProgramData: programData,
+        CODEX_BRIDGE_DESKTOP_TASKS: "1",
+      },
+      input: "",
+      encoding: "utf8",
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(fs.readFileSync(paths.config, "utf8"), /approval_policy = "never"/);
+    assert.match(fs.readFileSync(path.join(programData, "OpenAI", "Codex", "requirements.toml"), "utf8"), /allowed_sandbox_modes = \["read-only", "danger-full-access"\]/);
   }));
 });

@@ -81,8 +81,40 @@ export function createStatsHandler({
   now = Date.now,
   env = (name: string) => Deno.env.get(name),
 } = {}) {
-  const caches: Record<string, Cache> = Object.fromEntries(["usage", "repository", "npm", "traffic"].map((source) => [source, { checkedAt: -Infinity, failed: false }]));
+  const caches: Record<string, Cache> = Object.fromEntries(["usage", "repository", "npm", "views", "clones", "releases"].map((source) => [source, { checkedAt: -Infinity, failed: false }]));
   const get = async (url: string, init: RequestInit = {}) => readJson(await fetcher(url, { ...init, signal: AbortSignal.timeout(5000) }));
+  let archiveCheckedAt = -Infinity;
+  let archiveSnapshots: Json[] | undefined;
+  let archivePending: Promise<Json[]> | undefined;
+  const archive = async (): Promise<Json[]> => {
+    if (archivePending) return archivePending;
+    if (now() - archiveCheckedAt < 60000) {
+      if (!archiveSnapshots) throw new Error("Unavailable");
+      return archiveSnapshots;
+    }
+    archiveSnapshots = undefined;
+    archivePending = (async () => {
+      const value = object(await get("https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/data.json"));
+      if (!Array.isArray(value.snapshots)) throw new Error("Unavailable");
+      archiveSnapshots = value.snapshots.map(object).sort((a, b) => timestamp(b.collectedAt).localeCompare(timestamp(a.collectedAt)));
+      return archiveSnapshots;
+    })();
+    try { return await archivePending; }
+    finally { archiveCheckedAt = now(); archivePending = undefined; }
+  };
+  const archivedTraffic = async (source: string): Promise<Json> => {
+    const snapshot = (await archive()).find((row) => row[source]);
+    if (!snapshot) throw new Error("Unavailable");
+    const row = object(snapshot[source]);
+    const sourceTimes = snapshot.sourceCollectedAt ? object(snapshot.sourceCollectedAt) : {};
+    const output: Json = { count: count(row.count), uniques: count(row.uniques), collectedAt: timestamp(sourceTimes[source] ?? snapshot.collectedAt) };
+    if (Array.isArray(row[source]) && row[source].length) {
+      const days = row[source].map((input) => timestamp(object(input).timestamp).slice(0, 10)).sort();
+      output.start = days[0];
+      output.end = days[days.length - 1];
+    }
+    return output;
+  };
   const loaders: Record<string, () => Promise<Json>> = {
     async usage() {
       const url = env("SUPABASE_URL");
@@ -100,25 +132,12 @@ export function createStatsHandler({
       const value = object(await get("https://api.npmjs.org/downloads/point/last-month/@minhspark%2Fcodex-mcp-bridge"));
       return { start: date(value.start), end: date(value.end), downloads: count(value.downloads), collectedAt: new Date(now()).toISOString() };
     },
-    async traffic() {
-      const value = object(await get("https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/data.json"));
-      if (!Array.isArray(value.snapshots)) throw new Error("Unavailable");
-      const snapshots = value.snapshots.map(object).sort((a, b) => timestamp(b.collectedAt).localeCompare(timestamp(a.collectedAt)));
-      const select = (field: string) => {
-        for (const snapshot of snapshots) {
-          if (!snapshot[field]) continue;
-          const row = object(snapshot[field]);
-          const sourceTimes = snapshot.sourceCollectedAt ? object(snapshot.sourceCollectedAt) : {};
-          return { count: count(row.count), uniques: count(row.uniques), collectedAt: timestamp(sourceTimes[field] ?? snapshot.collectedAt) };
-        }
-        throw new Error("Unavailable");
-      };
-      const views = select("views");
-      const clones = select("clones");
-      const releaseSnapshot = snapshots.find((snapshot) => Array.isArray(snapshot.releases));
-      const releaseFields: Json = {};
-      if (releaseSnapshot) {
-        releaseFields.releases = (releaseSnapshot.releases as unknown[]).map((input) => {
+    views: () => archivedTraffic("views"),
+    clones: () => archivedTraffic("clones"),
+    async releases() {
+      const releaseSnapshot = (await archive()).find((snapshot) => Array.isArray(snapshot.releases));
+      if (!releaseSnapshot) throw new Error("Unavailable");
+      const releases = (releaseSnapshot.releases as unknown[]).map((input) => {
           const release = object(input);
           if (typeof release.tag !== "string" || release.tag.length > 256 || !Array.isArray(release.assets)) throw new Error("Invalid release");
           return { tag: release.tag, assets: release.assets.map((inputAsset) => {
@@ -127,14 +146,8 @@ export function createStatsHandler({
             return { name: asset.name, downloads: count(asset.downloads) };
           }) };
         });
-        const sourceTimes = releaseSnapshot.sourceCollectedAt ? object(releaseSnapshot.sourceCollectedAt) : {};
-        releaseFields.releasesCollectedAt = timestamp(sourceTimes.releases ?? releaseSnapshot.collectedAt);
-      }
-      return {
-        views: { count: views.count, uniques: views.uniques }, clones: { count: clones.count, uniques: clones.uniques },
-        collectedAt: Date.parse(views.collectedAt) <= Date.parse(clones.collectedAt) ? views.collectedAt : clones.collectedAt,
-        ...releaseFields,
-      };
+      const sourceTimes = releaseSnapshot.sourceCollectedAt ? object(releaseSnapshot.sourceCollectedAt) : {};
+      return { releases, collectedAt: timestamp(sourceTimes.releases ?? releaseSnapshot.collectedAt) };
     },
   };
   const refresh = async (source: string) => {
@@ -155,16 +168,32 @@ export function createStatsHandler({
     await Promise.all(Object.keys(caches).map(refresh));
     const output: Json = { collectedAt: new Date(now()).toISOString() };
     const errors: Json[] = [];
+    const traffic: Json = {};
+    const sourceCollectedAt: Json = {};
     for (const [source, cache] of Object.entries(caches)) {
-      if (cache.value && source === "traffic") {
-        const { releases, releasesCollectedAt, ...traffic } = cache.value;
-        output.traffic = traffic;
-        if (releases) { output.releases = releases; output.releasesCollectedAt = releasesCollectedAt; }
+      if (cache.value && ["views", "clones"].includes(source)) {
+        const { collectedAt, ...metric } = cache.value;
+        traffic[source] = metric;
+        traffic[`${source}CollectedAt`] = collectedAt;
+        sourceCollectedAt[source] = collectedAt;
+      } else if (cache.value && source === "releases") {
+        output.releases = cache.value.releases;
+        output.releasesCollectedAt = cache.value.collectedAt;
+        sourceCollectedAt.releases = cache.value.collectedAt;
       } else if (cache.value) output[source] = cache.value;
       if (cache.failed) errors.push({ source, error: "source_unavailable", stale: Boolean(cache.value) });
+      else if (["views", "clones", "releases"].includes(source) && cache.value && now() - Date.parse(String(cache.value.collectedAt)) > 3 * 60 * 60 * 1000) {
+        errors.push({ source, error: "archive_stale", stale: true });
+      }
     }
+    const trafficTimes = [traffic.viewsCollectedAt, traffic.clonesCollectedAt].filter((value): value is string => typeof value === "string");
+    if (trafficTimes.length) {
+      traffic.collectedAt = trafficTimes.sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+      output.traffic = traffic;
+    }
+    if (Object.keys(sourceCollectedAt).length) output.sourceCollectedAt = sourceCollectedAt;
     if (errors.length) output.errors = errors;
-    return new Response(JSON.stringify(output), { status: caches.usage.value ? 200 : 503, headers });
+    return new Response(JSON.stringify(output), { status: Object.values(caches).some((cache) => cache.value) ? 200 : 503, headers });
   };
 }
 

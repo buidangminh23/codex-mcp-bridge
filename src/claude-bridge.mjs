@@ -474,7 +474,7 @@ registerTool(
 
       const wait = waitSec ?? 180;
       const desktop = session.entrypoint === "claude-desktop";
-      const text = desktop ? `${message}\n\n[Bridge response routing: reply with ordinary text in this conversation. The bridge reads the response associated with this message from the local transcript; no cross-session reply tool is needed.]` : message;
+      const text = desktop ? `${message}\n\n[Bridge response routing: reply with ordinary text in this conversation. The bridge reads the response associated with this message from the local transcript; no cross-session reply tool is needed. For native child tasks, check completion with native session/event tools. Do not infer completion by regex-matching JSON field order or leave an unbounded custom watcher running.]` : message;
       const { msgId, reply, delivery } = await peer.sendAndWait(session.socket, text, {
         timeoutMs: wait * 1000,
         ...(selectedAccounts ? { accountContext: selectedAccounts } : {}),
@@ -514,6 +514,10 @@ registerTool(
       });
       const status = reply ? "reply_received" : delivery?.status ?? (wait === 0 ? "sent_unconfirmed" : "reply_timeout");
       const receipt = { status, msgId, target: session.name ?? String(session.pid), sessionId: session.sessionId, cwd: session.cwd, entrypoint: session.entrypoint, waitSec: wait,
+        ...(delivery?.status === "interrupted" ? { pending: false, outcome: "unknown", waitEnded: true,
+          taskCancelled: false, retrySafe: false, nextAction: "inspect_existing_task_then_follow_up",
+          reason: delivery.reason, interruption: { reasonCode: delivery.reasonCode, source: delivery.source,
+            observedAt: delivery.observedAt, entryIds: delivery.interruptedBy, backgroundTaskIds: delivery.backgroundTaskIds } } : {}),
         ...(selectedAccounts ? { accountContext: selectedAccounts, rediscovered: target === "auto" || ![session.name, String(session.pid), session.sessionId].includes(target) } : {}),
         ...(desktop ? { taskId: session.desktop.taskId, title: session.desktop.title, approvalUi: "unverified", recipientPermissionMode: session.desktop.permissionMode ?? null, recipientPermissionClass: session.desktop.permissionClass ?? null, recipientInboundPolicy: session.inbound?.value ?? null } : {}),
         ...(sender ? { senderMode: sender.mode, senderApprovalPolicy: sender.approvalPolicy, senderThreadId: sender.threadId, senderTurnId: sender.turnId, senderReview: sender.review } : {}),
@@ -525,6 +529,10 @@ registerTool(
         return result(`The account changed after this message was dispatched. Its receipt and any reply remain attached to the original accounts. Do not resend automatically.\nMessage id: ${msgId}`, true);
       }
       const targetLabel = `${session.desktop?.title ?? session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"}, via ${session.entrypoint ?? "unknown"}, cwd ${session.cwd ?? "?"})`;
+
+      if (!reply && delivery?.status === "interrupted") {
+        return result(`Reply waiting ended for ${targetLabel} because a new conversation command interrupted the original request.\nMessage id: ${msgId}\nThe original task was not cancelled and its result remains unknown. Inspect that existing session/card, then send a scoped follow-up if needed. Do not resend the original action or create a replacement task. This is not a permission rejection.`, true);
+      }
 
       if (!reply && delivery && delivery.status !== "delivered") {
         const classes = desktop && sender ? `Recipient task mode: ${session.desktop.permissionMode ?? "unknown"}${session.desktop.permissionClass ? ` (${session.desktop.permissionClass} class)` : ""}; this sender attested ${sender.mode}.\n` : "";
@@ -554,7 +562,7 @@ registerTool(
   "read_claude_delivery",
   {
     title: "Inspect a Claude message receipt without resending",
-    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process. Also accepts the 64-character requestId returned by target new to inspect creation without reopening. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
+    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process. An interrupted receipt ends only reply waiting: task outcome remains unknown and background work may still run. Inspect the existing task before any scoped follow-up; never resend the original action automatically. Ordinary timeouts remain pending. Also accepts the 64-character requestId returned by target new to inspect creation without reopening. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
     inputSchema: { msgId: z.string().describe("The original message ID returned by send_to_claude_session") },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },

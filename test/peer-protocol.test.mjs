@@ -17,6 +17,7 @@ import {
   peerKeyPath,
   readTranscript,
   readTranscriptReply,
+  readTranscriptOutcome,
   readPeerProcessIdentity,
   assertClaudeSessionProcess,
   readInitialTranscriptMessage,
@@ -411,6 +412,43 @@ describe("peer endpoint", () => {
     assert.equal(readTranscriptReply("reply", "unused", "request"), null);
   });
 
+  it("keeps Read image companions in the reply chain but rejects lookalikes and unrelated results", () => {
+    const dir = path.join(projectsDir, "image-companion");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "image-companion.jsonl");
+    const root = { uuid: "request", message: { role: "user", content: "inspect image" } };
+    const call = { uuid: "call", parentUuid: "request", sessionId: "image-companion", type: "assistant", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "read-1", name: "Read" }] } };
+    const result = { uuid: "result", parentUuid: "call", type: "user", sessionId: "image-companion", promptId: "prompt-1", sourceToolAssistantUUID: "call", toolUseResult: { type: "image" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: [{ type: "image" }] }] } };
+    const hook = { uuid: "hook", parentUuid: "result", type: "attachment", attachment: { type: "hook_success" } };
+    const companion = { uuid: "companion", parentUuid: "hook", type: "user", sessionId: "image-companion", promptId: "prompt-1", isMeta: true, turnCompanion: true, message: { role: "user", content: "[Image: original 2850x580, displayed at 2000x407. Multiply coordinates by 1.43 to map to original image.]" } };
+    const answer = { uuid: "answer", parentUuid: "companion", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "image inspected" }] } };
+    const rows = [root, call, result, hook, companion, answer];
+    const write = values => fs.writeFileSync(file, values.map(JSON.stringify).join("\n") + "\n");
+    write(rows);
+    assert.equal(readTranscriptReply("image-companion", "unused", "request")?.text, "image inspected");
+    for (const change of [
+      r => { r[4].isMeta = false; },
+      r => { delete r[4].turnCompanion; },
+      r => { r[4].origin = { kind: "human" }; r[4].promptSource = "sdk"; r[4].turnOrigin = "human"; },
+      r => { r[4].promptId = "other"; },
+      r => { r[4].sessionId = "other"; },
+      r => { r[4].parentUuid = "request"; },
+      r => { r[3].attachment.type = "unknown"; },
+      r => { r[2].sourceToolAssistantUUID = "other"; },
+      r => { r[2].message.content[0].tool_use_id = "other"; },
+      r => { r[2].message.content[0].is_error = true; },
+      r => { r[2].message.content[0].content = [{ type: "text", text: "not an image" }]; },
+      r => { r[1].message.content[0].name = "Bash"; },
+    ]) {
+      const changed = structuredClone(rows); change(changed); write(changed);
+      assert.equal(readTranscriptReply("image-companion", "unused", "request"), null, String(change));
+    }
+    const human = { uuid: "human", parentUuid: "companion", message: { role: "user", content: "different task" } };
+    write([...rows.slice(0, -1), human, { ...answer, parentUuid: "human" }]);
+    assert.equal(readTranscriptOutcome("image-companion", "unused", "request")?.status, "interrupted");
+    assert.equal(readTranscriptReply("image-companion", "unused", "request"), null);
+  });
+
   it("waits through a native background-task continuation instead of returning its interim end_turn", () => {
     const dir = path.join(projectsDir, "background-replies");
     fs.mkdirSync(dir, { recursive: true });
@@ -446,6 +484,127 @@ describe("peer endpoint", () => {
     assert.equal(readTranscriptReply("background", "unused", "request"), null, "a human command still separates turns");
     write([...initial, { ...notification, uuid: "unrelated-branch" }, { ...final, parentUuid: "interim" }]);
     assert.equal(readTranscriptReply("background", "unused", "request"), null, "completion on another branch must not release this branch");
+  });
+
+  it("reports a new input after a background wait as interrupted, never as a completed task", () => {
+    const dir = path.join(projectsDir, "interrupted-replies");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "interrupted.jsonl");
+    const root = { uuid: "request", message: { role: "user", content: "start one child" } };
+    const call = { uuid: "call", parentUuid: "request", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tool-1", name: "Bash" }] } };
+    const result = { uuid: "result", parentUuid: "call", toolUseResult: { backgroundTaskId: "bg-1" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "running" }] } };
+    const interim = { uuid: "interim", parentUuid: "result", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "still waiting" }] } };
+    const next = { uuid: "new-input", parentUuid: "interim", message: { role: "user", content: "check the existing child" } };
+    const answer = { uuid: "later-answer", parentUuid: "new-input", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "finished after intervention" }] } };
+    const write = (rows) => fs.writeFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    write([root, call, result, interim]);
+    assert.equal(readTranscriptOutcome("interrupted", "unused", "request"), null);
+    write([root, call, result, interim, next, answer]);
+    const outcome = readTranscriptOutcome("interrupted", "unused", "request");
+    assert.equal(outcome.status, "interrupted");
+    assert.deepEqual(outcome.interruptedBy, ["new-input"]);
+    assert.deepEqual(outcome.backgroundTaskIds, ["bg-1"]);
+    assert.equal(outcome.reply, undefined);
+    assert.equal(readTranscriptReply("interrupted", "unused", "request"), null);
+    assert.equal(readTranscriptOutcome("interrupted", "unused", "wrong-id"), null);
+    write([root, call, result, interim, { ...next, origin: { kind: "human" }, promptSource: "sdk", turnOrigin: "human" }, answer]);
+    assert.equal(readTranscriptOutcome("interrupted", "unused", "request")?.status, "interrupted", "measured Desktop SDK human input ends old reply observation");
+    write([root, call, result, interim, { ...next, parentUuid: "unrelated" }, answer]);
+    assert.equal(readTranscriptOutcome("interrupted", "unused", "request"), null);
+    write([root, call, result, interim, next, { uuid: "other-branch", parentUuid: "interim", message: { role: "assistant", stop_reason: "tool_use", content: [] } }]);
+    assert.equal(readTranscriptOutcome("interrupted", "unused", "request"), null, "a still-open sibling branch must keep waiting");
+    write([root, call, result, interim, next]);
+    fs.appendFileSync(file, '{"partial":');
+    assert.equal(readTranscriptOutcome("interrupted", "unused", "request"), null, "partial writes do not release pending ownership");
+    write([root, call, result, interim, next, next]);
+    assert.equal(readTranscriptOutcome("interrupted", "unused", "request"), null, "duplicate record identities are ambiguous");
+  });
+
+  it("recognizes interruption after inline native notifications and completed parallel leaves", () => {
+    const dir = path.join(projectsDir, "parallel-interruption");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "parallel-interruption.jsonl");
+    const rows = [
+      { uuid: "request", message: { role: "user", content: "task" } },
+      { uuid: "call", parentUuid: "request", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "read-1", name: "Read" }] } },
+      { uuid: "result", parentUuid: "call", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "done" }] } },
+      { uuid: "hook", parentUuid: "call", type: "attachment", attachment: { type: "hook_success" } },
+      { uuid: "native-note", parentUuid: "call", type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", origin: { kind: "task-notification", producer: "session-task" }, prompt: "<task-notification>unrelated task</task-notification>" } },
+      { uuid: "continuation", parentUuid: "native-note", message: { role: "assistant", stop_reason: "tool_use", content: [] } },
+      { uuid: "new-input", parentUuid: "continuation", origin: { kind: "human" }, promptSource: "sdk", turnOrigin: "human", message: { role: "user", content: "check existing task" } },
+    ];
+    const write = () => fs.writeFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
+    write();
+    assert.equal(readTranscriptOutcome("parallel-interruption", "unused", "request")?.status, "interrupted");
+    rows[2].message.content[0].tool_use_id = "unmatched";
+    write();
+    assert.equal(readTranscriptOutcome("parallel-interruption", "unused", "request"), null, "unmatched tool results remain unresolved");
+    rows[2].message.content[0].tool_use_id = "read-1";
+    rows[2].toolUseResult = { backgroundTaskId: "still-running" };
+    write();
+    assert.equal(readTranscriptOutcome("parallel-interruption", "unused", "request"), null, "a separate background result is not a passive leaf");
+    delete rows[2].toolUseResult;
+    rows[4].attachment.origin.producer = "unknown";
+    write();
+    assert.equal(readTranscriptOutcome("parallel-interruption", "unused", "request"), null, "unknown inline notification cannot bridge ancestry");
+  });
+
+  it("recognizes queued prompt boundaries but not notification text or unknown user metadata", () => {
+    const dir = path.join(projectsDir, "interruption-boundaries");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "boundaries.jsonl");
+    const root = { uuid: "request", message: { role: "user", content: "task" } };
+    const queued = { uuid: "next", parentUuid: "request", type: "attachment", attachment: { type: "queued_command", commandMode: "prompt", origin: { kind: "peer", msg_id: "other-request" } } };
+    const write = (entry) => fs.writeFileSync(file, [root, entry].map((row) => JSON.stringify(row)).join("\n") + "\n");
+    write(queued);
+    assert.equal(readTranscriptOutcome("boundaries", "unused", "request")?.status, "interrupted");
+    for (const entry of [
+      { ...queued, attachment: { ...queued.attachment, commandMode: "unknown" } },
+      { uuid: "next", parentUuid: "request", message: { role: "user", content: "<task-notification>\n<status>completed</status>\n</task-notification>" } },
+      { uuid: "next", parentUuid: "request", promptSource: "system", message: { role: "user", content: "task finished" } },
+      { uuid: "next", parentUuid: "request", origin: { kind: "unknown" }, message: { role: "user", content: "next" } },
+      { uuid: "next", parentUuid: "request", message: { role: "user", content: [{ type: "tool_result", content: "completed" }] } },
+    ]) {
+      write(entry);
+      assert.equal(readTranscriptOutcome("boundaries", "unused", "request"), null);
+    }
+  });
+
+  it("retains interrupted receipts, releases only reply waiting, and permits a separate follow-up", async (t) => {
+    const isolated = new PeerEndpoint({ name: "interruption-fixture", cwd: sandbox });
+    t.after(() => isolated.stop());
+    const dir = path.join(projectsDir, "interruption-endpoint");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "interruption-endpoint.jsonl");
+    t.mock.method(isolated, "send", async (target, text, { msgId }) => {
+      const rows = [{ uuid: msgId, message: { role: "user", content: text } }];
+      if (text === "original") rows.push({ uuid: "new-command", parentUuid: msgId, message: { role: "user", content: "continue the existing task" } });
+      else rows.push({ uuid: "follow-up-answer", parentUuid: msgId, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "checked existing task" }] } });
+      fs.appendFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+      return msgId;
+    });
+    const options = { timeoutMs: 1500, transcriptSession: { sessionId: "interruption-endpoint", cwd: "unused" } };
+    const first = await isolated.sendAndWait("interruption-peer", "original", options);
+    assert.equal(first.reply, null);
+    assert.equal(first.delivery.status, "interrupted");
+    const receipt = isolated.readDelivery(first.msgId);
+    assert.equal(receipt.pending, false);
+    assert.equal(receipt.outcome, "unknown");
+    assert.equal(receipt.taskCancelled, false);
+    assert.equal(receipt.retrySafe, false);
+    assert.equal(isolated.inbox.length, 0, "interruption must not become a fabricated reply");
+    assert.equal(isolated.send.mock.callCount(), 1, "never resend on interruption");
+    assert.equal(isolated.reloadReason(), null);
+    const snapshot = isolated.exportReloadState();
+    const restored = new PeerEndpoint({ name: "restored-fixture", cwd: sandbox });
+    t.after(() => restored.stop());
+    restored.restoreReloadState(snapshot);
+    assert.deepEqual(restored.readDelivery(first.msgId), receipt);
+    const second = await isolated.sendAndWait("interruption-peer", "follow-up", options);
+    assert.notEqual(second.msgId, first.msgId);
+    assert.equal(second.reply?.text, "checked existing task");
+    assert.equal(isolated.readDelivery(first.msgId).status, "interrupted");
+    assert.equal(isolated.send.mock.callCount(), 2);
   });
 
   /**

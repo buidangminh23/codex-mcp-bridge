@@ -174,7 +174,11 @@ export function readCodexSenderContext(meta, { env = process.env, maxRolloutByte
     review: { autoReview: reviewFlag(metadata, "auto_review_enabled"), nodeReplReview: reviewFlag(metadata, "node_repl_auto_review_required") } };
   try {
     if (!Number.isSafeInteger(maxRolloutBytes) || maxRolloutBytes < 1) throw new Error("The sender rollout read limit is invalid");
-    if (metadata.thread_source !== "user") throw new Error("This MCP call is not from a user-owned Codex task");
+    // Native create_thread produces a user-visible Desktop task with a distinct
+    // host source. It is not a transient subagent. Require live native proof in
+    // addition to the root rollout and the caller's own permission context.
+    const agentCreated = metadata.thread_source === "agent_created_thread" && originator === "Codex Desktop";
+    if (metadata.thread_source !== "user" && !agentCreated) throw new Error(`Unsupported calling task source (host thread_source: ${JSON.stringify(metadata.thread_source) ?? "missing"})`);
     const configuredHome = env.CODEX_HOME || path.join(env.HOME || env.USERPROFILE || os.homedir(), ".codex");
     if (!path.isAbsolute(configuredHome)) throw new Error("The configured Codex home must be absolute");
     const sessions = path.join(configuredHome, "sessions");
@@ -203,8 +207,8 @@ export function readCodexSenderContext(meta, { env = process.env, maxRolloutByte
     // VS Code's same-project policy is deliberately unchanged.
     if (!desktop && path.relative(fs.realpathSync.native(session.cwd), cwd)) throw new Error("The caller's workspace changed from its VS Code session identity");
     const { mode, approvalPolicy, permissionProfile } = permissionClass(context, metadata);
-    if (legacy && !confirmsDesktopTask(desktopEvidence, identity.threadId, cwd, identity.turnId)) {
-      return { ...unavailable("This CLI-origin task requires current native Desktop ownership and exact active-turn confirmation", identity), requiresDesktopEvidence: true };
+    if ((legacy || agentCreated) && !confirmsDesktopTask(desktopEvidence, identity.threadId, cwd, identity.turnId)) {
+      return { ...unavailable(`This ${agentCreated ? "agent-created" : "CLI-origin"} task requires current native Desktop ownership and exact active-turn confirmation`, identity), requiresDesktopEvidence: true };
     }
     return { status: "verified", ...identity, mode, cwd, source: file, approvalPolicy, permissionProfile, approvalsReviewer: context.approvals_reviewer, reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" };
   } catch (error) {
@@ -212,7 +216,7 @@ export function readCodexSenderContext(meta, { env = process.env, maxRolloutByte
   }
 }
 
-// Resolve a historical CLI origin only through the account-bound native relay,
+// Confirm adopted CLI and agent-created tasks through the account-bound native relay,
 // then re-read the rollout so a completed/replaced turn cannot reuse the proof.
 export async function resolveCodexSenderContext(meta, { inspectDesktopTask, ...options } = {}) {
   const initial = readCodexSenderContext(meta, options);

@@ -114,6 +114,60 @@ it("does not consult Desktop adoption for malformed metadata or unknown origins"
   assert.equal(calls, 0);
 });
 
+it("verifies native agent-created Desktop tasks with their own live turn and permissions", async () => {
+  const f = managedFixture();
+  f.metadata.thread_source = "agent_created_thread";
+  const evidence = { thread: { id: threadId, kind: "codex", hostId: "local", cwd: f.home }, latestTurnId: turnId };
+  const resolve = (inspectDesktopTask) => resolveCodexSenderContext({ "x-codex-turn-metadata": f.metadata }, { env: { HOME: f.home }, inspectDesktopTask });
+  assert.equal(f.read().requiresDesktopEvidence, true);
+  assert.equal((await resolve(undefined)).status, "unavailable");
+  const result = await resolve(async id => { assert.equal(id, threadId); return evidence; });
+  assert.equal(result.status, "verified", result.reason);
+  assert.equal(result.threadId, threadId);
+  assert.equal(result.mode, "prompting");
+  assert.equal(result.approvalPolicy, "on-request");
+  for (const changed of [
+    {},
+    { ...evidence, latestTurnId: otherId },
+    { ...evidence, thread: { ...evidence.thread, id: otherId } },
+    { ...evidence, thread: { ...evidence.thread, hostId: "remote" } },
+    { ...evidence, thread: { ...evidence.thread, kind: "chatgpt" } },
+    { ...evidence, thread: { ...evidence.thread, cwd: root } },
+  ]) assert.equal((await resolve(async () => changed)).status, "unavailable");
+  assert.equal((await resolve(async () => { throw new Error("relay unavailable"); })).status, "unavailable");
+  assert.equal((await resolve(async () => {
+    f.lifecycle.type = "task_complete"; f.write(); return evidence;
+  })).status, "unavailable");
+  f.lifecycle.type = "task_started"; f.write();
+  assert.equal((await resolve(async () => {
+    f.context.approval_policy = "never"; f.write(); return evidence;
+  })).status, "unavailable");
+});
+
+it("does not treat subagents, unknown sources or non-Desktop origins as native created tasks", async () => {
+  for (const source of ["subagent", "agent", "agent_created_thread_unknown", undefined, {}, true]) {
+    const f = managedFixture();
+    f.metadata.thread_source = source;
+    let calls = 0;
+    const result = await resolveCodexSenderContext({ "x-codex-turn-metadata": f.metadata }, {
+      env: { HOME: f.home }, inspectDesktopTask: async () => { calls++; return {}; },
+    });
+    assert.equal(result.status, "unavailable");
+    assert.equal(calls, 0);
+  }
+  for (const source of ["cli", { subagent: { thread_spawn: { parent_thread_id: otherId } } }]) {
+    const f = managedFixture();
+    f.metadata.thread_source = "agent_created_thread";
+    f.session.source = source; f.write();
+    assert.equal(f.read().status, "unavailable");
+    assert.equal(f.read().requiresDesktopEvidence, undefined);
+  }
+  const f = fixture();
+  f.metadata.thread_source = "agent_created_thread";
+  f.session.originator = "codex_vscode"; f.write();
+  assert.equal(f.read({ originator: "codex_vscode" }).status, "unavailable");
+});
+
 it("recognizes local Work Desktop without accepting web, CLI, or extension origins", () => {
   for (const originator of ["Codex Desktop", "codex_work_desktop"]) {
     const f = fixture();

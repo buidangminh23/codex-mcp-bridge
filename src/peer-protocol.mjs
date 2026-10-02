@@ -365,34 +365,127 @@ function injectedMessageRoot(entry, msgId) {
   return null;
 }
 
+function isInterruptedDelivery(receipt) {
+  return receipt?.status === "interrupted" && receipt.source === "transcript"
+    && receipt.reasonCode === "CLAUDE_REPLY_INTERRUPTED"
+    && typeof receipt.inReplyTo === "string" && receipt.inReplyTo.length > 0
+    && Number.isFinite(receipt.observedAt)
+    && Array.isArray(receipt.interruptedBy) && receipt.interruptedBy.length > 0
+    && receipt.interruptedBy.every((id) => typeof id === "string" && id.trim())
+    && Array.isArray(receipt.backgroundTaskIds)
+    && receipt.backgroundTaskIds.every((id) => typeof id === "string" && id.trim());
+}
+
+function isTerminalDelivery(receipt) {
+  return ["refused", "denied", "expired", "dropped"].includes(receipt?.status) || isInterruptedDelivery(receipt);
+}
+
 export function readTranscriptReply(sessionId, cwd, msgId) {
+  return readTranscriptOutcome(sessionId, cwd, msgId)?.reply ?? null;
+}
+
+// Read(image) adds a native user-role companion after its tool result (and
+// sometimes hooks). It describes image scaling, not a new user command.
+// Require the actual image-result ancestry; matching text alone is not proof.
+function isImageToolCompanion(entry, entriesById) {
+  if (entry.type !== "user" || entry.message?.role !== "user"
+      || entry.isMeta !== true || entry.turnCompanion !== true
+      || entry.origin != null || entry.promptSource != null || entry.turnOrigin != null
+      || typeof entry.promptId !== "string" || !entry.promptId
+      || typeof entry.sessionId !== "string" || !entry.sessionId
+      || typeof entry.message.content !== "string") return false;
+  let result = entriesById.get(entry.parentUuid);
+  for (let i = 0; i < 8 && result?.type === "attachment"
+      && ["hook_success", "total_tokens_reminder"].includes(result.attachment?.type); i++) {
+    result = entriesById.get(result.parentUuid);
+  }
+  const call = entriesById.get(result?.parentUuid);
+  return result?.type === "user" && result.message?.role === "user"
+    && result.promptId === entry.promptId && result.sessionId === entry.sessionId
+    && result.toolUseResult?.type === "image"
+    && result.sourceToolAssistantUUID === call?.uuid
+    && call?.message?.role === "assistant" && call.sessionId === entry.sessionId
+    && Array.isArray(result.message.content) && result.message.content.length === 1
+    && result.message.content.every(part => part?.type === "tool_result" && !part.is_error
+      && Array.isArray(part.content) && part.content.some(block => block?.type === "image")
+      && Array.isArray(call.message.content) && call.message.content.some(tool =>
+        tool?.type === "tool_use" && tool.name === "Read"
+        && typeof tool.id === "string" && tool.id === part.tool_use_id));
+}
+
+// Interruption closes reply observation, not execution. Never attach a later
+// user turn's answer to the original request or claim its side effects stopped.
+export function readTranscriptOutcome(sessionId, cwd, msgId) {
   const file = findTranscriptFile(sessionId, cwd);
   let lines;
   try { lines = fs.readFileSync(file, "utf8").split("\n"); }
   catch { return null; }
   const entries = [];
   const roots = [];
+  const ids = new Set();
+  let ambiguous = false;
   for (const line of lines) {
+    if (!line.trim()) continue;
     let entry;
-    try { entry = JSON.parse(line); } catch { continue; }
+    try { entry = JSON.parse(line); } catch { ambiguous = true; continue; }
     if (!entry || typeof entry !== "object" || Array.isArray(entry) || entry.isSidechain) continue;
+    if (typeof entry.uuid === "string") {
+      if (ids.has(entry.uuid)) ambiguous = true;
+      ids.add(entry.uuid);
+    }
     entries.push(entry);
     const root = injectedMessageRoot(entry, msgId);
     if (root) roots.push({ entry, absorbed: root === "absorbed" });
   }
   if (roots.length !== 1) return null;
   const { entry: root, absorbed } = roots[0];
+  const entriesById = new Map(entries.map((entry) => [entry.uuid, entry]));
   const descendants = new Map();
   const backgroundCalls = new Map();
+  const openLeaves = new Set();
+  const passiveLeaves = new Set();
+  const interruptions = [];
+  const interrupt = (entry, outstanding) => {
+    if (typeof entry.uuid !== "string" || !entry.uuid.trim()) return;
+    openLeaves.delete(entry.parentUuid);
+    interruptions.push({ entryId: entry.uuid, backgroundTaskIds: [...outstanding.keys()] });
+  };
   for (const entry of entries) {
-    if (entry === root) { descendants.set(entry.uuid, new Map()); continue; }
+    if (entry === root) { descendants.set(entry.uuid, new Map()); openLeaves.add(entry.uuid); continue; }
     if (!descendants.has(entry.parentUuid)) continue;
-    if (entry.type === "attachment" && entry.attachment?.type === "queued_command") continue;
+    if (entry.type === "attachment" && entry.attachment?.type === "queued_command") {
+      // Only a native command record is a boundary. Its text is never used as
+      // proof of authorization, cancellation, or successful task completion.
+      if (entry.attachment.commandMode === "prompt") {
+        interrupt(entry, descendants.get(entry.parentUuid));
+        continue;
+      }
+      // An inline native task notification is not a new prompt. Preserve the
+      // active reply chain even when the notification belongs to another task;
+      // its text alone never completes any outstanding background command.
+      if (entry.attachment.commandMode !== "task-notification"
+        || entry.attachment.origin?.kind !== "task-notification"
+        || entry.attachment.origin?.producer !== "session-task") continue;
+    }
     const role = entry.message?.role;
     const content = entry.message?.content;
     const outstanding = new Map(descendants.get(entry.parentUuid));
     const toolResults = Array.isArray(content) && content.length > 0 && content.every((part) => part?.type === "tool_result");
-    if (role === "user" && !toolResults) {
+    const imageCompanion = isImageToolCompanion(entry, entriesById);
+    if (role === "user" && !toolResults && !imageCompanion) {
+      const notificationText = typeof content === "string" ? content
+        : Array.isArray(content) ? content.filter((part) => typeof part?.text === "string").map((part) => part.text).join("\n") : "";
+      const nativeHuman = entry.origin?.kind === "human" && entry.promptSource === "sdk" && entry.turnOrigin === "human";
+      const legacyInput = entry.origin == null && entry.promptSource == null && entry.turnOrigin == null;
+      const ordinaryInput = !entry.isMeta && (nativeHuman || legacyInput)
+        && !notificationText.includes("<task-notification>")
+        && (typeof content === "string" && content.trim()
+          || Array.isArray(content) && content.length > 0 && content.every((part) => part?.type === "text" && typeof part.text === "string")
+            && content.some((part) => part.text.trim()));
+      if (ordinaryInput) {
+        interrupt(entry, outstanding);
+        continue;
+      }
       // A background command can end one model turn, then resume it through a
       // native task notification. Only that correlated system event may cross
       // the user-message boundary; pasted notification text is never enough.
@@ -421,10 +514,30 @@ export function readTranscriptReply(sessionId, cwd, msgId) {
       if (matches.length === 1) outstanding.set(taskId, matches[0].tool_use_id);
     }
     descendants.set(entry.uuid, outstanding);
+    // Parallel tool results and hook records can be leaf siblings of the real
+    // continuation. They are completed observations, not separate reply turns.
+    const parentEntry = entriesById.get(entry.parentUuid);
+    const matchedResults = toolResults && !entry.toolUseResult?.backgroundTaskId
+      && content.every((part) => Array.isArray(parentEntry?.message?.content)
+        && parentEntry.message.content.some((call) => call.type === "tool_use" && call.id === part.tool_use_id));
+    if (matchedResults || imageCompanion || entry.type === "attachment"
+      && ["hook_success", "total_tokens_reminder", "deferred_tools_record"].includes(entry.attachment?.type)) {
+      passiveLeaves.add(entry.uuid);
+    }
+    openLeaves.delete(entry.parentUuid);
+    openLeaves.add(entry.uuid);
     if (role !== "assistant" || !["end_turn", "stop_sequence"].includes(entry.message.stop_reason)) continue;
     if (outstanding.size > 0) continue;
     const text = Array.isArray(content) ? content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n") : typeof content === "string" ? content : "";
-    if (text.trim()) return { text: text.trim(), msgId: entry.uuid, source: "transcript", inReplyTo: msgId, absorbed };
+    if (text.trim()) return { status: "reply_received", reply: { text: text.trim(), msgId: entry.uuid, source: "transcript", inReplyTo: msgId, absorbed } };
+  }
+  if (!ambiguous && interruptions.length && [...openLeaves].every((id) => passiveLeaves.has(id))) {
+    return { status: "interrupted", source: "transcript", inReplyTo: msgId,
+      reasonCode: "CLAUDE_REPLY_INTERRUPTED",
+      reason: "A new conversation command separated this request from later replies. Reply waiting ended; the original task outcome is unknown and any background work may still be running. Inspect the existing task before sending a follow-up; do not resend the original action.",
+      interruptedBy: interruptions.map((entry) => entry.entryId),
+      backgroundTaskIds: [...new Set(interruptions.flatMap((entry) => entry.backgroundTaskIds))],
+    };
   }
   return null;
 }
@@ -642,6 +755,9 @@ export class PeerEndpoint {
                 reason: typeof frame.reason === "string" ? frame.reason : "",
                 fromSocket: decodePeerAddress(frame.from),
               };
+              // This status is derived locally from transcript ancestry, never
+              // accepted as a peer assertion that releases pending ownership.
+              if (receipt.status === "interrupted") continue;
               const pending = this.pendingMessages.get(frame.orig_msg_id);
               if (pending?.targetSocket === receipt.fromSocket) {
                 this.deliveryReceipts.set(frame.orig_msg_id, receipt);
@@ -704,8 +820,14 @@ export class PeerEndpoint {
       catch { continue; }
       if (stamp === pending.transcriptStamp) continue;
       pending.transcriptStamp = stamp;
-      const reply = readTranscriptReply(sessionId, cwd, msgId);
-      if (reply) this.#receiveMessage({ ...reply, fromSocket: pending.targetSocket });
+      const outcome = readTranscriptOutcome(sessionId, cwd, msgId);
+      if (outcome?.reply) this.#receiveMessage({ ...outcome.reply, fromSocket: pending.targetSocket });
+      else if (outcome?.status === "interrupted") {
+        this.activityRevision += 1;
+        this.deliveryReceipts.set(msgId, { ...outcome, fromSocket: pending.targetSocket, observedAt: Date.now() });
+        this.#removePendingReply(pending.targetSocket, msgId);
+        this.log(`reply observation interrupted for ${msgId}; task outcome remains unknown`);
+      }
     }
     if (![...this.pendingMessages.values()].some((entry) => entry.transcriptSession)) {
       globalThis.clearInterval(this.responsePoll);
@@ -814,6 +936,7 @@ export class PeerEndpoint {
     const previous = this.requestQueues.get(targetSocket) ?? Promise.resolve();
     const pending = previous.catch(() => {}).then(async () => {
       await beforeSend?.();
+      this.#refreshTranscriptReplies();
       const unconfirmed = this.unconfirmedReplies.get(targetSocket) ?? 0;
       if (unconfirmed > 0) {
         const error = new Error(
@@ -905,7 +1028,7 @@ export class PeerEndpoint {
       });
       const poll = msgId ? globalThis.setInterval(() => {
         const receipt = this.deliveryReceipts.get(msgId);
-        if (receipt?.fromSocket === fromSocket && ["held", "refused", "denied", "expired", "dropped"].includes(receipt.status)) { finish(null); return; }
+        if (receipt?.fromSocket === fromSocket && (receipt.status === "held" || isTerminalDelivery(receipt))) { finish(null); return; }
       }, 250) : null;
     });
   }
@@ -922,6 +1045,7 @@ export class PeerEndpoint {
   }
 
   readDelivery(msgId) {
+    this.#refreshTranscriptReplies();
     const sent = this.sentMessages.get(msgId);
     if (!sent) return null;
     const delivery = this.deliveryReceipts.get(msgId);
@@ -944,15 +1068,23 @@ export class PeerEndpoint {
       ...(sent.accountContext ? { accountContext: { ...sent.accountContext } } : {}),
       ...(sent.scopeBindings ? { scopeBindings: structuredClone(sent.scopeBindings), senderCwd: sent.scopeBindings.sender?.path ?? null } : {}),
       pending: this.pendingMessages.has(msgId),
+      ...(isInterruptedDelivery(delivery) ? {
+        outcome: "unknown", waitEnded: true, taskCancelled: false, retrySafe: false,
+        nextAction: "inspect_existing_task_then_follow_up",
+        interruption: { reasonCode: delivery.reasonCode, source: delivery.source,
+          observedAt: delivery.observedAt, entryIds: delivery.interruptedBy,
+          backgroundTaskIds: delivery.backgroundTaskIds },
+      } : {}),
       ...(sent.reply ? { reply: sent.reply.text, source: sent.reply.source ?? "peer", ...(sent.reply.absorbed ? { replyAbsorbed: true } : {}), ...(sent.reply.forwardingError ? { forwardingError: { ...sent.reply.forwardingError } } : {}) } : {}),
     };
   }
 
   reloadReason() {
+    this.#refreshTranscriptReplies();
     if (this.connections.size) return "Peer socket connections are still open";
     if (this.requestQueues.size || this.pendingMessages.size || this.unconfirmedReplies.size) return "Claude messages still have pending or unconfirmed delivery";
     for (const [id, sent] of this.sentMessages) {
-      if (!sent.reply && !sent.failed && !["refused", "denied", "expired", "dropped"].includes(this.deliveryReceipts.get(id)?.status)) {
+      if (!sent.reply && !sent.failed && !isTerminalDelivery(this.deliveryReceipts.get(id))) {
         return "A Claude delivery outcome remains unconfirmed";
       }
     }
@@ -1009,7 +1141,8 @@ export class PeerEndpoint {
     for (const [id, sent] of sentMessages) {
       if (typeof sent.targetSocket !== "string" || !sent.targetSocket || !Number.isFinite(sent.sentAt)
         || sent.reply && (typeof sent.reply.text !== "string" || sent.reply.inReplyTo !== id)
-        || !sent.reply && !sent.failed && !["refused", "denied", "expired", "dropped"].includes(deliveryReceipts.get(id)?.status)) {
+        || !sent.reply && !sent.failed && !isTerminalDelivery(deliveryReceipts.get(id))
+        || isInterruptedDelivery(deliveryReceipts.get(id)) && deliveryReceipts.get(id).inReplyTo !== id) {
         throw new Error("Invalid or unconfirmed Claude delivery reload record");
       }
     }

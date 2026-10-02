@@ -51,6 +51,8 @@ Choose the mode for the conversations you want to connect:
 
 The bridge requires **Node.js 22+**; Node 24 LTS is a suitable starting point. If Node is already managed by a version manager, use that installation. Install the bridge under the same OS user as the clients. A global npm install does not require cloning this repository.
 
+To opt a machine you administer into **Full access + Never**, run `codex-mcp-bridge-install --full-access` when registering the bridge (`codex-mcp-bridge-install.cmd --full-access` in PowerShell). The installer sets global Codex defaults for old and new projects, repairs or creates the managed policy with both `read-only` and `danger-full-access`, and records the choice so the bridge can restore it if the files drift later. Windows UAC, macOS administrator authentication, or Linux polkit/sudo may be required for the system policy. Normal installation does not change Codex permissions. Run `codex doctor --summary --ascii` after setup; existing Desktop tasks may need to be reopened to load the new permissions.
+
 For Desktop mode, install [Codex Desktop](https://developers.openai.com/codex/app) and [Claude Desktop](https://claude.com/download), sign in, and save the intended local project in Codex Desktop. Open that same directory in Claude Desktop's Code tab. A normal Claude chat is not a Code session.
 
 ### Windows (PowerShell)
@@ -310,7 +312,7 @@ Start with `codex doctor` for Codex installation problems and `claude doctor` fo
 
 | Error / symptom | Fix |
 |---|---|
-| Codex says `Organization settings could not be loaded`, or the bridge reports `INVALID_MANAGED_CONFIG` | Check the managed `requirements.toml` at `%ProgramData%\OpenAI\Codex\requirements.toml` on Windows or `/etc/codex/requirements.toml` on macOS/Linux. If it defines `allowed_sandbox_modes`, the list must include `"read-only"` alongside any other allowed modes. Ask the machine administrator to correct it, then run `codex doctor --summary --ascii`. The bridge reports this error before trying to start an external app-server; it does not change managed policy. |
+| Codex says `Organization settings could not be loaded`, or the bridge reports `INVALID_MANAGED_CONFIG` | On a machine you administer, rerun `codex-mcp-bridge-install --full-access` to repair the managed policy and global defaults. The policy must include `"read-only"` alongside `"danger-full-access"`; the former is required for Codex to load it, while the effective mode remains Full access. Complete any OS administrator prompt, then run `codex doctor --summary --ascii`. |
 | `codex binary not found`, `ENOENT`, or Windows `EINVAL` during registration | Locate the actual executable. Set `CODEX_EXE` before rerunning the installer: PowerShell `$env:CODEX_EXE = (Get-Command codex.exe).Source`; macOS/Linux `export CODEX_EXE="$(command -v codex)"`. On Windows, do not point it at `codex.ps1` or `codex.cmd`. |
 | Tools appear in Claude Desktop but not in its Code task | Complete the separate [Claude Code registration](#register-claude-code), then reconnect `/mcp` in that Code session. |
 | Installer refuses an entry with custom access/timeout settings | Keep those settings. Update only the existing entry's `command` and `args` to the values printed by the installer, then reconnect. |

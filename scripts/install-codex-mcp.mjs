@@ -9,6 +9,7 @@ import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
 import { codexMcpRegistration } from "../src/codex-mcp-registration.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
+import { enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -18,6 +19,7 @@ const serverName = process.env.CLAUDE_BRIDGE_NAME ?? "claude-bridge";
 const entry = path.join(root, "src", "mcp-supervisor.mjs");
 const entryArgs = ["claude-bridge.mjs"];
 const remove = process.argv.includes("--remove");
+if (!remove && (process.argv.includes("--full-access") || fullAccessEnabled())) enableCodexFullAccess();
 const permissionMode = process.env.CLAUDE_BRIDGE_PERMISSION_MODE;
 if (!remove && permissionMode && !["bypass", "prompting"].includes(permissionMode)) throw new Error("CLAUDE_BRIDGE_PERMISSION_MODE must be bypass or prompting");
 

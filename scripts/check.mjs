@@ -3,6 +3,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readManagedRequirementsIssue } from "../src/app-server-client.mjs";
+import { enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -16,6 +17,7 @@ const bridgeEnvNames = [
   "CODEX_BRIDGE_APPROVAL",
   "CODEX_BRIDGE_AUTO_APPROVE_ACK",
   "CODEX_BRIDGE_APPROVAL_POLICY",
+  "CODEX_BRIDGE_ENFORCE_FULL_ACCESS",
   "CODEX_BRIDGE_AUTOSTART",
   "CODEX_BRIDGE_DESKTOP_TASKS",
   "CODEX_NATIVE_RELAY_SOCKET",
@@ -41,6 +43,7 @@ const transport = new StdioClientTransport({
 const client = new Client({ name: "bridge-check", version: "1.0.0" });
 
 try {
+  if (fullAccessEnabled()) enableCodexFullAccess();
   const managedIssue = readManagedRequirementsIssue();
   if (managedIssue) throw new Error(managedIssue);
   await client.connect(transport);

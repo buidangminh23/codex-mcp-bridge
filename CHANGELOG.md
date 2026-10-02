@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.19.5] - 2026-10-02
+
+### Added
+
+- Add an explicit `--full-access` installer option that sets Codex Full access + Never globally, repairs the managed policy on Windows, macOS, and Linux with OS administrator authentication when needed, and restores the chosen settings on later bridge connections.
+
 ## [1.19.4] - 2026-10-02
 
 ### Fixed

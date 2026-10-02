@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { PLATFORM_LABEL, resolveCodexBin, spawnEnv } from "./platform.mjs";
 import { assertAllowedAppServerUrl } from "./security-policy.mjs";
+import { enableCodexFullAccess, fullAccessEnabled } from "./codex-full-access.mjs";
 
 const DEFAULT_URL = "ws://127.0.0.1:8791";
 const CONNECT_ATTEMPTS = 2;
@@ -211,13 +212,20 @@ export class CodexAppServerClient {
       for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt += 1) {
         try {
           this.#assertConnectionEpoch(epoch);
+          if (fullAccessEnabled()) {
+            try {
+              enableCodexFullAccess();
+            } catch (error) {
+              throw new AppServerError(`Codex Full access repair failed: ${error.message}`, "CODEX_ACCESS_REPAIR_FAILED");
+            }
+          }
           await this.#openConnection(epoch);
           return;
         } catch (err) {
           lastError = err;
           this.#assertConnectionEpoch(epoch);
           this.log(`connect attempt ${attempt}/${CONNECT_ATTEMPTS} failed: ${err.message}`);
-          if (err.code === "INVALID_MANAGED_CONFIG") throw err;
+          if (["INVALID_MANAGED_CONFIG", "CODEX_ACCESS_REPAIR_FAILED"].includes(err.code)) throw err;
           if (attempt < CONNECT_ATTEMPTS) await delay(CONNECT_RETRY_DELAY_MS);
         }
       }

@@ -7,6 +7,7 @@ import { IS_WINDOWS, PLATFORM_LABEL, claudeDesktopConfigPath, resolveCodexBin } 
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
+import { enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -14,6 +15,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();
 const reset = process.argv.includes("--reset");
 const forceDesktopTasks = process.argv.includes("--desktop-tasks");
+const fullAccess = process.argv.includes("--full-access") || fullAccessEnabled();
+if (fullAccess) enableCodexFullAccess();
 
 /**
  * This bridge is intentionally the local hand-off point between Claude and
@@ -85,7 +88,8 @@ cfg.mcpServers["codex-bridge"] = {
     CODEX_BRIDGE_ALLOWED_ROOTS: settled("CODEX_BRIDGE_ALLOWED_ROOTS", defaultRoots),
     CODEX_BRIDGE_APPROVAL: settled("CODEX_BRIDGE_APPROVAL", "deny"),
     CODEX_BRIDGE_AUTO_APPROVE_ACK: settled("CODEX_BRIDGE_AUTO_APPROVE_ACK", "0"),
-    CODEX_BRIDGE_APPROVAL_POLICY: settled("CODEX_BRIDGE_APPROVAL_POLICY", "on-request"),
+    CODEX_BRIDGE_APPROVAL_POLICY: fullAccess ? "never" : settled("CODEX_BRIDGE_APPROVAL_POLICY", "on-request"),
+    CODEX_BRIDGE_ENFORCE_FULL_ACCESS: fullAccess ? "1" : settled("CODEX_BRIDGE_ENFORCE_FULL_ACCESS", "0"),
     /**
      * Written out even at its default so it is visible in the file. Left
      * implicit, the one setting that decides whether the bridge can reach a
@@ -94,7 +98,7 @@ cfg.mcpServers["codex-bridge"] = {
      * points nowhere near it.
      */
     CODEX_BRIDGE_THREAD_POLICY: settled("CODEX_BRIDGE_THREAD_POLICY", "roots"),
-    CODEX_BRIDGE_SANDBOX: settled("CODEX_BRIDGE_SANDBOX", "workspace-write"),
+    CODEX_BRIDGE_SANDBOX: fullAccess ? "danger-full-access" : settled("CODEX_BRIDGE_SANDBOX", "workspace-write"),
     CODEX_BRIDGE_OPEN_IN_APP: settled("CODEX_BRIDGE_OPEN_IN_APP", IS_WINDOWS ? "1" : "0"),
     CODEX_BRIDGE_RELEASE_AFTER_TURN: settled("CODEX_BRIDGE_RELEASE_AFTER_TURN", IS_WINDOWS ? "1" : "0"),
     ...(desktopMode !== undefined ? { CODEX_BRIDGE_DESKTOP_TASKS: desktopMode } : {}),

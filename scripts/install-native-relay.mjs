@@ -19,15 +19,17 @@ import {
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
+import { enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.19.4";
+const VERSION = "1.19.5";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = path.join(root, "src", "mcp-supervisor.mjs");
 const entryArgs = ["native-relay-companion.mjs"];
 const serverName = process.env.CODEX_NATIVE_RELAY_NAME ?? "codex-native-relay";
 const remove = process.argv.includes("--remove");
+if (!remove && (process.argv.includes("--full-access") || fullAccessEnabled())) enableCodexFullAccess();
 const skipBootstrap = process.argv.includes("--no-bootstrap");
 
 const codexBin = resolveCodexBin(process.env.CODEX_EXE);

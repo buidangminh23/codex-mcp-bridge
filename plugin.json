@@ -1,0 +1,31 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-mcp-bridge",
+  "version": "1.20.0",
+  "description": "Connect ChatGPT to your own Codex Desktop projects and conversations.",
+  "author": {
+    "name": "Bui Dang Minh",
+    "email": "buidangminh23@gmail.com",
+    "url": "https://github.com/buidangminh23"
+  },
+  "homepage": "https://github.com/buidangminh23/codex-mcp-bridge",
+  "repository": "https://github.com/buidangminh23/codex-mcp-bridge",
+  "license": "MIT",
+  "keywords": ["codex", "mcp", "developer-tools"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Codex MCP Bridge",
+        "shortDescription": "Connect to your Codex Desktop",
+        "longDescription": "Connect ChatGPT to your own Codex Desktop computer. Read saved projects and conversations, start an authorized task, or continue unfinished work. Requires Node.js 22+, Windows or macOS, signed-in Codex Desktop and Claude Desktop, the native relay, and a running outbound connector. Each account pairs its own computer and chooses allowed project roots. Interrupted sends are never automatically repeated.",
+        "developerName": "Bui Dang Minh",
+        "category": "Developer Tools",
+        "capabilities": ["Read", "Write"],
+        "websiteURL": "https://codex-mcp-bridge.buidangminh23.chatgpt.site",
+        "supportURL": "https://github.com/buidangminh23/codex-mcp-bridge/issues",
+        "privacyPolicyURL": "https://github.com/buidangminh23/codex-mcp-bridge#hosted-data",
+        "termsOfServiceURL": "https://github.com/buidangminh23/codex-mcp-bridge/blob/main/LICENSE"
+      }
+    }
+  }
+}

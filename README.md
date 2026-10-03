@@ -58,7 +58,7 @@ Use a semicolon between multiple Windows roots or a colon on macOS. The relay's 
 
 The plugin can list projects, read conversations, create an authorized task, and continue an existing task. Requests return an operation ID; read its result before sending more work. An uncertain send is never automatically repeated. Disconnecting blocks future dispatch and cancels queued work; tasks already sent to Desktop keep running. Linux/WSL users can use the existing CLI bridge below; the hosted connector requires native Codex Desktop.
 
-The hosted Worker source and database migrations are in `sites/codex-bridge`. A compatibility plugin manifest and workflow skill are included in the npm package and this repository.
+The hosted Worker source and database migrations are in `sites/codex-bridge`. The portable `plugin.json`, `mcp.json`, compatibility manifest, and workflow skill are included in the npm package and this repository. The plugin ZIP has its portable manifest directly at the archive root.
 
 #### Hosted data
 

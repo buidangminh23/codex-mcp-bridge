@@ -14,6 +14,8 @@
     "shortDescription": "Connect to your Codex Desktop",
     "longDescription": "Connect ChatGPT to your own Codex Desktop computer. List saved projects, read conversations, start an authorized task, or continue unfinished work. Each account pairs its own connector; local project roots and account identities are verified before dispatch. Requires Node.js 22+, Windows or macOS, signed-in Codex Desktop and Claude Desktop, the native relay, and a running outbound connector. Queued requests return an operation ID. Interrupted sends are never automatically repeated.",
     "developerName": "Bui Dang Minh",
+    "composerIcon": "./assets/plugin-icon.svg",
+    "logo": "./assets/plugin-icon.svg",
     "category": "Developer Tools",
     "capabilities": ["List Codex projects", "Read Codex conversations", "Start Codex tasks", "Continue Codex tasks"],
     "websiteURL": "https://codex-mcp-bridge.buidangminh23.chatgpt.site",

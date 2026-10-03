@@ -36,6 +36,7 @@
     "src",
     "scripts",
     "skills",
+    "assets",
     "plugin.json",
     "mcp.json",
     ".codex-plugin",

@@ -20,7 +20,17 @@ test("portable and compatibility packages resolve the same production endpoint a
   assert.equal(server.type, "streamable-http");
   assert.equal(server.url, legacyServer.url);
   assert.equal(server.url, `${manifest.extensions["com.openai"].interface.websiteURL}/mcp`);
-  for (const entry of ["plugin.json", "mcp.json", ".mcp.json", ".codex-plugin", "skills"]) {
+  const presentation = manifest.extensions["com.openai"].interface;
+  assert.ok(presentation.shortDescription.length <= 30);
+  assert.equal(presentation.category, "Developer Tools");
+  for (const field of ["logo", "composerIcon"]) {
+    assert.equal(presentation[field], compatibility.interface[field]);
+    assert.match(presentation[field], /^\.\/assets\/[a-z-]+\.svg$/);
+    const svg = fs.readFileSync(path.join(root, presentation[field]), "utf8");
+    assert.match(svg, /viewBox="0 0 256 256"/);
+    assert.doesNotMatch(svg, /<script|<foreignObject|href=/i);
+  }
+  for (const entry of ["plugin.json", "mcp.json", ".mcp.json", ".codex-plugin", "skills", "assets"]) {
     assert.ok(pkg.files.includes(entry), `npm package must include ${entry}`);
     assert.ok(fs.existsSync(path.join(root, entry)), `${entry} must exist`);
   }

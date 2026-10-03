@@ -145,7 +145,7 @@ function replyResult(delivered, deliveryId, result, notes = []) {
   const continuation = deliveryId ? `deliveryId: ${deliveryId}\n${pending ? "Continue automatically with wait_codex_reply and this deliveryId; it only observes the original send. Do not resend the prompt." : "Keep this deliveryId to inspect the same send after reconnecting."}` : "";
   return {
     ...textResult([...notes, formatTurn(result, { desktop: true }), continuation].filter(Boolean).join("\n"), result.status === "failed" || result.status === "systemError"),
-    structuredContent: { ...result, threadId: delivered.threadId, deliveryStatus: "accepted", ...(deliveryId ? { deliveryId } : {}), nextAction: pending && deliveryId ? "wait_codex_reply" : "none" },
+    structuredContent: { ...result, threadId: delivered.threadId, deliveryStatus: result.responseStatus === "completed" || result.responseStatus === "completed_no_reply" ? "accepted" : delivered.deliveryStatus ?? "accepted", ...(deliveryId ? { deliveryId } : {}), nextAction: pending && deliveryId ? "wait_codex_reply" : "none" },
   };
 }
 
@@ -206,7 +206,10 @@ async function delegateDesktopTask({ cwd, prompt, name, requestId, model, effort
   const created = await desktopTasks.create({
     cwd: workspace.path, prompt, name: threadNameFor({ cwd: workspace.path, prompt, name }),
     dedupeName: name ?? "", requestId, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, deadline,
+    onAccepted: (delivered) => replyReceipts.create(delivered, desktopOperation.getStore()),
   });
+  const deliveryId = created.deliveryId;
+  const delivered = deliveryId ? replyReceipts.read(deliveryId, desktopOperation.getStore()) : null;
   const notes = [];
   if (workspace.note) notes.push(workspace.note);
   if (openInApp ?? DEFAULT_OPEN_IN_APP) {
@@ -230,12 +233,16 @@ async function delegateDesktopTask({ cwd, prompt, name, requestId, model, effort
       : "The edited brief was not sent. Continue the same unfinished work with send_to_codex_thread and this threadId. For independent new work, create a task with a fresh requestId; never change requestId merely to retry uncertain delivery."] : []), ...notes,
   ];
   if (created.projectAssignmentStatus === "unverified") return textResult([...lines, "status: existing task retained; project assignment needs inspection"].join("\n"));
-  if (!waitForReply) return textResult([...lines, created.reused ? "status: existing task; read it to check its current progress" : "status: accepted; the task is running in Desktop"].join("\n"));
+  if (!waitForReply) return textResult([...lines, created.reused ? "status: existing task; read it to check its current progress" : "status: accepted; the task is running in Desktop", ...(deliveryId ? [`deliveryId: ${deliveryId}`, "Use wait_codex_reply with this deliveryId to observe the original creation without resending."] : [])].join("\n"));
+  if (!delivered) return textResult([...lines, "The existing creation has no original reply binding. Inspect it without resending; a new binding cannot be inferred from a retry."].join("\n"));
   try {
-    const result = await desktopTasks.wait(created.threadId, { timeoutMs: Math.max(0, deadline - Date.now()) });
-    return textResult([...lines, "", formatTurn(result, { desktop: true })].join("\n"), result.status === "failed" || result.status === "systemError");
+    const result = await desktopTasks.wait(created.threadId, { timeoutMs: Math.max(0, deadline - Date.now()), previousTurnId: delivered.previousTurnId, responseObservation: delivered.responseObservation });
+    return replyResult(delivered, deliveryId, result, lines);
   } catch (err) {
-    return textResult([...lines, `Task was accepted; observation failed: ${err.message}`, "Do not resend the prompt. Inspect the existing task."].join("\n"), true);
+    if (Date.now() >= deadline && /deadline|timed out|within \d+ms/.test(err.message)) {
+      return replyResult(delivered, deliveryId, { threadId: created.threadId, status: "timeout", responseStatus: "unavailable", text: "" }, lines);
+    }
+    return textResult([...lines, `Task was accepted; observation failed: ${err.message}`, `deliveryId: ${deliveryId}`, "Do not resend the prompt. Resolve the observation error, then use wait_codex_reply."].join("\n"), true);
   }
 }
 
@@ -447,7 +454,7 @@ registerTool(
       "Create a named Codex session at the requested project directory, send Claude's prompt into it, " +
       "return Codex's reply, and hand the session to Codex Desktop without leaving the bridge writer lock behind. " +
       "Use for independent new work when the user explicitly or through standing instructions authorizes new conversations. " +
-      "In Desktop mode, supply a fresh requestId per independent task and keep it on retries; omit requestId in legacy app-server mode. Use send_to_codex_thread for unfinished work.",
+      "Desktop creation returns a durable deliveryId; on timeout continue with wait_codex_reply instead of resending. In Desktop mode, supply a fresh requestId per independent task and keep it on retries; omit requestId in legacy app-server mode. Use send_to_codex_thread for unfinished work.",
     inputSchema: {
       cwd: z.string().describe("Absolute project directory where Codex must work"),
       requestId: z.string().uuid().optional().describe("Desktop creation identity: fresh UUID for each independent new task; retain exactly on retries. Omitting it preserves legacy title/prompt deduplication and can return an older task. Not supported in legacy app-server mode."),
@@ -543,7 +550,7 @@ registerTool(
       "Use only for the same unfinished task, including follow-up fixes, clarifications, or results; independent new work belongs in a new conversation when authorized. " +
       "The thread keeps its full history, cwd and model. Use list_codex_threads first if you do not know the threadId. " +
       "Desktop-owned tasks must use Desktop native delivery; an open task is a valid destination. " +
-      "An accepted Desktop send returns a durable deliveryId. If it times out, continue automatically with wait_codex_reply using that ID; never resend to obtain the answer. " +
+      "A Desktop send prepares a durable deliveryId before dispatch. An ambiguous acknowledgement is marked unconfirmed, never accepted without evidence. If it times out, continue automatically with wait_codex_reply using that ID; never resend to obtain the answer. " +
       "If legacy delivery reports an active writer, inspect codex_bridge_status and repair the native relay/configuration. " +
       "Do not close the task, create a replacement, or ask the user to copy the message manually.",
     inputSchema: {
@@ -591,10 +598,13 @@ registerTool(
         if (desktopTasksEnabled) {
           const workspace = cwd ? resolveWorkspacePath(cwd) : null;
           if (workspace) security.assertCwd(workspace.path);
-          const delivered = await desktopTasks.send({ threadId, prompt, cwd: workspace?.path, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, name, deadline });
+          const delivered = await desktopTasks.send({ threadId, prompt, cwd: workspace?.path, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, name, deadline, onPrepared: (prepared) => {
+            deliveryId = replyReceipts.create(prepared, desktopOperation.getStore());
+            acceptedDelivery = prepared;
+          } });
           acceptedDelivery = delivered;
-          deliveryId = replyReceipts.create(delivered, desktopOperation.getStore());
-          notes.push("sent through Codex Desktop; no external app-server writer", `cwd: ${delivered.cwd}`);
+          notes.push(delivered.deliveryStatus === "unconfirmed" ? "Desktop delivery acknowledgement timed out; delivery is unconfirmed. Continue observing this receipt; do not resend." : "sent through Codex Desktop; no external app-server writer", `cwd: ${delivered.cwd}`);
+          if (delivered.deliveryStatus === "unconfirmed") return replyResult(delivered, deliveryId, { threadId, status: "timeout", responseStatus: "unavailable", text: "" }, notes);
           if (shouldOpen) {
             try {
               await desktopTasks.open(threadId, { deadline });
@@ -662,7 +672,7 @@ registerTool(
         const held = shouldOpen && !shouldRelease && client.holdsThread(threadId) ? writerLockWarning(threadId) : "";
         return textResult(`${notes.length ? `${notes.join("\n")}\n` : ""}${body}${held}`, failed);
       } catch (err) {
-        if (acceptedDelivery) return textResult(`threadId: ${threadId}\nTask was accepted, but its reply receipt could not be prepared: ${err.message}. Inspect the existing task; do not resend.`, true);
+        if (acceptedDelivery?.deliveryStatus === "accepted") return textResult(`threadId: ${threadId}\nTask was accepted, but its reply receipt could not be prepared: ${err.message}. Inspect the existing task; do not resend.`, true);
         return failure(err);
       }
     }, {
@@ -678,10 +688,10 @@ registerTool(
 registerTool(
   "wait_codex_reply",
   {
-    title: "Continue waiting for an accepted Codex reply",
-    description: "Continue an existing Desktop send using its deliveryId, including after MCP reconnect. Never sends a message or creates a task. On timeout, call again with the same deliveryId; do not ask the user to fetch the answer or resend. Stops for approval, user input or a verification error. Only the original verified Claude session and accounts can use the receipt.",
+    title: "Continue waiting for a Codex reply",
+    description: "Continue a Desktop creation or send using its deliveryId; an unconfirmed acknowledgement does not prove delivery, including after MCP reconnect. Never sends a message or creates a task. On timeout, call again with the same deliveryId; do not ask the user to fetch the answer or resend. Stops for approval, user input or a verification error. Only the original verified Claude session and accounts can use the receipt.",
     inputSchema: {
-      deliveryId: z.string().uuid().describe("Exact deliveryId returned by send_to_codex_thread"),
+      deliveryId: z.string().uuid().describe("Exact deliveryId returned by send_to_codex_thread, delegate_to_codex or start_codex_thread"),
       timeoutSec: z.number().int().min(1).max(40).optional().describe("Bounded observation time, default 40 seconds; repeat with the same receipt if still running"),
     },
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },

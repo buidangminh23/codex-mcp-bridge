@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse } from "../src/codex-native-response.mjs";
+import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse, readCodexNativeCreationResponse } from "../src/codex-native-response.mjs";
 
 const THREAD_ID = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
 const TURN_ID = "01a087df-8988-7433-b08b-d85692b1f41a";
@@ -57,6 +57,21 @@ function fixture(t) {
 }
 
 describe("native Codex response observation", () => {
+  it("correlates a confirmed creation to create_thread only, with exact sender and prompt", (t) => {
+    const f = fixture(t);
+    const records = f.turn();
+    records[2].payload.name = "create_thread";
+    f.append(records);
+    const binding = { threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd, executorThreadId: EXECUTOR_ID, prompt: PROMPT };
+    const read = (overrides = {}) => readCodexNativeCreationResponse({ ...binding, ...overrides }, { env: f.env });
+    assert.equal(read().text, "Received safely");
+    for (const override of [{ executorThreadId: PREVIOUS_TURN_ID }, { prompt: "another brief" }, { expectedCwd: f.home }]) {
+      assert.equal(read(override).status, "unavailable");
+    }
+    fs.writeFileSync(f.file, line(f.session) + f.turn().map(line).join(""));
+    assert.match(read().reason, /exact native dispatch/);
+  });
+
   it("follows a new continuation after dispatch and verifies every old segment prefix", (t) => {
     const f = fixture(t);
     f.append(f.turn({ turnId: PREVIOUS_TURN_ID }));

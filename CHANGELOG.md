@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve reply continuation for confirmed Desktop creation and for existing-thread sends whose native acknowledgement times out. Return an owner/account-bound delivery ID without resending; keep uncertain delivery distinct from acceptance, and correlate creation replies to the exact native creation dispatch. Retain the upstream project and permission checks.
+
 ## [1.20.1] - 2026-10-03
 
 ### Fixed

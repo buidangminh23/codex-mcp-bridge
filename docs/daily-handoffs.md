@@ -46,9 +46,10 @@ new task, account, process, prompt and directory to match.
 3. Claude may report progress, request help and return results through the
    messaging MCP within the user's authorized collaboration. Acknowledgment is
    not task completion; check the actual result.
-4. For an accepted Claude-to-Codex timeout, call `wait_codex_reply` with the same
+4. For a Claude-to-Codex creation/send timeout with a deliveryId, call `wait_codex_reply` with the same
    deliveryId. For Codex-to-Claude, retain the original msgId and inspect its
-   receipt. Never resend an uncertain task to obtain its reply.
+   receipt. An unconfirmed acknowledgement is not proof of delivery; observe
+   the original receipt instead of resending an uncertain task.
 5. An `interrupted` receipt ends observation only: task outcome is unknown and
    background work may continue. Inspect the existing task before a scoped
    follow-up; do not repeat card creation or file operations.

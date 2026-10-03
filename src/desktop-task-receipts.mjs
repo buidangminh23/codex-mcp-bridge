@@ -6,7 +6,7 @@ import { homeDir } from "./platform.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
 const REQUEST_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const FIELDS = new Set(["version", "key", "cwd", "promptHash", "state", "startedAt", "threadId", "projectId", "projectName", "name", "accountContext", "requestId"]);
+const FIELDS = new Set(["version", "key", "cwd", "promptHash", "state", "startedAt", "threadId", "projectId", "projectName", "name", "accountContext", "requestId", "deliveryId"]);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const normalizedName = (name) => name?.normalize("NFC").trim().replace(/\s+/g, " ");
 const canonicalCwd = (cwd) => process.platform === "win32" ? path.normalize(cwd).toLowerCase() : path.normalize(cwd);
@@ -27,6 +27,7 @@ function validateReceipt(key, receipt) {
   const valid = receipt && typeof receipt === "object" && !Array.isArray(receipt)
     && Object.keys(receipt).every((field) => FIELDS.has(field))
     && receipt.version === 1 && receipt.key === key && HASH.test(receipt.promptHash)
+    && (receipt.deliveryId === undefined || typeof receipt.deliveryId === "string" && REQUEST_ID.test(receipt.deliveryId))
     && (receipt.requestId === undefined || typeof receipt.requestId === "string" && REQUEST_ID.test(receipt.requestId))
     && nonemptyString(receipt.cwd) && path.isAbsolute(receipt.cwd)
     && ["pending", "unknown", "known"].includes(receipt.state)

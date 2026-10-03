@@ -260,7 +260,7 @@ describe("Desktop task MCP integration", () => {
     });
   });
 
-  for (const resume of [false, true]) it(resume ? "continues a timed-out send after MCP restart with the same reply and no duplicate dispatch" : "returns the same exact assistant item and hash from send and authoritative turn read", async () => {
+  for (const resume of [false, true, "lost-ack", "creation"]) it(resume ? `continues ${resume} after MCP restart with the same reply and no duplicate dispatch` : "returns the same exact assistant item and hash from send and authoritative turn read", async () => {
     const threadId = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
     const turnId = "01a08812-f472-7f43-8f9b-1137e61f6d32";
     const previousTurnId = "01a087dd-d587-76c3-93c3-60c16bc08542";
@@ -277,10 +277,10 @@ describe("Desktop task MCP integration", () => {
     const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-integrity-${randomUUID()}` : path.join(socketRoot, "d.sock");
     try {
       await withBridge(() => { throw new Error("Desktop integrity test must not reach an external app-server"); }, async ({ client, home, env }) => {
-        let sentResult = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId, prompt, openInApp: false, ...(resume ? { timeoutSec: 10 } : {}) } });
+        let sentResult = await client.callTool({ name: resume === "creation" ? "delegate_to_codex" : "send_to_codex_thread", arguments: { ...(resume === "creation" ? { cwd: home, requestId: randomUUID() } : { threadId }), prompt, openInApp: false, ...(resume ? { timeoutSec: 10 } : {}) } });
         if (resume) {
           assert.equal(sentResult.isError, undefined);
-          assert.equal(sentResult.structuredContent.deliveryStatus, "accepted");
+          assert.equal(sentResult.structuredContent.deliveryStatus, resume === "lost-ack" ? "unconfirmed" : "accepted");
           assert.equal(sentResult.structuredContent.status, "timeout");
           assert.equal(sentResult.structuredContent.nextAction, "wait_codex_reply");
           const { deliveryId } = sentResult.structuredContent;
@@ -302,8 +302,9 @@ describe("Desktop task MCP integration", () => {
         assert.equal(authoritative.status, "completed");
         assert.deepEqual(authoritative.assistantItems, [{ id: itemId, text: reply }]);
         assert.equal(authoritative.replySha256, expectedHash);
-        assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, 1);
-        assert.equal(calls.includes("create_thread"), false);
+        assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, resume === "creation" ? 0 : 1);
+        assert.equal(calls.filter((operation) => operation === "create_thread").length, resume === "creation" ? 1 : 0);
+        assert.equal(sentResult.structuredContent.deliveryStatus, "accepted");
       }, async (home) => {
         const directory = path.join(home, ".codex", "sessions", "2026", "09", "09");
         fs.mkdirSync(directory, { recursive: true });
@@ -314,15 +315,17 @@ describe("Desktop task MCP integration", () => {
           calls.push(operation);
           let result;
           if (operation === "read_thread") result = { thread: { id: threadId, hostId: "local", cwd: home }, turns: [{ id: sent ? turnId : previousTurnId, status: sent ? "completed" : "completed" }] };
-          else if (operation === "send_message_to_thread") {
+          else if (operation === "list_projects" && resume === "creation") result = { projects: [{ projectId: "fixture-project", projectKind: "local", hostId: "local", path: home }] };
+          else if (operation === "send_message_to_thread" || operation === "create_thread" && resume === "creation") {
             sent = true;
             append({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } });
             append({ type: "turn_context", payload: { turn_id: turnId, cwd: home } });
-            append({ type: "response_item", payload: { type: "function_call_output", id: randomUUID(), namespace: "codex_app", name: "send_message_to_thread", output: `<codex_delegation>\n  <source_thread_id>${executorThreadId}</source_thread_id>\n  <input>${prompt}</input>\n</codex_delegation>`, internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
+            append({ type: "response_item", payload: { type: "function_call_output", id: randomUUID(), namespace: "codex_app", name: operation, output: `<codex_delegation>\n  <source_thread_id>${executorThreadId}</source_thread_id>\n  <input>${prompt}</input>\n</codex_delegation>`, internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
             append({ type: "event_msg", payload: { type: "item_completed", thread_id: threadId, turn_id: turnId, item: { type: "AgentMessage", id: itemId, content: [{ type: "Text", text: reply }], phase: "final_answer" } } });
             append({ type: "response_item", payload: { type: "message", id: itemId, role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: reply }], internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
             append({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId } });
-            result = { threadId, status: "accepted" };
+            if (resume === "lost-ack") await new Promise((resolve) => setTimeout(resolve, 11000));
+            result = { threadId, hostId: "local", status: "accepted", firstTurn: { status: "accepted" } };
           } else if (operation === "wait_threads") result = { polls: [{ thread: { id: threadId, hostId: "local", status: { type: completed ? "idle" : "active" } }, latestTurn: { id: turnId, status: completed ? "completed" : "inProgress" }, latestAssistantMessage: { turnId: previousTurnId, phase: "final_answer", text: "must not be used" } }] };
           else throw new Error(`Unexpected operation ${operation}`);
           return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
@@ -711,18 +714,18 @@ describe("Desktop task MCP integration", () => {
         assert.match(result.content[0].text, /opened in Codex Desktop while/);
         assert.match(result.content[0].text, /response observation: unavailable/);
         assert.doesNotMatch(result.content[0].text, /COMPLETE/);
-        assert.deepEqual(calls.map(([op]) => op), ["list_projects", "list_projects", "create_thread", "read_thread", "read_thread", "navigate_to_codex_page", "wait_threads"]);
+        assert.deepEqual(calls.map(([op]) => op), ["list_projects", "list_projects", "create_thread", "read_thread", "read_thread", "navigate_to_codex_page", "wait_threads", "read_thread", "read_thread"]);
         const empty = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home } });
         assert.equal(empty.isError, true);
         assert.match(empty.content[0].text, /No task was created/);
-        assert.equal(calls.length, 7);
+        assert.equal(calls.length, 9);
       }, async (home) => {
         relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
           calls.push([operation, args]);
           let result;
           if (operation === "list_projects") result = { projects: [{ projectId: "project-id", projectKind: "local", hostId: "local", path: home, label: "Test" }] };
           else if (operation === "create_thread") result = { threadId: "new-task", hostId: "local" };
-          else if (operation === "read_thread") result = { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [] };
+          else if (operation === "read_thread") result = { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [{ id: "turn", status: "completed" }] };
           else if (operation === "navigate_to_codex_page") result = { navigated: true };
           else if (operation === "wait_threads") result = { polls: [{ thread: { id: "new-task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "turn", status: "completed" }, latestAssistantMessage: { turnId: "turn", phase: "final_answer", text: "COMPLETE" } }] };
           else throw new Error(`Unexpected operation ${operation}`);

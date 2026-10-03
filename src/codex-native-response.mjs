@@ -202,7 +202,7 @@ function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch } 
   let dispatch = null;
   if (requireDispatch) {
     const dispatches = turns.filter(({ record }) => record.type === "response_item" && record.payload.type === "function_call_output" &&
-      record.payload.namespace === "codex_app" && record.payload.name === "send_message_to_thread");
+      record.payload.namespace === "codex_app" && record.payload.name === (requireDispatch.operation ?? "send_message_to_thread"));
     if (dispatches.length !== 1 || !requireDispatch.outputs.includes(dispatches[0].record.payload.output) ||
         contexts[0].start >= dispatches[0].start || dispatches[0].start >= completions[0].start) {
       throw new Error("The newly observed turn is not correlated to the exact native dispatch");
@@ -275,6 +275,33 @@ export function captureCodexRolloutWatermark({ threadId, expectedCwd, desktopEvi
     return { status: "available", threadId, cwd, ...mark(selected), segments: snapshots.map(mark) };
   } catch (error) {
     return unavailable(error);
+  }
+}
+
+// Creation has no pre-send rollout: the confirmed fresh thread ID is its boundary.
+// Require the exact create_thread dispatch, executor and prompt rather than
+// treating any later turn in that thread as the delegated reply.
+export function readCodexNativeCreationResponse({ threadId, turnId, expectedCwd, executorThreadId, prompt, desktopEvidence }, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
+  try {
+    if (!UUID.test(threadId) || !UUID.test(turnId) || !UUID.test(executorThreadId)) throw new Error("The native creation response identity is invalid");
+    if (typeof prompt !== "string" || !prompt.length) throw new Error("The exact creation prompt is unavailable");
+    const cwd = canonicalDirectory(expectedCwd, "The created native task workspace");
+    let retainedBytes = 0;
+    const snapshots = findRollouts(threadId, env).map((found) => {
+      const snapshot = readStable(found, maxRolloutBytes, { threadId, turnId });
+      retainedBytes += snapshot.retainedBytes;
+      if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
+      validateIdentity(snapshot, threadId, cwd, desktopEvidence);
+      return snapshot;
+    });
+    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
+    const selected = uniqueTurn(snapshots);
+    validateSession(selected, threadId, cwd, desktopEvidence);
+    return inspectTurnRecords(selected.records, threadId, turnId, cwd, {
+      requireDispatch: { operation: "create_thread", outputs: delegationOutputs(executorThreadId, prompt) },
+    });
+  } catch (error) {
+    return { ...unavailable(error), threadId, turnId, source: "codex_desktop_rollout", assistantItems: [], text: "", replySha256: null };
   }
 }
 

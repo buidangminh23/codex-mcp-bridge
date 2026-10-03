@@ -50,6 +50,49 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, beforeWrit
 }
 
 describe("Desktop creation receipts and deadlines", () => {
+  it("keeps callers without a local receipt callback on the original fail-closed send contract", async (t) => {
+    const f = fixture(t, { dispatch({ operation }) {
+      if (operation === "send_message_to_thread") throw Object.assign(new Error("lost acknowledgement"), { code: "RELAY_TIMEOUT", reachedCompanion: true });
+    } });
+    await assert.rejects(f.delivery.send({ threadId: "task", prompt: "no local continuation owner" }), /lost acknowledgement/);
+    const created = await f.delivery.create({ cwd: f.cwd, prompt: "private", name: "ordinary creation" });
+    assert.equal(Object.hasOwn(created, "responseObservation"), false);
+    assert.equal(Object.hasOwn(created, "deliveryId"), false);
+  });
+
+  it("persists the original creation reply ID before returning and preserves it across retries", async (t) => {
+    const f = fixture(t);
+    const deliveryId = randomUUID();
+    let accepted = 0;
+    const args = { cwd: f.cwd, prompt: "original", name: "continuation", requestId: randomUUID(), onAccepted(binding) {
+      accepted++;
+      assert.equal(binding.responseObservation.operation, "create_thread");
+      assert.equal(binding.responseObservation.prompt, "original");
+      return deliveryId;
+    } };
+    const first = await f.delivery.create(args);
+    const reused = await f.createDelivery().create({ ...args, prompt: "edited" });
+    assert.equal(first.deliveryId, deliveryId);
+    assert.equal(reused.deliveryId, deliveryId);
+    assert.equal(reused.promptChanged, true);
+    assert.equal(accepted, 1);
+    assert.equal(f.calls.filter(({ operation }) => operation === "create_thread").length, 1);
+  });
+
+  it("preserves a pre-send binding on a lost acknowledgement without claiming acceptance or retrying", async (t) => {
+    let prepared;
+    const f = fixture(t, { captureResponse: () => ({ status: "available", fixture: true }), dispatch({ operation }) {
+      if (operation === "send_message_to_thread") {
+        assert.equal(prepared.deliveryStatus, "unconfirmed");
+        throw Object.assign(new Error("late acknowledgement"), { code: "RELAY_TIMEOUT", reachedCompanion: true });
+      }
+    } });
+    const result = await f.delivery.send({ threadId: "task", prompt: "original", onPrepared(value) { prepared = value; } });
+    assert.equal(result.deliveryStatus, "unconfirmed");
+    assert.deepEqual(result.responseObservation, prepared.responseObservation);
+    assert.equal(f.calls.filter(({ operation }) => operation === "send_message_to_thread").length, 1);
+  });
+
   for (const operation of ["create_thread", "send_message_to_thread"]) {
     it(`rechecks live project revocation immediately before ${operation} writes`, async (t) => {
       let sent = false;

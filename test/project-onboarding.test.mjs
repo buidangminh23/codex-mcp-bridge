@@ -155,6 +155,17 @@ test("project directory replacement during setup is rejected before trust is sto
   assert.equal(fs.existsSync(f.config), false); assert.equal(fs.existsSync(f.file), false);
 });
 
+test("home aliases cannot bypass the whole-home onboarding restriction", t => {
+  const f = fixture(t);
+  const alias = f.home + '-alias';
+  fs.symlinkSync(f.home, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  t.after(() => fs.unlinkSync(alias));
+  assert.throws(() => prepareBridgeProject({ cwd: alias }, f.options), /user home/);
+  assert.throws(() => prepareBridgeProject({ cwd: f.home }, { env: { ...f.env, HOME: alias, USERPROFILE: alias } }), /user home/);
+  assert.equal(fs.existsSync(f.config), false);
+  assert.equal(fs.existsSync(f.file), false);
+});
+
 test("custom Claude config directory is supported without touching default config", t => {
   const f = fixture(t); const custom = path.join(f.home, 'custom'); fs.mkdirSync(custom);
   const result = prepareBridgeProject({ cwd: f.cwd }, { env: { ...f.env, CLAUDE_CONFIG_DIR: custom } });

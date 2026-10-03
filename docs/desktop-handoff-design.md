@@ -113,3 +113,22 @@ excludes local acceptance artifacts. `git diff --check` passes. The standalone
 Desktop health check discovers tools and the existing native relay, then
 returns `SENDER_UNVERIFIED` as expected for a terminal process with no Claude
 Code ancestry. It does not substitute a sender or start an external app-server.
+
+### Path-alias CI fixes (2026-10-03)
+
+The first CI run exposed path aliases on macOS (`/var` versus `/private/var`)
+and Windows (short versus long temporary-directory names). The card-settings
+adapter compared page paths literally against canonical policy paths, so
+removing a displayed project or parent could leave its grant in place. It now
+canonicalizes page paths, including missing projects via their nearest existing
+ancestor, before reconciliation. Exclusions and concurrent-change checks remain
+in force. Onboarding also canonicalizes the configured home before rejecting
+whole-home trust requests.
+
+Continuation/sender tests now expect the canonical paths returned by rollout
+discovery. They still check exact file and turn identity; no production sender
+check was relaxed. New directory-alias regressions exercise project revocation,
+parent removal, deleted-project exclusions and home-root rejection on Windows
+junctions and POSIX symlinks. The focused Windows run passed 102 checks with one
+existing platform skip. Fresh installation and bidirectional live acceptance
+remain separate from these isolated tests.

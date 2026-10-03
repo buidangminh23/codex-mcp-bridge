@@ -19,7 +19,7 @@ function fixture(t) {
 test('first empty native page imports existing MCP grants without revoking or trusting anything', t => {
   const f = fixture(t); f.edit('allow-project', f.a);
   const result = f.sync(empty());
-  assert.deepEqual(result.target.projects, [f.a]); assert.equal(result.needsPageUpdate, true);
+  assert.deepEqual(result.target.projects, [fs.realpathSync.native(f.a)]); assert.equal(result.needsPageUpdate, true);
   assert.equal(result.authorizationChanged, false);
   assert.equal(fs.existsSync(path.join(f.root, '.claude.json')), false);
   assert.equal(f.sync(result.target).needsPageUpdate, false);
@@ -33,7 +33,7 @@ test('native save authorizes projects and parents; removing project blocks inher
   f.sync(page); assert.equal(createProjectScope(f.file).allows(f.b), true);
   page = { ...page, projects: [] };
   const result = f.sync(page);
-  assert.deepEqual(result.target.excluded, [f.a]);
+  assert.deepEqual(result.target.excluded, [fs.realpathSync.native(f.a)]);
   assert.equal(createProjectScope(f.file).allows(f.a), false);
   assert.equal(createProjectScope(f.file).allows(f.b), true);
 });
@@ -46,7 +46,7 @@ test('removing a parent preserves independently authorized projects', t => {
 test('stale native page never restores a revoked project, including an unrelated Save', t => {
   const f = fixture(t); const page = { ...empty(), projects: [f.a] }; f.sync(page);
   f.edit('revoke', f.a);
-  const result = f.sync(page); assert.deepEqual(result.target.excluded, [f.a]);
+  const result = f.sync(page); assert.deepEqual(result.target.excluded, [fs.realpathSync.native(f.a)]);
   f.sync({ ...page, projects: [f.a, f.b] });
   assert.equal(createProjectScope(f.file).allows(f.a), false);
   assert.equal(createProjectScope(f.file).allows(f.b), true);
@@ -54,7 +54,7 @@ test('stale native page never restores a revoked project, including an unrelated
 test('a concurrent manual page edit conflicts instead of replacing newer MCP records', t => {
   const f = fixture(t); f.sync(empty()); f.edit('allow-project', f.a);
   const result = f.sync({ ...empty(), projects: [f.b] });
-  assert.equal(result.status, 'conflict_preserved'); assert.deepEqual(result.target.projects, [f.a]);
+  assert.equal(result.status, 'conflict_preserved'); assert.deepEqual(result.target.projects, [fs.realpathSync.native(f.a)]);
 });
 test('delayed helper Save after a newer revocation is only a render acknowledgement', t => {
   const f = fixture(t); f.edit('revoke', f.a);
@@ -64,7 +64,7 @@ test('delayed helper Save after a newer revocation is only a render acknowledgem
   const delayed = f.sync(oldRender);
   assert.equal(delayed.authorizationChanged, false);
   assert.equal(createProjectScope(f.file).allows(f.a), false);
-  assert.deepEqual(delayed.target.excluded, [f.a]);
+  assert.deepEqual(delayed.target.excluded, [fs.realpathSync.native(f.a)]);
 });
 test('removing a displayed exclusion and adding the project explicitly reauthorizes', t => {
   const f = fixture(t); f.edit('revoke', f.a); const page = f.sync(empty()).target; f.sync(page);
@@ -91,4 +91,37 @@ test('helper acknowledgement clears obsolete render history without applying per
   assert.deepEqual(f.read().uiAdapters.localCardDesktop.renderTargets, []);
   f.sync({ ...empty(), projects: [f.a] });
   assert.equal(createProjectScope(f.file).allows(f.a), true);
+});
+
+test('aliased native page paths revoke canonical projects and remove parent grants', t => {
+  const f = fixture(t);
+  const alias = f.root + '-alias';
+  fs.symlinkSync(f.root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  t.after(() => fs.unlinkSync(alias));
+  const aliasA = path.join(alias, 'a');
+  f.sync({ projects: [aliasA, f.a], parents: [alias], excluded: [] });
+  assert.equal(f.read().grants.filter(g => g.kind === 'project').length, 1);
+  assert.equal(createProjectScope(f.file).allows(f.b), true);
+  f.sync({ projects: [aliasA], parents: [], excluded: [] });
+  assert.equal(createProjectScope(f.file).allows(f.b), false);
+  assert.equal(createProjectScope(f.file).allows(f.a), true);
+  const removed = f.sync(empty());
+  assert.deepEqual(removed.target.excluded, [fs.realpathSync.native(f.a)]);
+  assert.equal(createProjectScope(f.file).allows(f.a), false);
+});
+
+test('missing projects retain their canonical exclusion through an aliased page', t => {
+  const f = fixture(t);
+  const alias = f.root + '-alias';
+  fs.symlinkSync(f.root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  t.after(() => fs.unlinkSync(alias));
+  f.edit('revoke', f.a);
+  const denied = fs.realpathSync.native(f.a);
+  f.sync(f.sync(empty()).target);
+  fs.rmdirSync(f.a);
+  const result = f.sync({ ...empty(), excluded: [path.join(alias, 'a')] });
+  assert.equal(result.authorizationChanged, false);
+  assert.deepEqual(result.target.excluded, [denied]);
+  fs.mkdirSync(f.a);
+  assert.equal(createProjectScope(f.file).allows(f.a), false);
 });

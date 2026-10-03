@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { scopeEntry, updateProjectPolicy } from './project-policy.mjs';
 
@@ -6,6 +7,24 @@ const empty = () => ({ projects: [], parents: [], excluded: [] });
 const key = p => process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
 const same = (a, b) => key(a) === key(b);
 const includes = (list, p) => list.some(v => same(v, p));
+function canonicalSettingsPath(value) {
+  // Policy entries use real directory paths. Native pages can use /var aliases
+  // or Windows short names; compare them in the same namespace. Keep missing
+  // paths removable by resolving their nearest existing ancestor, not dropping
+  // the record (in particular a revoked or deleted project).
+  let current = path.resolve(value);
+  const suffix = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(current), ...suffix); }
+    catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(value);
+      suffix.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
 function normalize(page) {
   const output = empty();
   for (const field of Object.keys(output)) {
@@ -15,7 +34,8 @@ function normalize(page) {
       const value = item.trim();
       if (!value) continue;
       if (!path.isAbsolute(value)) throw new Error('Card settings paths must be absolute');
-      if (!includes(output[field], value)) output[field].push(path.resolve(value));
+      const canonical = canonicalSettingsPath(value);
+      if (!includes(output[field], canonical)) output[field].push(canonical);
     }
     output[field].sort((a, b) => key(a).localeCompare(key(b)));
   }

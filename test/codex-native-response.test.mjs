@@ -68,7 +68,7 @@ describe("native Codex response observation", () => {
     const currentEvidence = { ...evidence, latestTurnId: TURN_ID };
     const second = captureCodexRolloutWatermark({ threadId: THREAD_ID, expectedCwd: f.cwd, desktopEvidence: currentEvidence }, { env: f.env });
     assert.equal(second.status, "available", second.reason);
-    assert.equal(second.file, continued);
+    assert.equal(second.file, fs.realpathSync.native(continued));
     assert.equal(second.segments.length, 2);
     assert.equal(f.read(second).status, "unavailable", "A turn predating dispatch cannot be replayed");
     assert.equal(inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd, desktopEvidence: currentEvidence }, { env: f.env }).status, "completed");

@@ -17,7 +17,7 @@ function fixture(t) {
   const write = (name) => {
     const file = path.join(date, name);
     fs.writeFileSync(file, JSON.stringify({ type: "session_meta", payload: { id: ID } }) + "\n");
-    return file;
+    return fs.realpathSync.native(file);
   };
   return { root, date, base, write };
 }

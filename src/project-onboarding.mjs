@@ -44,7 +44,7 @@ function target(cwd, options) {
     }
   }
   const root = repo?.primary ?? directory;
-  if (samePath(root.path, path.parse(root.path).root) || samePath(root.path, options.home)) throw new Error("Choose an exact project, not a drive root or the user home directory");
+  if (samePath(root.path, path.parse(root.path).root) || samePath(root.path, directoryBinding(options.home).path)) throw new Error("Choose an exact project, not a drive root or the user home directory");
   return { directory, root, repo, key: root.path.split(path.sep).join("/") };
 }
 

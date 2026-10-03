@@ -67,7 +67,7 @@ it("selects the exact active turn in a continuation, regardless of file timestam
   fs.utimesSync(f.file, new Date(), new Date(Date.now() + 86400000));
   const result = f.read();
   assert.equal(result.status, "verified", result.reason);
-  assert.equal(result.source, continued);
+  assert.equal(result.source, fs.realpathSync.native(continued));
   fs.copyFileSync(continued, f.file);
   assert.match(f.read().reason, /Multiple rollout segments/);
 });
@@ -275,7 +275,7 @@ it("preserves recipient parity and explicit hold/refuse for a verified managed s
 
 it("verifies only the exact active Desktop caller's effective disabled permissions", () => {
   const f = fixture();
-  assert.deepEqual(f.read(), { status: "verified", threadId, turnId, mode: "bypass", cwd: fs.realpathSync.native(f.home), source: f.file, review: { autoReview: "disabled", nodeReplReview: "disabled" }, approvalPolicy: "never", permissionProfile: "disabled", approvalsReviewer: "user", reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" });
+  assert.deepEqual(f.read(), { status: "verified", threadId, turnId, mode: "bypass", cwd: fs.realpathSync.native(f.home), source: fs.realpathSync.native(f.file), review: { autoReview: "disabled", nodeReplReview: "disabled" }, approvalPolicy: "never", permissionProfile: "disabled", approvalsReviewer: "user", reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" });
 });
 
 const GRANULAR = { granular: { sandbox_approval: true, rules: true, skill_approval: true, request_permissions: true, mcp_elicitations: true } };

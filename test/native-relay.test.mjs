@@ -1417,7 +1417,7 @@ describe("native tools pipe discovery", () => {
       readParentCommandLine: async () => null, readWindowsSnapshot: async () => snapshot,
       probeWindowsPipe: async (pipe, { timeoutMs }) => {
         probes.push(pipe);
-        assert.ok(timeoutMs > 0 && timeoutMs <= 750);
+        assert.ok(timeoutMs > 0 && timeoutMs <= 3000);
         if (pipe === modernPipe) throw new Error("No handler registered for method: tools/call");
         return true;
       },
@@ -1434,7 +1434,7 @@ describe("native tools pipe discovery", () => {
     }
   });
 
-  it("probes owned endpoints using only framed read-only list_projects with the existing executor", { skip: !IS_WINDOWS }, async () => {
+  it("discovers a cold owned endpoint exceeding 750ms using only read-only list_projects", { skip: !IS_WINDOWS }, async () => {
     const requests = [];
     const prefix = String.raw`\\.\pipe\codex-browser-use-test-${process.pid}-${Date.now()}`;
     const browser = await nativePipe((request, socket) => {
@@ -1443,7 +1443,7 @@ describe("native tools pipe discovery", () => {
     }, `${prefix}-a`);
     const native = await nativePipe((request, socket) => {
       requests.push(request);
-      socket.write(nativeFrame(desktop26924Response(request, { success: true, contentItems: [{ type: "inputText", text: JSON.stringify({ projects: [] }) }] })));
+      setTimeout(() => socket.write(nativeFrame(desktop26924Response(request, { success: true, contentItems: [{ type: "inputText", text: JSON.stringify({ projects: [] }) }] }))), 1100);
     }, `${prefix}-b`);
     try {
       const snapshot = modernSnapshot();

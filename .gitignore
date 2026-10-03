@@ -8,3 +8,4 @@ node_modules/
 .agentgate/
 .sites-runtime/
 receipt*.json
+/extensions/*.mcpb

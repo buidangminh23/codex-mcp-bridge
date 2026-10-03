@@ -16,11 +16,14 @@ import { AGENT_PROMPT_GUIDANCE, PROMPT_SECTIONS } from "../src/prompt-guidance.m
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const CODEX_TOOLS = [
+  "inspect_bridge_project",
+  "prepare_bridge_project",
   "delegate_to_codex",
   "send_to_codex_thread",
   "list_codex_threads",
   "start_codex_thread",
   "read_codex_thread",
+  "wait_codex_reply",
   "interrupt_codex_turn",
   "open_codex_thread",
   "stop_codex_app_server",
@@ -28,6 +31,8 @@ const CODEX_TOOLS = [
 ];
 
 const CLAUDE_TOOLS = [
+  "inspect_bridge_project",
+  "prepare_bridge_project",
   "start_claude_session",
   "read_claude_creation",
   "abandon_claude_creation",
@@ -765,7 +770,7 @@ describe("codex-bridge tool contract", async () => {
 
   it("marks the tools that only read as read-only", () => {
     const readOnly = tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name);
-    assert.deepEqual(readOnly.sort(), ["codex_bridge_status", "list_codex_threads", "read_codex_thread"]);
+    assert.deepEqual(readOnly.sort(), ["codex_bridge_status", "inspect_bridge_project", "list_codex_threads", "read_codex_thread", "wait_codex_reply"]);
   });
 
   it("marks the tools that can destroy work as destructive", () => {
@@ -773,6 +778,7 @@ describe("codex-bridge tool contract", async () => {
     assert.deepEqual(destructive.sort(), [
       "delegate_to_codex",
       "interrupt_codex_turn",
+      "prepare_bridge_project",
       "send_to_codex_thread",
       "start_codex_thread",
       "stop_codex_app_server",
@@ -808,7 +814,7 @@ describe("claude-bridge tool contract", async () => {
 
   it("marks the tools that only read as read-only", () => {
     const readOnly = tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name);
-    assert.deepEqual(readOnly.sort(), ["list_claude_sessions", "read_claude_creation", "read_claude_delivery", "read_claude_transcript"]);
+    assert.deepEqual(readOnly.sort(), ["inspect_bridge_project", "list_claude_sessions", "read_claude_creation", "read_claude_delivery", "read_claude_transcript"]);
   });
 });
 

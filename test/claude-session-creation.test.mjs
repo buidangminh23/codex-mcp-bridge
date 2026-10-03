@@ -35,6 +35,25 @@ async function blocked(promise, code) {
 }
 
 describe("Claude native new session lifecycle", () => {
+  it("awaits sender revalidation before opening and before automatic trust or submission", async () => {
+    let checked = 0;
+    const { creation, state } = fixture({
+      trust: async () => assert.fail("must not trust after sender changes"),
+      submit: async () => assert.fail("must not submit after sender changes"),
+    });
+    const denied = async () => { await Promise.resolve(); throw new Error("sender changed before open"); };
+    await assert.rejects(creation.start({ ...args, beforeOpen: denied }), /sender changed before open/);
+    assert.equal(state.opened.length, 0);
+    assert.equal(creation.requests.size, 0);
+    await assert.rejects(creation.start({ ...args, autoSubmit: true, trustProject: true, beforeOpen: async () => {
+      await Promise.resolve();
+      if (++checked === 2) throw new Error("sender changed after open");
+    } }), /sender changed after open/);
+    assert.equal(state.opened.length, 1);
+    assert.equal(checked, 2);
+    assert.equal(creation.requests.get(id).submissionAttempted, undefined);
+  });
+
   it("submits an authorized exact composer once, including concurrent and restored retries", async () => {
     let submitted = 0;
     let trusted = 0;
@@ -86,6 +105,9 @@ describe("Claude native new session lifecycle", () => {
     const result = await creation.start(args);
     assert.equal(result.status, "awaiting_user");
     assert.equal(result.promptSubmitted, false);
+    assert.equal(result.submissionStatus, "not_observed");
+    assert.equal(result.directoryVerification.expectedCwd, "/project");
+    assert.equal(result.directoryVerification.verified, false);
     const url = new URL(state.opened[0]);
     assert.equal(url.protocol, "claude:");
     assert.equal(url.host, "code");
@@ -105,6 +127,8 @@ describe("Claude native new session lifecycle", () => {
     assert.equal(result.sessionId, "new-cli");
     assert.equal(result.taskId, "new-task");
     assert.equal(result.title, "New native task");
+    assert.equal(result.submissionStatus, "observed");
+    assert.equal(result.directoryVerification, undefined);
   });
 
   it("rejects reopened old tasks including archived and previously disconnected tasks", async () => {

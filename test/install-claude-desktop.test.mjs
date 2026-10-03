@@ -306,6 +306,10 @@ describe("claude desktop installer", () => {
         PATH: process.env.PATH ?? "",
         SystemRoot: process.env.SystemRoot ?? "",
         CLAUDE_DESKTOP_CONFIG: configWith(null),
+        // Default project scope must not make this test use the operator's
+        // runtime cache or persisted Full access opt-in. Like install(), keep
+        // the installation state isolated while leaving allowed roots unset.
+        CODEX_HOME: sandbox,
         CODEX_EXE: codexStub,
       },
       timeout: INSTALL_TIMEOUT_MS,

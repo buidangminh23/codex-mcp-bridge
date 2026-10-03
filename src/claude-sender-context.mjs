@@ -285,7 +285,7 @@ export async function readClaudeSenderContext({ account, parentPid = process.ppi
     }
     const sessions = registered.filter((session) => session.entrypoint === "claude-desktop" && session.alive && seen.has(session.pid));
     if (sessions.length > 1) return senderResult("ambiguous", "Multiple registered Claude Desktop sessions appear in this MCP process's ancestry.");
-    if (!sessions.length) return senderResult("unavailable", "This MCP process has no registered Claude Desktop Code session in its parent ancestry. Reconnect the bridge inside the intended existing Code task.");
+    if (!sessions.length) return senderResult("unavailable", "This MCP process has no registered Claude Desktop Code session in its parent ancestry. Check the user-level Claude Code registration: a shared Desktop MCP entry cannot identify the sending Code task. Reload the existing task after correcting registration; View > Reload may refresh only the page. Do not substitute another session or disable sender verification.");
     const session = sessions[0];
     const process = ancestry.find((entry) => entry.pid === session.pid);
     if (session.processStart && session.processStart !== process.processStart) return senderResult("unavailable", "The calling Claude session's registered process identity changed.");

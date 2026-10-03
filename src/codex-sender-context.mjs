@@ -1,14 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { scanRollout } from "./rollout-reader.mjs";
+import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable } from "./rollout-segments.mjs";
 
 const METADATA_KEY = "x-codex-turn-metadata";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LIFECYCLE = new Set(["task_started", "task_complete", "task_completed", "turn_started", "turn_complete", "turn_completed", "turn_aborted", "task_aborted"]);
 const STARTED = new Set(["task_started", "turn_started"]);
 const MAX_ROLLOUT_BYTES = 64 * 1024 * 1024;
-const MAX_ENTRIES = 100000;
-const MAX_DIRECTORIES = 4096;
 const DESKTOP_ORIGINATORS = new Set(["Codex Desktop", "codex_work_desktop"]);
 const PROMPTING_POLICIES = new Set(["on-request", "on-failure", "untrusted"]);
 const GRANULAR_CATEGORIES = ["sandbox_approval", "rules", "mcp_elicitations"];
@@ -37,57 +37,27 @@ function reviewFlag(metadata, field) {
 }
 
 export function findRollout(sessions, threadId) {
-  if (!fs.lstatSync(sessions).isDirectory()) throw new Error("The Codex sessions path is not a regular directory");
-  const queue = [{ directory: sessions, depth: 0 }];
-  const matches = [];
-  let entries = 0;
-  let directories = 0;
-  while (queue.length) {
-    const { directory, depth } = queue.pop();
-    if (++directories > MAX_DIRECTORIES) throw new Error("The bounded Codex sessions scan exceeded its directory limit");
-    const children = fs.readdirSync(directory, { withFileTypes: true });
-    entries += children.length;
-    if (entries > MAX_ENTRIES) throw new Error("The bounded Codex sessions scan exceeded its entry limit");
-    for (const child of children) {
-      const candidate = path.join(directory, child.name);
-      if (depth < 3 && (depth === 0 ? /^\d{4}$/ : /^\d{2}$/).test(child.name)) {
-        if (child.isSymbolicLink()) throw new Error("The Codex sessions scan encountered a linked date directory");
-        if (child.isDirectory()) queue.push({ directory: candidate, depth: depth + 1 });
-      }
-      if (depth === 3 && child.name.startsWith("rollout-") && child.name.endsWith(`-${threadId}.jsonl`)) {
-        if (!child.isFile() || child.isSymbolicLink()) throw new Error("The sender rollout is not a regular file");
-        matches.push(candidate);
-      }
-    }
-  }
-  if (matches.length !== 1) throw new Error(matches.length ? "Multiple rollouts match the calling Codex task" : "No rollout matches the calling Codex task");
-  return matches[0];
+  const files = findRolloutSegments(sessions, threadId);
+  if (files.length !== 1) throw new Error("Multiple rollouts match the calling Codex task");
+  return files[0];
 }
 
 export function readState(file, maxBytes) {
-  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-  try {
-    const before = fs.fstatSync(descriptor);
-    if (!before.isFile() || before.size === 0 || before.size > maxBytes) throw new Error("The sender rollout is empty or exceeds the bounded read limit");
-    const data = Buffer.alloc(before.size);
-    let offset = 0;
-    while (offset < data.length) {
-      const count = fs.readSync(descriptor, data, offset, data.length - offset, offset);
-      if (!count) throw new Error("The sender rollout changed while reading");
-      offset += count;
+  for (let attempt = 0; ; attempt++) {
+    try { return readStateOnce(file, maxBytes); }
+    catch (error) {
+      // A live Desktop task can append its tool event during verification.
+      // Retry the entire scan, never reuse partially observed permissions.
+      if (attempt >= 2 || !/changed while (reading|opening)|incomplete final record/.test(error.message)) throw error;
     }
-    const after = fs.fstatSync(descriptor);
-    const current = fs.lstatSync(file);
-    if (!current.isFile() || current.isSymbolicLink() || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ino !== current.ino || before.dev !== current.dev) throw new Error("The sender rollout changed while reading");
-    const text = data.toString("utf8");
-    if (!text.endsWith("\n")) throw new Error("The sender rollout has an incomplete final record");
-    let session;
-    let context;
-    let lifecycle;
-    for (const line of text.split("\n")) {
-      if (!line) continue;
-      const record = JSON.parse(line);
-      if (!object(record) || !object(record.payload)) throw new Error("The sender rollout contains an invalid record");
+  }
+}
+
+function readStateOnce(file, maxBytes) {
+  let session, context, lifecycle;
+  const snapshot = scanRollout(file, {
+    maxRecordBytes: maxBytes,
+    onRecord(record) {
       if (record.type === "session_meta") {
         if (session) throw new Error("The sender rollout repeats its session identity");
         session = record.payload;
@@ -96,11 +66,9 @@ export function readState(file, maxBytes) {
       } else if (record.type === "event_msg" && LIFECYCLE.has(record.payload.type)) {
         lifecycle = record.payload;
       }
-    }
-    return { session, context, lifecycle };
-  } finally {
-    fs.closeSync(descriptor);
-  }
+    },
+  });
+  return { session, context, lifecycle, version: snapshot.version };
 }
 
 /**
@@ -199,31 +167,64 @@ function permissionClass(context, metadata) {
   throw new Error("The caller's effective approval policy is unsupported");
 }
 
-export function readCodexSenderContext(meta, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES, originator = "Codex Desktop" } = {}) {
+export function readCodexSenderContext(meta, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES, originator = "Codex Desktop", desktopEvidence } = {}) {
   const metadata = object(meta) ? meta[METADATA_KEY] : undefined;
   if (!object(metadata) || typeof metadata.thread_id !== "string" || typeof metadata.turn_id !== "string" || !UUID.test(metadata.thread_id) || !UUID.test(metadata.turn_id)) return unavailable("This MCP call has no valid host-supplied Codex task and turn identity");
   const identity = { threadId: metadata.thread_id, turnId: metadata.turn_id,
     review: { autoReview: reviewFlag(metadata, "auto_review_enabled"), nodeReplReview: reviewFlag(metadata, "node_repl_auto_review_required") } };
   try {
     if (!Number.isSafeInteger(maxRolloutBytes) || maxRolloutBytes < 1) throw new Error("The sender rollout read limit is invalid");
-    if (metadata.thread_source !== "user") throw new Error("This MCP call is not from a user-owned Codex task");
+    // Native create_thread produces a user-visible Desktop task with a distinct
+    // host source. It is not a transient subagent. Require live native proof in
+    // addition to the root rollout and the caller's own permission context.
+    const agentCreated = metadata.thread_source === "agent_created_thread" && originator === "Codex Desktop";
+    if (metadata.thread_source !== "user" && !agentCreated) throw new Error(`Unsupported calling task source (host thread_source: ${JSON.stringify(metadata.thread_source) ?? "missing"})`);
     const configuredHome = env.CODEX_HOME || path.join(env.HOME || env.USERPROFILE || os.homedir(), ".codex");
     if (!path.isAbsolute(configuredHome)) throw new Error("The configured Codex home must be absolute");
     const sessions = path.join(configuredHome, "sessions");
-    const file = findRollout(sessions, identity.threadId);
-    const state = readState(file, Math.min(MAX_ROLLOUT_BYTES, maxRolloutBytes));
-    const { session, context, lifecycle } = state;
+    const matches = [], snapshots = [];
+    for (const file of findRolloutSegments(sessions, identity.threadId)) {
+      const state = readState(file, Math.min(MAX_ROLLOUT_BYTES, maxRolloutBytes));
+      if (state.session?.id !== identity.threadId) throw new Error("A rollout segment contradicts the calling task identity");
+      snapshots.push({ file, version: state.version });
+      if (state.context?.turn_id === identity.turnId || state.lifecycle?.turn_id === identity.turnId) matches.push({ file, ...state });
+      if (matches.length > 1) throw new Error("Multiple rollout segments match the calling turn");
+    }
+    assertRolloutSetStable(sessions, identity.threadId, snapshots);
+    if (matches.length !== 1) throw new Error(matches.length ? "Multiple rollout segments match the calling turn" : "The calling turn is no longer the latest active Codex turn");
+    const { file, session, context, lifecycle } = matches[0];
     if (!["Codex Desktop", "codex_vscode"].includes(originator)) throw new Error("Unsupported calling host");
     const desktop = originator === "Codex Desktop";
     const matchesOriginator = desktop ? DESKTOP_ORIGINATORS.has(session?.originator) : session?.originator === originator;
-    if (session?.id !== identity.threadId || !matchesOriginator || session.source !== "vscode") throw new Error(`The caller rollout does not confirm a root ${originator} task`);
+    const legacy = desktop && isLegacyCliSession(session);
+    if ((!matchesOriginator || session.source !== "vscode") && !legacy) throw new Error(`The caller rollout does not confirm a root ${originator} task`);
     if (context?.turn_id !== identity.turnId || lifecycle?.turn_id !== identity.turnId || !STARTED.has(lifecycle?.type)) throw new Error("The calling turn is no longer the latest active Codex turn");
     if (typeof context.cwd !== "string" || !path.isAbsolute(context.cwd) || typeof session.cwd !== "string" || !path.isAbsolute(session.cwd)) throw new Error("The caller's workspace is missing or invalid");
     const cwd = fs.realpathSync.native(context.cwd);
-    if (!fs.statSync(cwd).isDirectory() || path.relative(fs.realpathSync.native(session.cwd), cwd)) throw new Error("The caller's workspace changed from its Desktop session identity");
+    if (!fs.statSync(cwd).isDirectory()) throw new Error("The caller's current workspace is not a directory");
+    // Desktop can move a task after creation. Its exact active turn supplies both
+    // the effective workspace and permissions; session_meta.cwd is historical.
+    // VS Code's same-project policy is deliberately unchanged.
+    if (!desktop && path.relative(fs.realpathSync.native(session.cwd), cwd)) throw new Error("The caller's workspace changed from its VS Code session identity");
     const { mode, approvalPolicy, permissionProfile } = permissionClass(context, metadata);
+    if ((legacy || agentCreated) && !confirmsDesktopTask(desktopEvidence, identity.threadId, cwd, identity.turnId)) {
+      return { ...unavailable(`This ${agentCreated ? "agent-created" : "CLI-origin"} task requires current native Desktop ownership and exact active-turn confirmation`, identity), requiresDesktopEvidence: true };
+    }
     return { status: "verified", ...identity, mode, cwd, source: file, approvalPolicy, permissionProfile, approvalsReviewer: context.approvals_reviewer, reason: "Host-supplied calling task and active turn match the Desktop rollout's effective permission settings" };
   } catch (error) {
     return unavailable(error?.code ? `Caller evidence could not be read (${error.code}); no sender permission class was inferred` : error.message, identity);
+  }
+}
+
+// Confirm adopted CLI and agent-created tasks through the account-bound native relay,
+// then re-read the rollout so a completed/replaced turn cannot reuse the proof.
+export async function resolveCodexSenderContext(meta, { inspectDesktopTask, ...options } = {}) {
+  const initial = readCodexSenderContext(meta, options);
+  if (!initial.requiresDesktopEvidence || typeof inspectDesktopTask !== "function") return initial;
+  try {
+    const desktopEvidence = await inspectDesktopTask(initial.threadId);
+    return readCodexSenderContext(meta, { ...options, desktopEvidence });
+  } catch (error) {
+    return { ...initial, reason: `Native Desktop ownership could not be verified: ${error.message}` };
   }
 }

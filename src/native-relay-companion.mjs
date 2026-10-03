@@ -32,6 +32,8 @@ import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 
+import { NativeCreationReceipts, creationIdValid } from "./native-creation-receipts.mjs";
+
 exitForVersionRequest(import.meta.url);
 
 const VERSION = "1.20.1";
@@ -238,12 +240,12 @@ export function createNativeScopeAuthorizer({ dispatchDesktop, env = process.env
  */
 export async function handleRelayRequest(
   payload,
-  { dispatch, dispatchDesktop, resolveExecutor = resolveRelayThreadId, env = process.env, assertAccount = assertAccountIdentity, authorize, strict = hardenedBridgeEnabled(env) } = {},
+  { dispatch, dispatchDesktop, resolveExecutor = resolveRelayThreadId, env = process.env, assertAccount = assertAccountIdentity, authorize, creationReceipts = new NativeCreationReceipts(), strict = hardenedBridgeEnabled(env) } = {},
 ) {
   if (strict && (!boundRequest(payload) || !validProtocol(payload))) return errorResponse("RELAY_BAD_REQUEST", "Hardened relay accepts only protocol 2 requests with account context", false);
   if (strict && typeof authorize !== "function") return errorResponse("NATIVE_SCOPE_UNVERIFIED", "Hardened relay requires verified current native project and task metadata; no dispatch was attempted", false);
   if (payload && typeof payload === "object" && Object.hasOwn(payload, "operation")) {
-    return handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env, assertAccount, authorize, strict });
+    return handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env, assertAccount, authorize, creationReceipts, strict });
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
       Object.keys(payload).some((key) => !["v", "targetThreadId", "message", "accountContext"].includes(key)) || !validProtocol(payload)) {
@@ -295,14 +297,15 @@ export async function handleRelayRequest(
   }
 }
 
-async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env, assertAccount, authorize, strict = hardenedBridgeEnabled(env) }) {
+async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor, env, assertAccount, authorize, creationReceipts, strict = hardenedBridgeEnabled(env) }) {
   if (strict && !boundRequest(payload)) return errorResponse("RELAY_BAD_REQUEST", "Hardened relay accepts only protocol 2 Desktop operations", false);
   if (Array.isArray(payload) || ![RELAY_PROTOCOL_VERSION, ACCOUNT_RELAY_PROTOCOL_VERSION].includes(payload.v) || !validProtocol(payload) ||
-      Object.keys(payload).some((key) => !["v", "operation", "arguments", "accountContext"].includes(key))) {
+      Object.keys(payload).some((key) => !["v", "operation", "arguments", "accountContext", "creationReceiptId"].includes(key))) {
     return errorResponse("RELAY_BAD_REQUEST", "expected an allowlisted Desktop operation");
   }
   try {
     validateDesktopOperation(payload.operation, payload.arguments);
+    if (payload.creationReceiptId !== undefined && (payload.operation !== "create_thread" || !boundRequest(payload) || !creationIdValid(payload.creationReceiptId))) throw new NativeRelayError("Invalid creation receipt binding", "RELAY_BAD_REQUEST");
     let accountContext;
     try {
       accountContext = await checkAccountContext(payload, assertAccount);
@@ -313,12 +316,29 @@ async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor,
       return errorResponse("NATIVE_OPERATION_UNAVAILABLE", "This companion does not support Desktop operations; reload the native relay");
     }
     const executorThreadId = resolveExecutor(env).threadId;
+    if (payload.operation === "get_creation_receipt") {
+      if (!accountContext) throw new NativeRelayError("Creation receipts require bound accounts", "RELAY_BAD_REQUEST");
+      const row = creationReceipts.read(payload.arguments.receiptId, accountContext, payload.arguments.requestHash);
+      if (row && row.executorThreadId !== executorThreadId) throw new NativeRelayError("Creation receipt executor changed", "NATIVE_SCOPE_UNVERIFIED");
+      const original = row ? { executorThreadId, operation: "create_thread", arguments: row.args, accountContext } : { executorThreadId, operation: "list_projects", arguments: {}, accountContext };
+      if (strict) {
+        const initial = await authorize(original);
+        if (row?.state === "completed") await authorize({ ...original, phase: "return", expected: initial, result: row.result });
+      }
+      await assertAccount(accountContext);
+      return { ok: true, v: payload.v, operation: payload.operation, executorThreadId,
+        result: { status: row?.state ?? "missing", ...(row?.state === "completed" ? { result: row.result } : {}), ...(row?.state === "failed" ? { error: row.error } : {}) } };
+    }
     const request = { executorThreadId, targetThreadId: payload.arguments?.threadId, operation: payload.operation, arguments: payload.arguments, accountContext };
     const authorization = strict ? await authorize(request) : null;
     if (payload.operation === "send_message_to_thread" && payload.arguments.threadId === executorThreadId) {
       return errorResponse("RELAY_BAD_REQUEST", "The relay executor cannot receive its own relayed message");
     }
-    const nativeResult = await dispatchDesktop({
+    // Reserve before dispatch. A disconnected caller must not discard a late
+    // result, and even identical duplicate writes must not dispatch twice.
+    const creation = payload.creationReceiptId ? creationReceipts.reserve(payload.creationReceiptId, payload.arguments, accountContext, executorThreadId) : null;
+    let nativeResult;
+    try { nativeResult = await dispatchDesktop({
       executorThreadId,
       operation: payload.operation,
       arguments: payload.arguments,
@@ -328,6 +348,10 @@ async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor,
     });
     const decoded = decodeNativeToolResult(nativeResult);
     const checked = strict ? await authorize({ ...request, phase: "return", expected: authorization, result: decoded }) : null;
+    if (creation) {
+      await assertAccount(accountContext);
+      creationReceipts.write({ ...creation, state: "completed", result: checked?.result ?? decoded });
+    }
     return {
       ok: true,
       v: boundRequest(payload) ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION,
@@ -335,6 +359,10 @@ async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor,
       executorThreadId,
       result: checked?.result ?? decoded,
     };
+    } catch (error) {
+      if (creation) creationReceipts.write({ ...creation, state: "failed", error: { code: errorCode(error), message: error.message } });
+      throw error;
+    }
   } catch (err) {
     return errorResponse(errorCode(err), err?.message ?? String(err), err?.sent === false && err?.reachedCompanion !== true ? false : undefined);
   }
@@ -354,6 +382,7 @@ export class RelaySocketServer {
     resolveExecutor = resolveRelayThreadId,
     assertAccount = assertAccountIdentity,
     authorize,
+    creationReceipts = new NativeCreationReceipts(),
     requireAccountContext = false,
     strict = hardenedBridgeEnabled(),
     protectSocket = protectCurrentUserPipe,
@@ -368,6 +397,7 @@ export class RelaySocketServer {
     this.resolveExecutor = resolveExecutor;
     this.assertAccount = assertAccount;
     this.authorize = authorize;
+    this.creationReceipts = creationReceipts;
     this.requireAccountContext = requireAccountContext;
     this.strict = strict;
     this.protectSocket = protectSocket;
@@ -574,6 +604,7 @@ export class RelaySocketServer {
       assertAccount: this.assertAccount,
       authorize: this.authorize,
       strict: this.strict,
+      creationReceipts: this.creationReceipts,
     });
     if (!response.ok) this.log(`relay refused ${payload?.targetThreadId ?? "?"}: ${response.error.message}`);
     else this.log(response.operation ? `completed Desktop operation ${response.operation}` : `relayed a message into thread ${response.targetThreadId}`);

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { before, after } from "node:test";
 import { randomUUID } from "node:crypto";
 
 import { createHardenedRootPolicy } from "../src/hardened-root-policy.mjs";
@@ -17,6 +17,17 @@ const accounts = Object.freeze({ claude: "a".repeat(64), codex: "b".repeat(64) }
 const otherAccounts = Object.freeze({ claude: "c".repeat(64), codex: "d".repeat(64) });
 const native = (structuredContent) => ({ success: true, structuredContent });
 const delay = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// PeerEndpoint discovers its registry at call time; never publish test peers
+// into the developer's real Claude session registry.
+const originalHome = process.env.HOME;
+const registryHome = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-hardened-home-"));
+before(() => { process.env.HOME = registryHome; });
+after(() => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  fs.rmSync(registryHome, { recursive: true, force: true });
+});
 
 function strictEnv(root, extra = {}) {
   return { CODEX_BRIDGE_HARDENED: "1", CODEX_BRIDGE_ALLOWED_ROOTS: root,

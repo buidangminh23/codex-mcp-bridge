@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createProjectScope } from "./project-policy.mjs";
 
 const enabled = (env) => env.CODEX_BRIDGE_HARDENED === "1";
 
@@ -39,6 +40,10 @@ function assertStrictProfile(env) {
 
 /** The deployment profile deliberately has no permissive default. */
 export function createHardenedRootPolicy(env = process.env) {
+  if (env.CODEX_BRIDGE_PROJECT_POLICY) {
+    if (enabled(env)) throw new Error("CODEX_BRIDGE_PROJECT_POLICY cannot replace a CODEX_BRIDGE_HARDENED profile; keep its explicit pinned roots");
+    return createProjectScope(env.CODEX_BRIDGE_PROJECT_POLICY, { env });
+  }
   if (!enabled(env)) return {
     enabled: false,
     assert: (candidate) => candidate,

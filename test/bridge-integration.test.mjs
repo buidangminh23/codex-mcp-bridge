@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { OwnedStdioTransport } from "./helpers/owned-stdio-transport.mjs";
 import { startFakeAppServer } from "./helpers/fake-app-server.mjs";
 import { RelaySocketServer } from "../src/native-relay-companion.mjs";
+import { NativeCreationReceipts } from "../src/native-creation-receipts.mjs";
 import { randomUUID } from "node:crypto";
 import { readProcessAncestry } from "../src/claude-sender-context.mjs";
 import { readClaudeAccountContext } from "../src/desktop-account-context.mjs";
@@ -32,7 +33,7 @@ function fixtureRelayServer({ home, socketPath, ...options }) {
     codex: readCodexAccountContext({ root: path.join(home, ".codex") }),
   });
   const servers = [socketPath, `${socketPath}-accounts-v2`].map((endpoint) => new RelaySocketServer({
-    ...options, socketPath: endpoint, assertAccount,
+    ...options, socketPath: endpoint, assertAccount, creationReceipts: new NativeCreationReceipts({ directory: path.join(home, "native-creations") }),
   }));
   return { start: () => Promise.all(servers.map((server) => server.start())), stop: () => servers.forEach((server) => server.stop()) };
 }
@@ -260,7 +261,7 @@ describe("Desktop task MCP integration", () => {
     });
   });
 
-  it("returns the same exact assistant item and hash from send and authoritative turn read", async () => {
+  for (const resume of [false, true, "lost-ack", "creation", "creation-lost-ack"]) it(resume ? `continues ${resume} after MCP restart with the same reply and no duplicate dispatch` : "returns the same exact assistant item and hash from send and authoritative turn read", async () => {
     const threadId = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
     const turnId = "01a08812-f472-7f43-8f9b-1137e61f6d32";
     const previousTurnId = "01a087dd-d587-76c3-93c3-60c16bc08542";
@@ -272,23 +273,39 @@ describe("Desktop task MCP integration", () => {
     const calls = [];
     let relay;
     let sent = false;
+    let completed = !resume;
     const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
     const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-integrity-${randomUUID()}` : path.join(socketRoot, "d.sock");
     try {
-      await withBridge(() => { throw new Error("Desktop integrity test must not reach an external app-server"); }, async ({ client }) => {
-        const sentResult = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId, prompt, openInApp: false } });
+      await withBridge(() => { throw new Error("Desktop integrity test must not reach an external app-server"); }, async ({ client, home, env }) => {
+        let sentResult = await client.callTool({ name: String(resume).startsWith("creation") ? "delegate_to_codex" : "send_to_codex_thread", arguments: { ...(String(resume).startsWith("creation") ? { cwd: home, requestId: randomUUID() } : { threadId }), prompt, openInApp: false, ...(resume ? { timeoutSec: 10 } : {}) } });
+        if (resume) {
+          assert.equal(sentResult.isError, undefined);
+          assert.equal(sentResult.structuredContent.deliveryStatus, ["lost-ack", "creation-lost-ack"].includes(resume) ? "unconfirmed" : "accepted");
+          assert.equal(sentResult.structuredContent.status, "timeout");
+          assert.equal(sentResult.structuredContent.nextAction, "wait_codex_reply");
+          const { deliveryId } = sentResult.structuredContent;
+          assert.ok(deliveryId);
+          await client.close();
+          completed = true;
+          const restarted = await additionalBridgeProcess({ home, env });
+          try {
+            sentResult = await restarted.client.callTool({ name: "wait_codex_reply", arguments: { deliveryId } });
+            assert.equal(sentResult.structuredContent.deliveryId, deliveryId);
+            assert.equal(sentResult.structuredContent.nextAction, "none");
+          } finally { await restarted.client.close(); }
+        }
         assert.equal(sentResult.isError, undefined);
         assert.match(sentResult.content[0].text, new RegExp(itemId));
         assert.match(sentResult.content[0].text, new RegExp(expectedHash));
         assert.match(sentResult.content[0].text, /exact fixture reply/);
-        const readResult = await client.callTool({ name: "read_codex_thread", arguments: { threadId, turnId } });
-        assert.equal(readResult.isError, undefined);
-        const authoritative = JSON.parse(readResult.content[0].text);
+        const authoritative = resume ? sentResult.structuredContent : JSON.parse((await client.callTool({ name: "read_codex_thread", arguments: { threadId, turnId } })).content[0].text);
         assert.equal(authoritative.status, "completed");
         assert.deepEqual(authoritative.assistantItems, [{ id: itemId, text: reply }]);
         assert.equal(authoritative.replySha256, expectedHash);
-        assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, 1);
-        assert.equal(calls.includes("create_thread"), false);
+        assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, String(resume).startsWith("creation") ? 0 : 1);
+        assert.equal(calls.filter((operation) => operation === "create_thread").length, String(resume).startsWith("creation") ? 1 : 0);
+        assert.equal(sentResult.structuredContent.deliveryStatus, "accepted");
       }, async (home) => {
         const directory = path.join(home, ".codex", "sessions", "2026", "09", "09");
         fs.mkdirSync(directory, { recursive: true });
@@ -299,16 +316,19 @@ describe("Desktop task MCP integration", () => {
           calls.push(operation);
           let result;
           if (operation === "read_thread") result = { thread: { id: threadId, hostId: "local", cwd: home }, turns: [{ id: sent ? turnId : previousTurnId, status: sent ? "completed" : "completed" }] };
-          else if (operation === "send_message_to_thread") {
+          else if (operation === "list_projects" && String(resume).startsWith("creation")) result = { projects: [{ projectId: "fixture-project", projectKind: "local", hostId: "local", path: home }] };
+          else if (operation === "send_message_to_thread" || operation === "create_thread" && String(resume).startsWith("creation")) {
+            if (resume === "creation-lost-ack") await new Promise(resolve => setTimeout(resolve, 11000));
             sent = true;
             append({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } });
             append({ type: "turn_context", payload: { turn_id: turnId, cwd: home } });
-            append({ type: "response_item", payload: { type: "function_call_output", id: randomUUID(), namespace: "codex_app", name: "send_message_to_thread", output: `<codex_delegation>\n  <source_thread_id>${executorThreadId}</source_thread_id>\n  <input>${prompt}</input>\n</codex_delegation>`, internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
+            append({ type: "response_item", payload: { type: "function_call_output", id: randomUUID(), namespace: "codex_app", name: operation, output: `<codex_delegation>\n  <source_thread_id>${executorThreadId}</source_thread_id>\n  <input>${prompt}</input>\n</codex_delegation>`, internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
             append({ type: "event_msg", payload: { type: "item_completed", thread_id: threadId, turn_id: turnId, item: { type: "AgentMessage", id: itemId, content: [{ type: "Text", text: reply }], phase: "final_answer" } } });
             append({ type: "response_item", payload: { type: "message", id: itemId, role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: reply }], internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
             append({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId } });
-            result = { threadId, status: "accepted" };
-          } else if (operation === "wait_threads") result = { polls: [{ thread: { id: threadId, hostId: "local", status: { type: "idle" } }, latestTurn: { id: turnId, status: "completed" }, latestAssistantMessage: { turnId: previousTurnId, phase: "final_answer", text: "must not be used" } }] };
+            if (resume === "lost-ack") await new Promise((resolve) => setTimeout(resolve, 11000));
+            result = { threadId, hostId: "local", status: "accepted", firstTurn: { status: "accepted" } };
+          } else if (operation === "wait_threads") result = { polls: [{ thread: { id: threadId, hostId: "local", status: { type: completed ? "idle" : "active" } }, latestTurn: { id: turnId, status: completed ? "completed" : "inProgress" }, latestAssistantMessage: { turnId: previousTurnId, phase: "final_answer", text: "must not be used" } }] };
           else throw new Error(`Unexpected operation ${operation}`);
           return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
         } });
@@ -337,7 +357,7 @@ describe("Desktop task MCP integration", () => {
       assert.match(result.content[0].text, /assistant response unavailable.*do not resend/i);
       assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, 1);
       assert.equal(calls.includes("create_thread"), false);
-      assert.deepEqual(calls, ["read_thread", "read_thread", "send_message_to_thread", "wait_threads", "read_thread"]);
+      assert.deepEqual(calls, ["read_thread", "read_thread", "send_message_to_thread", "wait_threads", "read_thread", "read_thread"]);
     });
   });
 
@@ -378,7 +398,9 @@ describe("Desktop task MCP integration", () => {
     }, async ({ client, home, desktopFixture }) => {
       fs.unlinkSync(desktopFixture.registryFile);
       const status = await client.callTool({ name: "codex_bridge_status", arguments: {} });
-      assert.equal(status.isError, undefined);
+      assert.equal(status.isError, true);
+      assert.equal(status.structuredContent.readiness.ready, false);
+      assert.ok(status.structuredContent.readiness.issues.some((issue) => issue.code === "SENDER_UNVERIFIED"));
       assert.deepEqual(status.structuredContent.projectScope, { enabled: true, policy: "verified-sender-same-project", match: "canonical-directory-or-git-repository", checkedBeforeMutation: true });
       const mutation = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home, prompt: "Blocked generic caller" } });
       assert.equal(mutation.isError, true);
@@ -439,7 +461,7 @@ describe("Desktop task MCP integration", () => {
         assert.match(retry.content[0].text, /threadId: shared-receipt-task/);
         assert.match(retry.content[0].text, /^projectId: receipt-project$/m);
         assert.match(retry.content[0].text, /^project assignment: verified in Desktop's current listing$/m);
-        assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread", "read_thread", "list_projects", "list_threads", "read_thread", "list_projects", "list_threads"]);
+        assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread", "read_thread", "read_thread", "list_projects", "list_threads", "read_thread", "read_thread", "list_projects", "list_threads", "read_thread"]);
         assert.equal(server.connections, 0);
       } finally {
         releaseCreate();
@@ -474,7 +496,7 @@ describe("Desktop task MCP integration", () => {
         assert.match(text, /absent from Desktop's recent\/pinned listing/);
         assert.match(text, /^status: existing task retained; project assignment needs inspection$/m);
         assert.doesNotMatch(text, /^projectId:|^project:|project assignment: verified|status: completed/m);
-        assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread", "read_thread", "list_projects", "list_threads"]);
+        assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread", "read_thread", "read_thread", "list_projects", "list_threads", "read_thread"]);
         assert.deepEqual(creationReceipts(home).map(({ state, threadId }) => ({ state, threadId })), [{ state: "known", threadId: "omitted-receipt-task" }]);
         assert.equal(server.connections, 0);
       } finally {
@@ -501,7 +523,7 @@ describe("Desktop task MCP integration", () => {
       try {
         const retry = await restarted.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Original brief with minor edits" } });
         assert.equal(retry.isError, true);
-        assert.match(retry.content[0].text, /earlier Desktop creation is unknown.*Do not resend or create another task/);
+        assert.match(retry.content[0].text, /Native creation remains unconfirmed.*Do not resend/);
         assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread"]);
         assert.deepEqual(creationReceipts(home).map((receipt) => receipt.state), ["unknown"]);
         assert.equal(server.connections, 0);
@@ -550,7 +572,7 @@ describe("Desktop task MCP integration", () => {
           assert.match(retry.content[0].text, /Reused the existing Codex Desktop task/);
           assert.match(retry.content[0].text, /threadId: timeout-receipt-task/);
           assert.match(retry.content[0].text, /^project assignment: verified in Desktop's current listing$/m);
-          assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread", "wait_threads", "read_thread", "list_projects", "list_threads"]);
+          assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread", "read_thread", "wait_threads", "read_thread", "list_projects", "list_threads", "read_thread"]);
           assert.equal(server.connections, 0);
         } finally {
           await restarted.client.close();
@@ -694,18 +716,18 @@ describe("Desktop task MCP integration", () => {
         assert.match(result.content[0].text, /opened in Codex Desktop while/);
         assert.match(result.content[0].text, /response observation: unavailable/);
         assert.doesNotMatch(result.content[0].text, /COMPLETE/);
-        assert.deepEqual(calls.map(([op]) => op), ["list_projects", "list_projects", "create_thread", "read_thread", "read_thread", "navigate_to_codex_page", "wait_threads"]);
+        assert.deepEqual(calls.map(([op]) => op), ["list_projects", "list_projects", "create_thread", "read_thread", "read_thread", "read_thread", "navigate_to_codex_page", "wait_threads", "read_thread", "read_thread"]);
         const empty = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home } });
         assert.equal(empty.isError, true);
         assert.match(empty.content[0].text, /No task was created/);
-        assert.equal(calls.length, 7);
+        assert.equal(calls.length, 10);
       }, async (home) => {
         relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
           calls.push([operation, args]);
           let result;
           if (operation === "list_projects") result = { projects: [{ projectId: "project-id", projectKind: "local", hostId: "local", path: home, label: "Test" }] };
           else if (operation === "create_thread") result = { threadId: "new-task", hostId: "local" };
-          else if (operation === "read_thread") result = { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [] };
+          else if (operation === "read_thread") result = { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [{ id: "turn", status: "completed" }] };
           else if (operation === "navigate_to_codex_page") result = { navigated: true };
           else if (operation === "wait_threads") result = { polls: [{ thread: { id: "new-task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "turn", status: "completed" }, latestAssistantMessage: { turnId: "turn", phase: "final_answer", text: "COMPLETE" } }] };
           else throw new Error(`Unexpected operation ${operation}`);
@@ -842,7 +864,7 @@ function runCheck(env) {
 }
 
 describe("check command exit status", () => {
-  it("checks Desktop connectivity without requiring a Claude caller or listing private tasks", async () => {
+  it("reports Desktop connectivity but marks an unverified Claude caller as not ready without listing private tasks", async () => {
     let relay;
     const operations = [];
     const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-check-native-"));
@@ -851,7 +873,7 @@ describe("check command exit status", () => {
       await withBridge(() => assert.fail("Desktop check contacted the legacy app-server"), async ({ env, desktopFixture, server }) => {
         fs.rmSync(desktopFixture.registryFile);
         const result = await runCheck(env);
-        assert.equal(result.code, 0, result.output);
+        assert.equal(result.code, 1, result.output);
         assert.match(result.output, /native relay:.*available/);
         assert.deepEqual(operations, ["list_projects"]);
         assert.equal(server.connections, 0);

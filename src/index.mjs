@@ -32,6 +32,10 @@ import { assertRoutingReload, clientReloadReason, createReloadControl } from "./
 import { accountIdentity, assertAccountIdentity, publicAccountState, readBridgeAccounts, requireBridgeAccounts } from "./bridge-account-context.mjs";
 import { assertClaudeSenderContext, readClaudeSenderContext, requireClaudeSenderContext, stopProcessInspectors } from "./claude-sender-context.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
+import { bridgeReadiness } from "./bridge-readiness.mjs";
+import { captureProjectScope } from "./project-scope.mjs";
+import { DesktopReplyReceipts } from "./desktop-reply-receipts.mjs";
+import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -69,6 +73,7 @@ const security = new BridgeSecurityPolicy({
 const desktopTasksEnabled = desktopTasksConfigured();
 const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
 const desktopOperation = new AsyncLocalStorage();
+const replyReceipts = new DesktopReplyReceipts();
 const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts, senderContext: () => desktopOperation.getStore()?.caller });
 
 async function assertDesktopOperation(context, { verifyProcess = false } = {}) {
@@ -80,6 +85,10 @@ async function assertDesktopOperation(context, { verifyProcess = false } = {}) {
     account: accounts.claude,
     ...(!verifyProcess ? { readAncestry: async () => context.caller.lineage } : {}),
   });
+  // Provisioning an explicitly selected new project must work before its grant
+  // exists. Only these setup calls omit the scope check; identity/account checks
+  // and every message/file operation retain their existing checks.
+  if (!context.projectSetup && security.hardenedRoots.mode === "project-policy") security.hardenedRoots.assert(context.caller.cwd, "Claude sender working directory");
   assertAccountIdentity(context.accounts);
 }
 
@@ -129,6 +138,16 @@ const textResult = (text, isError = false) => ({
 });
 
 const failure = (err) => textResult(`Codex bridge error: ${err?.message ?? String(err)}`, true);
+
+function replyResult(delivered, deliveryId, result, notes = []) {
+  result = { activity: [], errors: [], ...result };
+  const pending = result.status === "timeout";
+  const continuation = deliveryId ? `deliveryId: ${deliveryId}\n${pending ? "Continue automatically with wait_codex_reply and this deliveryId; it only observes the original send. Do not resend the prompt." : "Keep this deliveryId to inspect the same send after reconnecting."}` : "";
+  return {
+    ...textResult([...notes, formatTurn(result, { desktop: true }), continuation].filter(Boolean).join("\n"), result.status === "failed" || result.status === "systemError"),
+    structuredContent: { ...result, threadId: delivered.threadId, deliveryStatus: result.responseStatus === "completed" || result.responseStatus === "completed_no_reply" ? "accepted" : delivered.deliveryStatus ?? "accepted", ...(deliveryId ? { deliveryId } : {}), nextAction: pending && deliveryId ? "wait_codex_reply" : "none" },
+  };
+}
 
 /**
  * Decides whether this bridge may act on a thread, before anything acts on it.
@@ -187,7 +206,16 @@ async function delegateDesktopTask({ cwd, prompt, name, requestId, model, effort
   const created = await desktopTasks.create({
     cwd: workspace.path, prompt, name: threadNameFor({ cwd: workspace.path, prompt, name }),
     dedupeName: name ?? "", requestId, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, deadline,
+    onPrepared: (delivered) => replyReceipts.create(delivered, desktopOperation.getStore()),
   });
+  const deliveryId = created.deliveryId;
+  let delivered = deliveryId ? replyReceipts.read(deliveryId, desktopOperation.getStore()) : null;
+  if (delivered?.creationObservation) {
+    const resolved = await desktopTasks.resolveCreation(delivered, { deadline });
+    if (!resolved) return replyResult(delivered, deliveryId, { threadId: null, status: "timeout", responseStatus: "unavailable", text: "" }, ["Creation acknowledgement pending; do not create again."]);
+    delivered = resolved;
+    created.threadId = resolved.threadId;
+  }
   const notes = [];
   if (workspace.note) notes.push(workspace.note);
   if (openInApp ?? DEFAULT_OPEN_IN_APP) {
@@ -211,12 +239,16 @@ async function delegateDesktopTask({ cwd, prompt, name, requestId, model, effort
       : "The edited brief was not sent. Continue the same unfinished work with send_to_codex_thread and this threadId. For independent new work, create a task with a fresh requestId; never change requestId merely to retry uncertain delivery."] : []), ...notes,
   ];
   if (created.projectAssignmentStatus === "unverified") return textResult([...lines, "status: existing task retained; project assignment needs inspection"].join("\n"));
-  if (!waitForReply) return textResult([...lines, created.reused ? "status: existing task; read it to check its current progress" : "status: accepted; the task is running in Desktop"].join("\n"));
+  if (!waitForReply) return textResult([...lines, created.reused ? "status: existing task; read it to check its current progress" : "status: accepted; the task is running in Desktop", ...(deliveryId ? [`deliveryId: ${deliveryId}`, "Use wait_codex_reply with this deliveryId to observe the original creation without resending."] : [])].join("\n"));
+  if (!delivered) return textResult([...lines, "The existing creation has no original reply binding. Inspect it without resending; a new binding cannot be inferred from a retry."].join("\n"));
   try {
-    const result = await desktopTasks.wait(created.threadId, { timeoutMs: Math.max(0, deadline - Date.now()) });
-    return textResult([...lines, "", formatTurn(result, { desktop: true })].join("\n"), result.status === "failed" || result.status === "systemError");
+    const result = await desktopTasks.wait(created.threadId, { timeoutMs: Math.max(0, deadline - Date.now()), previousTurnId: delivered.previousTurnId, responseObservation: delivered.responseObservation });
+    return replyResult(delivered, deliveryId, result, lines);
   } catch (err) {
-    return textResult([...lines, `Task was accepted; observation failed: ${err.message}`, "Do not resend the prompt. Inspect the existing task."].join("\n"), true);
+    if (Date.now() >= deadline && /deadline|timed out|within \d+ms/.test(err.message)) {
+      return replyResult(delivered, deliveryId, { threadId: created.threadId, status: "timeout", responseStatus: "unavailable", text: "" }, lines);
+    }
+    return textResult([...lines, `Task was accepted; observation failed: ${err.message}`, `deliveryId: ${deliveryId}`, "Do not resend the prompt. Resolve the observation error, then use wait_codex_reply."].join("\n"), true);
   }
 }
 
@@ -364,6 +396,7 @@ const server = new McpServer(
       "Codex Desktop. Desktop creation and sends always require the verified calling Claude task and the Codex destination to belong to the same project, even when cwd is omitted. " +
       "Use send_to_codex_thread only when an existing threadId is intentional; use " +
       "list_codex_threads or read_codex_thread to inspect sessions and codex_bridge_status to inspect wiring. " +
+      "When a Desktop send returns nextAction=wait_codex_reply, continue observing with that tool and the returned deliveryId until completion, user input is required, or the user stops the task. Never resend to obtain a reply. Each observation is bounded, and the receipt survives reconnection. " +
       AGENT_PROMPT_GUIDANCE,
   },
 );
@@ -391,7 +424,7 @@ function registerTool(name, definition, handler) {
         const accounts = readBridgeAccounts();
         const identity = requireBridgeAccounts(accounts);
         const caller = requireClaudeSenderContext(await readClaudeSenderContext({ account: accounts.claude }));
-        const context = { accounts: identity, caller, dispatched: false, deadline };
+        const context = { accounts: identity, caller, dispatched: false, deadline, projectSetup: PROJECT_SETUP_TOOLS.has(name) };
         return await desktopOperation.run(context, async () => {
           try {
             await assertDesktopOperation(context);
@@ -414,6 +447,11 @@ function registerTool(name, definition, handler) {
   });
 }
 
+registerProjectOnboardingTools(registerTool, { beforePrepare: async () => {
+  if (!desktopTasksEnabled || !desktopOperation.getStore()?.caller) throw new Error("Project onboarding requires a verified Desktop caller");
+  await assertDesktopOperation(desktopOperation.getStore(), { verifyProcess: true });
+} });
+
 registerTool(
   "delegate_to_codex",
   {
@@ -422,7 +460,7 @@ registerTool(
       "Create a named Codex session at the requested project directory, send Claude's prompt into it, " +
       "return Codex's reply, and hand the session to Codex Desktop without leaving the bridge writer lock behind. " +
       "Use for independent new work when the user explicitly or through standing instructions authorizes new conversations. " +
-      "In Desktop mode, supply a fresh requestId per independent task and keep it on retries; omit requestId in legacy app-server mode. Use send_to_codex_thread for unfinished work.",
+      "Desktop creation returns a durable deliveryId; on timeout continue with wait_codex_reply instead of resending. In Desktop mode, supply a fresh requestId per independent task and keep it on retries; omit requestId in legacy app-server mode. Use send_to_codex_thread for unfinished work.",
     inputSchema: {
       cwd: z.string().describe("Absolute project directory where Codex must work"),
       requestId: z.string().uuid().optional().describe("Desktop creation identity: fresh UUID for each independent new task; retain exactly on retries. Omitting it preserves legacy title/prompt deduplication and can return an older task. Not supported in legacy app-server mode."),
@@ -518,6 +556,7 @@ registerTool(
       "Use only for the same unfinished task, including follow-up fixes, clarifications, or results; independent new work belongs in a new conversation when authorized. " +
       "The thread keeps its full history, cwd and model. Use list_codex_threads first if you do not know the threadId. " +
       "Desktop-owned tasks must use Desktop native delivery; an open task is a valid destination. " +
+      "A Desktop send prepares a durable deliveryId before dispatch. An ambiguous acknowledgement is marked unconfirmed, never accepted without evidence. If it times out, continue automatically with wait_codex_reply using that ID; never resend to obtain the answer. " +
       "If legacy delivery reports an active writer, inspect codex_bridge_status and repair the native relay/configuration. " +
       "Do not close the task, create a replacement, or ask the user to copy the message manually.",
     inputSchema: {
@@ -556,6 +595,7 @@ registerTool(
   async ({ threadId, prompt, timeoutSec, cwd, model, effort, name, openInApp, releaseAfterTurn }) => {
     const deadline = desktopTasksEnabled ? desktopOperation.getStore()?.deadline ?? Date.now() + Math.min((timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS) : undefined;
     let acceptedDelivery;
+    let deliveryId;
     return (desktopTasksEnabled ? desktopTasks : client).withThread(threadId, async () => {
       const notes = [];
       const shouldOpen = openInApp ?? DEFAULT_OPEN_IN_APP;
@@ -564,9 +604,13 @@ registerTool(
         if (desktopTasksEnabled) {
           const workspace = cwd ? resolveWorkspacePath(cwd) : null;
           if (workspace) security.assertCwd(workspace.path);
-          const delivered = await desktopTasks.send({ threadId, prompt, cwd: workspace?.path, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, name, deadline });
+          const delivered = await desktopTasks.send({ threadId, prompt, cwd: workspace?.path, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, name, deadline, onPrepared: (prepared) => {
+            deliveryId = replyReceipts.create(prepared, desktopOperation.getStore());
+            acceptedDelivery = prepared;
+          } });
           acceptedDelivery = delivered;
-          notes.push("sent through Codex Desktop; no external app-server writer", `cwd: ${delivered.cwd}`);
+          notes.push(delivered.deliveryStatus === "unconfirmed" ? "Desktop delivery acknowledgement timed out; delivery is unconfirmed. Continue observing this receipt; do not resend." : "sent through Codex Desktop; no external app-server writer", `cwd: ${delivered.cwd}`);
+          if (delivered.deliveryStatus === "unconfirmed") return replyResult(delivered, deliveryId, { threadId, status: "timeout", responseStatus: "unavailable", text: "" }, notes);
           if (shouldOpen) {
             try {
               await desktopTasks.open(threadId, { deadline });
@@ -577,9 +621,9 @@ registerTool(
           }
           try {
             const result = await desktopTasks.wait(threadId, { timeoutMs: Math.max(0, deadline - Date.now()), previousTurnId: delivered.previousTurnId, responseObservation: delivered.responseObservation });
-            return textResult([...notes, formatTurn(result, { desktop: true })].join("\n"), result.status === "failed" || result.status === "systemError");
+            return replyResult(delivered, deliveryId, result, notes);
           } catch (err) {
-            return textResult([...notes, `threadId: ${threadId}`, `Task was accepted; observation failed: ${err.message}. Do not resend.`].join("\n"), true);
+            return textResult([...notes, `threadId: ${threadId}`, `deliveryId: ${deliveryId}`, `Task was accepted; observation failed: ${err.message}. Do not resend. Use wait_codex_reply only after resolving the observation error.`].join("\n"), true);
           }
         }
         const authorizedThread = await assertThreadAccess(threadId);
@@ -634,18 +678,46 @@ registerTool(
         const held = shouldOpen && !shouldRelease && client.holdsThread(threadId) ? writerLockWarning(threadId) : "";
         return textResult(`${notes.length ? `${notes.join("\n")}\n` : ""}${body}${held}`, failed);
       } catch (err) {
+        if (acceptedDelivery?.deliveryStatus === "accepted") return textResult(`threadId: ${threadId}\nTask was accepted, but its reply receipt could not be prepared: ${err.message}. Inspect the existing task; do not resend.`, true);
         return failure(err);
       }
     }, {
       deadline,
       onDeadline(error) {
         if (!acceptedDelivery) throw error;
-        return {
-          ...textResult(`sent through Codex Desktop; no external app-server writer\ncwd: ${acceptedDelivery.cwd}\nthreadId: ${threadId}\nstatus: timeout\nTask was accepted; the response deadline elapsed before a completed reply was observed. Inspect the existing task; do not resend.`),
-          structuredContent: { threadId, deliveryStatus: "accepted", status: "timeout", responseStatus: "unavailable" },
-        };
+        return replyResult(acceptedDelivery, deliveryId, { threadId, status: "timeout", responseStatus: "unavailable", text: "" });
       },
     }).catch(failure);
+  },
+);
+
+registerTool(
+  "wait_codex_reply",
+  {
+    title: "Continue waiting for a Codex reply",
+    description: "Continue a Desktop creation or send using its deliveryId; an unconfirmed acknowledgement does not prove delivery, including after MCP reconnect. Never sends a message or creates a task. On timeout, call again with the same deliveryId; do not ask the user to fetch the answer or resend. Stops for approval, user input or a verification error. Only the original verified Claude session and accounts can use the receipt.",
+    inputSchema: {
+      deliveryId: z.string().uuid().describe("Exact deliveryId returned by send_to_codex_thread, delegate_to_codex or start_codex_thread"),
+      timeoutSec: z.number().int().min(1).max(40).optional().describe("Bounded observation time, default 40 seconds; repeat with the same receipt if still running"),
+    },
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ deliveryId }) => {
+    if (!desktopTasksEnabled) return failure(new Error("Reply continuations require Desktop native delivery"));
+    const context = desktopOperation.getStore();
+    let delivered = replyReceipts.read(deliveryId, context);
+    if (delivered.creationObservation) {
+      const resolved = await desktopTasks.resolveCreation(delivered, { deadline: context.deadline });
+      if (!resolved) return replyResult(delivered, deliveryId, { threadId: null, status: "timeout", responseStatus: "unavailable", text: "" });
+      delivered = resolved;
+    }
+    const { threadId } = delivered;
+    const expired = () => replyResult(delivered, deliveryId, { threadId, status: "timeout", responseStatus: "unavailable", text: "" });
+    return desktopTasks.withThread(threadId, async () => {
+      await desktopTasks.inspect(threadId, delivered.cwd, { deadline: context.deadline });
+      const result = await desktopTasks.wait(threadId, { timeoutMs: Math.max(0, context.deadline - Date.now()), previousTurnId: delivered.previousTurnId, responseObservation: delivered.responseObservation });
+      return replyResult(delivered, deliveryId, result);
+    }, { deadline: context.deadline, onDeadline: expired });
   },
 );
 
@@ -952,17 +1024,19 @@ registerTool(
     description:
       "Report how this bridge is wired on the current machine: platform, resolved codex binary, " +
       "app-server endpoint and whether it is live, plus desktop deep-link support and macOS integrations.",
-    inputSchema: {},
+    inputSchema: { cwd: z.string().optional().describe("Optional intended target project directory to check before sending; does not grant access") },
     annotations: {
       readOnlyHint: true,
       openWorldHint: false,
     },
   },
-  async () => {
+  async ({ cwd }) => {
     const summary = security.summary();
     if (desktopTasksEnabled) {
       const native = await desktopTasks.status();
-      return textResult([
+      const sender = await readClaudeSenderContext({ account: readBridgeAccounts().claude });
+      const readiness = bridgeReadiness({ sender, scope: security.hardenedRoots.mode === "project-policy" ? security.hardenedRoots : { assert: (candidate) => { security.assertCwd(candidate); return candidate; } }, targetCwd: cwd, nativeAvailable: native.available, verifyTargetProject: captureProjectScope });
+      return { ...textResult([
         `platform:       ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
         `bridge version: ${VERSION}`,
         `node:           ${process.version} at ${process.execPath}`,
@@ -975,7 +1049,11 @@ registerTool(
         "autostart:      off; external app-server fallback is disabled",
         `security:       thread policy ${security.threadPolicy}, ${summary.allowAllRoots ? "all directories" : `${summary.allowedRoots.length} allowed root(s)`}; task permissions belong to Codex Desktop`,
         `claude desktop config: ${claudeDesktopConfigPath()}`,
-      ].join("\n"), !native.available);
+        `sender context: ${sender.status}${sender.taskId ? `; task ${sender.taskId}` : ""}`,
+        ...(readiness.projectPolicy ? [`project policy: ${readiness.projectPolicy.file}; revision ${readiness.projectPolicy.revision ?? "unavailable"}; changes apply on the next operation`] : []),
+        ...(readiness.target ? [`target: ${readiness.target.cwd}; authorized=${readiness.target.authorized}${readiness.target.authorizedBy ? `; via ${readiness.target.authorizedBy.kind} ${readiness.target.authorizedBy.path}` : ""}`] : []),
+        ...readiness.issues.map((issue) => `${issue.code}: ${issue.detail ?? ""} ${issue.action}`),
+      ].join("\n"), !readiness.ready), structuredContent: { readiness, projectScope: { enabled: true, policy: "verified-sender-same-project", match: "canonical-directory-or-git-repository", checkedBeforeMutation: true } } };
     }
     const up = await client.isServerUp();
     let liveThreads = null;

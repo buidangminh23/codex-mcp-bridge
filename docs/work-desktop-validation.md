@@ -20,7 +20,7 @@ No uncertain message was resent. A failed earlier reverse test was recovered sep
 
 Claude used a project-local MCP registration with a distinct name. The original shared Desktop registration did not have the Code session ancestry required to authorize a Claude sender; the caller-identity check correctly rejected it. The dedicated registration retained the same bridge implementation and access settings, and its process ancestry was verified under the intended Code session.
 
-The live checks cover the observed account, client setup, fixed-directory tasks, and short final replies. They do not validate migrated historical conversations, every Desktop version, or long tasks beyond the response budget. The unchanged-workspace check remains in force. No sender or recipient permission checks were disabled for acceptance.
+The live checks cover the observed account, client setup, fixed-directory tasks, and short final replies. They do not validate migrated historical conversations, every Desktop version, or long tasks beyond the response budget. At that validation point, the unchanged-workspace check remained in force. The later [long-rollout repair](long-rollout-validation.md) records the revised Desktop workspace and continuation checks separately. No sender or recipient permission checks were disabled for acceptance.
 
 ## Reproducible regression checks
 
@@ -33,6 +33,14 @@ Result on the reviewed changes: 90 passed, 1 platform skip, 0 failed. These test
 The standard `scripts/check.mjs` health check also passed with the existing Desktop-only configuration and external app-server autostart disabled. The initial full Windows rerun (`node --test --test-concurrency=2`) reported 768 passed, 6 failed, and 9 skipped. Three Windows pipe tests were blocked by PowerShell script policy, one installer migration case timed out, and the `mcp-supervisor` and `tool-contract` test processes exited unsuccessfully. The follow-up below records their diagnosis and final full-suite result.
 
 Raw transcripts, account identifiers, task IDs, and machine-specific paths remain outside the published repository.
+
+## Existing-project proactive-send follow-up (2026-09-29)
+
+A separate existing production-project conversation could reply to Codex-originated messages but could not proactively list or message Codex through its shared Desktop MCP entry. Its caller ancestry was unverified. Adding a distinct project-local `codex-bridge-code` registration resolved the caller error after a full Claude restart and reopening the same task. View > Reload alone left the original Code process and its MCP server list unchanged on this Windows installation.
+
+The copied registration initially retained only the earlier test workspace roots. Target list/read correctly refused the production project, and no reverse test message was sent. Adding that one user-authorized project directory to the dedicated registration, preserving the other controls, and restarting loaded the intended scope.
+
+The final live test verified the original Claude task and the exact idle Codex target, then made one `send_to_codex_thread` call. That call directly returned a completed turn, the exact requested test token, an assistant item ID and a reply SHA-256 in nine seconds. The saved original tool result and an independent Codex turn snapshot matched; the independent read did not supply a missing reply. No retry, replacement conversation, production-file edit, or sender-verification bypass was used. The send result reported opening the target in Codex Desktop, so this check does not establish a focus-free notification workflow.
 
 ## Windows full-suite follow-up
 

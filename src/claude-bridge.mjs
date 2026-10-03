@@ -10,13 +10,13 @@ import { PLATFORM_LABEL, openClaudeCodeComposer } from "./platform.mjs";
 import { PeerEndpoint, assertClaudeSessionCwd, assertClaudeSessionProcess, findClaudeSession, listClaudeSessions, readTranscript, readInitialTranscriptMessage } from "./peer-protocol.mjs";
 import { createThreadDelivery } from "./thread-delivery.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
-import { desktopTasksConfigured } from "./native-relay.mjs";
+import { desktopTasksConfigured, NativeDesktopRelay, desktopTaskSocketPath, accountRelaySocketPath } from "./native-relay.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
 import { readClaudeDesktopContext, readClaudeDesktopTasks } from "./claude-desktop-context.mjs";
 import { ClaudeSessionCreation } from "./claude-session-creation.mjs";
 import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
 import { assertRecipientClass, preflightFailure } from "./recipient-preflight.mjs";
-import { readCodexSenderContext } from "./codex-sender-context.mjs";
+import { resolveCodexSenderContext } from "./codex-sender-context.mjs";
 import { ReplyForwarder } from "./reply-forwarder.mjs";
 import { assertRoutingReload, clientReloadReason, createReloadControl } from "./reload-control.mjs";
 import { readClaudeAccountContext } from "./desktop-account-context.mjs";
@@ -25,6 +25,7 @@ import { recoverClaudeDesktopSession, resolveClaudeDesktopSession, sameClaudeDes
 import { submitClaudeCodeComposer, trustClaudeCodeComposer } from "./claude-composer-submit.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
+import { registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -216,8 +217,20 @@ function assertDesktopTask(session, expectedTaskId) {
   }
 }
 
-function assertSender(meta) {
-  const sender = readCodexSenderContext(meta);
+const senderRelay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath(), accountSocketPath: accountRelaySocketPath() });
+async function readSender(meta) {
+  return resolveCodexSenderContext(meta, { inspectDesktopTask: async (threadId) => {
+    const accounts = requireBridgeAccounts(readBridgeAccounts());
+    const { result } = await senderRelay.requestDesktop("read_thread", {
+      threadId, hostId: "local", turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 1,
+    }, { accountContext: accounts, beforeSend: () => assertAccountIdentity(accounts) });
+    assertAccountIdentity(accounts);
+    return { thread: result?.thread, latestTurnId: result?.turns?.[0]?.id ?? null };
+  } });
+}
+
+async function assertSender(meta) {
+  const sender = await readSender(meta);
   if (sender.status !== "verified") {
     throw preflightFailure("CODEX_SENDER_CONTEXT_UNVERIFIED", `${sender.reason} Check claude_bridge_status in the calling Codex Desktop task. Manual relay binding and a global permission override do not establish the sender's permissions.`);
   }
@@ -233,7 +246,7 @@ function assertCreationRoots(requestId, sender) {
 async function startClaudeCreation({ requestId, cwd, prompt, autoSubmit = process.platform === "win32", trustProject = process.env.CLAUDE_BRIDGE_AUTO_TRUST_PROJECTS === "1" }, meta) {
   runtime.assertCurrent();
   if (!desktopOnly) throw new Error("New Claude sessions require Desktop-only mode");
-  const sender = assertSender(meta);
+  const sender = await assertSender(meta);
   const accounts = readBridgeAccounts();
   const selectedAccounts = requireBridgeAccounts(accounts);
   if (rootPolicy.enabled && creations.requests.has(requestId)) assertCreationRoots(requestId, sender);
@@ -242,12 +255,12 @@ async function startClaudeCreation({ requestId, cwd, prompt, autoSubmit = proces
     recipient: rootPolicy.capture(cwd, "Claude creation working directory"),
   } : null;
   const receipt = await creations.start({ requestId, cwd, prompt, autoSubmit, trustProject, account: accounts.claude, senderThreadId: sender.threadId,
-    beforeOpen: () => {
+    beforeOpen: async () => {
       runtime.assertCurrent();
       assertAccountIdentity(selectedAccounts);
       recheckScopeBindings(scopeBindings);
       if (rootPolicy.enabled && !rootPolicy.same(cwd, scopeBindings.recipient.path)) throw new Error("The Claude creation working directory changed before opening Desktop");
-      const current = assertSender(meta);
+      const current = await assertSender(meta);
       if (JSON.stringify(current) !== JSON.stringify(sender)) throw new Error("The calling Codex turn changed before opening Claude Desktop");
     },
   });
@@ -256,7 +269,7 @@ async function startClaudeCreation({ requestId, cwd, prompt, autoSubmit = proces
 }
 
 async function inspectClaudeCreation(requestId, meta) {
-  const sender = assertSender(meta);
+  const sender = await assertSender(meta);
   assertCreationRoots(requestId, sender);
   const accounts = readBridgeAccounts();
   requireBridgeAccounts(accounts);
@@ -314,6 +327,13 @@ function registerTool(name, definition, handler) {
   });
 }
 
+registerProjectOnboardingTools(registerTool, { beforePrepare: async (extra) => {
+  runtime.assertCurrent();
+  if (!desktopOnly) throw new Error("Project onboarding requires a verified Desktop caller");
+  await assertSender(extra?._meta);
+  requireBridgeAccounts(readBridgeAccounts());
+} });
+
 registerTool(
   "start_claude_session",
   {
@@ -351,7 +371,7 @@ registerTool(
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
   async ({ requestId }, extra) => {
-    const sender = assertSender(extra?._meta);
+    const sender = await assertSender(extra?._meta);
     assertCreationRoots(requestId, sender);
     const accounts = readBridgeAccounts();
     requireBridgeAccounts(accounts);
@@ -443,7 +463,7 @@ registerTool(
       runtime.assertCurrent();
       if (target === "new") {
         if (expectedTaskId !== undefined) throw new Error("A new Claude conversation cannot target an existing task ID");
-        const sender = assertSender(extra?._meta);
+        const sender = await assertSender(extra?._meta);
         const creationId = requestId ?? createHash("sha256").update(JSON.stringify([sender.threadId, expectedCwd, message])).digest("hex");
         return await startClaudeCreation({ requestId: creationId, cwd: expectedCwd, prompt: message, autoSubmit, trustProject }, extra?._meta);
       }
@@ -458,8 +478,8 @@ registerTool(
         listTasks: () => readClaudeDesktopTasks({ account: accounts.claude }),
         listSessions: () => listClaudeSessions().filter((entry) => entry.pid !== process.pid),
         open: (taskId) => openClaudeCodeComposer(`claude://code/continue?session=${encodeURIComponent(taskId)}`),
-        beforeOpen: () => {
-          const currentSender = assertSender(extra?._meta);
+        beforeOpen: async () => {
+          const currentSender = await assertSender(extra?._meta);
           if (!recoverySender) {
             recoverySender = currentSender;
             recoveryBindings = rootPolicy.enabled ? { sender: rootPolicy.capture(recoverySender.cwd, "Codex sender working directory"), recipient: rootPolicy.capture(expectedCwd, "Claude recipient working directory") } : null;
@@ -481,7 +501,7 @@ registerTool(
         assertDesktopTask(session, selectedTaskId);
         assertClaudeSessionProcess(session);
       }
-      const sender = desktopOnly ? assertSender(extra?._meta) : null;
+      const sender = desktopOnly ? await assertSender(extra?._meta) : null;
       const scopeBindings = rootPolicy.enabled ? {
         sender: rootPolicy.capture(sender?.cwd, "Codex sender working directory"),
         recipient: rootPolicy.capture(session.cwd, "Claude recipient working directory"),
@@ -491,14 +511,14 @@ registerTool(
 
       const wait = waitSec ?? 180;
       const desktop = session.entrypoint === "claude-desktop";
-      const text = desktop ? `${message}\n\n[Bridge response routing: reply with ordinary text in this conversation. The bridge reads the response associated with this message from the local transcript; no cross-session reply tool is needed.]` : message;
+      const text = desktop ? `${message}\n\n[Bridge response routing: reply with ordinary text in this conversation. The bridge reads the response associated with this message from the local transcript; no cross-session reply tool is needed. For native child tasks, check completion with native session/event tools. Do not infer completion by regex-matching JSON field order or leave an unbounded custom watcher running.]` : message;
       const { msgId, reply, delivery } = await peer.sendAndWait(session.socket, text, {
         timeoutMs: wait * 1000,
         ...(selectedAccounts ? { accountContext: selectedAccounts } : {}),
         ...(sender ? { permissionMode: sender.mode, replyThreadId: sender.threadId, senderReview: sender.review, senderApprovalPolicy: sender.approvalPolicy } : {}),
         ...(desktop ? { recipient: { permissionMode: session.desktop.permissionMode ?? null, permissionClass: session.desktop.permissionClass ?? null, inboundPolicy: session.inbound?.value ?? null } } : {}),
         ...(scopeBindings ? { scopeBindings } : {}),
-        beforeSend: () => {
+        beforeSend: async () => {
           runtime.assertCurrent();
           if (desktopOnly) assertAccountIdentity(selectedAccounts);
           const current = findClaudeSession(session.sessionId ?? String(session.pid), { desktopOnly });
@@ -514,7 +534,7 @@ registerTool(
             assertClaudeSessionProcess(current);
             const refreshed = withDesktopContext(current, readClaudeAccountContext());
             assertDesktopTask(refreshed, selectedTaskId);
-            const active = assertSender(extra?._meta);
+            const active = await assertSender(extra?._meta);
             if (rootPolicy.enabled) {
               rootPolicy.recheck(scopeBindings.sender, "Codex sender working directory");
               rootPolicy.recheck(scopeBindings.recipient, "Claude recipient working directory");
@@ -531,6 +551,10 @@ registerTool(
       });
       const status = reply ? "reply_received" : delivery?.status ?? (wait === 0 ? "sent_unconfirmed" : "reply_timeout");
       const receipt = { status, msgId, target: session.name ?? String(session.pid), sessionId: session.sessionId, cwd: session.cwd, entrypoint: session.entrypoint, waitSec: wait,
+        ...(delivery?.status === "interrupted" ? { pending: false, outcome: "unknown", waitEnded: true,
+          taskCancelled: false, retrySafe: false, nextAction: "inspect_existing_task_then_follow_up",
+          reason: delivery.reason, interruption: { reasonCode: delivery.reasonCode, source: delivery.source,
+            observedAt: delivery.observedAt, entryIds: delivery.interruptedBy, backgroundTaskIds: delivery.backgroundTaskIds } } : {}),
         ...(selectedAccounts ? { accountContext: selectedAccounts, rediscovered: target === "auto" || ![session.name, String(session.pid), session.sessionId].includes(target) } : {}),
         ...(desktop ? { taskId: session.desktop.taskId, title: session.desktop.title, approvalUi: "unverified", recipientPermissionMode: session.desktop.permissionMode ?? null, recipientPermissionClass: session.desktop.permissionClass ?? null, recipientInboundPolicy: session.inbound?.value ?? null } : {}),
         ...(sender ? { senderMode: sender.mode, senderApprovalPolicy: sender.approvalPolicy, senderThreadId: sender.threadId, senderTurnId: sender.turnId, senderReview: sender.review } : {}),
@@ -542,6 +566,10 @@ registerTool(
         return result(`The account changed after this message was dispatched. Its receipt and any reply remain attached to the original accounts. Do not resend automatically.\nMessage id: ${msgId}`, true);
       }
       const targetLabel = `${session.desktop?.title ?? session.name ?? session.pid} (pid ${session.pid}, session ${session.sessionId ?? "?"}, via ${session.entrypoint ?? "unknown"}, cwd ${session.cwd ?? "?"})`;
+
+      if (!reply && delivery?.status === "interrupted") {
+        return result(`Reply waiting ended for ${targetLabel} because a new conversation command interrupted the original request.\nMessage id: ${msgId}\nThe original task was not cancelled and its result remains unknown. Inspect that existing session/card, then send a scoped follow-up if needed. Do not resend the original action or create a replacement task. This is not a permission rejection.`, true);
+      }
 
       if (!reply && delivery && delivery.status !== "delivered") {
         const classes = desktop && sender ? `Recipient task mode: ${session.desktop.permissionMode ?? "unknown"}${session.desktop.permissionClass ? ` (${session.desktop.permissionClass} class)` : ""}; this sender attested ${sender.mode}.\n` : "";
@@ -571,7 +599,7 @@ registerTool(
   "read_claude_delivery",
   {
     title: "Inspect a Claude message receipt without resending",
-    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process. Also accepts the 64-character requestId returned by target new to inspect creation without reopening. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
+    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process. An interrupted receipt ends only reply waiting: task outcome remains unknown and background work may still run. Inspect the existing task before any scoped follow-up; never resend the original action automatically. Ordinary timeouts remain pending. Also accepts the 64-character requestId returned by target new to inspect creation without reopening. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
     inputSchema: { msgId: z.string().describe("The original message ID returned by send_to_claude_session") },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
@@ -719,7 +747,8 @@ registerTool(
       const visibleInbox = peer.inbox.filter((record) => recordVisible(record, accounts));
       const visiblePending = [...peer.pendingMessages.keys()].filter((id) => readReceipt(id));
       const visibleForwarding = replyForwarder.status((record) => recordVisible(record, accounts));
-      const sender = desktopOnly ? readCodexSenderContext(extra?._meta) : null;
+      const sender = desktopOnly ? await readSender(extra?._meta) : null;
+      const projectPolicy = rootPolicy.status?.(sender?.status === "verified" ? sender.cwd : undefined);
       const lines = [
         `platform:      ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
         `bridge:        claude-bridge ${VERSION}`,
@@ -731,6 +760,7 @@ registerTool(
         ...(sender?.permissionProfile ? [`sender permission profile: ${sender.permissionProfile}`, `sender approval reviewer: ${sender.approvalsReviewer}`] : []),
         ...(sender?.review ? [`sender auto review: ${sender.review.autoReview}`, `sender Node REPL review: ${sender.review.nodeReplReview}`] : []),
         `session policy: ${desktopOnly ? "desktop-only" : "all Claude Code entrypoints"}`,
+        ...(projectPolicy ? [`project policy: ${projectPolicy.file}; ${projectPolicy.error ?? `${projectPolicy.grants} grants, ${projectPolicy.denies} revocations; live per operation`}`] : []),
         `Claude account: ${accounts.claude.status}${accounts.claude.fingerprint ? ` (${accounts.claude.fingerprint.slice(0, 12)})` : ` - ${accounts.claude.reason}`}`,
         `Codex account: ${accounts.codex.status}${accounts.codex.fingerprint ? ` (${accounts.codex.fingerprint.slice(0, 12)})` : ` - ${accounts.codex.reason}`}`,
         `live sessions: ${eligible.length}`,
@@ -745,7 +775,7 @@ registerTool(
       ];
       const state = runtime.status();
       lines.push(`runtime pid:   ${state.pid}`, `loaded source: ${state.revision}`, `disk source:   ${state.diskRevision ?? "unreadable"}`, `runtime state: ${state.current ? "current" : `STALE - ${state.reason}; reconnect this MCP server in the existing task`}`);
-      return { ...textResult(lines.join("\n"), !state.current), structuredContent: { runtime: state, accounts: { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) }, discovery, replyForwarding: visibleForwarding, ...(sender ? { sender } : {}) } };
+      return { ...textResult(lines.join("\n"), !state.current || Boolean(projectPolicy?.error)), structuredContent: { runtime: state, accounts: { claude: publicAccountState(accounts.claude), codex: publicAccountState(accounts.codex) }, discovery, replyForwarding: visibleForwarding, ...(projectPolicy ? { projectPolicy } : {}), ...(sender ? { sender } : {}) } };
     } catch (err) {
       return failure(err);
     }

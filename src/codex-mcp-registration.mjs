@@ -17,7 +17,7 @@ export function stdioMcpRegistration({ name, existing, node, entry, entryArgs = 
 
 export function codexMcpRegistration({ name, existing, node, entry, entryArgs = [], env, desktopOnly }) {
   const values = { ...existing?.transport?.env };
-  for (const key of ["CLAUDE_BRIDGE_PEER_NAME", "CLAUDE_BRIDGE_PERMISSION_MODE", "CODEX_BRIDGE_DESKTOP_TASKS", "CLAUDE_DESKTOP_USER_DATA"]) {
+  for (const key of ["CLAUDE_BRIDGE_PEER_NAME", "CLAUDE_BRIDGE_PERMISSION_MODE", "CODEX_BRIDGE_DESKTOP_TASKS", "CLAUDE_DESKTOP_USER_DATA", "CODEX_BRIDGE_PROJECT_POLICY"]) {
     if (env[key] !== undefined) values[key] = env[key];
   }
   values.CODEX_BRIDGE_DESKTOP_TASKS ??= desktopOnly ? "1" : "0";

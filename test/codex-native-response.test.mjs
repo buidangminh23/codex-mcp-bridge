@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse } from "../src/codex-native-response.mjs";
+import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse, readCodexNativeCreationResponse } from "../src/codex-native-response.mjs";
 
 const THREAD_ID = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
 const TURN_ID = "01a087df-8988-7433-b08b-d85692b1f41a";
@@ -57,6 +57,112 @@ function fixture(t) {
 }
 
 describe("native Codex response observation", () => {
+  it("correlates a confirmed creation to create_thread only, with exact sender and prompt", (t) => {
+    const f = fixture(t);
+    const records = f.turn();
+    records[2].payload.name = "create_thread";
+    f.append(records);
+    const binding = { threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd, executorThreadId: EXECUTOR_ID, prompt: PROMPT };
+    const read = (overrides = {}) => readCodexNativeCreationResponse({ ...binding, ...overrides }, { env: f.env });
+    assert.equal(read().text, "Received safely");
+    for (const override of [{ executorThreadId: PREVIOUS_TURN_ID }, { prompt: "another brief" }, { expectedCwd: f.home }]) {
+      assert.equal(read(override).status, "unavailable");
+    }
+    fs.writeFileSync(f.file, line(f.session) + f.turn().map(line).join(""));
+    assert.match(read().reason, /exact native dispatch/);
+  });
+
+  it("follows a new continuation after dispatch and verifies every old segment prefix", (t) => {
+    const f = fixture(t);
+    f.append(f.turn({ turnId: PREVIOUS_TURN_ID }));
+    const evidence = { thread: { id: THREAD_ID, kind: "codex", hostId: "local", cwd: f.cwd }, latestTurnId: PREVIOUS_TURN_ID };
+    const first = f.capture();
+    const continued = f.file.replace(".jsonl", `_${EXECUTOR_ID}.jsonl`);
+    fs.writeFileSync(continued, line(f.session) + f.turn().map(line).join(""));
+    assert.equal(f.read(first, { desktopEvidence: evidence }).status, "completed");
+    const currentEvidence = { ...evidence, latestTurnId: TURN_ID };
+    const second = captureCodexRolloutWatermark({ threadId: THREAD_ID, expectedCwd: f.cwd, desktopEvidence: currentEvidence }, { env: f.env });
+    assert.equal(second.status, "available", second.reason);
+    assert.equal(second.file, fs.realpathSync.native(continued));
+    assert.equal(second.segments.length, 2);
+    assert.equal(f.read(second).status, "unavailable", "A turn predating dispatch cannot be replayed");
+    assert.equal(inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd, desktopEvidence: currentEvidence }, { env: f.env }).status, "completed");
+    fs.writeFileSync(f.file, fs.readFileSync(f.file, "utf8").replace("Received safely", "Replaced safely"));
+    assert.match(f.read(first).reason, /history changed/);
+  });
+
+  it("accepts CLI-origin responses only with independently confirmed native task ownership", (t) => {
+    const f = fixture(t);
+    Object.assign(f.session.payload, { originator: "codex-tui", source: "cli" });
+    fs.writeFileSync(f.file, line(f.session));
+    assert.equal(f.capture().status, "unavailable");
+    const evidence = { thread: { id: THREAD_ID, kind: "codex", hostId: "local", cwd: f.cwd }, latestTurnId: PREVIOUS_TURN_ID };
+    const watermark = captureCodexRolloutWatermark({ threadId: THREAD_ID, expectedCwd: f.cwd, desktopEvidence: evidence }, { env: f.env });
+    assert.equal(watermark.status, "available", watermark.reason);
+    f.append(f.turn());
+    assert.equal(f.read(watermark).status, "unavailable");
+    assert.equal(f.read(watermark, { desktopEvidence: evidence }).status, "completed");
+    for (const thread of [
+      { ...evidence.thread, kind: "chatgpt" }, { ...evidence.thread, hostId: "remote" },
+      { ...evidence.thread, id: EXECUTOR_ID }, { ...evidence.thread, cwd: f.home },
+    ]) assert.equal(f.read(watermark, { desktopEvidence: { ...evidence, thread } }).status, "unavailable");
+  });
+
+  it("rejects copied or split turns across continuations and missing pre-send segments", (t) => {
+    const f = fixture(t);
+    const watermark = f.capture();
+    const continued = f.file.replace(".jsonl", `_${EXECUTOR_ID}.jsonl`);
+    const records = f.turn();
+    f.append(records.slice(0, 3));
+    fs.writeFileSync(continued, line(f.session) + records.slice(3).map(line).join(""));
+    assert.match(f.read(watermark).reason, /multiple rollout segments/);
+    fs.writeFileSync(continued, line(f.session) + records.map(line).join(""));
+    f.append(records.slice(3));
+    assert.match(f.read(watermark).reason, /multiple rollout segments/);
+    fs.unlinkSync(f.file);
+    assert.match(f.read(watermark).reason, /disappeared/);
+  });
+
+  it("streams histories above 16 MiB while retaining exact prefix and reply verification", (t) => {
+    const f = fixture(t);
+    const row = line({ type: "response_item", payload: { content: "x".repeat(1024 * 1024) } });
+    for (let i = 0; i < 17; i++) fs.appendFileSync(f.file, row);
+    const watermark = f.capture();
+    assert.equal(watermark.status, "available", watermark.reason);
+    assert.ok(watermark.size > 16 * 1024 * 1024);
+    assert.equal(watermark.prefixSha256, crypto.createHash("sha256").update(fs.readFileSync(f.file)).digest("hex"));
+    f.append(f.turn());
+    assert.equal(f.read(watermark).text, "Received safely");
+    assert.equal(inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env }).text, "Received safely");
+    const fd = fs.openSync(f.file, "r+");
+    try { fs.writeSync(fd, Buffer.from("y"), 0, 1, 8 * 1024 * 1024); } finally { fs.closeSync(fd); }
+    assert.match(f.read(watermark).reason, /history changed/);
+  });
+
+  it("reads migrated Desktop tasks only when the latest context matches the selected workspace", (t) => {
+    const f = fixture(t);
+    f.session.payload.cwd = path.join(f.home, "removed-original-workspace");
+    fs.writeFileSync(f.file, line(f.session));
+    assert.equal(f.capture().status, "unavailable");
+    f.append(f.turn({ turnId: PREVIOUS_TURN_ID }));
+    const watermark = f.capture();
+    assert.equal(watermark.status, "available", watermark.reason);
+    f.append(f.turn());
+    assert.equal(f.read(watermark).status, "completed");
+    f.append([{ type: "turn_context", payload: { turn_id: PREVIOUS_TURN_ID, cwd: f.home } }]);
+    assert.equal(f.capture().status, "unavailable");
+    assert.equal(f.read(watermark).status, "unavailable");
+  });
+
+  it("bounds retained records of the requested turn even when each record fits", (t) => {
+    const f = fixture(t);
+    const watermark = f.capture();
+    const records = f.turn();
+    for (let i = 0; i < 40; i++) records.splice(3, 0, { type: "event_msg", payload: { type: "progress", turn_id: TURN_ID, text: "x".repeat(100) } });
+    f.append(records);
+    assert.match(f.read(watermark, {}, { maxRolloutBytes: 2048 }).reason, /retained-record limit/);
+  });
+
   it("captures and reads exact final replies from both native Desktop origins", (t) => {
     for (const originator of ["Codex Desktop", "codex_work_desktop"]) {
       const f = fixture(t);
@@ -87,7 +193,7 @@ describe("native Codex response observation", () => {
   });
 
   it("retains session, workspace and source checks for Work Desktop response observation", (t) => {
-    for (const patch of [{ id: EXECUTOR_ID }, { source: "cli" }, { source: "web" }, { cwd: os.tmpdir() }]) {
+    for (const patch of [{ id: EXECUTOR_ID }, { source: "cli" }, { source: "web" }, { cwd: "relative-workspace" }]) {
       const f = fixture(t);
       Object.assign(f.session.payload, { originator: "codex_work_desktop" }, patch);
       fs.writeFileSync(f.file, line(f.session));

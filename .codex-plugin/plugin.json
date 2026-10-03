@@ -1,6 +1,6 @@
 {
   "name": "codex-mcp-bridge",
-  "version": "1.20.0",
+  "version": "1.20.1",
   "description": "Connect ChatGPT to your own Codex Desktop projects and conversations.",
   "author": {
     "name": "Bui Dang Minh"
@@ -17,7 +17,12 @@
     "composerIcon": "./assets/plugin-icon.svg",
     "logo": "./assets/plugin-icon.svg",
     "category": "Developer Tools",
-    "capabilities": ["List Codex projects", "Read Codex conversations", "Start Codex tasks", "Continue Codex tasks"],
+    "capabilities": [
+      "List Codex projects",
+      "Read Codex conversations",
+      "Start Codex tasks",
+      "Continue Codex tasks"
+    ],
     "websiteURL": "https://codex-mcp-bridge.buidangminh23.chatgpt.site",
     "supportURL": "https://github.com/buidangminh23/codex-mcp-bridge/issues",
     "privacyPolicyURL": "https://github.com/buidangminh23/codex-mcp-bridge#hosted-data",

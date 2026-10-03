@@ -382,7 +382,7 @@ export async function runSitesConnector({ configFile, once = false, signal, ...d
   return new SitesConnector({ config, backend, journal, log: (state) => process.stderr.write(`[sites-connector] ${JSON.stringify(state)}\n`), ...dependencies }).run({ once, signal });
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && await fs.realpath(process.argv[1]).catch(() => null) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const flags = new Map();
   let invalid = false;

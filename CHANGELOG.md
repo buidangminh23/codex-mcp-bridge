@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.20.1] - 2026-10-03
+
+### Fixed
+
+- Start the Sites connector through symbolic installation paths, including the Windows NVM directory junction. Resolve the entry point before comparing it with the module path, so the installed command polls its paired Site instead of silently exiting.
+
 ## [1.20.0] - 2026-10-03
 
 ### Added

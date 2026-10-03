@@ -177,6 +177,8 @@ export function nativeDispatchParams({ executorThreadId, targetThreadId, message
   };
 }
 
+import { creationIdValid } from "./native-creation-receipts.mjs";
+
 const DESKTOP_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 
 function exactObject(value, keys) {
@@ -201,6 +203,9 @@ export function validateDesktopOperation(operation, args) {
   const modelSettings = () => optionalText(args.model) &&
     (args.thinking === undefined || DESKTOP_EFFORTS.has(args.thinking));
   switch (operation) {
+    case "get_creation_receipt":
+      valid = exactObject(args, ["receiptId", "requestHash"]) && creationIdValid(args.receiptId) && /^[a-f0-9]{64}$/.test(args.requestHash);
+      break;
     case "list_projects":
       valid = exactObject(args, []);
       break;
@@ -804,11 +809,12 @@ export class NativeDesktopRelay {
     return this.#request(request, timeoutMs, beforeSend);
   }
 
-  async requestDesktop(operation, args, { timeoutMs = this.timeoutMs, beforeSend, accountContext } = {}) {
+  async requestDesktop(operation, args, { timeoutMs = this.timeoutMs, beforeSend, accountContext, creationReceiptId } = {}) {
     validateDesktopOperation(operation, args);
     const accounts = relayAccountContext(accountContext);
     if (hardenedBridgeEnabled(this.env) && !accounts) throw beforeWriteError(new NativeRelayError("Hardened relay requires protocol 2 account context", "RELAY_BAD_REQUEST"));
-    return this.#request({ v: accounts ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION, operation, arguments: args, ...(accounts ? { accountContext: accounts } : {}) }, timeoutMs, beforeSend);
+    if (creationReceiptId !== undefined && (operation !== "create_thread" || !accounts || !creationIdValid(creationReceiptId))) throw beforeWriteError(new NativeRelayError("Invalid creation receipt binding", "RELAY_BAD_REQUEST"));
+    return this.#request({ v: accounts ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION, operation, arguments: args, ...(accounts ? { accountContext: accounts } : {}), ...(creationReceiptId ? { creationReceiptId } : {}) }, timeoutMs, beforeSend);
   }
 
   async #request(request, timeoutMs, beforeSend) {

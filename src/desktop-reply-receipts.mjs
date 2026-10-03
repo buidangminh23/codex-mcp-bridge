@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { creationRequestHash, creationIdValid } from "./native-creation-receipts.mjs";
 import { homeDir } from "./platform.mjs";
 
 const ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -69,6 +70,13 @@ export class DesktopReplyReceipts {
       if (receipt.version !== 1 || receipt.deliveryId !== id || !receipt.owner ||
           Object.keys(expected).some((key) => expected[key] !== receipt.owner[key])) throw new Error("Reply receipt belongs to another sender or account");
       const d = receipt.delivered;
+      if (d?.creationObservation) {
+        const c = d.creationObservation;
+        if (d.threadId !== null || d.previousTurnId !== null || !path.isAbsolute(d.cwd ?? "") ||
+            !creationIdValid(c.receiptId) || !/^[a-f0-9]{64}$/.test(c.receiptKey) || creationRequestHash(c.args) !== c.requestHash ||
+            c.accountContext?.claude !== expected.claude || c.accountContext?.codex !== expected.codex) throw new Error("Invalid creation observation binding");
+        return d;
+      }
       if (!d || typeof d.threadId !== "string" || !path.isAbsolute(d.cwd ?? "") ||
           !d.responseObservation || d.responseObservation.threadId !== d.threadId ||
           d.responseObservation.expectedCwd !== d.cwd || d.previousTurnId !== d.responseObservation.previousTurnId ||

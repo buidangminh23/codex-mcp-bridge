@@ -97,3 +97,10 @@ receipts and recent validation evidence.
 > normal host approvals; do not enable Remote Control.
 
 This brief supplies a workflow, not new project or tool authorization.
+
+
+After an uncertain Desktop creation, keep its `deliveryId` even when `threadId`
+is still null. Continue with `wait_codex_reply`; do not create again to obtain the
+ID. The updated companion retains late creation acknowledgements. If it reports
+unsupported `get_creation_receipt`, reload both bridge workers after installing
+the update; that compatibility check occurs before any new task is dispatched.

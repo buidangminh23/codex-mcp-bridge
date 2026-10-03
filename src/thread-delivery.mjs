@@ -2,6 +2,8 @@ import { NativeDesktopRelay, accountRelaySocketPath, desktopTaskSocketPath, desk
 import { runTurn } from "./turn.mjs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { creationRequestHash } from "./native-creation-receipts.mjs";
 import { DesktopTaskReceipts } from "./desktop-task-receipts.mjs";
 import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse, readCodexNativeCreationResponse } from "./codex-native-response.mjs";
 import { captureProjectScope, recheckProjectScope } from "./project-scope.mjs";
@@ -85,7 +87,7 @@ export class DesktopTaskDelivery {
     return inspected.projectScope;
   }
 
-  async request(operation, args, { deadline, includeRelayContext = false, scopeBinding, projectScope: expectedScope } = {}) {
+  async request(operation, args, { deadline, includeRelayContext = false, scopeBinding, creationReceiptId, projectScope: expectedScope } = {}) {
     try {
       await this.beforeRequest?.({ operation, args });
       if (scopeBinding) this.security.hardenedRoots.recheck(scopeBinding);
@@ -106,6 +108,7 @@ export class DesktopTaskDelivery {
           if (scopeBinding) this.security.hardenedRoots.recheck(scopeBinding);
         } } : {}),
         ...(accountContext ? { accountContext } : {}),
+        ...(creationReceiptId ? { creationReceiptId } : {}),
       });
       return includeRelayContext ? { result: response.result, executorThreadId: response.executorThreadId } : response.result;
     } catch (err) {
@@ -183,6 +186,10 @@ export class DesktopTaskDelivery {
       throw new Error(`The existing Desktop creation receipt ${receipt.threadId ? `for task ${receipt.threadId} ` : ""}${receipt.accountContext ? "belongs to different accounts" : "has no verified original account binding"}. Its receipt and task ID were retained. No creation or prompt resend was attempted; inspect the explicit existing task before continuing.`);
     }
     if (path.relative(cwd, realpathSync.native(receipt.cwd))) throw new Error("The stored Desktop creation receipt belongs to another workspace. No prompt was sent.");
+    if (receipt.state === "unknown" && includeReplyReceipt && receipt.deliveryId) return {
+      threadId: null, cwd, deliveryId: receipt.deliveryId, deliveryStatus: "unconfirmed", reused: true, name: receipt.name,
+      projectId: receipt.projectId, projectName: receipt.projectName, promptChanged: receipt.promptHash !== promptHash,
+    };
     if (receipt.state !== "known") throw new Error(`An earlier Desktop creation is ${receipt.state} and may already have started. ${receipt.threadId ? `threadId: ${receipt.threadId}. ` : ""}Do not resend or create another task; inspect the existing Desktop task and resolve its creation receipt first.`);
     let response;
     try {
@@ -236,7 +243,7 @@ export class DesktopTaskDelivery {
     return { projectId: project.projectId, projectName: project.label, projectAssignmentStatus: "verified" };
   }
 
-  async create({ cwd, prompt, name, dedupeName = name, requestId, model, effort, onAccepted, deadline = this.now() + DESKTOP_TOOL_BUDGET_MS }) {
+  async create({ cwd, prompt, name, dedupeName = name, requestId, model, effort, onAccepted, onPrepared, deadline = this.now() + DESKTOP_TOOL_BUDGET_MS }) {
     this.security.assertCwd(cwd);
     const projectScope = this.senderProjectScope(cwd);
     cwd = realpathSync.native(cwd);
@@ -246,7 +253,7 @@ export class DesktopTaskDelivery {
     const identity = this.receipts.key({ cwd, prompt, name: dedupeName, requestId });
     const accountContext = this.accountContext?.();
     if (this.accountContext && !accountContext) throw new Error("Desktop creation requires the original verified account context.");
-    const options = { cwd, promptHash: identity.promptHash, deadline, accountContext, includeReplyReceipt: Boolean(onAccepted) };
+    const options = { cwd, promptHash: identity.promptHash, deadline, accountContext, includeReplyReceipt: Boolean(onAccepted || onPrepared) };
     const reused = await this.reuseReceipt(await this.receipts.read(identity.key), options);
     if (reused) return reused;
     const listed = await this.request("list_projects", {}, { deadline });
@@ -257,15 +264,26 @@ export class DesktopTaskDelivery {
       if (existing) return existing;
       if (this.now() >= deadline) throw new Error("The response deadline elapsed before Desktop creation. No task was created.");
       const receipt = { version: 1, ...identity, cwd, state: "pending", startedAt: this.now(), ...(accountContext ? { accountContext: { ...accountContext } } : {}), ...(dedupeName ? { name: dedupeName } : {}), projectId: project.projectId, ...(project.label ? { projectName: project.label } : {}) };
+      const creationArgs = { prompt, title: name,
+        target: { type: "project", projectId: project.projectId, environment: { type: "local" } },
+        ...(model ? { model } : {}), ...(effort ? { thinking: effort } : {}) };
+      const creationReceiptId = onPrepared ? randomUUID() : undefined;
+      if (onPrepared) {
+        // Feature-detect before mutation; old companions refuse this read-only
+        // probe. Never create first and discover missing recovery afterwards.
+        if (!accountContext) throw new Error("Creation continuation requires verified accounts");
+        const requestHash = creationRequestHash(creationArgs);
+        const probe = await this.request("get_creation_receipt", { receiptId: creationReceiptId, requestHash }, { deadline });
+        if (probe?.status !== "missing") throw new Error("Native creation receipt capability could not be confirmed; no task was created");
+        receipt.deliveryId = onPrepared({ threadId: null, cwd, previousTurnId: null, deliveryStatus: "unconfirmed",
+          creationObservation: { receiptId: creationReceiptId, requestHash, receiptKey: identity.key, args: creationArgs, accountContext: { ...accountContext } } });
+      }
       await this.receipts.write(identity.key, receipt);
       let threadId;
       let creationConfirmed = false;
       try {
-        const envelope = await this.request("create_thread", {
-          prompt, title: name,
-          target: { type: "project", projectId: project.projectId, environment: { type: "local" } },
-          ...(model ? { model } : {}), ...(effort ? { thinking: effort } : {}),
-        }, { deadline, projectScope, scopeBinding, includeRelayContext: true });
+        const envelope = await this.request("create_thread", creationArgs,
+          { deadline, projectScope, scopeBinding, creationReceiptId, includeRelayContext: true });
         const response = envelope.result;
         const confirmedId = response?.threadId ?? response?.conversationId;
         threadId = confirmedId;
@@ -282,7 +300,7 @@ export class DesktopTaskDelivery {
             accountContext: accountContext ? { ...accountContext } : null,
           },
         };
-        const deliveryId = onAccepted?.(delivered);
+        const deliveryId = receipt.deliveryId ?? onAccepted?.(delivered);
         if (deliveryId) {
           await this.receipts.write(identity.key, { ...receipt, state: "known", threadId, deliveryId });
           created.deliveryId = deliveryId;
@@ -290,9 +308,47 @@ export class DesktopTaskDelivery {
         return created;
       } catch (err) {
         if (!creationConfirmed) await this.receipts.write(identity.key, { ...receipt, state: "unknown", ...(typeof threadId === "string" && threadId ? { threadId } : {}) }).catch(() => {});
+        const cause = err.cause ?? err;
+        if (receipt.deliveryId && cause.reachedCompanion === true && ["RELAY_TIMEOUT", "RELAY_DELIVERY_UNCONFIRMED"].includes(cause.code)) {
+          return { threadId: null, cwd, name, projectId: project.projectId, projectName: project.label, deliveryStatus: "unconfirmed", deliveryId: receipt.deliveryId };
+        }
         throw new Error(`${err.message}. ${threadId ? `threadId: ${threadId}. ` : ""}Do not resend the prompt. The creation receipt blocks duplicate tasks even after a bridge restart.`, { cause: err });
       }
     });
+  }
+
+  async resolveCreation(delivered, { deadline = this.now() + DESKTOP_TOOL_BUDGET_MS } = {}) {
+    const binding = delivered.creationObservation;
+    if (!binding) return delivered;
+    for (;;) {
+      if (this.now() >= deadline) return null;
+      this.security.assertCwd(delivered.cwd);
+      this.senderProjectScope(delivered.cwd);
+      if (!sameAccountContext(binding.accountContext, this.accountContext?.())) throw new Error("Creation receipt account changed");
+      const receipt = await this.receipts.read(binding.receiptKey);
+      if (!receipt || !sameAccountContext(receipt.accountContext, binding.accountContext) || receipt.cwd !== delivered.cwd ||
+          receipt.promptHash !== this.receipts.key({ cwd: delivered.cwd, prompt: binding.args.prompt }).promptHash) throw new Error("Original creation receipt binding changed");
+      let envelope;
+      try { envelope = await this.request("get_creation_receipt", { receiptId: binding.receiptId, requestHash: binding.requestHash }, { deadline, includeRelayContext: true }); }
+      catch (error) { if (this.now() >= deadline && ["RELAY_TIMEOUT", "RELAY_UNREACHABLE"].includes(error.cause?.code)) return null; throw error; }
+      const row = envelope.result;
+      if (row?.status === "completed") {
+        const response = row.result, threadId = response?.threadId;
+        if (typeof threadId !== "string" || !threadId.trim() || response.hostId !== "local" || response.status === "outcome-unknown" ||
+            response.firstTurn && response.firstTurn.status !== "accepted" || receipt.threadId && receipt.threadId !== threadId) throw new Error("Native creation is not confirmed; do not resend");
+        let inspected;
+        try { inspected = await this.inspect(threadId, delivered.cwd, { deadline }); }
+        catch (error) { if (this.now() >= deadline && /deadline|within \d+ms/.test(error.message)) return null; throw error; }
+        if (inspected.executorThreadId !== envelope.executorThreadId) throw new Error("Native creation executor changed");
+        this.security.registerThread(threadId);
+        return { threadId, cwd: delivered.cwd, previousTurnId: null, deliveryStatus: "accepted",
+          responseObservation: { operation: "create_thread", threadId, previousTurnId: null, expectedCwd: delivered.cwd,
+            executorThreadId: envelope.executorThreadId, prompt: binding.args.prompt, accountContext: binding.accountContext } };
+      }
+      if (row?.status === "failed") throw new Error(`Native creation remains unconfirmed: ${row.error?.message ?? "unknown failure"}. Do not resend.`);
+      if (!["missing", "pending"].includes(row?.status)) throw new Error("Invalid native creation receipt response");
+      await this.sleep(Math.min(1000, Math.max(0, deadline - this.now())));
+    }
   }
 
   async inspect(threadId, cwd, { deadline } = {}) {

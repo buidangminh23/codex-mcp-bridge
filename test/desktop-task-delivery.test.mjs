@@ -802,3 +802,35 @@ describe("Desktop creation receipts and deadlines", () => {
     assert.equal(dispatched, false);
   });
 });
+
+it("publishes creation continuation before dispatch and resolves late confirmation without creating twice", async t => {
+  const accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
+  let prepared, complete = false;
+  const f = fixture(t, { accountContext: () => accounts, dispatch({ operation, options }) {
+    if (operation === "get_creation_receipt") return complete ? { status: "completed", result: { threadId: "late-task", hostId: "local", firstTurn: { status: "accepted" } } } : { status: "missing" };
+    if (operation === "create_thread") {
+      assert.equal(prepared.threadId, null);
+      assert.equal(options.creationReceiptId, prepared.creationObservation.receiptId);
+      throw Object.assign(Error("ack lost"), { code: "RELAY_TIMEOUT", reachedCompanion: true });
+    }
+  } });
+  const id = randomUUID(), requestId = randomUUID();
+  const created = await f.delivery.create({ cwd: f.cwd, prompt: "original", requestId,
+    onPrepared: d => { prepared = d; return id; } });
+  assert.equal(created.deliveryId, id); assert.equal(created.threadId, null);
+  const retry = await f.createDelivery().create({ cwd: f.cwd, prompt: "edited", requestId, onPrepared: () => { throw Error("duplicate preparation"); } });
+  assert.equal(retry.deliveryId, id); assert.equal(retry.promptChanged, true);
+  complete = true;
+  const resolved = await f.createDelivery().resolveCreation(prepared);
+  assert.equal(resolved.threadId, "late-task");
+  assert.equal(resolved.responseObservation.prompt, "original");
+  assert.equal(resolved.responseObservation.executorThreadId, "executor-thread");
+  assert.equal(f.calls.filter(c => c.operation === "create_thread").length, 1);
+});
+it("refuses local recoverable creation before mutation when the relay lacks receipt support", async t => {
+  const f = fixture(t, { accountContext: () => ({ claude: "a", codex: "b" }), dispatch({ operation }) {
+    if (operation === "get_creation_receipt") throw Error("unsupported operation");
+  } });
+  await assert.rejects(f.delivery.create({ cwd: f.cwd, prompt: "test", onPrepared: () => randomUUID() }), /unsupported/);
+  assert.equal(f.calls.some(c => c.operation === "create_thread"), false);
+});

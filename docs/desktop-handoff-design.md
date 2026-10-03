@@ -148,3 +148,26 @@ updates. Creation and recovery callbacks still await this branch's asynchronous
 sender verification before any UI action. A regression checks rejection both
 before opening and between opening and automatic trust/submission. No installed
 runtime or client configuration was replaced for this merge.
+
+
+### Native creation acknowledgement continuation
+
+Local Desktop creation probes the companion's `get_creation_receipt` capability
+before mutation. An older companion refuses the probe before a task is created;
+reload both installed workers after upgrading. Hosted callers retain their
+existing creation contract and receive no local observation binding.
+
+The caller persists an owner/account-bound delivery ID before dispatch. The
+companion reserves a separate unpredictable native receipt ID with the exact
+creation arguments, their canonical hash, accounts and executor. It keeps the
+result after the caller socket times out. `wait_codex_reply` queries that receipt
+without another creation and verifies current accounts, project scope, the native
+task directory and the exact initial creation response before releasing text.
+Duplicate native receipt IDs never dispatch again. A prompt edited on retry
+cannot replace the original observation binding.
+
+This is recovery of a late acknowledgement, not reconstruction by title or by
+scanning unrelated conversations. If the native operation itself never confirms,
+or the companion crashes before persisting its result, the outcome remains
+unknown and automatic re-creation remains blocked. Receipts made by earlier
+versions without this binding cannot be retroactively recovered by guessing.

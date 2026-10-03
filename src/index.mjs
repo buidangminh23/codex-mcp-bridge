@@ -206,10 +206,16 @@ async function delegateDesktopTask({ cwd, prompt, name, requestId, model, effort
   const created = await desktopTasks.create({
     cwd: workspace.path, prompt, name: threadNameFor({ cwd: workspace.path, prompt, name }),
     dedupeName: name ?? "", requestId, model: model ?? DEFAULT_MODEL, effort: effort ?? DEFAULT_EFFORT, deadline,
-    onAccepted: (delivered) => replyReceipts.create(delivered, desktopOperation.getStore()),
+    onPrepared: (delivered) => replyReceipts.create(delivered, desktopOperation.getStore()),
   });
   const deliveryId = created.deliveryId;
-  const delivered = deliveryId ? replyReceipts.read(deliveryId, desktopOperation.getStore()) : null;
+  let delivered = deliveryId ? replyReceipts.read(deliveryId, desktopOperation.getStore()) : null;
+  if (delivered?.creationObservation) {
+    const resolved = await desktopTasks.resolveCreation(delivered, { deadline });
+    if (!resolved) return replyResult(delivered, deliveryId, { threadId: null, status: "timeout", responseStatus: "unavailable", text: "" }, ["Creation acknowledgement pending; do not create again."]);
+    delivered = resolved;
+    created.threadId = resolved.threadId;
+  }
   const notes = [];
   if (workspace.note) notes.push(workspace.note);
   if (openInApp ?? DEFAULT_OPEN_IN_APP) {
@@ -699,7 +705,12 @@ registerTool(
   async ({ deliveryId }) => {
     if (!desktopTasksEnabled) return failure(new Error("Reply continuations require Desktop native delivery"));
     const context = desktopOperation.getStore();
-    const delivered = replyReceipts.read(deliveryId, context);
+    let delivered = replyReceipts.read(deliveryId, context);
+    if (delivered.creationObservation) {
+      const resolved = await desktopTasks.resolveCreation(delivered, { deadline: context.deadline });
+      if (!resolved) return replyResult(delivered, deliveryId, { threadId: null, status: "timeout", responseStatus: "unavailable", text: "" });
+      delivered = resolved;
+    }
     const { threadId } = delivered;
     const expired = () => replyResult(delivered, deliveryId, { threadId, status: "timeout", responseStatus: "unavailable", text: "" });
     return desktopTasks.withThread(threadId, async () => {

@@ -16,7 +16,7 @@
     "developerName": "Bui Dang Minh",
     "category": "Developer Tools",
     "capabilities": ["List Codex projects", "Read Codex conversations", "Start Codex tasks", "Continue Codex tasks"],
-    "websiteURL": "https://codex-mcp-bridge.minhspark.chatgpt.site",
+    "websiteURL": "https://codex-mcp-bridge.buidangminh23.chatgpt.site",
     "supportURL": "https://github.com/buidangminh23/codex-mcp-bridge/issues",
     "privacyPolicyURL": "https://github.com/buidangminh23/codex-mcp-bridge#hosted-data",
     "termsOfServiceURL": "https://github.com/buidangminh23/codex-mcp-bridge/blob/main/LICENSE"

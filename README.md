@@ -30,7 +30,7 @@ The image below is an hourly snapshot. Each metric shows its source time and rep
 
 ### ChatGPT plugin
 
-[Open Codex Bridge](https://codex-mcp-bridge.minhspark.chatgpt.site) to connect ChatGPT to **your own computer**. Each ChatGPT account pairs its own connector and can access only the local project directories selected during setup. Native Desktop mode supports Windows and macOS. Keep Codex Desktop and the connector running.
+[Open Codex Bridge](https://codex-mcp-bridge.buidangminh23.chatgpt.site) to connect ChatGPT to **your own computer**. Each ChatGPT account pairs its own connector and can access only the local project directories selected during setup. Native Desktop mode supports Windows and macOS. Keep Codex Desktop and the connector running.
 
 Install Node.js 22+, sign in to Codex Desktop and Claude Desktop, and save the intended project in Codex Desktop. The connector pins both local account identities and stops if either account changes. Install the native relay using the platform instructions below, then pair:
 
@@ -39,7 +39,7 @@ Windows PowerShell:
 ```powershell
 npm.cmd install -g @minhspark/codex-mcp-bridge@latest
 codex-native-relay-install.cmd --desktop-tasks
-codex-sites-connector.cmd --pair --site https://codex-mcp-bridge.minhspark.chatgpt.site --roots "C:\Projects\YourProject"
+codex-sites-connector.cmd --pair --site https://codex-mcp-bridge.buidangminh23.chatgpt.site --roots "C:\Projects\YourProject"
 ```
 
 macOS Terminal:
@@ -47,12 +47,12 @@ macOS Terminal:
 ```bash
 npm install -g @minhspark/codex-mcp-bridge@latest
 codex-native-relay-install --desktop-tasks
-codex-sites-connector --pair --site https://codex-mcp-bridge.minhspark.chatgpt.site --roots "$HOME/YourProject"
+codex-sites-connector --pair --site https://codex-mcp-bridge.buidangminh23.chatgpt.site --roots "$HOME/YourProject"
 ```
 
 Open the pairing URL printed in the terminal, sign in with the ChatGPT account that will use the plugin, and choose **Connect this computer**. The Site owner can install its provisioned plugin from **Plugins → Personal → Created by you**. To restart an already paired connector, run `codex-sites-connector` (`codex-sites-connector.cmd` on Windows). To replace the paired computer, use **Disconnect existing computer** on a fresh pairing page first.
 
-The public MCP endpoint is `https://codex-mcp-bridge.minhspark.chatgpt.site/mcp`; it uses Sign in with ChatGPT. A plugin compatibility ZIP is attached to the [1.20.0 release](https://github.com/buidangminh23/codex-mcp-bridge/releases/tag/v1.20.0) for manual import in clients that support plugin packages. ChatGPT personal accounts cannot share their Sites-provisioned plugin directly by invitation or share link. A public directory listing requires verified developer identity and OpenAI review; this release does not claim directory approval. See [OpenAI's Sites plugin access rules](https://help.openai.com/en/articles/20001547-hosting-a-plugin-with-chatgpt-sites).
+The public MCP endpoint is `https://codex-mcp-bridge.buidangminh23.chatgpt.site/mcp`; it uses Sign in with ChatGPT. A plugin compatibility ZIP is attached to the [1.20.0 release](https://github.com/buidangminh23/codex-mcp-bridge/releases/tag/v1.20.0) for manual import in clients that support plugin packages. ChatGPT personal accounts cannot share their Sites-provisioned plugin directly by invitation or share link. A public directory listing requires verified developer identity and OpenAI review; this release does not claim directory approval. See [OpenAI's Sites plugin access rules](https://help.openai.com/en/articles/20001547-hosting-a-plugin-with-chatgpt-sites).
 
 Use a semicolon between multiple Windows roots or a colon on macOS. The relay's executor must belong to an allowed project. Credentials and operation receipts stay in the current OS user's private `~/.codex/sites-bridge` directory. The connector uses outbound HTTPS; no public port or tunnel is required.
 

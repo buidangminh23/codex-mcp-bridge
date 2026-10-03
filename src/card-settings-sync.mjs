@@ -64,10 +64,17 @@ export function syncCardSettings(policyFile, input, options = {}) {
     if (!Array.isArray(priorRenders) || priorRenders.length > 16 || priorRenders.some(v => !/^[a-f0-9]{64}$/.test(v))) throw new Error('Invalid settings render acknowledgement');
     const rendered = saved && (equal(page, normalize(saved.target)) || priorRenders.includes(pageHash(page)));
     const changed = !equal(page, previous);
-    const conflict = saved && changed && !rendered && (saved.renderOverflow || current !== saved.authorizationFingerprint);
+    // Reinstalling the extension resets its page to blank while this acknowledgement
+    // survives, so a blank page cannot be told apart from "remove everything". Treat
+    // it like a first page: import the current lists and revoke nothing. A last
+    // project can still be revoked explicitly through the exclusion list.
+    const blank = Object.values(page).every(list => list.length === 0);
+    const reset = saved && changed && blank && !rendered && !options.acknowledgeRender;
+    const conflict = saved && changed && !rendered && !reset && (saved.renderOverflow || current !== saved.authorizationFingerprint);
     const warnings = [];
     if (conflict) warnings.push('通信授权刚被其他入口修改，本次页面更改未应用；先同步最新页面，再修改。');
-    if (changed && !rendered && !conflict && !options.acknowledgeRender) {
+    if (reset) warnings.push('通信页面为空，未撤销任何授权，已按现有授权重新填充。确需撤销，请把项目移入通信禁止列表后保存。');
+    if (changed && !rendered && !conflict && !reset && !options.acknowledgeRender) {
       // Removing a displayed exclusion is an explicit UI action. A new grant
       // never implicitly removes an exclusion that the page has not shown.
       const removedExclusions = previous.excluded.filter(p => !includes(page.excluded, p));
@@ -110,7 +117,7 @@ export function syncCardSettings(policyFile, input, options = {}) {
     policy.uiAdapters ??= {};
     policy.uiAdapters.localCardDesktop = { version: 1, page, target, authorizationFingerprint: fingerprint(policy),
       renderTargets: renderTargets.slice(-16), renderOverflow: !acknowledged && (saved?.renderOverflow === true || renderTargets.length > 16) };
-    result = { status: conflict ? 'conflict_preserved' : 'synchronized', target,
+    result = { status: conflict ? 'conflict_preserved' : reset ? 'blank_page_imported' : 'synchronized', target,
       needsPageUpdate: !equal(page, target), warnings, authorizationChanged: current !== fingerprint(policy),
       detail: 'Only messaging lists were reconciled. Card grants and workspace trust are unchanged.' };
   });

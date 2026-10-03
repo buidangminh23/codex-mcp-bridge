@@ -105,8 +105,37 @@ test('aliased native page paths revoke canonical projects and remove parent gran
   f.sync({ projects: [aliasA], parents: [], excluded: [] });
   assert.equal(createProjectScope(f.file).allows(f.b), false);
   assert.equal(createProjectScope(f.file).allows(f.a), true);
-  const removed = f.sync(empty());
+  const removed = f.sync({ ...empty(), excluded: [aliasA] });
   assert.deepEqual(removed.target.excluded, [fs.realpathSync.native(f.a)]);
+  assert.equal(createProjectScope(f.file).allows(f.a), false);
+});
+
+test('blank page after an extension reinstall imports grants instead of revoking them', t => {
+  const f = fixture(t); const c = fs.mkdtempSync(path.join(f.root, 'c-'));
+  f.sync({ ...empty(), projects: [f.a, f.b] });
+  f.sync({ projects: [f.a, f.b], parents: [f.root], excluded: [] });
+  f.edit('revoke', c); f.sync(f.sync({ projects: [f.a, f.b], parents: [f.root], excluded: [] }).target);
+  const before = f.read();
+  const result = f.sync(empty());
+  assert.equal(result.status, 'blank_page_imported');
+  assert.equal(result.authorizationChanged, false);
+  assert.equal(result.needsPageUpdate, true);
+  assert.equal(result.warnings.length, 1);
+  assert.deepEqual(f.read().grants, before.grants); assert.deepEqual(f.read().denies, before.denies);
+  assert.equal(createProjectScope(f.file).allows(f.a), true);
+  assert.equal(createProjectScope(f.file).allows(c), false);
+  // The extension then writes the target back into the page; that save changes nothing.
+  const refilled = f.sync(result.target);
+  assert.equal(refilled.authorizationChanged, false); assert.equal(refilled.needsPageUpdate, false);
+  assert.deepEqual(refilled.target, result.target);
+});
+
+test('revoking the last project goes through the exclusion list', t => {
+  const f = fixture(t); f.sync({ ...empty(), projects: [f.a] });
+  assert.equal(f.sync(empty()).authorizationChanged, false);
+  assert.equal(createProjectScope(f.file).allows(f.a), true);
+  const page = f.sync(f.sync(empty()).target).target;
+  f.sync({ ...page, projects: [], excluded: [f.a] });
   assert.equal(createProjectScope(f.file).allows(f.a), false);
 });
 

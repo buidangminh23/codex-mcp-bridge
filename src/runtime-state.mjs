@@ -6,7 +6,7 @@ import path from "node:path";
 export function createRuntimeState({ directory = path.dirname(fileURLToPath(import.meta.url)), configuration = () => null } = {}) {
   const fingerprint = () => {
     const hash = createHash("sha256");
-    for (const file of ["../package.json", ...readdirSync(directory).filter((file) => file.endsWith(".mjs")).sort()]) {
+    for (const file of ["../package.json", ...readdirSync(directory).filter((file) => /\.(?:mjs|ps1)$/.test(file)).sort()]) {
       hash.update(file).update("\0").update(readFileSync(path.join(directory, file))).update("\0");
     }
     return hash.digest("hex");

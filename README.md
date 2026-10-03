@@ -22,11 +22,53 @@ Starring the repository or downloading/installing a package does not subscribe y
 
 **[Open live dashboard — refreshes every 30 seconds](https://buidangminh23.github.io/codex-mcp-bridge/)**
 
+The image below is an hourly snapshot. Each metric shows its source time and reporting window; delayed sources are marked stale. The live dashboard refreshes independently.
+
 [![Repository usage dashboard](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/dashboard.svg)](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics)
 
 [Full statistics and daily history](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics) · [Public aggregate JSON](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/data.json) · [How these metrics work](#repository-analytics)
 
 ## Installation
+
+### ChatGPT plugin
+
+[Open Codex Bridge](https://codex-mcp-bridge.buidangminh23.chatgpt.site) to connect ChatGPT to **your own computer**. Each ChatGPT account pairs its own connector and can access only the local project directories selected during setup. Native Desktop mode supports Windows and macOS. Keep Codex Desktop and the connector running.
+
+Install Node.js 22+, sign in to Codex Desktop and Claude Desktop, and save the intended project in Codex Desktop. The connector pins both local account identities and stops if either account changes. Install the native relay using the platform instructions below, then pair:
+
+Windows PowerShell:
+
+```powershell
+npm.cmd install -g @minhspark/codex-mcp-bridge@latest
+codex-native-relay-install.cmd --desktop-tasks
+codex-sites-connector.cmd --pair --site https://codex-mcp-bridge.buidangminh23.chatgpt.site --roots "C:\Projects\YourProject"
+```
+
+macOS Terminal:
+
+```bash
+npm install -g @minhspark/codex-mcp-bridge@latest
+codex-native-relay-install --desktop-tasks
+codex-sites-connector --pair --site https://codex-mcp-bridge.buidangminh23.chatgpt.site --roots "$HOME/YourProject"
+```
+
+Open the pairing URL printed in the terminal, sign in with the ChatGPT account that will use the plugin, and choose **Connect this computer**. The Site owner can install its provisioned plugin from **Plugins → Personal → Created by you**. To restart an already paired connector, run `codex-sites-connector` (`codex-sites-connector.cmd` on Windows). To replace the paired computer, use **Disconnect existing computer** on a fresh pairing page first.
+
+The public MCP endpoint is `https://codex-mcp-bridge.buidangminh23.chatgpt.site/mcp`; it uses Sign in with ChatGPT. A plugin compatibility ZIP is attached to the [1.20.1 release](https://github.com/buidangminh23/codex-mcp-bridge/releases/tag/v1.20.1) for manual import in clients that support plugin packages. ChatGPT personal accounts cannot share their Sites-provisioned plugin directly by invitation or share link. A public directory listing requires verified developer identity and OpenAI review; this release does not claim directory approval. See [OpenAI's Sites plugin access rules](https://help.openai.com/en/articles/20001547-hosting-a-plugin-with-chatgpt-sites).
+
+Use a semicolon between multiple Windows roots or a colon on macOS. The relay's executor must belong to an allowed project. Credentials and operation receipts stay in the current OS user's private `~/.codex/sites-bridge` directory. The connector uses outbound HTTPS; no public port or tunnel is required.
+
+The plugin can list projects, read conversations, create an authorized task, and continue an existing task. Requests return an operation ID; read its result before sending more work. An uncertain send is never automatically repeated. Disconnecting blocks future dispatch and cancels queued work; tasks already sent to Desktop keep running. Linux/WSL users can use the existing CLI bridge below; the hosted connector requires native Codex Desktop.
+
+The hosted Worker source and database migrations are in `sites/codex-bridge`. The portable `plugin.json`, `mcp.json`, compatibility manifest, and workflow skill are included in the npm package and this repository. The plugin ZIP has its portable manifest directly at the archive root.
+
+#### Hosted data
+
+The hosted service is operated by Bui Dang Minh and runs on OpenAI Sites. Sign in with ChatGPT supplies a Site-scoped user identifier; the Worker uses it to bind a connector and isolate each account's operation records. The Worker does not use profile names or email addresses. OpenAI handles sign-in and hosting independently.
+
+The database stores the account identifier, a connector identifier and token hash, connection timestamps, requested tool arguments (including task prompts), and the returned Desktop results. These records support polling and duplicate-send prevention. The service operator can access this database. Data is sent only to the paired computer and returned to the requesting account through the authenticated service. A local connector stores its credentials, account fingerprints and operation receipts in the OS user's private configuration directory.
+
+Requests expire for dispatch after two minutes. Expiry is not data deletion: operation records remain stored to preserve dispatch history. Disconnecting revokes the device token and cancels undispatched work; it does not erase operation history or stop tasks already running in Desktop. For deletion or privacy requests, contact the operator through the repository's support link, without posting private prompts, account credentials or conversation content in a public issue. No advertising or analytics collection is implemented by this hosted Worker.
 
 ### GitHub Packages
 
@@ -344,7 +386,7 @@ For unresolved failures, [open an issue](https://github.com/buidangminh23/codex-
 
 ## Repository analytics
 
-The live dashboard polls the aggregate API every 30 seconds. Installation counts reflect reports received by the server; this is not a count of currently online processes. Public GitHub/npm sources are refreshed with a short cache, but their own statistics may be delayed. GitHub Actions refreshes and archives statistics hourly through the `Repository analytics` workflow, including private GitHub traffic; scheduled runs may be delayed by GitHub. That workflow reads GitHub traffic with the `ANALYTICS_TOKEN` repository secret, a token with push access to this repository (fine-grained: Administration read); the default workflow token cannot read GitHub traffic, so without it the views/clones sources are retained from the last successful run and the run is reported as incomplete while the Pages deployment still succeeds. The `analytics` branch is written with the workflow's own token, so its commits come from `github-actions[bot]` and `ANALYTICS_TOKEN` needs no write access. The README image is a snapshot and may be cached by GitHub; open the live dashboard for automatic updates. Source timestamps show freshness; missing data is unavailable, not zero. Only aggregate figures are published. Installation IDs stay in the private database.
+The live dashboard polls the aggregate API every 30 seconds. Installation counts reflect reports received by the server; this is not a count of currently online processes. Public GitHub/npm sources are refreshed with a short cache, but their own statistics may be delayed. GitHub Actions refreshes and archives statistics hourly through the `Repository analytics` workflow, including private GitHub traffic; scheduled runs may be delayed by GitHub. Data collection and publication to the `analytics` branch run independently of the Pages deployment environment, and a newer scheduled run replaces a stuck older run. That workflow reads GitHub traffic with the `ANALYTICS_TOKEN` repository secret, a token with push access to this repository (fine-grained: Administration read); the default workflow token cannot read GitHub traffic, so without it the views/clones sources are retained from the last successful run and the run is reported as incomplete. The `analytics` branch is written with the workflow's own token, so its commits come from `github-actions[bot]` and `ANALYTICS_TOKEN` needs no write access. The README image is a snapshot and may be cached by GitHub; open the live dashboard for automatic updates. Each source keeps its own collection time and reporting window. Sources older than three hours are marked stale even when polling succeeds. Missing data is unavailable, not zero; an empty usage breakdown means no opted-in reports in that period. Only aggregate figures are published. Installation IDs stay in the private database.
 
 Repository owners can view [GitHub traffic](https://github.com/buidangminh23/codex-mcp-bridge/graphs/traffic) for recent views and clones. Downloads and clones include updates, reinstalls, and automation; they do not measure active users. GitHub traffic only covers the recent 14-day window, so collect it regularly to keep a longer history.
 

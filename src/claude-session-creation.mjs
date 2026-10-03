@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const REQUEST_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32,128})$/i;
-const PENDING = new Set(["awaiting_user", "launch_uncertain", "ambiguous", "awaiting_project_confirmation"]);
+const PENDING = new Set(["awaiting_user", "awaiting_session", "submission_uncertain", "launch_uncertain", "ambiguous", "awaiting_project_confirmation"]);
 const STATUSES = new Set([...PENDING, "created", "abandoned"]);
 const MAX_REQUESTS = 32;
 const MAX_TASKS = 8192;
@@ -35,6 +35,8 @@ function augmentedPrompt(prompt, requestId) {
 
 function matchesInitialMessage(text, expected) {
   if (text === expected) return true;
+  const normalized = (value) => typeof value === "string" ? value.replace(/\r\n/g, "\n").split("\n").filter((line) => line !== "").join("\n") : null;
+  if (normalized(text) === normalized(expected)) return true;
   if (typeof text !== "string" || !/^<system-reminder>\r?\nThe user started this session without choosing a project folder,/.test(text)) return false;
   const closing = text.indexOf("</system-reminder>");
   if (closing < 0 || closing > 32768) return false;
@@ -42,7 +44,7 @@ function matchesInitialMessage(text, expected) {
   if (body.includes("<system-reminder") || body.includes("</system-reminder")) return false;
   const suffix = text.slice(closing + "</system-reminder>".length);
   const separator = /^\r?\n\r?\n/.exec(suffix);
-  return separator !== null && suffix.slice(separator[0].length) === expected;
+  return separator !== null && normalized(suffix.slice(separator[0].length)) === normalized(expected);
 }
 
 function receipt(request) {
@@ -58,7 +60,7 @@ function receipt(request) {
 }
 
 export class ClaudeSessionCreation {
-  constructor({ open, listTasks, listSessions, readContext, readTranscript, readAccount, assertProcess, realpath = (directory) => {
+  constructor({ open, submit, trust, settle = async () => {}, listTasks, listSessions, readContext, readTranscript, readAccount, assertProcess, realpath = (directory) => {
     const canonical = fs.realpathSync.native(directory);
     if (!fs.statSync(canonical).isDirectory()) throw new Error("Not a directory");
     return canonical;
@@ -66,7 +68,7 @@ export class ClaudeSessionCreation {
     for (const [name, dependency] of Object.entries({ open, listTasks, listSessions, readContext, readTranscript, readAccount, assertProcess, realpath })) {
       if (typeof dependency !== "function") throw new TypeError(`${name} must be a function`);
     }
-    Object.assign(this, { open, listTasks, listSessions, readContext, readTranscript, readAccount, assertProcess, realpath, platform });
+    Object.assign(this, { open, submit, trust, settle, listTasks, listSessions, readContext, readTranscript, readAccount, assertProcess, realpath, platform });
     this.requests = new Map();
     this.queue = Promise.resolve();
   }
@@ -97,7 +99,7 @@ export class ClaudeSessionCreation {
     return pending;
   }
 
-  async startLocked({ requestId, cwd, prompt, account, senderThreadId, beforeOpen }) {
+  async startLocked({ requestId, cwd, prompt, account, senderThreadId, beforeOpen, autoSubmit = false, trustProject = false }) {
     if (!REQUEST_ID.test(requestId ?? "") || typeof requestId !== "string") fail("CLAUDE_CREATION_REQUEST_INVALID", "requestId must be a UUID or 32–128 hexadecimal characters.");
     if (!string(senderThreadId, 256)) fail("CLAUDE_CREATION_SENDER_INVALID", "A verified sender thread identity is required.");
     const identity = await this.checkAccount(account);
@@ -108,11 +110,17 @@ export class ClaudeSessionCreation {
       if (!sameAccount(identity, prior.account) || prior.senderThreadId !== senderThreadId || !this.sameCwd(prior.cwd, canonical) || prior.prompt !== prompt) {
         fail("CLAUDE_CREATION_REQUEST_CONFLICT", "This requestId is already bound to a different creation payload.");
       }
+      if (autoSubmit && !prior.submissionAttempted && ["awaiting_user", "launch_uncertain"].includes(prior.status)) {
+        const observed = await this.inspect(requestId, { account, senderThreadId });
+        if (observed.promptSubmitted) return observed;
+        return this.completeRequest(prior, { account, senderThreadId, beforeOpen, trustProject });
+      }
       return receipt(prior);
     }
     if (this.requests.size >= MAX_REQUESTS) fail("CLAUDE_CREATION_LIMIT", "The creation receipt limit has been reached; existing requests remain available for inspection.");
     for (const existing of this.requests.values()) {
-      if (sameAccount(existing.account, identity) && PENDING.has(existing.status)) fail("CLAUDE_CREATION_PENDING", "A creation request is already pending for this account; inspect or explicitly abandon that request before opening another project in the shared composer.");
+      const composerReleased = existing.status === "awaiting_project_confirmation" && existing.submissionObserved === true;
+      if (sameAccount(existing.account, identity) && PENDING.has(existing.status) && !composerReleased) fail("CLAUDE_CREATION_PENDING", "A creation request is already pending for this account; inspect or explicitly abandon that request before opening another project in the shared composer.");
     }
     const tasks = await this.listTasks(account);
     if (!Array.isArray(tasks) || tasks.length > MAX_TASKS || tasks.some((task) => !string(task?.taskId, 256) || (task.fileTaskId !== undefined && task.fileTaskId !== task.taskId))) fail("CLAUDE_CREATION_TASKS_INVALID", "The existing native task baseline cannot be verified.");
@@ -122,6 +130,8 @@ export class ClaudeSessionCreation {
       try { if (this.sameCwd(await this.canonical(task.cwd), canonical)) existingProject = true; } catch {}
     }
     if (!existingProject) fail("CLAUDE_CREATION_PROJECT_NOT_FOUND", "The canonical directory must already belong to a nonarchived Claude Desktop task.");
+    if (autoSubmit && typeof this.submit !== "function") fail("CLAUDE_CREATION_SUBMIT_UNAVAILABLE", "Native composer submission is not available.");
+    if (trustProject && typeof this.trust !== "function") fail("CLAUDE_CREATION_TRUST_UNAVAILABLE", "Authorized project trust preparation is not available.");
     const url = `claude://code/new?q=${encodeURIComponent(initialMessage)}&folder=${encodeURIComponent(canonical)}`;
     if (url.length > 30000) fail("CLAUDE_CREATION_URL_TOO_LONG", "The encoded Claude Desktop link exceeds 30000 characters.");
     await this.checkAccount(account, identity);
@@ -133,12 +143,47 @@ export class ClaudeSessionCreation {
     this.requests.set(requestId, request);
     try {
       await this.open(url);
+      if (autoSubmit) await this.settle();
       request.status = "awaiting_user";
       request.reason = "Claude Desktop was asked to prefill a new session; the bridge did not press Send. The folder chip alone does not confirm the actual directory. Verify the created task's cwd before dispatching work; absence of a discovered task does not prove that the prompt was not submitted.";
     } catch {
       request.reason = "The Desktop launcher failed or returned an uncertain outcome. This request will not be launched again; inspect it to check whether the session was created.";
     }
+    if (request.status === "awaiting_user" && autoSubmit) {
+      return this.completeRequest(request, { account, senderThreadId, beforeOpen, trustProject });
+    }
     return receipt(request);
+  }
+
+  async completeRequest(request, { account, senderThreadId, beforeOpen, trustProject }) {
+    if (typeof this.submit !== "function") fail("CLAUDE_CREATION_SUBMIT_UNAVAILABLE", "Native composer submission is not available.");
+    if (trustProject && typeof this.trust !== "function") fail("CLAUDE_CREATION_TRUST_UNAVAILABLE", "Authorized project trust preparation is not available.");
+    await this.checkAccount(account, request.account);
+    if (beforeOpen) await beforeOpen();
+    if (trustProject) {
+      const trusted = await this.trust({ cwd: request.cwd, prompt: request.initialMessage });
+      if (!["trusted", "absent"].includes(trusted?.status)) {
+        request.status = "awaiting_user";
+        request.reason = trusted?.reason ?? "Native workspace trust is not confirmed; inspect the exact project composer.";
+        return receipt(request);
+      }
+      if (trusted.status === "trusted") await this.settle();
+    }
+    await this.checkAccount(account, request.account);
+    if (beforeOpen) await beforeOpen();
+    request.submissionAttempted = true;
+    request.status = "submission_uncertain";
+    request.reason = "Native submission was attempted; inspect this request before retrying. The bridge will not press Send again.";
+    try {
+      const submission = await this.submit({ prompt: request.initialMessage, cwd: request.cwd, beforeSubmit: async () => {
+        await this.checkAccount(account, request.account);
+        if (beforeOpen) await beforeOpen();
+      } });
+      if (submission?.status === "blocked" && submission.submissionAttempted === false) delete request.submissionAttempted;
+      request.status = submission?.status === "submitted" ? "awaiting_session" : submission?.status === "blocked" ? "awaiting_user" : "submission_uncertain";
+      request.reason = submission?.reason ?? "Inspect the original native composer and creation receipt; submission has not been verified.";
+    } catch {}
+    return this.inspect(request.requestId, { account, senderThreadId });
   }
 
   async inspect(requestId, { account, senderThreadId }) {
@@ -214,10 +259,11 @@ export class ClaudeSessionCreation {
       const hasSession = ["created", "awaiting_project_confirmation"].includes(request.status) || request.sessionId !== undefined;
       if (hasSession && (!string(request.sessionId, 256) || !string(request.taskId, 256) || request.baseline.includes(request.taskId) || (request.title !== null && !string(request.title, 4096)))) fail("CLAUDE_CREATION_STATE_INVALID", "A submitted creation receipt is invalid.");
       if (request.submissionObserved !== undefined && typeof request.submissionObserved !== "boolean") fail("CLAUDE_CREATION_STATE_INVALID", "A retained submission marker is invalid.");
+      if (request.submissionAttempted !== undefined && typeof request.submissionAttempted !== "boolean") fail("CLAUDE_CREATION_STATE_INVALID", "A retained submission attempt is invalid.");
       if ((request.status === "awaiting_project_confirmation" || request.observedCwd !== undefined) && (!string(request.observedCwd, 8192) || !paths.isAbsolute(request.observedCwd))) fail("CLAUDE_CREATION_STATE_INVALID", "A retained observed directory is invalid.");
       if (request.status === "awaiting_project_confirmation" && (request.submissionObserved !== true || this.sameCwd(request.cwd, request.observedCwd))) fail("CLAUDE_CREATION_STATE_INVALID", "A pending project confirmation is invalid.");
       if (request.ambiguitySeen !== undefined && typeof request.ambiguitySeen !== "boolean") fail("CLAUDE_CREATION_STATE_INVALID", "A retained ambiguity marker is invalid.");
-      restored.set(request.requestId, structuredClone({ requestId: request.requestId, cwd: request.cwd, prompt: request.prompt, initialMessage: request.initialMessage, account: { fingerprint: request.account.fingerprint, root: request.account.root }, senderThreadId: request.senderThreadId, baseline: request.baseline, status: request.status, reason: request.reason, ...(request.ambiguitySeen || request.status === "ambiguous" ? { ambiguitySeen: true } : {}), ...(request.submissionObserved ? { submissionObserved: true } : {}), ...(request.observedCwd ? { observedCwd: request.observedCwd } : {}), ...(hasSession ? { sessionId: request.sessionId, taskId: request.taskId, title: request.title } : {}) }));
+      restored.set(request.requestId, structuredClone({ requestId: request.requestId, cwd: request.cwd, prompt: request.prompt, initialMessage: request.initialMessage, account: { fingerprint: request.account.fingerprint, root: request.account.root }, senderThreadId: request.senderThreadId, baseline: request.baseline, status: request.status, reason: request.reason, ...(request.submissionAttempted ? { submissionAttempted: true } : {}), ...(request.ambiguitySeen || request.status === "ambiguous" ? { ambiguitySeen: true } : {}), ...(request.submissionObserved ? { submissionObserved: true } : {}), ...(request.observedCwd ? { observedCwd: request.observedCwd } : {}), ...(hasSession ? { sessionId: request.sessionId, taskId: request.taskId, title: request.title } : {}) }));
     }
     this.requests = restored;
   }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { githubApi, githubClient, githubEnvironment } from '../scripts/publish-repo-analytics.mjs';
@@ -93,4 +93,39 @@ test('hosted refresh keeps the default gh credentials when no branch token is se
 
 test('hosted refresh fails when the analytics branch moves during verification', async t => {
   await assert.rejects(refresh(t, { ANALYTICS_BRANCH_TOKEN: 'bot-token' }, fakeGithub({ verifiedSha: 'someone-else' })), /changed during verification/);
+});
+
+test('Pages approval cannot block hourly data collection or keep newer runs waiting', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/analytics.yml', import.meta.url), 'utf8');
+  const refreshJob = workflow.split('  refresh:')[1].split(/\n  \w+:/)[0];
+  const deployJob = workflow.split('  deploy:')[1].split(/\n  \w+:/)[0];
+  assert.ok(workflow.includes('cancel-in-progress: true'));
+  assert.ok(!refreshJob.includes('environment:'));
+  assert.ok(refreshJob.includes('node scripts/refresh-hosted-analytics.mjs'));
+  assert.ok(refreshJob.includes('actions/upload-pages-artifact@'));
+  assert.ok(!refreshJob.includes('actions/deploy-pages@'));
+  assert.ok(deployJob.includes('needs: refresh'));
+  assert.ok(deployJob.includes('name: github-pages'));
+  assert.ok(deployJob.includes('actions/deploy-pages@'));
+});
+
+test('usage failure retains its original timestamp while independent sources publish fresh data', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'bridge-analytics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const github = fakeGithub();
+  const retained = { ...previous, usage };
+  const result = await refreshHostedAnalytics({
+    directory,
+    api: async (endpoint, options) => endpoint.endsWith('contents/data.json?ref=analytics')
+      ? { content: Buffer.from(JSON.stringify(retained)).toString('base64') }
+      : github.api(endpoint, options),
+    collect: async () => ({ collectedAt: '2026-10-02T14:00:00Z', repository: { stars: 20, forks: 9, subscribers: 1 }, errors: [] }),
+    fetcher: async () => ({ ok: true, json: async () => ({ errors: [{ source: 'usage' }], usage: { active: { day: 99 } } }) }),
+  });
+  const published = JSON.parse(await readFile(path.join(directory, 'data.json'), 'utf8'));
+  assert.equal(result.usageFailed, true);
+  assert.deepEqual(published.usage, usage);
+  assert.equal(published.snapshots.at(-1).repository.stars, 20);
+  assert.equal(published.snapshots.at(-1).sourceCollectedAt.repository, '2026-10-02T14:00:00Z');
+  assert.equal(published.usage.collectedAt, '2026-09-30T00:00:00Z');
 });

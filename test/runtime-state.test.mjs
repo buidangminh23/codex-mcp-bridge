@@ -28,6 +28,12 @@ it("detects source updates even when the package version and file timestamp are 
   assert.throws(() => runtime.assertCurrent(), /source changed.*No message was sent/);
   const reconnected = createRuntimeState({ directory });
   assert.equal(reconnected.status().current, true);
+  const helper = path.join(directory, "native.ps1");
+  fs.writeFileSync(helper, "original native helper");
+  assert.throws(() => reconnected.assertCurrent(), /source changed/);
+  const nativeRuntime = createRuntimeState({ directory });
+  fs.writeFileSync(helper, "updated native helper");
+  assert.throws(() => nativeRuntime.assertCurrent(), /source changed/);
   fs.unlinkSync(file);
   assert.throws(() => reconnected.assertCurrent(), /source changed/);
 });

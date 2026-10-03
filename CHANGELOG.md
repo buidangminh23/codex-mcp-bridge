@@ -4,6 +4,28 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.20.1] - 2026-10-03
+
+### Fixed
+
+- Start the Sites connector through symbolic installation paths, including the Windows NVM directory junction. Resolve the entry point before comparing it with the module path, so the installed command polls its paired Site instead of silently exiting.
+
+## [1.20.0] - 2026-10-03
+
+### Added
+
+- Codex MCP Bridge plugin package and a public Sites MCP server. Each account pairs its own computer; users can access only their paired connector and its allowed local projects. Public ChatGPT directory publication remains subject to developer verification and review.
+- Outbound HTTPS Desktop connector with account binding, private credentials, persistent operation receipts, and live pairing checks before sending work. Duplicate operation IDs cannot send the same prompt again; interrupted sends remain uncertain until inspected.
+- Hosted Worker source, D1 migrations, pairing UI, plugin compatibility manifest, workflow skill, and Windows/macOS setup instructions.
+
+## [1.19.7] - 2026-10-02
+
+### Fixed
+
+- Recover dormant Claude Desktop Code tasks by reopening their exact saved task ID before sending. Keep account, sender, project and recipient checks active throughout recovery; never substitute a CLI or another task.
+- On Windows, submit authorized new Desktop conversations after verifying the exact prompt and explicitly selecting the full native project path. A deep-link folder hint can otherwise create a scratch "No folder" session. Authorized workspace trust handles only the exact native project dialog. Preserve uncertain submission receipts without duplicate Send and track native helper changes during runtime reload.
+- Recover the Windows Claude URI launcher when an application update leaves the registered executable missing.
+
 ## [1.19.6] - 2026-10-02
 
 ### Fixed

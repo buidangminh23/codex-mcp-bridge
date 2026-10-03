@@ -1,6 +1,6 @@
 {
   "name": "@minhspark/codex-mcp-bridge",
-  "version": "1.19.6",
+  "version": "1.20.1",
   "description": "Two-way MCP bridge between Claude and Codex: prompts into a live Codex thread, messages into a running Claude Code session.",
   "keywords": [
     "mcp",
@@ -31,11 +31,18 @@
     "codex-native-relay": "src/native-relay-launcher.mjs",
     "codex-native-relay-install": "scripts/install-native-relay.mjs",
     "codex-npm-footer-install": "scripts/install-npm-footer.mjs",
-    "codex-full-access": "scripts/repair-codex-access.mjs"
+    "codex-full-access": "scripts/repair-codex-access.mjs",
+    "codex-sites-connector": "src/sites-connector.mjs"
   },
   "files": [
     "src",
     "scripts",
+    "skills",
+    "assets",
+    "plugin.json",
+    "mcp.json",
+    ".codex-plugin",
+    ".mcp.json",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
@@ -66,7 +73,7 @@
     "install:footer": "node scripts/install-npm-footer.mjs",
     "uninstall:footer": "node scripts/install-npm-footer.mjs --remove",
     "uninstall:agent": "node scripts/install-launch-agent.mjs --uninstall",
-    "version": "node scripts/sync-version.mjs && git add src/index.mjs src/claude-bridge.mjs src/native-relay-companion.mjs scripts/install-native-relay.mjs"
+    "version": "node scripts/sync-version.mjs && git add src/index.mjs src/claude-bridge.mjs src/native-relay-companion.mjs scripts/install-native-relay.mjs .codex-plugin/plugin.json"
   },
   "engines": {
     "node": ">=22"

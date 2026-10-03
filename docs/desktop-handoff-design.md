@@ -132,3 +132,18 @@ parent removal, deleted-project exclusions and home-root rejection on Windows
 junctions and POSIX symlinks. The focused Windows run passed 102 checks with one
 existing platform skip. Fresh installation and bidirectional live acceptance
 remain separate from these isolated tests.
+
+The full Windows run at `989ed6c` completed with **989 passed, 2 failed and
+12 skipped** (1,003 tests). Both failures remain the same installer cases
+reaching the unchanged 60-second deadline described above. The standalone
+health check listed tools but could not reach the default native relay and
+reported an unverified sender from the terminal; it did not send a message,
+change permissions or launch an external app-server.
+
+Upstream subsequently advanced to `e0f40b5` (1.20.1), making the PR conflicted
+and preventing a fresh pull-request CI run. The merge preserves upstream's
+composer submission, dormant-task recovery, Sites connector and dependency
+updates. Creation and recovery callbacks still await this branch's asynchronous
+sender verification before any UI action. A regression checks rejection both
+before opening and between opening and automatic trust/submission. No installed
+runtime or client configuration was replaced for this merge.

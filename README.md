@@ -99,6 +99,19 @@ If the bridge is already registered, `codex-full-access` (`codex-full-access.cmd
 
 For Desktop mode, install [Codex Desktop](https://developers.openai.com/codex/app) and [Claude Desktop](https://claude.com/download), sign in, and save the intended local project in Codex Desktop. Open that same directory in Claude Desktop's Code tab. A normal Claude chat is not a Code session.
 
+#### Native relay pipe forwarding
+
+After running the native relay installer, add this setting to its **existing** entry in `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`):
+
+```toml
+[mcp_servers.codex-native-relay]
+env_vars = ["CODEX_APP_TOOLS_PIPE_PATH"]
+```
+
+Keep the entry's `command`, `args`, and other settings; append the variable name if `env_vars` already contains names. Use your configured server name if you set `CODEX_NATIVE_RELAY_NAME`. This forwards the running Desktop app-server's pipe path without saving its temporary value. The installer uses `codex mcp add`, which does not provide an `env_vars` option, and refuses to reset entries with custom transport settings, including `env_vars`.
+
+Reconnect `codex-native-relay` in the existing Desktop task, or restart Codex Desktop after active work finishes. Verify `native_relay_status` from that task. Without forwarding, Desktop setups whose pipe is absent from app-server command-line configuration can expose status tools while reporting native pipe unavailable and relay sockets not listening; a connected Claude bridge alone does not establish native delivery.
+
 ### Windows (PowerShell)
 
 Install Node and a native Codex executable with WinGet:
@@ -361,7 +374,7 @@ Start with `codex doctor` for Codex installation problems and `claude doctor` fo
 | Tools appear in Claude Desktop but not in its Code task | Complete the separate [Claude Code registration](#register-claude-code), then reconnect `/mcp` in that Code session. |
 | Installer refuses an entry with custom access/timeout settings | Keep those settings. Update only the existing entry's `command` and `args` to the values printed by the installer, then reconnect. |
 | Desktop task still reports `app-server` | Rerun `codex-mcp-bridge-install --desktop-tasks`; set `CODEX_BRIDGE_DESKTOP_TASKS=1` in the separate Claude Code registration too. Refresh the reverse registration with the same setting and reconnect the actual sending task. |
-| Relay is installed but unavailable | Open Codex Desktop and reconnect `codex-native-relay`. Check `codex mcp get codex-native-relay` and the in-task `native_relay_status`; a registered entry alone is insufficient. |
+| Relay is installed but unavailable | Check [native relay pipe forwarding](#native-relay-pipe-forwarding), then reconnect `codex-native-relay` or restart Codex Desktop after active work finishes. Check `codex mcp get codex-native-relay` and the in-task `native_relay_status`; a registered entry alone is insufficient. |
 | `RELAY_THREAD_UNCONFIGURED` | Rerun `codex-native-relay-install --desktop-tasks` without `--no-bootstrap` to create the missing executor. |
 | macOS `untrusted-code-signing-identity` or `NATIVE_DELIVERY_UNCONFIRMED` | Inspect the client logs and the installer's `relay runtime:` line. Rerun the relay installer with Codex Desktop installed; if runtime detection fails, set `CODEX_NATIVE_RELAY_NODE` to the actual app-bundled runtime. Relaunch the companion after active work finishes. Inspect any original delivery before retrying. |
 | Linux says native relay unavailable | Use the Linux CLI setup with `CODEX_BRIDGE_DESKTOP_TASKS=0` on both registrations. Native Desktop relay support is Windows/macOS only. |

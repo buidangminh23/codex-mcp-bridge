@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { it } from "node:test";
 import { NativeCreationReceipts, creationRequestHash } from "../src/native-creation-receipts.mjs";
 import { handleRelayRequest, RelaySocketServer } from "../src/native-relay-companion.mjs";
@@ -149,4 +150,47 @@ it("isolates native authority ACL checks from inherited PowerShell modules", { s
     delete process.env.PSModulePath;
     for (const [key, value] of inherited) process.env[key] = value;
   }
+});
+
+it("rejects Windows authority access granted to another principal", { skip: process.platform !== "win32" }, async t => {
+  for (const target of ["directory", "key"]) {
+    const f = fixture(t);
+    const created = await handleRelayRequest(f.create, f.deps);
+    assert.equal(created.ok, true, created.error?.message);
+    const directory = path.join(f.dir, "bridge-native-creation-authority");
+    const file = target === "directory" ? directory : path.join(directory, "signing-key");
+    execFileSync("icacls.exe", [file, "/grant", "*S-1-1-0:(R)"], { stdio: "pipe", windowsHide: true });
+    const restarted = new NativeCreationReceipts({ directory: f.store.directory });
+    assert.throws(() => restarted.read(f.id, accounts, f.hash), /Unexpected native authority access/, target);
+    assert.equal(f.calls(), 1);
+  }
+});
+
+it("removes only its newly created signing key after initialization fails", async t => {
+  const f = fixture(t);
+  const original = fs.writeFileSync;
+  const key = path.join(f.dir, "bridge-native-creation-authority", "signing-key");
+  let failed = false;
+  fs.writeFileSync = (...args) => {
+    if (!failed && typeof args[0] === "number" && Buffer.isBuffer(args[1]) && args[1].length === 32) {
+      failed = true;
+      throw Object.assign(Error("Signing key initialization failed"), { code: "EIO" });
+    }
+    return original(...args);
+  };
+  try {
+    const reply = await handleRelayRequest(f.create, f.deps);
+    assert.equal(reply.ok, false);
+    assert.match(reply.error.message, /Signing key initialization failed/);
+    assert.equal(fs.existsSync(key), false);
+    assert.equal(f.calls(), 0);
+  } finally { fs.writeFileSync = original; }
+  const reply = await handleRelayRequest(f.create, f.deps);
+  assert.equal(reply.ok, true, reply.error?.message);
+  assert.equal(fs.statSync(key).size, 32);
+  assert.equal(f.calls(), 1);
+  fs.writeFileSync(key, Buffer.alloc(0));
+  const existing = new NativeCreationReceipts({ directory: f.store.directory });
+  assert.throws(() => existing.reserve(randomUUID(), args, accounts, "executor"), /Unsafe native creation signing key/);
+  assert.equal(fs.statSync(key).size, 0);
 });

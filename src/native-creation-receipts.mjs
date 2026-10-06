@@ -26,12 +26,7 @@ export class NativeCreationReceipts {
     if (create) {
       try {
         fs.mkdirSync(this.#keyDirectory, { mode: 0o700 });
-        if (process.platform === "win32") {
-          const identity = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
-          const sid = identity.match(/S-1-5-[0-9-]+/)?.[0];
-          if (!sid) throw Error("Native creation authority owner could not be verified");
-          execFileSync("icacls.exe", [this.#keyDirectory, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)(F)`], { stdio: "pipe", windowsHide: true });
-        }
+        if (process.platform === "win32") this.#protectWindowsPrivate(this.#keyDirectory, true);
       } catch (error) { if (error.code !== "EEXIST") throw error; }
     }
     const directory = fs.lstatSync(this.#keyDirectory);
@@ -47,9 +42,23 @@ export class NativeCreationReceipts {
     this.#keyDirectoryBoundary ??= { path: canonical, dev: directory.dev, ino: directory.ino };
     const file = path.join(canonical, "signing-key");
     if (create) {
-      let created;
-      try { created = fs.openSync(file, "wx", 0o600); fs.writeFileSync(created, randomBytes(32)); fs.fsyncSync(created); }
-      catch (error) { if (error.code !== "EEXIST") throw error; }
+      let created, createdBoundary;
+      try {
+        created = fs.openSync(file, "wx", 0o600);
+        createdBoundary = fs.fstatSync(created);
+        if (process.platform === "win32") this.#protectWindowsPrivate(file, false);
+        fs.writeFileSync(created, randomBytes(32));
+        fs.fsyncSync(created);
+      }
+      catch (error) {
+        if (created !== undefined) {
+          fs.closeSync(created);
+          created = undefined;
+          const failed = fs.lstatSync(file);
+          if (failed.dev === createdBoundary.dev && failed.ino === createdBoundary.ino && !failed.isSymbolicLink()) fs.unlinkSync(file);
+        }
+        if (error.code !== "EEXIST") throw error;
+      }
       finally { if (created !== undefined) fs.closeSync(created); }
     }
     const before = fs.lstatSync(file);
@@ -72,6 +81,14 @@ export class NativeCreationReceipts {
     this.#keyBoundary ??= { dev: before.dev, ino: before.ino };
     this.#key ??= key;
     return this.#key;
+  }
+  #protectWindowsPrivate(file, directory) {
+    const identity = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
+    const sid = identity.match(/S-1-5-[0-9-]+/)?.[0];
+    if (!sid) throw Error("Native creation authority owner could not be verified");
+    const options = { stdio: "pipe", windowsHide: true, timeout: 10000 };
+    execFileSync("icacls.exe", [file, "/inheritance:r", "/grant:r", `*${sid}:${directory ? "(OI)(CI)(F)" : "(F)"}`], options);
+    execFileSync("icacls.exe", [file, "/setowner", `*${sid}`], options);
   }
   #assertWindowsPrivate(file, directory) {
     const quoted = file.replaceAll("'", "''");

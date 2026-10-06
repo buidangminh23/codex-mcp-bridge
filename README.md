@@ -7,6 +7,7 @@
 [![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
 [![npm downloads](https://img.shields.io/npm/dt/@minhspark/codex-mcp-bridge?logo=npm&label=npm%20downloads&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
 [![skills.sh installs](https://skills.sh/b/buidangminh23/codex-mcp-bridge?label=skills.sh)](https://skills.sh/buidangminh23/codex-mcp-bridge/codex-bridge)
+[![GitHub views / source window](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-github-views.svg)](https://buidangminh23.github.io/codex-mcp-bridge/)
 [![license](https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge)](LICENSE)
 
 Send prompts and replies between **Claude and Codex**, keeping each conversation in its own app. Supports Windows, macOS, and Linux; native Desktop integration supports Windows and macOS.
@@ -20,16 +21,6 @@ To receive new release notifications, open [this repository](https://github.com/
 Starring the repository or downloading/installing a package does not subscribe you to release notifications. Notifications do not update your installed copy; follow the installation instructions to update.
 
 [View release notes](https://github.com/buidangminh23/codex-mcp-bridge/releases).
-
-## Project statistics
-
-**[Open live dashboard — refreshes every 30 seconds](https://buidangminh23.github.io/codex-mcp-bridge/)**
-
-The image below is an hourly snapshot. Each metric shows its source time and reporting window; delayed sources are marked stale. The live dashboard refreshes independently.
-
-[![Repository usage dashboard](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/dashboard.svg)](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics)
-
-[Full statistics and daily history](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics) · [Public aggregate JSON](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/data.json) · [How these metrics work](#repository-analytics)
 
 ## Installation
 
@@ -396,7 +387,7 @@ For unresolved failures, [open an issue](https://github.com/buidangminh23/codex-
 
 ## Repository analytics
 
-The live dashboard polls the aggregate API every 30 seconds. Installation counts reflect reports received by the server; this is not a count of currently online processes. Public GitHub/npm sources are refreshed with a short cache, but their own statistics may be delayed. GitHub Actions refreshes and archives statistics hourly through the `Repository analytics` workflow, including private GitHub traffic; scheduled runs may be delayed by GitHub. Data collection and publication to the `analytics` branch run independently of the Pages deployment environment, and a newer scheduled run replaces a stuck older run. That workflow reads GitHub traffic with the `ANALYTICS_TOKEN` repository secret, a token with push access to this repository (fine-grained: Administration read); the default workflow token cannot read GitHub traffic, so without it the views/clones sources are retained from the last successful run and the run is reported as incomplete. The `analytics` branch is written with the workflow's own token, so its commits come from `github-actions[bot]` and `ANALYTICS_TOKEN` needs no write access. The README image is a snapshot and may be cached by GitHub; open the live dashboard for automatic updates. Each source keeps its own collection time and reporting window. Sources older than three hours are marked stale even when polling succeeds. Missing data is unavailable, not zero; an empty usage breakdown means no opted-in reports in that period. Only aggregate figures are published. Installation IDs stay in the private database.
+The live dashboard polls the aggregate API every 30 seconds. Installation counts reflect reports received by the server; this is not a count of currently online processes. Public GitHub/npm sources are refreshed with a short cache, but their own statistics may be delayed. GitHub Actions refreshes and archives statistics hourly through the `Repository analytics` workflow, including private GitHub traffic; scheduled runs may be delayed by GitHub. Data collection and publication to the `analytics` branch run independently of the Pages deployment environment, and a newer scheduled run replaces a stuck older run. That workflow reads GitHub traffic with the `ANALYTICS_TOKEN` repository secret, a token with push access to this repository (fine-grained: Administration read); the default workflow token cannot read GitHub traffic, so without it the views/clones sources are retained from the last successful run and the run is reported as incomplete. The `analytics` branch is written with the workflow's own token, so its commits come from `github-actions[bot]` and `ANALYTICS_TOKEN` needs no write access. The README view badge is an hourly snapshot and may be cached by GitHub; open the live dashboard for automatic updates. Each source keeps its own collection time and reporting window. Sources older than three hours are marked stale even when polling succeeds. Missing data is unavailable, not zero; an empty usage breakdown means no opted-in reports in that period. Only aggregate figures are published. Installation IDs stay in the private database.
 
 Repository owners can view [GitHub traffic](https://github.com/buidangminh23/codex-mcp-bridge/graphs/traffic) for recent views and clones. Downloads and clones include updates, reinstalls, and automation; they do not measure active users. GitHub traffic only covers the recent 14-day window, so collect it regularly to keep a longer history.
 

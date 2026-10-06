@@ -6,6 +6,26 @@ on:
   pull_request:
 
 jobs:
+  sites-security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: sites/codex-bridge
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: sites/codex-bridge/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=moderate
+      - run: npm test
+      - run: npm run build
+      - run: npm run db:generate
+      - run: test -z "$(git status --porcelain -- drizzle)"
   telemetry-endpoint:
     runs-on: ubuntu-latest
     steps:

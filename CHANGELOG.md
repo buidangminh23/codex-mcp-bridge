@@ -4,18 +4,31 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-10-06
+
+### Added
+
+- Resume an accepted Codex Desktop delivery after a timeout with `wait_codex_reply`, using its original delivery ID without resending the prompt.
+- Inspect and prepare the selected workspace through `inspect_bridge_project` and `prepare_bridge_project`, with shared project grants, registered worktree support and explicit revocation.
+- Add `bridge-projects` for project policy management and `codex-bridge-code-install` for explicit, previewable Claude Code MCP registration. Include Desktop handoff and new-machine onboarding guides.
+
 ### Fixed
 
 - Authenticate native creation receipt contents with a private persisted signing key; reject altered and unsigned receipts before restoring ownership.
 - Restore owned task authority from verified native creation receipts after lost acknowledgements or bridge restarts. Keep ordinary inspection and editable local receipts subject to ownership checks.
 - Bind project grants to repository identity and retain repository and registered worktree revocations when Git metadata or directories disappear or are replaced. Reject malformed Git metadata instead of treating it as a plain folder.
 - Recheck live project, account and runtime authority after awaited sender validation before opening, trusting or submitting a Claude Desktop creation.
-
 - Preserve reply continuation for confirmed Desktop creation and for existing-thread sends whose native acknowledgement times out. Return an owner/account-bound delivery ID without resending; keep uncertain delivery distinct from acceptance, and correlate creation replies to the exact native creation dispatch. Retain the upstream project and permission checks.
-
 - Bind standalone Git directory pointers to their checkout so a different project cannot impersonate an authorized recipient. Reject private metadata, task receipts and connector credentials that grow, disappear or change while being read.
 - Read release fingerprints through bounded file descriptors, preserve locks replaced by another writer, and refuse automatic expiry of an occupied telemetry lock. Write installer output atomically and stop if the Desktop configuration changes before replacement.
 - Refuse app-server health redirects and revalidate loopback endpoints before use. Clamp supervisor timer intervals to the supported range and restrict CI token permissions while pinning the Deno setup action.
+- Create Windows private files and directories with a protected access list owned by the current user; reject unsafe existing artifacts instead of retaining inherited or foreign explicit access entries.
+
+### Upgrade notes
+
+- Update the installed npm package to `@minhspark/codex-mcp-bridge@1.21.0` and reconnect the existing Desktop MCP connections. Publication does not reload already running MCP processes or prove a live Desktop handoff.
+- Shared project policy is opt-in. Configure both bridge MCP entries with the same absolute `CODEX_BRIDGE_PROJECT_POLICY` JSON path when using shared grants; project grants do not change session permissions.
+- At release preparation, 91 new CodeQL alerts from PR #100 remain open. Static triage did not establish an exploitable security boundary for 86 alerts; five file-reading race alerts still require validation. This release does not claim a clean CodeQL alert inventory.
 
 ## [1.20.1] - 2026-10-03
 

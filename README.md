@@ -1,4 +1,8 @@
-# codex-mcp-bridge
+<p align="center">
+  <img src="assets/agent-pets.svg" width="144" height="52" alt="Claude Clawd → Codex; Codex → Claude" />
+</p>
+
+<h1 align="center">codex-mcp-bridge</h1>
 
 [![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
 [![CI](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml)

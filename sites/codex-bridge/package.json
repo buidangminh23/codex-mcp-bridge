@@ -6,10 +6,15 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "db:generate": "drizzle-kit generate",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs scripts/security-check.mjs"
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.4",
-    "drizzle-orm": "^0.44.5"
+    "drizzle-orm": "^0.45.3"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "0.25.12"
+    }
   }
 }

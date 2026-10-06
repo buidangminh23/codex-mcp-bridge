@@ -81,7 +81,8 @@ test('hosted refresh reads, writes and verifies the analytics branch with the br
   ]);
   assert.ok(calls.every(call => call.token === 'bot-token'));
   assert.deepEqual(collected, [{ repo, package: '@minhspark/codex-mcp-bridge' }]);
-  assert.deepEqual((await readdir(directory)).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html']);
+  assert.deepEqual((await readdir(directory)).filter(name => !name.startsWith('stats-')).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html']);
+  assert.equal((await readdir(directory)).filter(name => name.startsWith('stats-')).length, 13);
 });
 
 test('hosted refresh keeps the default gh credentials when no branch token is set', async t => {

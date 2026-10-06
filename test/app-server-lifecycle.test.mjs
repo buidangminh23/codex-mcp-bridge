@@ -30,6 +30,29 @@ async function fixture(options, action) {
   }
 }
 
+it("does not follow app-server health redirects", async () => {
+  let redirected = 0;
+  const server = createServer((request, response) => {
+    if (request.url === "/redirected") { redirected += 1; response.writeHead(200).end(); }
+    else response.writeHead(302, { Location: "/redirected" }).end();
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const client = new CodexAppServerClient({ url: `ws://127.0.0.1:${server.address().port}`, autoStart: false });
+  try {
+    assert.equal(await client.isServerUp(), false);
+    assert.equal(redirected, 0);
+  } finally { client.close(); await new Promise(resolve => server.close(resolve)); }
+});
+
+it("revalidates a changed app-server URL before health requests", async t => {
+  const client = new CodexAppServerClient({ autoStart: false });
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => { requests += 1; return { ok: true }; });
+  client.url = "ws://example.test:8791";
+  assert.equal(await client.isServerUp(), false);
+  assert.equal(requests, 0);
+});
+
 describe("app-server request lifecycle", () => {
   it("reports invalid managed sandbox modes before launching Codex", async () => {
     const directory = mkdtempSync(join(tmpdir(), "codex-managed-policy-"));

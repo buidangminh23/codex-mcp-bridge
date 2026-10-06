@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, writeFile, utimes, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { enableTelemetry, disableTelemetry, getTelemetryStatus, reportUsage, handleTelemetryCommand, startUsageReporting } from '../src/telemetry.mjs';
@@ -18,6 +18,32 @@ test('default off neither creates identity nor contacts the endpoint', async t =
   assert.equal((await getTelemetryStatus(opts)).enabled, false);
   assert.equal(calls, 0);
   assert.deepEqual(await readdir(opts.directory), []);
+});
+
+test('an old lock still prevents concurrent settings changes and duplicate reports', async t => {
+  const opts = await fixture(t);
+  await enableTelemetry(opts);
+  const lock = path.join(opts.directory, '.telemetry.lock');
+  await writeFile(lock, 'active request');
+  await utimes(lock, new Date(0), new Date(0));
+  let calls = 0;
+  assert.equal(await reportUsage({ ...opts, fetcher: async () => { calls++; return { ok: true }; } }), false);
+  await assert.rejects(disableTelemetry(opts), /Locks never expire/);
+  assert.equal(calls, 0);
+  assert.equal(await readFile(lock, 'utf8'), 'active request');
+  assert.equal((await getTelemetryStatus(opts)).enabled, true);
+});
+
+test('report cleanup preserves a lock replaced by another writer', async t => {
+  const opts = await fixture(t);
+  await enableTelemetry(opts);
+  const lock = path.join(opts.directory, '.telemetry.lock');
+  assert.equal(await reportUsage({ ...opts, fetcher: async () => {
+    await rename(lock, `${lock}.original`);
+    await writeFile(lock, 'replacement request');
+    return { ok: true };
+  } }), true);
+  assert.equal(await readFile(lock, 'utf8'), 'replacement request');
 });
 
 test('consent is explicit, enable is idempotent, disable removes identity', async t => {

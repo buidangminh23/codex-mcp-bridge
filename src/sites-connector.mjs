@@ -54,8 +54,23 @@ async function readPrivateJson(file, maxBytes = 2 * 1024 * 1024) {
   const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const current = await handle.stat();
-    if (!current.isFile() || current.nlink !== 1 || current.ino !== info.ino || current.dev !== info.dev || current.size > maxBytes) throw new Error("Private connector file changed during access");
-    return JSON.parse(await handle.readFile("utf8"));
+    const fields = ["dev", "ino", "size", "mtimeMs", "ctimeMs"];
+    const matches = (left, right) => fields.every((field) => left[field] === right[field]);
+    if (!current.isFile() || current.nlink !== 1 || current.size > maxBytes || !matches(info, current)) throw new Error("Private connector file changed during access");
+    const data = Buffer.alloc(current.size);
+    let offset = 0;
+    while (offset < data.length) {
+      const { bytesRead } = await handle.read(data, offset, data.length - offset, offset);
+      if (!bytesRead) throw new Error("Private connector file changed during access");
+      offset += bytesRead;
+    }
+    const after = await handle.stat();
+    const entry = await fs.lstat(file);
+    if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1 || !matches(current, after) || !matches(after, entry)) throw new Error("Private connector file changed during access");
+    return JSON.parse(data.toString("utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") throw new Error("Private connector file changed during access", { cause: error });
+    throw error;
   } finally { await handle.close(); }
 }
 

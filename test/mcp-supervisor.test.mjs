@@ -102,6 +102,15 @@ async function eventually(read, predicate, errorDetails = () => "") {
   assert.fail(`Reload did not settle: ${JSON.stringify(value)} ${errorDetails()}`);
 }
 
+for (const value of ["Infinity", "4294967296"]) {
+  it(`prevents timer overflow for reload interval ${value}`, async t => {
+    const fixture = installation(t);
+    const api = await connect(t, fixture, { CODEX_BRIDGE_RELOAD_POLL_MS: value, CODEX_BRIDGE_RELOAD_SETTLE_MS: value });
+    assert.equal((await api.call()).structuredContent.version, "A");
+    assert.doesNotMatch(api.stderr(), /TimeoutOverflowWarning/);
+  });
+}
+
 for (const entry of ["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs"]) {
   it(`reloads ${entry} on the same MCP connection and retains completed state`, async t => {
     const fixture = installation(t, entry);
@@ -251,13 +260,18 @@ it("copies dependencies instead of sharing mutable installed files", t => {
 
 function countDependencyReads(action) {
   const original = fs.readFileSync;
+  const originalOpen = fs.openSync;
   let count = 0;
   fs.readFileSync = (file, ...args) => {
     if (typeof file === "string" && file.includes(`${path.sep}node_modules${path.sep}`)) count++;
     return original.call(fs, file, ...args);
   };
+  fs.openSync = (file, ...args) => {
+    if (typeof file === "string" && file.includes(`${path.sep}node_modules${path.sep}`)) count++;
+    return originalOpen.call(fs, file, ...args);
+  };
   try { return { result: action(), count }; }
-  finally { fs.readFileSync = original; }
+  finally { fs.readFileSync = original; fs.openSync = originalOpen; }
 }
 
 it("reuses validated dependency digests without rereading unchanged content", t => {

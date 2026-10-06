@@ -20,9 +20,12 @@ export function parseArgs(args) {
   const options = { repo: defaultRepo, package: defaultPackage, output: defaultOutput() };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--help' || args[i] === '-h') return { help: true };
-    const name = args[i].slice(2);
     if (!['--repo', '--package', '--output'].includes(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Expected --repo owner/name, --package name, or --output directory.');
-    options[name] = args[++i];
+    const flag = args[i];
+    const value = args[++i];
+    if (flag === '--repo') options.repo = value;
+    else if (flag === '--package') options.package = value;
+    else options.output = value;
   }
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(options.repo)) throw new Error('Invalid repository: expected owner/name.');
   if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(options.package)) throw new Error('Invalid npm package name.');

@@ -69,7 +69,9 @@ function listeningPids(port) {
 }
 
 function httpBase(wsUrl) {
-  return wsUrl.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
+  const url = assertAllowedAppServerUrl(wsUrl);
+  url.protocol = url.protocol === "ws:" ? "http:" : "https:";
+  return url.href.replace(/\/+$/, "");
 }
 
 /**
@@ -133,6 +135,7 @@ export class CodexAppServerClient {
     try {
       const res = await fetch(`${httpBase(this.url)}/readyz`, {
         signal: AbortSignal.timeout(2000),
+        redirect: "error",
       });
       return res.ok;
     } catch {
@@ -283,7 +286,7 @@ export class CodexAppServerClient {
     }
 
     this.#assertConnectionEpoch(epoch);
-    const ws = new WebSocket(this.url);
+    const ws = new WebSocket(assertAllowedAppServerUrl(this.url).href);
     this.ws = ws;
     try {
       await new Promise((resolve, reject) => {

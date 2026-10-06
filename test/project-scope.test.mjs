@@ -55,6 +55,52 @@ function assertMismatch(sender, recipient) {
   assert.throws(() => captureProjectScope(sender, recipient), { code: "PROJECT_SCOPE_MISMATCH" });
 }
 
+it("rejects a forged direct Git directory pointer to another project", (t) => {
+  const root = fixture(t);
+  const sender = directory(root, "sender");
+  const recipient = repository(root, "recipient");
+  fs.writeFileSync(path.join(sender, ".git"), `gitdir: ${path.join(recipient, ".git")}\n`);
+  assertMismatch(sender, recipient);
+});
+
+it("rejects a Git directory symlink to another project", (t) => {
+  const root = fixture(t);
+  const sender = directory(root, "sender");
+  const recipient = repository(root, "recipient");
+  fs.symlinkSync(path.join(recipient, ".git"), path.join(sender, ".git"), linkType);
+  assert.throws(() => captureProjectScope(sender, recipient), { code: "PROJECT_SCOPE_UNVERIFIED" });
+});
+
+it("preserves separate Git directories and canonical aliases", (t) => {
+  const root = fixture(t);
+  const project = directory(root, "project");
+  git(project, "init", "--quiet", "--separate-git-dir", path.join(root, "metadata"));
+  const alias = path.join(root, "alias");
+  fs.symlinkSync(project, alias, linkType);
+  assert.doesNotThrow(() => captureProjectScope(project, alias));
+  assert.doesNotThrow(() => captureProjectScope(project, directory(project, "src")));
+});
+
+it("rejects repository metadata growing after its initial size check", (t) => {
+  const root = fixture(t);
+  const project = repository(root);
+  const head = path.join(project, ".git", "HEAD");
+  let changed = false;
+  for (const name of ["statSync", "lstatSync"]) {
+    const original = fs[name];
+    t.mock.method(fs, name, (file, ...args) => {
+      const info = original(file, ...args);
+      if (file === head && !changed) {
+        changed = true;
+        fs.appendFileSync(head, " ".repeat(8192));
+      }
+      return info;
+    });
+  }
+  assert.throws(() => captureProjectScope(project, project), { code: "PROJECT_SCOPE_UNVERIFIED" });
+  assert.equal(changed, true);
+});
+
 describe("project directory binding", () => {
   it("permits the same existing directory without a repository", (t) => {
     const project = directory(fixture(t), "project");

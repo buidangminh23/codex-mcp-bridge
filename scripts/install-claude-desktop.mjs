@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 import { IS_WINDOWS, PLATFORM_LABEL, claudeDesktopConfigPath, resolveCodexBin } from "../src/platform.mjs";
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
@@ -40,7 +41,37 @@ if (!path.isAbsolute(codexBin) || !fs.existsSync(codexBin)) {
 
 fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
 
-const cfg = fs.existsSync(cfgPath) ? JSON.parse(fs.readFileSync(cfgPath, "utf8")) : {};
+function readConfig() {
+  let descriptor;
+  try {
+    const before = fs.lstatSync(cfgPath);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 4 * 1024 * 1024) throw new Error("Unsafe Desktop configuration file");
+    descriptor = fs.openSync(cfgPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const opened = fs.fstatSync(descriptor);
+    const fields = ["dev", "ino", "size", "mtimeMs", "ctimeMs"];
+    const matches = (left, right) => fields.every(field => left[field] === right[field]);
+    if (!opened.isFile() || opened.nlink !== 1 || !matches(before, opened)) throw new Error("Desktop configuration changed during access");
+    const data = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < data.length) {
+      const count = fs.readSync(descriptor, data, offset, data.length - offset, offset);
+      if (!count) throw new Error("Desktop configuration changed during access");
+      offset += count;
+    }
+    const after = fs.fstatSync(descriptor);
+    const current = fs.lstatSync(cfgPath);
+    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !matches(opened, after) || !matches(after, current)) throw new Error("Desktop configuration changed during access");
+    return { data, version: fields.map(field => current[field]) };
+  } catch (error) {
+    if (error.code === "ENOENT" && descriptor === undefined) return null;
+    throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+const original = readConfig();
+const cfg = original ? JSON.parse(original.data.toString("utf8")) : {};
 cfg.mcpServers = cfg.mcpServers ?? {};
 
 /**
@@ -119,11 +150,23 @@ cfg.mcpServers["codex-bridge"] = {
 
 createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...cfg.mcpServers["codex-bridge"].env }) });
 
-if (fs.existsSync(cfgPath)) {
-  const backup = `${cfgPath}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge`;
-  if (!fs.existsSync(backup)) fs.copyFileSync(cfgPath, backup);
+const backup = `${cfgPath}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge`;
+if (original) {
+  try { fs.writeFileSync(backup, original.data, { flag: "wx", mode: 0o600 }); }
+  catch (error) { if (error.code !== "EEXIST") throw error; }
 }
-fs.writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
+const temporary = `${cfgPath}.${randomUUID()}.tmp`;
+try {
+  fs.writeFileSync(temporary, `${JSON.stringify(cfg, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  const current = readConfig();
+  if (original === null ? current !== null : current === null || !original.data.equals(current.data) || original.version.some((value, index) => value !== current.version[index])) {
+    throw new Error("Desktop configuration changed during installation; retry after the other writer finishes");
+  }
+  fs.renameSync(temporary, cfgPath);
+} finally {
+  try { fs.unlinkSync(temporary); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+}
 
 console.log(`platform: ${PLATFORM_LABEL}`);
 console.log(`updated ${cfgPath}`);

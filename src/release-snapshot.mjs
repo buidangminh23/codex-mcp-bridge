@@ -35,7 +35,17 @@ function digestMetadata(cache) {
       descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
       const opened = fs.fstatSync(descriptor, { bigint: true });
       if (!opened.isFile() || opened.nlink !== 1n || !matches(signature(info), signature(opened))) return new Map();
-      const metadata = JSON.parse(fs.readFileSync(descriptor, "utf8"));
+      const data = Buffer.alloc(Number(opened.size));
+      let offset = 0;
+      while (offset < data.length) {
+        const count = fs.readSync(descriptor, data, offset, data.length - offset, offset);
+        if (!count) return new Map();
+        offset += count;
+      }
+      const after = fs.fstatSync(descriptor, { bigint: true });
+      const current = fs.lstatSync(file, { bigint: true });
+      if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n || !matches(signature(opened), signature(after)) || !matches(signature(after), signature(current))) return new Map();
+      const metadata = JSON.parse(data.toString("utf8"));
       if (metadata?.schema !== 1 || metadata.directory !== directory || !metadata.files || typeof metadata.files !== "object" || Array.isArray(metadata.files)) return new Map();
       const entries = Object.entries(metadata.files);
       if (entries.some(([file, record]) => !safeRelativePath(file) || !record || typeof record !== "object" || Array.isArray(record)
@@ -64,10 +74,25 @@ function digestMetadata(cache) {
         let record = previous.get(file);
         if (!matches(record, current)) {
           dirty.add(directory);
-          const contentHash = createHash("sha256").update(fs.readFileSync(fullPath)).digest("hex");
-          const after = fs.statSync(fullPath, { bigint: true });
-          if (!after.isFile() || !matches(current, signature(after))) throw new Error("A release file changed during integrity verification");
-          record = { ...current, hash: contentHash };
+          const canonical = fs.realpathSync.native(fullPath);
+          const descriptor = fs.openSync(canonical, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+          try {
+            const opened = fs.fstatSync(descriptor, { bigint: true });
+            if (!opened.isFile() || !matches(current, signature(opened))) throw new Error("A release file changed during integrity verification");
+            const content = createHash("sha256");
+            const buffer = Buffer.alloc(64 * 1024);
+            let remaining = opened.size;
+            while (remaining > 0n) {
+              const count = fs.readSync(descriptor, buffer, 0, Number(remaining > BigInt(buffer.length) ? BigInt(buffer.length) : remaining), null);
+              if (!count) throw new Error("A release file changed during integrity verification");
+              content.update(buffer.subarray(0, count));
+              remaining -= BigInt(count);
+            }
+            const after = fs.fstatSync(descriptor, { bigint: true });
+            const resolved = fs.statSync(fullPath, { bigint: true });
+            if (!resolved.isFile() || fs.realpathSync.native(fullPath) !== canonical || !matches(current, signature(after)) || !matches(current, signature(resolved))) throw new Error("A release file changed during integrity verification");
+            record = { ...current, hash: content.digest("hex") };
+          } finally { fs.closeSync(descriptor); }
         }
         records.set(file, record);
         hash.update(file).update("\0").update(record.hash).update("\0");

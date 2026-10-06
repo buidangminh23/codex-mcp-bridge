@@ -79,10 +79,22 @@ export class DesktopTaskReceipts {
       if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw unsafeReceipt(key);
       handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       const opened = await handle.stat();
-      if (!opened.isFile() || opened.nlink !== 1 || opened.size > 65536) throw unsafeReceipt(key);
-      return validateReceipt(key, JSON.parse(await handle.readFile("utf8")));
+      const fields = ["dev", "ino", "size", "mtimeMs", "ctimeMs"];
+      const matches = (left, right) => fields.every((field) => left[field] === right[field]);
+      if (!opened.isFile() || opened.nlink !== 1 || opened.size > 65536 || !matches(info, opened)) throw unsafeReceipt(key);
+      const data = Buffer.alloc(opened.size);
+      let offset = 0;
+      while (offset < data.length) {
+        const { bytesRead } = await handle.read(data, offset, data.length - offset, offset);
+        if (!bytesRead) throw unsafeReceipt(key);
+        offset += bytesRead;
+      }
+      const after = await handle.stat();
+      const current = await fs.lstat(file);
+      if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !matches(opened, after) || !matches(after, current)) throw unsafeReceipt(key);
+      return validateReceipt(key, JSON.parse(data.toString("utf8")));
     } catch (err) {
-      if (err.code === "ENOENT") return null;
+      if (err.code === "ENOENT" && !handle) return null;
       throw unsafeReceipt(key, err);
     } finally {
       await handle?.close();
@@ -124,7 +136,7 @@ export class DesktopTaskReceipts {
     const token = randomUUID();
     let handle;
     try {
-      handle = await fs.open(file, "wx", 0o600);
+      handle = await fs.open(file, "wx+", 0o600);
     } catch (err) {
       if (err.code === "EEXIST") {
         throw new Error(`Desktop task creation ${key} is already in progress or a previous process left its lock. Do not resend; inspect the existing task. Locks never expire automatically.`, { cause: err });
@@ -136,8 +148,18 @@ export class DesktopTaskReceipts {
       await handle.sync();
       return await callback();
     } finally {
-      await handle.close();
-      if (await fs.readFile(file, "utf8") === token) await fs.unlink(file);
+      try {
+        const owned = await handle.stat();
+        const data = Buffer.alloc(Buffer.byteLength(token));
+        const { bytesRead } = await handle.read(data, 0, data.length, 0);
+        const current = await fs.lstat(file);
+        if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || owned.dev !== current.dev || owned.ino !== current.ino || owned.size !== data.length || current.size !== data.length || bytesRead !== data.length || data.toString("utf8") !== token) {
+          throw new Error("Desktop task creation lock changed; inspect the existing task before repairing the lock");
+        }
+        await fs.unlink(file);
+      } finally {
+        await handle.close();
+      }
     }
   }
 }

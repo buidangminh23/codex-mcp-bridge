@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Bind standalone Git directory pointers to their checkout so a different project cannot impersonate an authorized recipient. Reject private metadata, task receipts and connector credentials that grow, disappear or change while being read.
+- Read release fingerprints through bounded file descriptors, preserve locks replaced by another writer, and refuse automatic expiry of an occupied telemetry lock. Write installer output atomically and stop if the Desktop configuration changes before replacement.
+- Refuse app-server health redirects and revalidate loopback endpoints before use. Clamp supervisor timer intervals to the supported range and restrict CI token permissions while pinning the Deno setup action.
+
 ## [1.20.1] - 2026-10-03
 
 ### Fixed

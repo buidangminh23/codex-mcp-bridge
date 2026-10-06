@@ -20,6 +20,44 @@ function fixture(name) {
   return { store, key: identity.key, receipt: { version: 1, ...identity, cwd: sandbox, state: "pending", startedAt: Date.now(), ...(name ? { name } : {}) } };
 }
 
+it("preserves a replaced creation lock even when its token is copied", async () => {
+  const { store, key } = fixture();
+  const file = path.join(store.directory, `${key}.lock`);
+  let token;
+  await assert.rejects(store.withLock(key, async () => {
+    token = await fs.readFile(file, "utf8");
+    await fs.rename(file, `${file}.original`);
+    await fs.writeFile(file, token);
+  }), /lock changed/);
+  assert.equal(await fs.readFile(file, "utf8"), token);
+});
+
+it("rejects receipt growth and disappearance during a bounded read", async (t) => {
+  for (const operation of ["grow", "remove"]) {
+    const { store, key, receipt } = fixture();
+    await store.write(key, receipt);
+    const file = path.join(store.directory, `${key}.json`);
+    const probe = await fs.open(file, "r");
+    const prototype = Object.getPrototypeOf(probe);
+    await probe.close();
+    const original = prototype.stat;
+    let changed = false;
+    const mock = t.mock.method(prototype, "stat", async function (...args) {
+      const info = await original.apply(this, args);
+      if (!changed) {
+        changed = true;
+        if (operation === "grow") await fs.appendFile(file, " ".repeat(70000));
+        else await fs.unlink(file);
+      }
+      return info;
+    });
+    try {
+      await assert.rejects(store.read(key), /unsafe or corrupt.*Do not resend/);
+      assert.equal(changed, true);
+    } finally { mock.mock.restore(); }
+  }
+});
+
 /**
  * Bounded by default so a wedged child fails the test instead of running to the
  * CI job wall, and opted out of explicitly by the one caller whose child is

@@ -5,6 +5,7 @@
 <h1 align="center">codex-mcp-bridge</h1>
 
 [![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
+[![skills.sh installs](https://skills.sh/b/buidangminh23/codex-mcp-bridge?label=skills.sh)](https://skills.sh/buidangminh23/codex-mcp-bridge/codex-bridge)
 [![CI](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge)](LICENSE)
 

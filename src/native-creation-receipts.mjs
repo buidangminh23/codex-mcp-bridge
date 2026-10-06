@@ -83,16 +83,18 @@ export class NativeCreationReceipts {
     return this.#key;
   }
   #protectWindowsPrivate(file, directory) {
-    const identity = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
-    const sid = identity.match(/S-1-5-[0-9-]+/)?.[0];
-    if (!sid) throw Error("Native creation authority owner could not be verified");
-    const options = { stdio: "pipe", windowsHide: true, timeout: 10000 };
-    execFileSync("icacls.exe", [file, "/inheritance:r", "/grant:r", `*${sid}:${directory ? "(OI)(CI)(F)" : "(F)"}`], options);
-    execFileSync("icacls.exe", [file, "/setowner", `*${sid}`], options);
+    const quoted = file.replaceAll("'", "''");
+    const securityType = directory ? "DirectorySecurity" : "FileSecurity";
+    const inheritance = directory ? "ContainerInherit,ObjectInherit" : "None";
+    const script = `$ErrorActionPreference='Stop';$s=[Security.Principal.WindowsIdentity]::GetCurrent().User;$a=New-Object Security.AccessControl.${securityType};$a.SetOwner($s);$a.SetAccessRuleProtection($true,$false);$r=New-Object Security.AccessControl.FileSystemAccessRule($s,'FullControl','${inheritance}','None','Allow');$a.AddAccessRule($r);Set-Acl -LiteralPath '${quoted}' -AclObject $a`;
+    this.#runWindowsAclScript(script);
   }
   #assertWindowsPrivate(file, directory) {
     const quoted = file.replaceAll("'", "''");
     const script = `$ErrorActionPreference='Stop';$a=Get-Acl -LiteralPath '${quoted}';$s=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;if(${directory ? "$true" : "$false"} -and !$a.AreAccessRulesProtected){throw 'Unprotected native authority'};if($a.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $s){throw 'Unexpected native authority owner'};foreach($r in $a.Access){if($r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $s -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected native authority access'}};if($a.Access.Count -ne 1){throw 'Ambiguous native authority access'}`;
+    this.#runWindowsAclScript(script);
+  }
+  #runWindowsAclScript(script) {
     const shellDirectory = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0");
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
     env.PSModulePath = path.win32.join(shellDirectory, "Modules");

@@ -152,6 +152,38 @@ it("isolates native authority ACL checks from inherited PowerShell modules", { s
   }
 });
 
+it("initializes Windows authority with only the current user despite explicit default access", { skip: process.platform !== "win32" }, async t => {
+  const f = fixture(t);
+  const directory = path.join(f.dir, "bridge-native-creation-authority");
+  const key = path.join(directory, "signing-key");
+  const mkdir = fs.mkdirSync, open = fs.openSync;
+  const injected = [];
+  const grant = file => {
+    execFileSync("icacls.exe", [file, "/grant", "*S-1-5-18:(F)", "*S-1-5-32-544:(F)"], { stdio: "pipe", windowsHide: true });
+    injected.push(file);
+  };
+  fs.mkdirSync = (file, ...options) => {
+    const result = mkdir(file, ...options);
+    if (file === directory) grant(file);
+    return result;
+  };
+  fs.openSync = (file, flags, ...options) => {
+    const fd = open(file, flags, ...options);
+    if (file === key && flags === "wx") {
+      try { grant(file); } catch (error) { fs.closeSync(fd); throw error; }
+    }
+    return fd;
+  };
+  try {
+    const created = await handleRelayRequest(f.create, f.deps);
+    assert.equal(created.ok, true, created.error?.message);
+    assert.deepEqual(injected, [directory, key]);
+    const restarted = new NativeCreationReceipts({ directory: f.store.directory });
+    assert.equal(restarted.read(f.id, accounts, f.hash).result.threadId, "new-thread");
+    assert.equal(f.calls(), 1);
+  } finally { fs.mkdirSync = mkdir; fs.openSync = open; }
+});
+
 it("rejects Windows authority access granted to another principal", { skip: process.platform !== "win32" }, async t => {
   for (const target of ["directory", "key"]) {
     const f = fixture(t);

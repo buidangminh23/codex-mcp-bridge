@@ -129,3 +129,24 @@ it("fails closed when the persisted signing key is missing or replaced", async t
     assert.equal(f.calls(), 1);
   }
 });
+
+it("isolates native authority ACL checks from inherited PowerShell modules", { skip: process.platform !== "win32" }, async t => {
+  const f = fixture(t);
+  const moduleDirectory = path.join(f.dir, "modules", "Microsoft.PowerShell.Security");
+  fs.mkdirSync(moduleDirectory, { recursive: true });
+  fs.writeFileSync(path.join(moduleDirectory, "Microsoft.PowerShell.Security.psd1"), "@{ RootModule = 'Microsoft.PowerShell.Security.psm1'; ModuleVersion = '99.0.0'; GUID = '56a44588-742a-41ef-9c35-1b2ecb1bb5b4'; FunctionsToExport = @('Get-Acl') }");
+  fs.writeFileSync(path.join(moduleDirectory, "Microsoft.PowerShell.Security.psm1"), "throw 'Inherited PowerShell module must not load'; function Get-Acl { throw 'Unexpected inherited module' }");
+  const inherited = Object.entries(process.env).filter(([key]) => key.toLowerCase() === "psmodulepath");
+  for (const [key] of inherited) delete process.env[key];
+  process.env.PSModulePath = path.dirname(moduleDirectory);
+  try {
+    const reply = await handleRelayRequest(f.create, f.deps);
+    assert.equal(reply.ok, true, reply.error?.message);
+    const restarted = new NativeCreationReceipts({ directory: f.store.directory });
+    assert.equal(restarted.read(f.id, accounts, f.hash).result.threadId, "new-thread");
+    assert.equal(f.calls(), 1);
+  } finally {
+    delete process.env.PSModulePath;
+    for (const [key, value] of inherited) process.env[key] = value;
+  }
+});

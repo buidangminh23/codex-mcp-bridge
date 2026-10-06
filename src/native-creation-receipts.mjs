@@ -76,7 +76,10 @@ export class NativeCreationReceipts {
   #assertWindowsPrivate(file, directory) {
     const quoted = file.replaceAll("'", "''");
     const script = `$ErrorActionPreference='Stop';$a=Get-Acl -LiteralPath '${quoted}';$s=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;if(${directory ? "$true" : "$false"} -and !$a.AreAccessRulesProtected){throw 'Unprotected native authority'};if($a.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $s){throw 'Unexpected native authority owner'};foreach($r in $a.Access){if($r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $s -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected native authority access'}};if($a.Access.Count -ne 1){throw 'Ambiguous native authority access'}`;
-    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { stdio: "pipe", windowsHide: true, timeout: 10000 });
+    const shellDirectory = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0");
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
+    env.PSModulePath = path.win32.join(shellDirectory, "Modules");
+    execFileSync(path.win32.join(shellDirectory, "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { env, stdio: "pipe", windowsHide: true, timeout: 10000 });
   }
   #signature(row, create = false) {
     const { signature, ...payload } = row;

@@ -79,6 +79,11 @@ const existingServer = servers.some((server) => server.name === serverName)
  */
 const runtime = resolveCodexDesktopNodeBin();
 
+if (IS_MACOS || IS_WINDOWS) {
+  console.log(`Native Desktop setup: in ${path.join(homeDir(), ".codex", "config.toml")} (or CODEX_HOME/config.toml), add env_vars = ["CODEX_APP_TOOLS_PIPE_PATH"] to the existing [mcp_servers.${serverName}] entry after registration.`);
+  console.log("Preserve existing settings and append the name to any existing env_vars list; do not save the temporary pipe path. Reconnect the relay or restart Codex Desktop after active work finishes, then check native_relay_status in the existing task.");
+}
+
 const registration = stdioMcpRegistration({ name: serverName, existing: existingServer, node: runtime.path, entry, entryArgs, envOverrides: {
   ...(process.env.CLAUDE_DESKTOP_USER_DATA !== undefined ? { CLAUDE_DESKTOP_USER_DATA: process.env.CLAUDE_DESKTOP_USER_DATA } : {}),
 } });

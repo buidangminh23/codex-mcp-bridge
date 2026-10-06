@@ -163,6 +163,13 @@ creation arguments, their canonical hash, accounts and executor. It keeps the
 result after the caller socket times out. `wait_codex_reply` queries that receipt
 without another creation and verifies current accounts, project scope, the native
 task directory and the exact initial creation response before releasing text.
+The companion authenticates every persisted receipt field with HMAC-SHA256.
+Its 32-byte signing key lives in the separate `bridge-native-creation-authority`
+directory beside the receipt store, with owner-only permissions or a protected
+Windows ACL. Altered, unsigned legacy receipts and missing, replaced or unsafe
+keys fail closed before any ownership is restored. The key is never returned
+to callers. Existing live account, executor and project checks still apply.
+
 Duplicate native receipt IDs never dispatch again. A prompt edited on retry
 cannot replace the original observation binding.
 

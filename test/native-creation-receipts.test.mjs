@@ -97,3 +97,35 @@ it("rejects unsafe, corrupt, oversized and altered on-disk receipts", async t =>
   const row = JSON.parse(original); row.args.prompt = "changed"; fs.writeFileSync(file, JSON.stringify(row));
   assert.throws(() => f.store.read(f.id, accounts, f.hash), /binding mismatch/);
 });
+
+
+it("authenticates completed results and refuses unsigned legacy receipts", async t => {
+  const f = fixture(t);
+  await handleRelayRequest(f.create, f.deps);
+  const file = f.store.file(f.id), original = fs.readFileSync(file, "utf8");
+  for (const edit of [row => { row.result.threadId = "unowned-victim"; }, row => { row.state = "pending"; }, row => { delete row.signature; }]) {
+    const row = JSON.parse(original); edit(row); fs.writeFileSync(file, JSON.stringify(row));
+    const restarted = new NativeCreationReceipts({ directory: f.store.directory });
+    const reply = await handleRelayRequest(f.poll, { ...f.deps, creationReceipts: restarted });
+    assert.equal(reply.ok, false);
+    assert.match(reply.error.message, /signature/);
+    assert.equal(f.calls(), 1);
+  }
+  fs.writeFileSync(file, original);
+  assert.equal((await handleRelayRequest(f.poll, f.deps)).result.result.threadId, "new-thread");
+});
+
+it("fails closed when the persisted signing key is missing or replaced", async t => {
+  for (const change of ["missing", "replaced", "truncated", "hardlink"]) {
+    const f = fixture(t);
+    await handleRelayRequest(f.create, f.deps);
+    const key = path.join(f.dir, "bridge-native-creation-authority", "signing-key");
+    const saved = path.join(f.dir, "saved-key"); fs.renameSync(key, saved);
+    if (change === "replaced") fs.writeFileSync(key, Buffer.alloc(32), { mode: 0o600 });
+    if (change === "truncated") fs.writeFileSync(key, Buffer.alloc(31), { mode: 0o600 });
+    if (change === "hardlink") fs.linkSync(saved, key);
+    const reply = await handleRelayRequest(f.poll, f.deps);
+    assert.equal(reply.ok, false, change);
+    assert.equal(f.calls(), 1);
+  }
+});

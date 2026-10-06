@@ -20,6 +20,13 @@ directory is outside the granted parent. Denials beat parent grants and require
 explicit reauthorization. Revocation affects subsequent operations, not work
 already dispatched. Invalid/missing configured policies fail closed.
 
+Project grants bind both the project directory and its verified common Git
+directory. Revocation preserves repository and registered worktree path
+denials even when the original directory or Git metadata disappears or is
+replaced. Discovery failures retain saved denials and appear in policy status
+as warnings; they cannot leave the original grant enabled. Malformed Git
+markers fail closed instead of becoming ordinary folders under parent grants.
+
 This optional `project-policy.mjs` store does not replace upstream
 `project-scope.mjs`: Claude-to-Codex delivery still requires the verified sender
 and target to share a directory or registered Git repository. Two granted

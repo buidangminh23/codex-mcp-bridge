@@ -7,6 +7,27 @@ import { it } from "node:test";
 import { SitesConnector, SitesOperationJournal, createSitesDesktopBackend, loadSitesConfig, pairSitesConnector, sitesHardenedEnv, validateSitesConfig, validateSitesJob } from "../src/sites-connector.mjs";
 
 const identity = { claude: "a".repeat(64), codex: "b".repeat(64) };
+
+it("rejects connector configuration growing after the descriptor size check", async (t) => {
+  const f = await fixture(t);
+  const file = path.join(f.directory, "connector.json");
+  await fs.writeFile(file, JSON.stringify(f.config));
+  const probe = await fs.open(file, "r");
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const original = prototype.stat;
+  let changed = false;
+  t.mock.method(prototype, "stat", async function (...args) {
+    const info = await original.apply(this, args);
+    if (!changed) {
+      changed = true;
+      await fs.appendFile(file, " ".repeat(70000));
+    }
+    return info;
+  });
+  await assert.rejects(loadSitesConfig(file), /changed during access/);
+  assert.equal(changed, true);
+});
 const currentAccounts = () => Object.fromEntries(Object.entries(identity).map(([name, fingerprint]) => [name, { status: "verified", fingerprint }]));
 const configFor = (root) => ({ siteUrl: "https://bridge.example", serviceToken: "private-service", connectorId: randomUUID(), connectorToken: "private-connector".repeat(3), ownerEmail: "owner@example.com", allowedRoots: [root], accountContext: identity });
 const reply = { content: [{ type: "text", text: "accepted" }], structuredContent: { threadId: "task", state: "accepted" } };

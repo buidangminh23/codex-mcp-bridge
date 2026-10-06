@@ -146,3 +146,88 @@ test("readiness diagnoses unknown callers and out-of-scope targets before sendin
   const bad = bridgeReadiness({ sender: { status: "unavailable", reason: "shared entry" }, scope: f.scope, targetCwd: f.root });
   assert.deepEqual(bad.issues.map((issue) => issue.code), ["SENDER_UNVERIFIED", "TARGET_NOT_AUTHORIZED"]);
 });
+
+test("repository-bound project grants reject missing, broken and replaced Git metadata", (t) => {
+  for (const change of ["missing", "broken", "replaced"]) {
+    const f = fixture(t); const { main } = repo(f, change);
+    f.edit("allow-project", main);
+    fs.renameSync(path.join(main, ".git"), path.join(f.root, "saved-git"));
+    if (change === "broken") fs.writeFileSync(path.join(main, ".git"), "gitdir: missing\n");
+    if (change === "replaced") git(main, "init", "-b", "main");
+    assert.equal(createProjectScope(f.file).allows(main), false, change);
+  }
+});
+
+test("revocation retains registered worktree paths when their Git metadata disappears", (t) => {
+  const f = fixture(t); const { main } = repo(f);
+  const linked = path.join(f.parent, "linked");
+  git(main, "worktree", "add", "--detach", linked);
+  f.edit("allow-parent", f.parent);
+  f.edit("revoke", main);
+  fs.renameSync(path.join(linked, ".git"), path.join(f.root, "saved-pointer"));
+  assert.equal(createProjectScope(f.file).allows(linked), false);
+  f.edit("allow-project", main);
+  assert.equal(f.scope.allows(linked), true);
+});
+
+test("revocation preserves saved repository evidence after missing metadata or directories", (t) => {
+  for (const change of ["metadata", "directory"]) {
+    const f = fixture(t); const { main, worktree } = repo(f, change);
+    f.edit("allow-parent", f.parent);
+    f.edit("allow-project", worktree);
+    fs.renameSync(change === "metadata" ? path.join(worktree, ".git") : worktree, path.join(f.root, "removed"));
+    f.edit("revoke", worktree);
+    assert.equal(createProjectScope(f.file).allows(main), false, change);
+  }
+});
+
+test("repository revocation survives common directory replacement under an authorized parent", (t) => {
+  const f = fixture(t); const { main, worktree } = repo(f);
+  f.edit("allow-parent", f.parent);
+  f.edit("revoke", worktree);
+  fs.renameSync(path.join(main, ".git"), path.join(f.root, "saved-common"));
+  git(main, "init", "-b", "main");
+  assert.equal(createProjectScope(f.file).allows(main), false);
+  f.edit("allow-project", main);
+  assert.equal(f.scope.allows(main), true);
+});
+
+test("broken Git metadata cannot downgrade to an authorized plain folder", (t) => {
+  const f = fixture(t);
+  f.edit("allow-parent", f.parent);
+  const broken = path.join(f.parent, "broken"); fs.mkdirSync(broken);
+  fs.writeFileSync(path.join(broken, ".git"), "gitdir: missing\n");
+  assert.equal(f.scope.allows(broken), false);
+  assert.throws(() => f.edit("allow-project", broken), /repository|Git/);
+  const plain = path.join(f.parent, "plain"); fs.mkdirSync(plain);
+  assert.equal(f.scope.allows(plain), true);
+});
+
+
+test("revocation refreshes late worktrees through the saved common directory after its grant path disappears", (t) => {
+  const f = fixture(t); const { main, worktree } = repo(f);
+  f.edit("allow-parent", f.parent);
+  f.edit("allow-project", worktree);
+  const late = path.join(f.parent, "late");
+  git(main, "worktree", "add", "--detach", late);
+  fs.renameSync(worktree, path.join(f.root, "removed-grant"));
+  f.edit("revoke", worktree);
+  assert.equal(f.scope.allows(late), false);
+  fs.renameSync(path.join(late, ".git"), path.join(f.root, "late-pointer"));
+  assert.equal(createProjectScope(f.file).allows(late), false);
+});
+
+
+test("revocation retains saved denials when the common Git directory is corrupt", (t) => {
+  const f = fixture(t); const { main, worktree } = repo(f);
+  f.edit("allow-parent", f.parent);
+  f.edit("allow-project", worktree);
+  fs.renameSync(path.join(main, ".git", "HEAD"), path.join(f.root, "saved-head"));
+  f.edit("revoke", worktree);
+  const policy = readProjectPolicy(f.file).policy;
+  assert.equal(policy.grants.some(entry => entry.kind === "project"), false);
+  assert.equal(policy.denies.length, 1);
+  assert.match(f.scope.status().warnings.join(" "), /discovery failed/);
+  fs.renameSync(path.join(worktree, ".git"), path.join(f.root, "saved-worktree-pointer"));
+  assert.equal(f.scope.allows(worktree), false);
+});

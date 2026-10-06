@@ -6,7 +6,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Fixed
 
+- Authenticate native creation receipt contents with a private persisted signing key; reject altered and unsigned receipts before restoring ownership.
+- Restore owned task authority from verified native creation receipts after lost acknowledgements or bridge restarts. Keep ordinary inspection and editable local receipts subject to ownership checks.
+- Bind project grants to repository identity and retain repository and registered worktree revocations when Git metadata or directories disappear or are replaced. Reject malformed Git metadata instead of treating it as a plain folder.
+- Recheck live project, account and runtime authority after awaited sender validation before opening, trusting or submitting a Claude Desktop creation.
+
 - Preserve reply continuation for confirmed Desktop creation and for existing-thread sends whose native acknowledgement times out. Return an owner/account-bound delivery ID without resending; keep uncertain delivery distinct from acceptance, and correlate creation replies to the exact native creation dispatch. Retain the upstream project and permission checks.
+
+- Bind standalone Git directory pointers to their checkout so a different project cannot impersonate an authorized recipient. Reject private metadata, task receipts and connector credentials that grow, disappear or change while being read.
+- Read release fingerprints through bounded file descriptors, preserve locks replaced by another writer, and refuse automatic expiry of an occupied telemetry lock. Write installer output atomically and stop if the Desktop configuration changes before replacement.
+- Refuse app-server health redirects and revalidate loopback endpoints before use. Clamp supervisor timer intervals to the supported range and restrict CI token permissions while pinning the Deno setup action.
 
 ## [1.20.1] - 2026-10-03
 

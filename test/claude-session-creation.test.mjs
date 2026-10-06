@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
+import { execFileSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { ClaudeSessionCreation } from "../src/claude-session-creation.mjs";
+import { createProjectScope, editProjectGrant, updateProjectPolicy } from "../src/project-policy.mjs";
 
 const id = "c264a6f1-0945-47b1-b3c1-810bf4f33312";
 const secondId = "c264a6f1-0945-47b1-b3c1-810bf4f33313";
@@ -32,6 +36,68 @@ function fixture(overrides = {}) {
 
 async function blocked(promise, code) {
   await assert.rejects(promise, (error) => error.code === code);
+}
+
+for (const phase of ["open", "trust", "submit", "composer"]) {
+  for (const mutation of ["revoke", "directory", "repository", "account", "runtime", "unchanged"]) {
+    it(`revalidates production creation guard after sender lookup: ${phase}/${mutation}`, async t => {
+      const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "creation-final-gate-")));
+      t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+      const cwd = path.join(root, "project"); fs.mkdirSync(cwd);
+      if (mutation === "repository") execFileSync("git", ["-C", cwd, "init", "-b", "main"], { stdio: "pipe" });
+      const file = path.join(root, "policy.json");
+      updateProjectPolicy(file, policy => editProjectGrant(policy, "allow-project", cwd));
+      const rootPolicy = createProjectScope(file);
+      const effects = [];
+      let validAccount = true, validRuntime = true, lookups = 0;
+      const lookup = { open: 2, trust: 3, submit: 4, composer: 6 }[phase];
+      const f = fixture({
+        listTasks: async () => [{ taskId: "old-task", cwd, isArchived: false }],
+        realpath: async directory => fs.realpathSync.native(directory),
+        open: async () => { effects.push("open"); },
+        trust: async () => { effects.push("trust"); return { status: "trusted" }; },
+        settle: async () => {},
+        submit: async ({ beforeSubmit }) => {
+          await beforeSubmit();
+          effects.push("select");
+          await beforeSubmit();
+          effects.push("submit");
+          return { status: "submitted" };
+        },
+      });
+      const sender = { cwd, threadId: "sender-a", status: "verified" };
+      const assertSender = async () => {
+        await Promise.resolve();
+        if (++lookups === lookup) {
+          if (mutation === "revoke") updateProjectPolicy(file, policy => editProjectGrant(policy, "revoke", cwd));
+          if (mutation === "directory") { fs.renameSync(cwd, path.join(root, "previous")); fs.mkdirSync(cwd); }
+          if (mutation === "repository") { fs.renameSync(path.join(cwd, ".git"), path.join(root, "previous-git")); execFileSync("git", ["-C", cwd, "init", "-b", "main"], { stdio: "pipe" }); }
+          if (mutation === "account") validAccount = false;
+          if (mutation === "runtime") validRuntime = false;
+        }
+        return sender;
+      };
+      const source = fs.readFileSync(new URL("../src/claude-bridge.mjs", import.meta.url), "utf8");
+      const start = source.slice(source.indexOf("async function startClaudeCreation("), source.indexOf("async function inspectClaudeCreation("));
+      const names = ["runtime", "desktopOnly", "assertSender", "readBridgeAccounts", "requireBridgeAccounts", "rootPolicy", "creations", "creationRootBindings", "assertCreationRoots", "assertAccountIdentity", "recheckScopeBindings", "textResult"];
+      const execute = new Function(...names, start + "\nreturn startClaudeCreation;")(
+        { assertCurrent() { if (!validRuntime) throw Error("runtime changed"); } }, true, assertSender,
+        () => ({ claude: account }), value => value, rootPolicy, f.creation, new Map(), () => {},
+        () => { if (!validAccount) throw Error("account changed"); },
+        bindings => { rootPolicy.recheck(bindings.sender); rootPolicy.recheck(bindings.recipient); },
+        value => ({ content: [{ type: "text", text: value }] }),
+      );
+      const operation = execute({ requestId: id, cwd, prompt: args.prompt, autoSubmit: true, trustProject: true }, {});
+      if (mutation === "unchanged") {
+        await operation;
+        assert.deepEqual(effects, ["open", "trust", "select", "submit"]);
+      } else {
+        await operation.catch(error => assert.match(error.message, /revoked|replaced|not authorized|account changed|runtime changed/));
+        assert.ok(lookups >= lookup);
+        assert.equal(effects.includes(phase === "composer" ? "submit" : phase), false);
+      }
+    });
+  }
 }
 
 describe("Claude native new session lifecycle", () => {

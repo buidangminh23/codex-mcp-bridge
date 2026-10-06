@@ -147,8 +147,12 @@ export async function runSupervisor(entry, options = {}) {
     const pipe = await resolveNativeToolsPipePath();
     if (pipe) env.CODEX_APP_TOOLS_PIPE_PATH = pipe;
   }
-  const pollMs = Math.max(100, Number(env.CODEX_BRIDGE_RELOAD_POLL_MS) || 1000);
-  const settleMs = Math.max(100, Number(env.CODEX_BRIDGE_RELOAD_SETTLE_MS) || 1500);
+  const interval = (value, fallback) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.max(100, Math.min(2147483647, parsed)) : fallback;
+  };
+  const pollMs = interval(env.CODEX_BRIDGE_RELOAD_POLL_MS, 1000);
+  const settleMs = interval(env.CODEX_BRIDGE_RELOAD_SETTLE_MS, 1500);
   let active;
   let initializeParams;
   let initializeResult;

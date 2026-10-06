@@ -15,9 +15,28 @@ function samePath(left, right) {
 }
 
 function metadata(file) {
-  const stat = fs.statSync(file);
-  if (!stat.isFile() || stat.size > 4096) throw new Error("Invalid project repository metadata");
-  return fs.readFileSync(file, "utf8").trim();
+  const entry = fs.lstatSync(file);
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.size > 4096) throw new Error("Invalid project repository metadata");
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = fs.fstatSync(descriptor);
+    const fields = ["dev", "ino", "size", "mtimeMs", "ctimeMs"];
+    const matches = (left, right) => fields.every((field) => left[field] === right[field]);
+    if (!before.isFile() || !matches(entry, before)) throw new Error("Project repository metadata changed during access");
+    const data = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < data.length) {
+      const count = fs.readSync(descriptor, data, offset, data.length - offset, offset);
+      if (!count) throw new Error("Project repository metadata changed during access");
+      offset += count;
+    }
+    const after = fs.fstatSync(descriptor);
+    const current = fs.lstatSync(file);
+    if (!current.isFile() || current.isSymbolicLink() || !matches(before, after) || !matches(after, current)) throw new Error("Project repository metadata changed during access");
+    return data.toString("utf8").trim();
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }
 
 function exists(file) {
@@ -40,12 +59,21 @@ function repository(cwd) {
     if (samePath(root, path.parse(root).root) || samePath(root, home)) return null;
     const marker = path.join(root, ".git");
     if (exists(marker)) {
-      if (fs.statSync(marker).isDirectory()) return gitRepository(directory(marker));
+      const entry = fs.lstatSync(marker);
+      if (entry.isSymbolicLink()) throw new Error("Project repository marker cannot be a symbolic link");
+      if (entry.isDirectory()) {
+        const gitdir = directory(marker);
+        if (!samePath(gitdir.path, marker)) throw new Error("Project repository marker changed during access");
+        return gitRepository(gitdir);
+      }
       const match = metadata(marker).match(/^gitdir: ([^\r\n]+)$/);
       if (!match) throw new Error("Invalid project gitdir metadata");
       const gitdir = directory(path.resolve(root, match[1]));
       const commonFile = path.join(gitdir.path, "commondir");
-      if (!exists(commonFile)) return gitRepository(gitdir);
+      if (!exists(commonFile)) {
+        const separate = gitRepository(gitdir);
+        return { ...separate, identity: `${separate.identity}:${root}` };
+      }
       const common = gitRepository(directory(path.resolve(gitdir.path, metadata(commonFile))));
       const registered = path.relative(path.join(common.path, "worktrees"), gitdir.path);
       if (!registered || registered === ".." || registered.startsWith(`..${path.sep}`) || path.isAbsolute(registered) || registered.includes(path.sep)) throw new Error("Project worktree is not registered in its common repository");

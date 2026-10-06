@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { scopeEntry, updateProjectPolicy } from './project-policy.mjs';
+import { projectRevocationEntry, scopeEntry, updateProjectPolicy } from './project-policy.mjs';
 
 const empty = () => ({ projects: [], parents: [], excluded: [] });
 const key = p => process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
@@ -86,7 +86,7 @@ export function syncCardSettings(policyFile, input, options = {}) {
         // Removing one project revokes it even under a granted parent. Removing
         // a parent only removes that broad grant; exact project grants survive.
         if (kind === 'project') for (const grant of oldGrants) {
-          if (!policy.denies.some(d => sameEntry(d, grant))) policy.denies.push(grant);
+          if (!policy.denies.some(d => sameEntry(d, grant))) policy.denies.push(projectRevocationEntry(grant, options));
         }
         for (const p of page[field].filter(p => !includes(previous[field], p))) {
           if (policy.grants.some(g => g.kind === kind && same(g.path, p))) continue;
@@ -102,7 +102,7 @@ export function syncCardSettings(policyFile, input, options = {}) {
       for (const p of page.excluded.filter(p => !includes(previous.excluded, p))) {
         if (policy.denies.some(d => same(d.path, p))) continue;
         const old = policy.grants.find(g => same(g.path, p));
-        const entry = old ?? scopeEntry(p, 'project', options);
+        const entry = projectRevocationEntry(old ?? scopeEntry(p, 'project', options), options);
         policy.grants = policy.grants.filter(g => !sameEntry(g, entry));
         policy.denies.push(entry);
       }

@@ -1,9 +1,15 @@
-# codex-mcp-bridge
+<p align="center">
+  <img src="assets/agent-pets.svg" width="144" height="52" alt="Claude Clawd → Codex; Codex → Claude" />
+</p>
+
+<h1 align="center">codex-mcp-bridge</h1>
 
 Local Desktop handoff guides: [daily workflow and directory verification](docs/daily-handoffs.md), [new-machine setup and permissions](docs/new-machine-setup.md), and [project onboarding](docs/project-onboarding.md).
 
 [![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
-[![CI](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/buidangminh23/codex-mcp-bridge/actions/workflows/ci.yml)
+[![npm downloads](https://img.shields.io/npm/dt/@minhspark/codex-mcp-bridge?logo=npm&label=npm%20downloads&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
+[![skills.sh installs](https://skills.sh/b/buidangminh23/codex-mcp-bridge?label=skills.sh)](https://skills.sh/buidangminh23/codex-mcp-bridge/codex-bridge)
+[![GitHub views / source window](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-github-views.svg)](https://buidangminh23.github.io/codex-mcp-bridge/)
 [![license](https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge)](LICENSE)
 
 Send prompts and replies between **Claude and Codex**, keeping each conversation in its own app. Supports Windows, macOS, and Linux; native Desktop integration supports Windows and macOS.
@@ -17,16 +23,6 @@ To receive new release notifications, open [this repository](https://github.com/
 Starring the repository or downloading/installing a package does not subscribe you to release notifications. Notifications do not update your installed copy; follow the installation instructions to update.
 
 [View release notes](https://github.com/buidangminh23/codex-mcp-bridge/releases).
-
-## Project statistics
-
-**[Open live dashboard — refreshes every 30 seconds](https://buidangminh23.github.io/codex-mcp-bridge/)**
-
-The image below is an hourly snapshot. Each metric shows its source time and reporting window; delayed sources are marked stale. The live dashboard refreshes independently.
-
-[![Repository usage dashboard](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/dashboard.svg)](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics)
-
-[Full statistics and daily history](https://github.com/buidangminh23/codex-mcp-bridge/tree/analytics) · [Public aggregate JSON](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/data.json) · [How these metrics work](#repository-analytics)
 
 ## Installation
 
@@ -100,6 +96,19 @@ To opt a machine you administer into **Full access + Never**, run `codex-mcp-bri
 If the bridge is already registered, `codex-full-access` (`codex-full-access.cmd` in PowerShell) enables the same settings without replacing that registration. The bridge reads the saved choice when it starts.
 
 For Desktop mode, install [Codex Desktop](https://developers.openai.com/codex/app) and [Claude Desktop](https://claude.com/download), sign in, and save the intended local project in Codex Desktop. Open that same directory in Claude Desktop's Code tab. A normal Claude chat is not a Code session.
+
+#### Native relay pipe forwarding
+
+After running the native relay installer, add this setting to its **existing** entry in `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`):
+
+```toml
+[mcp_servers.codex-native-relay]
+env_vars = ["CODEX_APP_TOOLS_PIPE_PATH"]
+```
+
+Keep the entry's `command`, `args`, and other settings; append the variable name if `env_vars` already contains names. Use your configured server name if you set `CODEX_NATIVE_RELAY_NAME`. This forwards the running Desktop app-server's pipe path without saving its temporary value. The installer uses `codex mcp add`, which does not provide an `env_vars` option, and refuses to reset entries with custom transport settings, including `env_vars`.
+
+Reconnect `codex-native-relay` in the existing Desktop task, or restart Codex Desktop after active work finishes. Verify `native_relay_status` from that task. Without forwarding, Desktop setups whose pipe is absent from app-server command-line configuration can expose status tools while reporting native pipe unavailable and relay sockets not listening; a connected Claude bridge alone does not establish native delivery.
 
 ### Windows (PowerShell)
 
@@ -369,7 +378,7 @@ Start with `codex doctor` for Codex installation problems and `claude doctor` fo
 | `This MCP process has no registered Claude Desktop Code session in its parent ancestry` | The shared Desktop entry may not belong to the calling Code task. Register the bridge in the intended existing Code project under a distinct name, such as `codex-bridge-code`, retaining its access settings. Check that `CODEX_BRIDGE_ALLOWED_ROOTS` includes the intended authorized target project; copied test registrations may still allow only test directories. Reload that task's MCP configuration. In the tested Windows Desktop version, View > Reload was insufficient: fully exit and reopen Claude after active work is stopped, then reopen the same task. Verify the dedicated entry and a new proactive send; receiving a reply to a Codex-originated message alone does not establish proactive sending. |
 | Installer refuses an entry with custom access/timeout settings | Keep those settings. Update only the existing entry's `command` and `args` to the values printed by the installer, then reconnect. |
 | Desktop task still reports `app-server` | Rerun `codex-mcp-bridge-install --desktop-tasks`; set `CODEX_BRIDGE_DESKTOP_TASKS=1` in the separate Claude Code registration too. Refresh the reverse registration with the same setting and reconnect the actual sending task. |
-| Relay is installed but unavailable | Open Codex Desktop and reconnect `codex-native-relay`. Check `codex mcp get codex-native-relay` and the in-task `native_relay_status`; a registered entry alone is insufficient. |
+| Relay is installed but unavailable | Check [native relay pipe forwarding](#native-relay-pipe-forwarding), then reconnect `codex-native-relay` or restart Codex Desktop after active work finishes. Check `codex mcp get codex-native-relay` and the in-task `native_relay_status`; a registered entry alone is insufficient. |
 | `RELAY_THREAD_UNCONFIGURED` | Rerun `codex-native-relay-install --desktop-tasks` without `--no-bootstrap` to create the missing executor. |
 | macOS `untrusted-code-signing-identity` or `NATIVE_DELIVERY_UNCONFIRMED` | Inspect the client logs and the installer's `relay runtime:` line. Rerun the relay installer with Codex Desktop installed; if runtime detection fails, set `CODEX_NATIVE_RELAY_NODE` to the actual app-bundled runtime. Relaunch the companion after active work finishes. Inspect any original delivery before retrying. |
 | Linux says native relay unavailable | Use the Linux CLI setup with `CODEX_BRIDGE_DESKTOP_TASKS=0` on both registrations. Native Desktop relay support is Windows/macOS only. |
@@ -386,7 +395,7 @@ For unresolved failures, [open an issue](https://github.com/buidangminh23/codex-
 
 ## Repository analytics
 
-The live dashboard polls the aggregate API every 30 seconds. Installation counts reflect reports received by the server; this is not a count of currently online processes. Public GitHub/npm sources are refreshed with a short cache, but their own statistics may be delayed. GitHub Actions refreshes and archives statistics hourly through the `Repository analytics` workflow, including private GitHub traffic; scheduled runs may be delayed by GitHub. Data collection and publication to the `analytics` branch run independently of the Pages deployment environment, and a newer scheduled run replaces a stuck older run. That workflow reads GitHub traffic with the `ANALYTICS_TOKEN` repository secret, a token with push access to this repository (fine-grained: Administration read); the default workflow token cannot read GitHub traffic, so without it the views/clones sources are retained from the last successful run and the run is reported as incomplete. The `analytics` branch is written with the workflow's own token, so its commits come from `github-actions[bot]` and `ANALYTICS_TOKEN` needs no write access. The README image is a snapshot and may be cached by GitHub; open the live dashboard for automatic updates. Each source keeps its own collection time and reporting window. Sources older than three hours are marked stale even when polling succeeds. Missing data is unavailable, not zero; an empty usage breakdown means no opted-in reports in that period. Only aggregate figures are published. Installation IDs stay in the private database.
+The live dashboard polls the aggregate API every 30 seconds. Installation counts reflect reports received by the server; this is not a count of currently online processes. Public GitHub/npm sources are refreshed with a short cache, but their own statistics may be delayed. GitHub Actions refreshes and archives statistics hourly through the `Repository analytics` workflow, including private GitHub traffic; scheduled runs may be delayed by GitHub. Data collection and publication to the `analytics` branch run independently of the Pages deployment environment, and a newer scheduled run replaces a stuck older run. That workflow reads GitHub traffic with the `ANALYTICS_TOKEN` repository secret, a token with push access to this repository (fine-grained: Administration read); the default workflow token cannot read GitHub traffic, so without it the views/clones sources are retained from the last successful run and the run is reported as incomplete. The `analytics` branch is written with the workflow's own token, so its commits come from `github-actions[bot]` and `ANALYTICS_TOKEN` needs no write access. The README view badge is an hourly snapshot and may be cached by GitHub; open the live dashboard for automatic updates. Each source keeps its own collection time and reporting window. Sources older than three hours are marked stale even when polling succeeds. Missing data is unavailable, not zero; an empty usage breakdown means no opted-in reports in that period. Only aggregate figures are published. Installation IDs stay in the private database.
 
 Repository owners can view [GitHub traffic](https://github.com/buidangminh23/codex-mcp-bridge/graphs/traffic) for recent views and clones. Downloads and clones include updates, reinstalls, and automation; they do not measure active users. GitHub traffic only covers the recent 14-day window, so collect it regularly to keep a longer history.
 

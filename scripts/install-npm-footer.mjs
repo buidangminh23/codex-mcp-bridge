@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 
 exitForVersionRequest(import.meta.url);
@@ -70,7 +71,18 @@ if (!remove) {
   fs.mkdirSync(footerDirectory, { recursive: true, mode: 0o700 });
   if (fs.existsSync(footerPath) && (!fs.lstatSync(footerPath).isFile() || fs.lstatSync(footerPath).isSymbolicLink())) throw new Error(`Unsafe footer destination: ${footerPath}`);
   if (!fs.existsSync(footerPath) || fs.readFileSync(footerPath, "utf8") !== source) {
-    fs.writeFileSync(footerPath, source, { mode: 0o600 });
+    const temporary = `${footerPath}.${randomUUID()}.tmp`;
+    let created = false;
+    try {
+      fs.writeFileSync(temporary, source, { mode: 0o600, flag: "wx" });
+      created = true;
+      fs.renameSync(temporary, footerPath);
+    } finally {
+      if (created) {
+        try { fs.unlinkSync(temporary); }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
+      }
+    }
   }
 }
 for (const { file, before, after } of edits) {

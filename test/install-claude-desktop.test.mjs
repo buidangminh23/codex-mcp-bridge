@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -63,6 +63,31 @@ function configWith(entry) {
   if (entry) fs.writeFileSync(file, `${JSON.stringify(entry, null, 2)}\n`);
   return file;
 }
+
+it("rejects a linked Desktop config without changing its target", { skip: process.platform === "win32" }, () => {
+  const target = configWith({ preserved: true });
+  const config = configWith(null);
+  fs.symlinkSync(target, config);
+  assert.throws(() => install({ config }), /unsafe|regular file/i);
+  assert.deepEqual(JSON.parse(fs.readFileSync(target, "utf8")), { preserved: true });
+});
+
+it("preserves a concurrent Desktop configuration update", () => {
+  const config = configWith({ preserved: true });
+  const preload = path.join(sandbox, "concurrent-config-writer.mjs");
+  fs.writeFileSync(preload, `import fs from 'node:fs';
+const original = fs.writeFileSync;
+let updated = false;
+fs.writeFileSync = function (file, ...args) {
+  if (!updated && (String(file) === process.env.CLAUDE_DESKTOP_CONFIG || (String(file).startsWith(process.env.CLAUDE_DESKTOP_CONFIG + '.') && String(file).endsWith('.tmp')))) {
+    updated = true;
+    original(process.env.CLAUDE_DESKTOP_CONFIG, JSON.stringify({ concurrent: true }));
+  }
+  return original.call(this, file, ...args);
+};`);
+  assert.throws(() => install({ config, env: { NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` } }), /configuration changed/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), { concurrent: true });
+});
 
 describe("claude desktop installer", () => {
   it("enables Full access and repairs the managed policy when explicitly requested", { skip: process.platform !== "win32" }, () => {

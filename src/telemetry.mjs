@@ -1,4 +1,4 @@
-import { mkdir, readFile, open, rename, unlink, stat } from 'node:fs/promises';
+import { mkdir, readFile, open, rename, unlink, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -48,14 +48,16 @@ async function locked(directory, action) {
     lock = await open(filename, 'wx', 0o600);
   } catch (error) {
     if (error.code !== 'EEXIST') throw error;
-    const info = await stat(filename).catch(() => null);
-    if (info && Date.now() - info.mtimeMs > 60000) {
-      await unlink(filename).catch(() => {});
-      lock = await open(filename, 'wx', 0o600);
-    } else throw new Error('Telemetry settings are busy. Retry in a few seconds.');
+    throw new Error('Telemetry settings are busy. Locks never expire automatically; inspect active telemetry processes before repairing a leftover lock.');
   }
-  try { return await action(); }
-  finally { await lock.close(); await unlink(filename).catch(() => {}); }
+  let owned;
+  try { owned = await lock.stat(); return await action(); }
+  finally {
+    try {
+      const current = await lstat(filename).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
+      if (owned && current?.isFile() && !current.isSymbolicLink() && current.nlink === 1 && owned.dev === current.dev && owned.ino === current.ino && owned.birthtimeMs === current.birthtimeMs) await unlink(filename);
+    } finally { await lock.close(); }
+  }
 }
 
 function suppressed(env) {

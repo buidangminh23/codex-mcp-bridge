@@ -262,6 +262,10 @@ async function startClaudeCreation({ requestId, cwd, prompt, autoSubmit = proces
       if (rootPolicy.enabled && !rootPolicy.same(cwd, scopeBindings.recipient.path)) throw new Error("The Claude creation working directory changed before opening Desktop");
       const current = await assertSender(meta);
       if (JSON.stringify(current) !== JSON.stringify(sender)) throw new Error("The calling Codex turn changed before opening Claude Desktop");
+      runtime.assertCurrent();
+      assertAccountIdentity(selectedAccounts);
+      recheckScopeBindings(scopeBindings);
+      if (rootPolicy.enabled && !rootPolicy.same(cwd, scopeBindings.recipient.path)) throw new Error("The Claude creation working directory changed before opening Desktop");
     },
   });
   if (rootPolicy.enabled) creationRootBindings.set(requestId, scopeBindings);

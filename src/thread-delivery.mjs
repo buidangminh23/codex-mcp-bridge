@@ -337,10 +337,16 @@ export class DesktopTaskDelivery {
         if (typeof threadId !== "string" || !threadId.trim() || response.hostId !== "local" || response.status === "outcome-unknown" ||
             response.firstTurn && response.firstTurn.status !== "accepted" || receipt.threadId && receipt.threadId !== threadId) throw new Error("Native creation is not confirmed; do not resend");
         let inspected;
-        try { inspected = await this.inspect(threadId, delivered.cwd, { deadline }); }
+        try { inspected = await this.#inspectMetadata(threadId, delivered.cwd, { deadline }); }
         catch (error) { if (this.now() >= deadline && /deadline|within \d+ms/.test(error.message)) return null; throw error; }
         if (inspected.executorThreadId !== envelope.executorThreadId) throw new Error("Native creation executor changed");
+        if (!sameAccountContext(binding.accountContext, this.accountContext?.())) throw new Error("Creation receipt account changed");
+        this.security.assertCwd(delivered.cwd);
+        this.senderProjectScope(delivered.cwd);
+        if (this.security.hardenedRoots?.mode === "project-policy") this.security.hardenedRoots.recheck(inspected.scopeBinding);
+        if (inspected.projectScope) recheckProjectScope(inspected.projectScope);
         this.security.registerThread(threadId);
+        this.security.assertThread(threadId, inspected.thread.cwd);
         return { threadId, cwd: delivered.cwd, previousTurnId: null, deliveryStatus: "accepted",
           responseObservation: { operation: "create_thread", threadId, previousTurnId: null, expectedCwd: delivered.cwd,
             executorThreadId: envelope.executorThreadId, prompt: binding.args.prompt, accountContext: binding.accountContext } };
@@ -352,17 +358,23 @@ export class DesktopTaskDelivery {
   }
 
   async inspect(threadId, cwd, { deadline } = {}) {
+    const inspected = await this.#inspectMetadata(threadId, cwd, { deadline });
+    this.security.assertThread(threadId, inspected.thread.cwd);
+    return inspected;
+  }
+
+  async #inspectMetadata(threadId, cwd, { deadline } = {}) {
     const envelope = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1 }, { deadline, includeRelayContext: true });
     const response = envelope.result;
     const thread = response?.thread;
     if (thread?.id !== threadId || thread.hostId !== "local" || !thread.cwd) throw new Error("Desktop did not confirm the task's local workspace.");
-    this.security.assertThread(threadId, thread.cwd);
     this.security.assertCwd(thread.cwd);
     const projectScope = this.senderProjectScope(thread.cwd);
     if (cwd && path.relative(realpathSync.native(cwd), realpathSync.native(thread.cwd))) {
       throw new Error("Native Desktop delivery cannot change an existing task's workspace; create a new task at the requested cwd.");
     }
-    return { thread, latestTurnId: response.turns?.[0]?.id ?? null, projectScope, executorThreadId: envelope.executorThreadId ?? null };
+    const scopeBinding = this.security.hardenedRoots?.mode === "project-policy" ? this.security.hardenedRoots.capture(thread.cwd) : undefined;
+    return { thread, latestTurnId: response.turns?.[0]?.id ?? null, projectScope, scopeBinding, executorThreadId: envelope.executorThreadId ?? null };
   }
 
   async send({ threadId, prompt, cwd, model, effort, name, deadline, onPrepared }) {

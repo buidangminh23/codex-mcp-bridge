@@ -52,6 +52,7 @@ for (const phase of ["open", "trust", "submit", "composer"]) {
       let validAccount = true, validRuntime = true, lookups = 0;
       const lookup = { open: 2, trust: 3, submit: 4, composer: 6 }[phase];
       const f = fixture({
+        platform: process.platform,
         listTasks: async () => [{ taskId: "old-task", cwd, isArchived: false }],
         realpath: async directory => fs.realpathSync.native(directory),
         open: async () => { effects.push("open"); },

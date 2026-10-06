@@ -37,7 +37,7 @@ export function sanitizeAnalytics(history, usage) {
   return output;
 }
 
-function analyticsMetrics(data) {
+export function renderPublicDashboard(data) {
   const latest = source => [...data.snapshots].sort((a, b) => String(b.collectedAt).localeCompare(String(a.collectedAt))).find(row => row[source]);
   const views = latest('views')?.views;
   const clones = latest('clones')?.clones;
@@ -61,11 +61,6 @@ function analyticsMetrics(data) {
     ['Versions / 30 days', ...(data.usage?.versions.length ? data.usage.versions.map(row => `${row.version}: ${format(row.installations)}`) : [noReports ? 'No opted-in reports in this period' : 'Source unavailable'])],
     ['Source freshness (UTC)', ...['views', 'clones', 'npm', 'repository', 'releases'].map(source => `${source}: ${latest(source)?.sourceCollectedAt?.[source] || 'Unavailable'}`), ...(data.usage ? [`usage: ${data.usage.collectedAt || 'Unavailable'}`] : [])],
   ];
-  return { cards, details };
-}
-
-export function renderPublicDashboard(data) {
-  const { cards, details } = analyticsMetrics(data);
   const wrap = (value, maximum) => {
     const lines = [];
     let remaining = String(value);
@@ -110,41 +105,27 @@ export function renderPublicDashboard(data) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="820" height="${y + 35}" viewBox="0 0 820 ${y + 35}" role="img" aria-label="Repository aggregate analytics"><rect width="100%" height="100%" fill="#0d1626"/><g font-family="Arial, sans-serif">${body.join('')}</g></svg>\n`;
 }
 
-function renderBadge(label, message, detail, color) {
+export function renderGithubViewsBadge(data, { now = Date.now() } = {}) {
+  const snapshot = [...data.snapshots].sort((a, b) => String(b.collectedAt).localeCompare(String(a.collectedAt))).find(row => row.views);
+  const views = snapshot?.views;
+  const time = snapshot?.sourceCollectedAt?.views;
+  const start = views?.views?.[0]?.timestamp?.slice(0, 10);
+  const end = views?.views?.at(-1)?.timestamp?.slice(0, 10);
+  const validWindow = date(start) && date(end);
+  const days = validWindow ? (Date.parse(end) - Date.parse(start)) / 86400000 + 1 : null;
+  const label = `GitHub views / ${days > 0 ? `${days}d` : 'window'}`;
+  const value = views?.count;
+  const undated = !date(time);
+  const stale = !undated && now - Date.parse(time) > staleAfter;
+  const age = value == null ? '' : undated ? ' · undated' : stale ? ' · stale' : '';
+  const message = format(value) + age;
+  const color = value == null ? '#555' : stale || undated ? '#92400e' : '#0369a1';
+  const detail = `${validWindow ? `${start} to ${end} UTC` : 'Source window unavailable'}. Source: ${displayTime(time)}. Archived badge; freshness is relative to generation time.`;
   const labelWidth = Math.ceil([...label].length * 7.2 + 16);
   const messageWidth = Math.ceil([...message].length * 7.2 + 16);
   const width = labelWidth + messageWidth;
   const accessible = `${label}: ${message}`;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="24" viewBox="0 0 ${width} 24" role="img" aria-label="${escapeXml(accessible)}"><title>${escapeXml(`${accessible}. ${detail}`)}</title><rect width="${width}" height="24" rx="4" fill="#555"/><path d="M${labelWidth} 0H${width - 4}Q${width} 0 ${width} 4V20Q${width} 24 ${width - 4} 24H${labelWidth}Z" fill="${color}"/><g fill="#fff" font-family="DejaVu Sans Mono,monospace" font-size="12" text-anchor="middle"><text x="${labelWidth / 2}" y="16">${escapeXml(label)}</text><text x="${labelWidth + messageWidth / 2}" y="16">${escapeXml(message)}</text></g></svg>\n`;
-}
-
-export function renderStatisticsBadges(data, { now = Date.now() } = {}) {
-  const { cards } = analyticsMetrics(data);
-  const labels = {
-    'Active installations / day': 'Reporting / 1d',
-    'Active installations / 7 days': 'Reporting / 7d',
-    'Active installations / 30 days': 'Reporting / 30d',
-  };
-  const files = {};
-  for (const [name, value, detail, time] of cards) {
-    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    let label = labels[name] || name;
-    const dates = detail.match(/^(\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2}) UTC$/);
-    if (dates) {
-      const days = (Date.parse(dates[2]) - Date.parse(dates[1])) / 86400000 + 1;
-      label += ` / ${days}d`;
-    } else if (['GitHub views', 'Unique visitors', 'GitHub clones', 'Unique cloners', 'npm downloads'].includes(name)) {
-      label += ' / window';
-    }
-    const undated = !date(time);
-    const stale = !undated && now - Date.parse(time) > staleAfter;
-    const age = value == null ? '' : undated ? ' · undated' : stale ? ' · stale' : '';
-    const message = format(value) + age;
-    const color = value == null ? '#555' : stale || undated ? '#92400e' : '#0369a1';
-    files[`stats-${id}.svg`] = renderBadge(label, message, `${detail}. Source: ${displayTime(time)}. Archived badge; freshness is relative to generation time.`, color);
-  }
-  files['stats-updated.svg'] = renderBadge('Snapshot UTC', date(data.updatedAt) ? displayTime(data.updatedAt).replace(' UTC', '') : 'Unavailable', 'Source timestamps and exact reporting windows are available in the live dashboard.', '#555');
-  return files;
 }
 
 export function renderLiveDashboard(data) {
@@ -237,7 +218,7 @@ export function publicFiles(history, usage) {
   const table = ['| Date (UTC) | Views | Unique visitors | Clones | Unique cloners | npm downloads | Active installations |', '|---|---:|---:|---:|---:|---:|---:|', ...days.map(day => `| ${day} | ${[data.daily.views[day]?.count, data.daily.views[day]?.uniques, data.daily.clones[day]?.count, data.daily.clones[day]?.uniques, data.daily.npm[day]?.downloads, usageDays[day]].map(format).join(' | ')} |`)].join('\n');
   const readme = `# Public repository analytics\n\n![Repository dashboard](dashboard.svg)\n\n[Aggregate JSON history](data.json) · [Repository](https://github.com/${data.repo})\n\nAll dates and source windows use UTC. Source timestamps on the dashboard show when each metric was last available. Downloads and clones include automation and do not measure people. Unique visitors/cloners apply only to the source window; never sum daily unique counts across dates. Active installations cover consenting installations only, with distinct counts for each whole period. Operating system and version breakdowns cover 30 days; an installation may appear in multiple version groups after upgrading.\n\nThis branch contains only aggregate statistics. No installation identifiers, prompts, account details, credentials, private error messages, or local paths are published. Missing metrics mean unavailable, not zero.\n\n## Daily history\n\nEvery archived source day is listed below, newest first. Active installations count consenting installations that reported that UTC day.\n\n${table}\n`;
   const pagesUrl = `https://${data.repo.split('/')[0]}.github.io/${data.repo.split('/')[1]}/`;
-  return { ...renderStatisticsBadges(data), 'dashboard.svg': renderPublicDashboard(data), 'README.md': readme.replace('![Repository dashboard]', `[Live dashboard · refreshes every 30 seconds](${pagesUrl})\n\n![Repository dashboard]`), 'data.json': `${JSON.stringify(data, null, 2)}\n`, 'index.html': renderLiveDashboard(data) };
+  return { 'stats-github-views.svg': renderGithubViewsBadge(data), 'dashboard.svg': renderPublicDashboard(data), 'README.md': readme.replace('![Repository dashboard]', `[Live dashboard · refreshes every 30 seconds](${pagesUrl})\n\n![Repository dashboard]`), 'data.json': `${JSON.stringify(data, null, 2)}\n`, 'index.html': renderLiveDashboard(data) };
 }
 
 export function githubEnvironment(token, env = process.env) {

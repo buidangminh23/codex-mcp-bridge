@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { publicFiles, sanitizeAnalytics, publishAnalytics, renderStatisticsBadges } from '../scripts/publish-repo-analytics.mjs';
+import { publicFiles, sanitizeAnalytics, publishAnalytics, renderGithubViewsBadge } from '../scripts/publish-repo-analytics.mjs';
 
 const history = {
   schemaVersion: 1, repo: 'owner/repo', package: '@owner/pkg', updatedAt: '2026-09-15T12:00:00Z',
@@ -27,8 +27,7 @@ test('public data allowlists aggregate fields and excludes private identities/er
 
 test('dashboard escapes external text and renders all metric families without pretending missing is zero', () => {
   const files = publicFiles(history, usage);
-  assert.deepEqual(Object.keys(files).filter(name => !name.startsWith('stats-')).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html']);
-  assert.equal(Object.keys(files).filter(name => name.startsWith('stats-')).length, 13);
+  assert.deepEqual(Object.keys(files).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html', 'stats-github-views.svg']);
   const svg = files['dashboard.svg'];
   assert.ok(svg.includes('&lt;script&gt;&amp;&quot;.zip'));
   assert.ok(!svg.includes('<script>'));
@@ -41,7 +40,7 @@ test('dashboard escapes external text and renders all metric families without pr
   assert.ok(!JSON.stringify(files).includes('private-'));
 });
 
-test('first publication creates an isolated aggregate tree including all statistics badges and analytics ref only', async () => {
+test('first publication creates an isolated five-file tree and analytics ref only', async () => {
   const calls = [];
   const gh = async (endpoint, options) => {
     calls.push({ endpoint, ...options });
@@ -51,7 +50,7 @@ test('first publication creates an isolated aggregate tree including all statist
   assert.equal(await publishAnalytics('owner/repo', publicFiles(history), gh), 'commit-sha');
   const tree = calls.find(call => call.endpoint.endsWith('/git/trees')).body;
   assert.equal(tree.base_tree, undefined);
-  assert.deepEqual(tree.tree.map(row => row.path).sort(), Object.keys(publicFiles(history)).sort());
+  assert.equal(tree.tree.length, 5);
   assert.deepEqual(calls.find(call => call.endpoint.endsWith('/git/commits')).body.parents, []);
   assert.equal(calls.at(-1).body.ref, 'refs/heads/analytics');
   assert.ok(!JSON.stringify(calls).includes('heads/main'));
@@ -206,53 +205,29 @@ test('snapshot labels generation and individual source age without breaking UTC 
 });
 
 
-test('statistics badges retain source periods, exact counts and unavailable metrics', () => {
+test('views badge retains the source period, count and collection time', () => {
   const data = sanitizeAnalytics(history, usage);
-  const files = renderStatisticsBadges(data, { now: Date.parse(history.updatedAt) });
-  assert.match(files['stats-github-views.svg'], /aria-label="GitHub views \/ 1d: 20"/);
-  assert.match(files['stats-github-views.svg'], /2026-09-14 to 2026-09-14 UTC/);
-  assert.match(files['stats-github-clones.svg'], /GitHub clones \/ window: Unavailable/);
-  assert.match(files['stats-active-installations-30-days.svg'], /Reporting \/ 30d: 3/);
-  assert.match(files['stats-release-downloads.svg'], /Release downloads: 12/);
-  assert.match(files['stats-updated.svg'], /Snapshot UTC: 2026-09-15 12:00/);
-  for (const svg of Object.values(files)) {
-    assert.match(svg, /height="24"/);
-    assert.ok(!svg.includes('private-'));
-    assert.ok(!svg.includes('<script>'));
-  }
+  const svg = renderGithubViewsBadge(data, { now: Date.parse(history.updatedAt) });
+  assert.match(svg, /aria-label="GitHub views \/ 1d: 20"/);
+  assert.match(svg, /2026-09-14 to 2026-09-14 UTC/);
+  assert.match(svg, /Source: 2026-09-15 12:00 UTC/);
+  assert.match(svg, /height="24"/);
+  assert.ok(!svg.includes('private-'));
 });
 
-test('statistics badges preserve old sources when a newer snapshot lacks them', () => {
+test('views badge preserves old sources and exposes stale or undated values', () => {
   const data = sanitizeAnalytics(history, usage);
-  data.updatedAt = '2026-09-15T16:00:00Z';
-  data.snapshots.push({ collectedAt: data.updatedAt, repository: { stars: 21, forks: 10, subscribers: 1 }, sourceCollectedAt: { repository: data.updatedAt } });
-  const files = renderStatisticsBadges(data, { now: Date.parse(data.updatedAt) });
-  assert.match(files['stats-github-views.svg'], /GitHub views \/ 1d: 20 · stale/);
-  assert.match(files['stats-github-views.svg'], /Source: 2026-09-15 12:00 UTC/);
-  assert.match(files['stats-stars.svg'], /aria-label="Stars: 21"/);
-  assert.ok(!files['stats-stars.svg'].includes('21 · stale'));
+  data.snapshots.push({ collectedAt: '2026-09-15T16:00:00Z', repository: { stars: 21 } });
+  assert.match(renderGithubViewsBadge(data, { now: Date.parse('2026-09-15T16:00:00Z') }), /20 · stale/);
+  data.snapshots[0].sourceCollectedAt.views = null;
+  assert.match(renderGithubViewsBadge(data), /20 · undated/);
+  assert.match(renderGithubViewsBadge(data), /fill="#92400e"/);
 });
 
-test('statistics badges sum npm source days and retain real zero reports and release downloads', () => {
-  const data = sanitizeAnalytics(history, { ...usage, active: { day: 0, week: 0, month: 0 }, platforms: [], versions: [] });
-  data.snapshots[0].npm = { start: '2026-08-17', end: '2026-09-15', downloads: [{ day: '2026-09-14', downloads: 4000 }, { day: '2026-09-15', downloads: 2000 }] };
-  data.snapshots[0].sourceCollectedAt.npm = history.updatedAt;
-  data.snapshots[0].releases = [];
-  const files = renderStatisticsBadges(data, { now: Date.parse(history.updatedAt) });
-  assert.match(files['stats-npm-downloads.svg'], /npm downloads \/ 30d: 6,000/);
-  assert.match(files['stats-release-downloads.svg'], /Release downloads: 0/);
-  assert.match(files['stats-active-installations-day.svg'], /Reporting \/ 1d: 0/);
-  assert.match(files['stats-active-installations-day.svg'], /No opted-in reports in this period/);
-  data.snapshots[0].npm.downloads[1].downloads = null;
-  assert.match(renderStatisticsBadges(data)['stats-npm-downloads.svg'], /npm downloads \/ 30d: Unavailable/);
-});
-
-
-test('statistics badges keep a valid count but expose unavailable source age', () => {
-  const data = sanitizeAnalytics(history, usage);
-  data.snapshots[0].sourceCollectedAt.repository = null;
-  const files = renderStatisticsBadges(data, { now: Date.parse(history.updatedAt) });
-  assert.match(files['stats-stars.svg'], /Stars: 10 · undated/);
-  assert.match(files['stats-stars.svg'], /fill="#92400e"/);
-  assert.match(files['stats-stars.svg'], /Source: Unavailable/);
+test('views badge distinguishes a real zero from an unavailable source', () => {
+  const data = sanitizeAnalytics(history);
+  data.snapshots[0].views.count = 0;
+  assert.match(renderGithubViewsBadge(data, { now: Date.parse(history.updatedAt) }), /GitHub views \/ 1d: 0"/);
+  data.snapshots[0].views = null;
+  assert.match(renderGithubViewsBadge(data), /GitHub views \/ window: Unavailable/);
 });

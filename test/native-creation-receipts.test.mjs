@@ -169,7 +169,7 @@ it("initializes Windows authority with only the current user despite explicit de
   };
   fs.openSync = (file, flags, ...options) => {
     const fd = open(file, flags, ...options);
-    if (file === key && flags === "wx") {
+    if (flags === "wx" && path.basename(file) === "signing-key" && fs.realpathSync.native(path.dirname(file)) === fs.realpathSync.native(directory)) {
       try { grant(file); } catch (error) { fs.closeSync(fd); throw error; }
     }
     return fd;
@@ -177,7 +177,7 @@ it("initializes Windows authority with only the current user despite explicit de
   try {
     const created = await handleRelayRequest(f.create, f.deps);
     assert.equal(created.ok, true, created.error?.message);
-    assert.deepEqual(injected, [directory, key]);
+    assert.deepEqual(injected.map(file => fs.realpathSync.native(file)), [directory, key].map(file => fs.realpathSync.native(file)));
     const restarted = new NativeCreationReceipts({ directory: f.store.directory });
     assert.equal(restarted.read(f.id, accounts, f.hash).result.threadId, "new-thread");
     assert.equal(f.calls(), 1);

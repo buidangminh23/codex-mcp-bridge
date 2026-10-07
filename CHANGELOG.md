@@ -4,6 +4,21 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.21.1] - 2026-10-07
+
+### Fixed
+
+- Read project policies, onboarding settings, manager descriptors and automation configuration through bounded, verified file descriptors. Reject files replaced, linked, enlarged or modified during reads, and preserve verified bytes in backups.
+- Pin reply receipt directory identity and recheck receipt and signing-key metadata before and after descriptor reads. Reject nonregular rollout descriptors and open without blocking on POSIX pipes.
+- Encode Windows ACL target paths as data so Unicode quotation marks in directory names cannot alter the PowerShell command.
+- Reject linked and oversized installer configuration, restore configuration through exclusive temporary files, and validate whole-home project aliases before acquiring onboarding locks.
+- Update the MCP SDK to 1.32.1 for GHSA-6qxp-vccf-f47h.
+
+### Upgrade notes
+
+- Update to `@minhspark/codex-mcp-bridge@1.21.1` and reconnect existing MCP connections to load the fixes in running processes.
+- The 91 open findings reported for 1.21.0 have been resolved: nine closed after code changes and 82 were reviewed as false positives with individual evidence. Additional findings from the new scans were reviewed against their data-flow sources and file validation controls. The final main-branch scan reported zero open CodeQL alerts without disabling queries or excluding paths.
+
 ## [1.21.0] - 2026-10-06
 
 ### Added

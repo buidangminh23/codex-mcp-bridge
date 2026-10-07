@@ -1,6 +1,6 @@
 {
   "name": "codex-mcp-bridge",
-  "version": "1.21.0",
+  "version": "1.21.1",
   "description": "Connect ChatGPT to your own Codex Desktop projects and conversations.",
   "author": {
     "name": "Bui Dang Minh"

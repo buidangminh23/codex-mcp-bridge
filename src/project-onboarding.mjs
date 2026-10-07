@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { directoryBinding, repositoryBinding, editProjectGrant, readProjectPolicy, createProjectScope } from "./project-policy.mjs";
+import { directoryBinding, repositoryBinding, editProjectGrant, readProjectPolicy, parseProjectPolicy, createProjectScope, readRegularConfigFile, backupRegularConfigFile } from "./project-policy.mjs";
 
 const MAX_CONFIG_BYTES = 8 * 1024 * 1024;
 const object = value => value && typeof value === "object" && !Array.isArray(value);
@@ -20,12 +20,7 @@ export function onboardingPaths(env = process.env) {
 }
 
 function read(file, maxBytes = MAX_CONFIG_BYTES) {
-  let stat;
-  try { stat = fs.lstatSync(file); } catch (e) { if (e.code === "ENOENT") return null; throw e; }
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > maxBytes) throw new Error(`Refusing linked, nonregular or oversized configuration: ${file}`);
-  const raw = fs.readFileSync(file, "utf8");
-  if (Buffer.byteLength(raw) > maxBytes) throw new Error(`Configuration exceeds size limit: ${file}`);
-  return raw;
+  return readRegularConfigFile(file, { maxBytes, missing: true });
 }
 function parse(raw) {
   const value = raw === null ? {} : JSON.parse(raw.replace(/^\uFEFF/, ""));
@@ -70,7 +65,7 @@ function load(cwd, options) {
   const config = parse(configRaw);
   const trust = trustEntry(config, project);
   const policyRaw = read(files.policyFile, 256 * 1024);
-  const policy = policyRaw === null ? { version: 1, grants: [], denies: [] } : readProjectPolicy(files.policyFile).policy;
+  const policy = policyRaw === null ? { version: 1, grants: [], denies: [] } : parseProjectPolicy(policyRaw).policy;
   const denials = denied(policy, project);
   const authorized = policyRaw !== null && createProjectScope(files.policyFile, options).allows(project.directory.path);
   return { files, project, configRaw, config, trust, policyRaw, policy, denials, authorized };
@@ -102,6 +97,7 @@ export function inspectBridgeProject({ cwd, taskCards = false }, options = {}) {
 // compare before replacement, and roll back only bytes this transaction still owns.
 export function prepareBridgeProject({ cwd, reauthorize = false, taskCards = false }, options = {}) {
   const files = onboardingPaths(options.env);
+  target(cwd, { ...options, home: files.home });
   const locks = [], changed = [], backups = [];
   const suffix = randomUUID();
   const pending = [];
@@ -131,7 +127,7 @@ export function prepareBridgeProject({ cwd, reauthorize = false, taskCards = fal
       if (read(item.file) !== item.before) throw new Error("Configuration changed concurrently; retry inspection before applying");
       if (item.before !== null) {
         const backup = `${item.file}.backup-${suffix}`;
-        fs.copyFileSync(item.file, backup, fs.constants.COPYFILE_EXCL);
+        backupRegularConfigFile(item.file, backup, item.before, MAX_CONFIG_BYTES);
         backups.push(backup);
       }
       item.temp = `${item.file}.pending-${suffix}`;

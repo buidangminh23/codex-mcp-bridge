@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { createProjectScope, editProjectGrant, readProjectPolicy, updateProjectPolicy } from "../src/project-policy.mjs";
+import { createProjectScope, editProjectGrant, readProjectPolicy, updateProjectPolicy, readRegularConfigFile, backupRegularConfigFile } from "../src/project-policy.mjs";
+import { inspectBridgeProject } from "../src/project-onboarding.mjs";
+import { registerProjectManager } from "../src/project-manager-registration.mjs";
+import { planMessageAutomation } from "../src/message-automation.mjs";
 import { createHardenedRootPolicy } from "../src/hardened-root-policy.mjs";
 import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
 import { bridgeReadiness } from "../src/bridge-readiness.mjs";
@@ -22,6 +25,79 @@ function fixture(t) {
   return { root, parent, file, edit, scope };
 }
 function git(cwd, ...args) { return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", windowsHide: true, stdio: "pipe" }); }
+
+for (const consumer of ["policy", "onboarding", "manager", "automation"]) test(`${consumer} rejects a configuration replaced between inspection and open`, t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-config-race-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cwd = path.join(root, "project"); fs.mkdirSync(cwd);
+  const policyFile = path.join(root, "policy.json");
+  fs.writeFileSync(policyFile, JSON.stringify({ version: 1, grants: [], denies: [] }));
+  const env = { ...process.env, HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: "", CODEX_BRIDGE_PROJECT_POLICY: policyFile, CODEX_BRIDGE_HARDENED: "0" };
+  let file = policyFile, operation = () => readProjectPolicy(file);
+  if (consumer === "onboarding") {
+    file = path.join(root, ".claude.json"); fs.writeFileSync(file, "{}");
+    operation = () => inspectBridgeProject({ cwd }, { env });
+  } else if (consumer === "manager") {
+    file = registerProjectManager({ policyFile, env }).file;
+    operation = () => registerProjectManager({ policyFile, env });
+  } else if (consumer === "automation") {
+    file = path.join(root, "code.json");
+    fs.writeFileSync(file, JSON.stringify({ mcpServers: { "codex-bridge": { args: [path.resolve("src/mcp-supervisor.mjs"), "index.mjs"], env: { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_PROJECT_POLICY: policyFile } } } }));
+    operation = () => planMessageAutomation({ claudeHome: root, codeFile: file });
+  }
+  const replacement = `${file}.replacement`;
+  fs.copyFileSync(file, replacement);
+  let swapped = false;
+  for (const method of ["lstatSync", "statSync"]) {
+    const original = fs[method];
+    t.mock.method(fs, method, function(candidate, ...args) {
+      const stat = original.call(this, candidate, ...args);
+      if (candidate === file && !swapped) { swapped = true; fs.renameSync(replacement, file); }
+      return stat;
+    });
+  }
+  assert.throws(operation, /changed during access/);
+  assert.equal(swapped, true);
+});
+
+test("configuration reads reject growth during descriptor reads and close the descriptor", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-config-growth-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "config.json"); fs.writeFileSync(file, "{}");
+  const original = fs.readSync, close = fs.closeSync;
+  let descriptor, closed = false, grew = false;
+  t.mock.method(fs, "readSync", function(fd, ...args) {
+    descriptor = fd;
+    if (!grew) { grew = true; fs.appendFileSync(file, " ".repeat(1024)); }
+    return original.call(this, fd, ...args);
+  });
+  t.mock.method(fs, "closeSync", function(fd) { if (fd === descriptor) closed = true; return close.call(this, fd); });
+  assert.throws(() => readRegularConfigFile(file, { maxBytes: 16 }), /changed during access/);
+  assert.equal(closed, true);
+});
+
+test("configuration backup preserves exact bytes without following a second unchecked read", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-config-backup-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "config"), backup = path.join(root, "backup");
+  const bytes = Buffer.from([0xef, 0xbb, 0xbf, 0x7b, 0x7d, 0x0d, 0x0a, 0xff]);
+  fs.writeFileSync(file, bytes);
+  backupRegularConfigFile(file, backup, bytes.toString("utf8"));
+  assert.deepEqual(fs.readFileSync(backup), bytes);
+  assert.throws(() => backupRegularConfigFile(file, `${backup}-other`, "changed"), /concurrently/);
+  assert.equal(fs.existsSync(`${backup}-other`), false);
+});
+
+test("snapshot CLI refuses a file swapped between inspection and reading", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-snapshot-race-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "snapshot.json"); fs.writeFileSync(file, "{}");
+  fs.writeFileSync(`${file}.replacement`, "{}");
+  const hook = `import fs from 'node:fs'; const original = fs.lstatSync; let swapped = false; fs.lstatSync = function(file, ...args) { const result = original.call(this, file, ...args); if (file === process.env.BRIDGE_TEST_SNAPSHOT && !swapped) { swapped = true; fs.renameSync(file + '.replacement', file); } return result; };`;
+  const result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(hook)}`, path.resolve("scripts/bridge-projects.mjs"), "sync-card-settings", file], { encoding: "utf8", windowsHide: true, env: { ...process.env, BRIDGE_TEST_SNAPSHOT: file } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /changed during access/);
+});
 function repo(f, name = "案例项目") {
   const main = path.join(f.parent, name);
   fs.mkdirSync(main);

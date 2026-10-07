@@ -53,3 +53,29 @@ test("installer previews without writes, requires stopped clients, backs up exac
   fs.writeFileSync(policyFile, "broken");
   assert.equal(run("--check").status, 1);
 });
+
+test("installer rejects hard-linked configuration without changing either name", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-code-linked-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = path.join(root, "source.json"), codeFile = path.join(root, "code.json");
+  const original = JSON.stringify({ mcpServers: { "codex-bridge": entry() } });
+  fs.writeFileSync(source, original);
+  fs.linkSync(source, codeFile);
+  const result = spawnSync(process.execPath, [path.resolve("scripts/install-claude-code.mjs"), "--code-config", codeFile,
+    "--desktop-config", path.join(root, "desktop.json"), "--check"], { encoding: "utf8", windowsHide: true });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /linked|regular/i);
+  assert.equal(fs.readFileSync(source, "utf8"), original);
+  assert.equal(fs.readFileSync(codeFile, "utf8"), original);
+});
+
+test("installer rejects oversized configuration before JSON parsing", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-code-large-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codeFile = path.join(root, "code.json");
+  fs.writeFileSync(codeFile, JSON.stringify({ padding: "x".repeat(8 * 1024 * 1024) }));
+  const result = spawnSync(process.execPath, [path.resolve("scripts/install-claude-code.mjs"), "--code-config", codeFile,
+    "--desktop-config", path.join(root, "desktop.json"), "--check"], { encoding: "utf8", windowsHide: true });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /size|limit|oversized/i);
+});

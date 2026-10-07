@@ -10,6 +10,38 @@ const inside = (root, candidate) => {
 };
 const equal = (a, b) => path.relative(a, b) === "";
 
+export function readRegularConfigFile(file, { maxBytes = MAX_BYTES, missing = false, encoding = "utf8", label = "Configuration" } = {}) {
+  let entry;
+  try { entry = fs.lstatSync(file, { bigint: true }); }
+  catch (error) { if (missing && error.code === "ENOENT") return null; throw error; }
+  const valid = stat => stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size <= BigInt(maxBytes);
+  const matches = (left, right) => ["dev", "ino", "size", "mtimeNs", "ctimeNs", "nlink"].every(field => left[field] === right[field]);
+  if (!valid(entry)) throw new Error(`${label}: refusing linked or nonregular file, or exceeded size limit`);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+  try {
+    const before = fs.fstatSync(fd, { bigint: true });
+    if (!valid(before) || !matches(entry, before)) throw new Error(`${label} changed during access`);
+    const data = Buffer.alloc(Number(before.size) + 1);
+    let offset = 0;
+    while (offset < data.length) {
+      const count = fs.readSync(fd, data, offset, data.length - offset, offset);
+      if (!count) break;
+      offset += count;
+    }
+    const after = fs.fstatSync(fd, { bigint: true });
+    const current = fs.lstatSync(file, { bigint: true });
+    if (offset !== Number(before.size) || !valid(after) || !valid(current) || !matches(before, after) || !matches(after, current)) throw new Error(`${label} changed during access`);
+    const bytes = data.subarray(0, offset);
+    return encoding === null ? bytes : bytes.toString(encoding);
+  } finally { fs.closeSync(fd); }
+}
+
+export function backupRegularConfigFile(file, backup, expected, maxBytes = MAX_BYTES) {
+  const bytes = readRegularConfigFile(file, { maxBytes, encoding: null });
+  if (bytes.toString("utf8") !== expected) throw new Error("Configuration changed concurrently before backup");
+  fs.writeFileSync(backup, bytes, { flag: "wx", mode: 0o600 });
+}
+
 export function directoryBinding(input) {
   if (typeof input !== "string" || !path.isAbsolute(input)) throw new Error("Project paths must be absolute directories");
   const resolved = fs.realpathSync.native(input);
@@ -59,10 +91,11 @@ function validateBinding(binding) {
 
 export function readProjectPolicy(file) {
   if (!path.isAbsolute(file)) throw new Error("CODEX_BRIDGE_PROJECT_POLICY must be an absolute file path");
-  const stat = fs.statSync(file);
-  if (!stat.isFile() || stat.size > MAX_BYTES) throw new Error("Project policy exceeds its file size limit");
-  const raw = fs.readFileSync(file, "utf8");
-  if (Buffer.byteLength(raw) > MAX_BYTES) throw new Error("Project policy exceeds its file size limit");
+  const raw = readRegularConfigFile(file, { label: "Project policy" });
+  return parseProjectPolicy(raw);
+}
+
+export function parseProjectPolicy(raw) {
   const policy = JSON.parse(raw);
   if (policy.version !== 1 || !Array.isArray(policy.grants) || !Array.isArray(policy.denies) || policy.grants.length + policy.denies.length > 512) throw new Error("Invalid project policy schema");
   for (const entry of [...policy.grants, ...policy.denies]) {
@@ -145,14 +178,16 @@ export function updateProjectPolicy(file, edit) {
   const handle = fs.openSync(lock, "wx", 0o600);
   const temporary = `${file}.pending-${randomUUID()}`;
   try {
-    const exists = fs.existsSync(file);
-    const policy = exists ? readProjectPolicy(file).policy : { version: 1, grants: [], denies: [] };
+    const original = readRegularConfigFile(file, { missing: true, label: "Project policy" });
+    const exists = original !== null;
+    const policy = exists ? parseProjectPolicy(original).policy : { version: 1, grants: [], denies: [] };
     const before = JSON.stringify(policy);
     edit(policy);
     if (exists && JSON.stringify(policy) === before) return policy;
     fs.writeFileSync(temporary, `${JSON.stringify(policy, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     readProjectPolicy(temporary);
-    if (exists) fs.copyFileSync(file, `${file}.backup-${randomUUID()}`, fs.constants.COPYFILE_EXCL);
+    if (readRegularConfigFile(file, { missing: true }) !== original) throw new Error("Project policy changed concurrently");
+    if (exists) backupRegularConfigFile(file, `${file}.backup-${randomUUID()}`, original);
     fs.renameSync(temporary, file);
     return policy;
   } finally {

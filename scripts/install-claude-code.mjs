@@ -5,7 +5,7 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { claudeDesktopConfigPath } from "../src/platform.mjs";
 import { checkCodeRegistration, planCodeRegistration } from "../src/claude-code-registration.mjs";
-import { readProjectPolicy } from "../src/project-policy.mjs";
+import { readProjectPolicy, readRegularConfigFile, backupRegularConfigFile } from "../src/project-policy.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 
 exitForVersionRequest(import.meta.url);
@@ -15,9 +15,11 @@ const option = (key, fallback) => { const index = args.indexOf(key); return inde
 const codeFile = option("--code-config", path.join(os.homedir(), ".claude.json"));
 const desktopFile = option("--desktop-config", claudeDesktopConfigPath());
 const policyFile = option("--policy", process.env.CODEX_BRIDGE_PROJECT_POLICY);
+const maxConfigBytes = 8 * 1024 * 1024;
+const read = (file) => readRegularConfigFile(file, { maxBytes: maxConfigBytes, missing: true });
 try {
   const files = [codeFile, desktopFile];
-  const originals = files.map((file) => fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null);
+  const originals = files.map(read);
   const [code, desktop] = originals.map((raw) => raw === null ? {} : JSON.parse(raw.replace(/^\uFEFF/, "")));
   if (args.includes("--check")) {
     const result = checkCodeRegistration({ code, desktop });
@@ -37,25 +39,36 @@ try {
       try {
         for (let index = 0; index < files.length; index++) {
           const file = files[index];
-          const now = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+          const now = read(file);
           if (now !== originals[index]) throw new Error(`Configuration changed concurrently: ${file}`);
           if (now === null && index === 1 && !Object.keys(plan.desktop.mcpServers ?? {}).length) continue;
-          if (now !== null) fs.copyFileSync(file, `${file}.backup-${suffix}`, fs.constants.COPYFILE_EXCL);
+          if (now !== null) backupRegularConfigFile(file, `${file}.backup-${suffix}`, now, maxConfigBytes);
           fs.mkdirSync(path.dirname(file), { recursive: true });
           const temporary = `${file}.pending-${suffix}`;
           try {
             fs.writeFileSync(temporary, contents[index], { flag: "wx", mode: 0o600 });
+            if (read(file) !== now) throw new Error(`Configuration changed concurrently: ${file}`);
             fs.renameSync(temporary, file);
           } finally { fs.rmSync(temporary, { force: true }); }
           written.push(index);
         }
       } catch (error) {
-        for (const index of written) {
-          if (fs.readFileSync(files[index], "utf8") === contents[index]) {
-            if (originals[index] === null) fs.rmSync(files[index]);
-            else fs.writeFileSync(files[index], originals[index]);
-          }
+        const remaining = [];
+        for (const index of written.reverse()) {
+          const file = files[index];
+          const temporary = `${file}.rollback-${suffix}`;
+          try {
+            if (read(file) !== contents[index]) { remaining.push(file); continue; }
+            if (originals[index] === null) fs.unlinkSync(file);
+            else {
+              fs.writeFileSync(temporary, originals[index], { flag: "wx", mode: 0o600 });
+              if (read(file) !== contents[index]) { remaining.push(file); continue; }
+              fs.renameSync(temporary, file);
+            }
+          } catch { remaining.push(file); }
+          finally { fs.rmSync(temporary, { force: true }); }
         }
+        if (remaining.length) error.message += `; rollback requires review: ${remaining.join(", ")}`;
         throw error;
       }
       console.log("Reopen the original Code task and call codex_bridge_status with the intended project cwd. Update the configuration manager's matching entry to the same policy file. No new per-project MCP entry is needed.");

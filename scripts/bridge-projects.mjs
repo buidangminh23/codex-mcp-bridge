@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
-import fs from "node:fs";
 import os from "node:os";
-import { createProjectScope, editProjectGrant, readProjectPolicy, updateProjectPolicy } from "../src/project-policy.mjs";
+import { createProjectScope, editProjectGrant, readProjectPolicy, updateProjectPolicy, readRegularConfigFile } from "../src/project-policy.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { inspectBridgeProject, prepareBridgeProject } from "../src/project-onboarding.mjs";
 import { registerProjectManager } from "../src/project-manager-registration.mjs";
@@ -19,9 +18,7 @@ try {
   if (action === "register-manager" || action === "register-card-settings") console.log(JSON.stringify(registerProjectManager({ policyFile: file }), null, 2));
   else if (action === "sync-card-settings") {
     if (!input || !path.isAbsolute(input)) throw new Error('An absolute settings snapshot file is required');
-    const stat = fs.lstatSync(input);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256 * 1024) throw new Error('Invalid settings snapshot');
-    const snapshot = JSON.parse(fs.readFileSync(input, 'utf8'));
+    const snapshot = JSON.parse(readRegularConfigFile(input, { label: "Invalid settings snapshot" }));
     console.log(JSON.stringify(syncCardSettings(file, snapshot, { acknowledgeRender: snapshot.acknowledgeRender === true }), null, 2));
   }
   else if (["prepare", "inspect"].includes(action)) {

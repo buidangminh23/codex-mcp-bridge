@@ -46,3 +46,47 @@ it("rejects path traversal, oversized data, corrupt bindings and linked receipts
   fs.linkSync(file, path.join(f.directory, "linked.json"));
   assert.throws(() => f.store.read(id, f.context), /Unsafe reply receipt/);
 });
+
+it("rejects replacement of a pinned receipt directory", (t) => {
+  const f = fixture(t);
+  const directory = path.join(f.directory, "store");
+  const store = new DesktopReplyReceipts({ directory });
+  const id = store.create(f.delivered, f.context);
+  fs.renameSync(directory, path.join(f.directory, "original"));
+  fs.mkdirSync(directory);
+  fs.copyFileSync(path.join(f.directory, "original", `${id}.json`), path.join(directory, `${id}.json`));
+  assert.throws(() => store.read(id, f.context), /directory changed/);
+});
+
+it("rejects same-inode receipt changes between inspection and opening", (t) => {
+  const f = fixture(t);
+  const id = f.store.create(f.delivered, f.context);
+  const file = f.store.file(id);
+  const original = fs.openSync;
+  let changed = false;
+  fs.openSync = (candidate, ...options) => {
+    if (candidate === file && !changed) { changed = true; fs.appendFileSync(file, " "); }
+    return original(candidate, ...options);
+  };
+  try { assert.throws(() => f.store.read(id, f.context), /changed while opening/); }
+  finally { fs.openSync = original; }
+});
+
+it("rejects a valid receipt path replaced while its descriptor is read", (t) => {
+  const f = fixture(t);
+  const id = f.store.create(f.delivered, f.context);
+  const file = path.join(f.directory, `${id}.json`);
+  const original = fs.readSync;
+  let swapped = false;
+  fs.readSync = (...options) => {
+    const count = original(...options);
+    if (!swapped) {
+      swapped = true;
+      fs.renameSync(file, `${file}.saved`);
+      fs.copyFileSync(`${file}.saved`, file);
+    }
+    return count;
+  };
+  try { assert.throws(() => f.store.read(id, f.context), /changed while reading/); }
+  finally { fs.readSync = original; }
+});

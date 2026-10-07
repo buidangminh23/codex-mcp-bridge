@@ -4,6 +4,8 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import { execFileSync } from "node:child_process";
 import { homeDir } from "./platform.mjs";
 
+const sameFile = (left, right) => ["dev", "ino", "size", "mode", "uid", "nlink", "mtimeMs", "ctimeMs"].every(field => left[field] === right[field]);
+
 export const creationIdValid = value => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
 export function creationRequestHash(args) {
   const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
@@ -65,17 +67,18 @@ export class NativeCreationReceipts {
     if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size !== 32 ||
         process.platform !== "win32" && ((before.mode & 0o077) || before.uid !== process.getuid())) throw Error("Unsafe native creation signing key");
     if (process.platform === "win32" && !this.#keyBoundary) this.#assertWindowsPrivate(file, false);
-    const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     let key;
     try {
       const opened = fs.fstatSync(fd);
-      if (opened.dev !== before.dev || opened.ino !== before.ino) throw Error("Native creation signing key changed");
+      if (!opened.isFile() || !sameFile(before, opened)) throw Error("Native creation signing key changed");
       const bytes = Buffer.alloc(33);
       let count = 0, read;
       while (count < bytes.length && (read = fs.readSync(fd, bytes, count, bytes.length - count, count))) count += read;
       key = bytes.subarray(0, count);
       const after = fs.fstatSync(fd);
-      if (key.length !== 32 || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) throw Error("Native creation signing key changed");
+      const current = fs.lstatSync(file);
+      if (key.length !== 32 || current.isSymbolicLink() || !sameFile(opened, after) || !sameFile(after, current)) throw Error("Native creation signing key changed");
     } finally { fs.closeSync(fd); }
     if (this.#keyBoundary && (this.#keyBoundary.dev !== before.dev || this.#keyBoundary.ino !== before.ino || !timingSafeEqual(this.#key, key))) throw Error("Native creation signing key changed");
     this.#keyBoundary ??= { dev: before.dev, ino: before.ino };
@@ -83,15 +86,15 @@ export class NativeCreationReceipts {
     return this.#key;
   }
   #protectWindowsPrivate(file, directory) {
-    const quoted = file.replaceAll("'", "''");
+    const encodedPath = Buffer.from(file, "utf8").toString("base64");
     const securityType = directory ? "DirectorySecurity" : "FileSecurity";
     const inheritance = directory ? "ContainerInherit,ObjectInherit" : "None";
-    const script = `$ErrorActionPreference='Stop';$s=[Security.Principal.WindowsIdentity]::GetCurrent().User;$a=New-Object Security.AccessControl.${securityType};$a.SetOwner($s);$a.SetAccessRuleProtection($true,$false);$r=New-Object Security.AccessControl.FileSystemAccessRule($s,'FullControl','${inheritance}','None','Allow');$a.AddAccessRule($r);Set-Acl -LiteralPath '${quoted}' -AclObject $a`;
+    const script = `$ErrorActionPreference='Stop';$s=[Security.Principal.WindowsIdentity]::GetCurrent().User;$a=New-Object Security.AccessControl.${securityType};$a.SetOwner($s);$a.SetAccessRuleProtection($true,$false);$r=New-Object Security.AccessControl.FileSystemAccessRule($s,'FullControl','${inheritance}','None','Allow');$a.AddAccessRule($r);Set-Acl -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}'))) -AclObject $a`;
     this.#runWindowsAclScript(script);
   }
   #assertWindowsPrivate(file, directory) {
-    const quoted = file.replaceAll("'", "''");
-    const script = `$ErrorActionPreference='Stop';$a=Get-Acl -LiteralPath '${quoted}';$s=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;if(${directory ? "$true" : "$false"} -and !$a.AreAccessRulesProtected){throw 'Unprotected native authority'};if($a.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $s){throw 'Unexpected native authority owner'};foreach($r in $a.Access){if($r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $s -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected native authority access'}};if($a.Access.Count -ne 1){throw 'Ambiguous native authority access'}`;
+    const encodedPath = Buffer.from(file, "utf8").toString("base64");
+    const script = `$ErrorActionPreference='Stop';$a=Get-Acl -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}')));$s=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;if(${directory ? "$true" : "$false"} -and !$a.AreAccessRulesProtected){throw 'Unprotected native authority'};if($a.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $s){throw 'Unexpected native authority owner'};foreach($r in $a.Access){if($r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $s -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected native authority access'}};if($a.Access.Count -ne 1){throw 'Ambiguous native authority access'}`;
     this.#runWindowsAclScript(script);
   }
   #runWindowsAclScript(script) {
@@ -122,14 +125,15 @@ export class NativeCreationReceipts {
       const before = fs.lstatSync(file);
       receiptFound = true;
       if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 1024 * 1024) throw Error("Unsafe native creation receipt");
-      fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+      fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
       const opened = fs.fstatSync(fd);
-      if (opened.ino !== before.ino || opened.dev !== before.dev) throw Error("Native creation receipt changed");
+      if (!opened.isFile() || !sameFile(before, opened)) throw Error("Native creation receipt changed");
       const bytes = Buffer.alloc(1024 * 1024 + 1);
       let count = 0, n;
       while ((n = fs.readSync(fd, bytes, count, bytes.length - count, count))) { count += n; if (count > 1024 * 1024) throw Error("Oversized native creation receipt"); }
       const after = fs.fstatSync(fd);
-      if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs || count !== opened.size) throw Error("Native creation receipt changed");
+      const current = fs.lstatSync(this.file(id));
+      if (current.isSymbolicLink() || !sameFile(opened, after) || !sameFile(after, current) || count !== opened.size) throw Error("Native creation receipt changed");
       const row = JSON.parse(bytes.subarray(0, count).toString());
       if (row.version !== 1 || row.id !== id || row.hash !== hash || creationRequestHash(row.args) !== hash ||
           !accounts || ["claude", "codex"].some(k => !accounts[k] || row.accounts?.[k] !== accounts[k]) ||

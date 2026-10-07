@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { readProjectPolicy } from "./project-policy.mjs";
+import { readProjectPolicy, readRegularConfigFile, backupRegularConfigFile } from "./project-policy.mjs";
 
 export const MESSAGE_TOOLS = Object.freeze([
   "mcp__codex-bridge__send_to_codex_thread",
@@ -25,10 +25,7 @@ The user enabled automatic messaging with the installed bridge. This is standing
 }
 
 function read(file) {
-  if (!fs.existsSync(file)) return null;
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new Error(`Refusing nonregular, linked or oversized configuration: ${file}`);
-  return fs.readFileSync(file, "utf8");
+  return readRegularConfigFile(file, { maxBytes: 2 * 1024 * 1024, missing: true });
 }
 const json = (raw) => raw === null ? {} : JSON.parse(raw.replace(/^\uFEFF/, ""));
 function matches(rule, tool) {
@@ -68,7 +65,7 @@ export function applyMessageAutomation(plan) {
       if (read(item.file) !== item.before) throw new Error(`Configuration changed concurrently: ${item.file}`);
       if (item.before === item.after) continue;
       fs.mkdirSync(path.dirname(item.file), { recursive: true });
-      if (item.before !== null) fs.copyFileSync(item.file, `${item.file}.backup-${suffix}`, fs.constants.COPYFILE_EXCL);
+      if (item.before !== null) backupRegularConfigFile(item.file, `${item.file}.backup-${suffix}`, item.before, 2 * 1024 * 1024);
       const temporary = `${item.file}.pending-${suffix}`;
       try {
         fs.writeFileSync(temporary, item.after, { flag: "wx", mode: 0o600 });
@@ -81,7 +78,13 @@ export function applyMessageAutomation(plan) {
     for (const item of changed.reverse()) {
       if (read(item.file) !== item.after) continue;
       if (item.before === null) fs.rmSync(item.file);
-      else fs.writeFileSync(item.file, item.before);
+      else {
+        const rollback = `${item.file}.rollback-${suffix}`;
+        try {
+          fs.writeFileSync(rollback, item.before, { flag: "wx", mode: 0o600 });
+          if (read(item.file) === item.after) fs.renameSync(rollback, item.file);
+        } finally { fs.rmSync(rollback, { force: true }); }
+      }
     }
     throw error;
   }

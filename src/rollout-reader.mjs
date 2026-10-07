@@ -10,9 +10,10 @@ export function scanRollout(file, { maxRecordBytes, onRecord, onChunk = () => {}
   if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes < 1) throw new Error("The rollout record read limit is invalid");
   const named = fs.lstatSync(file);
   if (!named.isFile() || named.isSymbolicLink()) throw new Error("The rollout is not a regular file");
-  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
   try {
     const before = fs.fstatSync(descriptor);
+    if (!before.isFile()) throw new Error("The opened rollout is not a regular file");
     if (!sameVersion(named, before)) throw new Error("The rollout changed while opening");
     if (before.size === 0) throw new Error("The rollout is empty (0 bytes)");
     let parts = [], length = 0, start = 0, position = 0;

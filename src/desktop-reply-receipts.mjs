@@ -6,6 +6,7 @@ import { homeDir } from "./platform.mjs";
 
 const ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const LIMIT = 256 * 1024;
+const sameFile = (left, right) => ["dev", "ino", "size", "mode", "uid", "nlink", "mtimeMs", "ctimeMs"].every(field => left[field] === right[field]);
 
 function owner(context) {
   const { sessionId, taskId } = context?.caller ?? {};
@@ -19,16 +20,20 @@ function owner(context) {
 // These are observation bindings, never permission grants. Every continuation
 // still passes the normal live sender, account, workspace and rollout checks.
 export class DesktopReplyReceipts {
+  #boundary;
   constructor({ directory = path.join(process.env.CODEX_HOME ?? path.join(homeDir(), ".codex"), "bridge-reply-receipts") } = {}) {
     this.directory = path.resolve(directory);
   }
 
   file(id, create = false) {
-    if (!ID.test(id)) throw new Error("Invalid reply deliveryId");
+    if (typeof id !== "string" || !ID.test(id)) throw new Error("Invalid reply deliveryId");
     if (create) fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     const info = fs.lstatSync(this.directory);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Unsafe reply receipt directory");
-    return path.join(this.directory, `${id}.json`);
+    const canonical = fs.realpathSync.native(this.directory);
+    if (this.#boundary && (this.#boundary.path !== canonical || this.#boundary.dev !== info.dev || this.#boundary.ino !== info.ino)) throw new Error("Reply receipt directory changed");
+    this.#boundary ??= { path: canonical, dev: info.dev, ino: info.ino };
+    return path.join(canonical, `${id}.json`);
   }
 
   create(delivered, context) {
@@ -51,10 +56,10 @@ export class DesktopReplyReceipts {
     const file = this.file(id);
     const before = fs.lstatSync(file);
     if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > LIMIT) throw new Error("Unsafe reply receipt");
-    const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     try {
       const opened = fs.fstatSync(fd);
-      if (!opened.isFile() || opened.nlink !== 1 || opened.size > LIMIT || opened.ino !== before.ino || opened.dev !== before.dev) throw new Error("Reply receipt changed while opening");
+      if (!opened.isFile() || !sameFile(before, opened)) throw new Error("Reply receipt changed while opening");
       const buffer = Buffer.alloc(LIMIT + 1);
       let length = 0;
       for (;;) {
@@ -64,7 +69,8 @@ export class DesktopReplyReceipts {
         if (length > LIMIT) throw new Error("Reply receipt exceeds its read limit");
       }
       const after = fs.fstatSync(fd);
-      if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs || length !== opened.size) throw new Error("Reply receipt changed while reading");
+      const current = fs.lstatSync(this.file(id));
+      if (current.isSymbolicLink() || !sameFile(opened, after) || !sameFile(after, current) || length !== opened.size) throw new Error("Reply receipt changed while reading");
       const receipt = JSON.parse(buffer.subarray(0, length).toString("utf8"));
       const expected = owner(context);
       if (receipt.version !== 1 || receipt.deliveryId !== id || !receipt.owner ||

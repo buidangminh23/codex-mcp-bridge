@@ -226,3 +226,39 @@ it("removes only its newly created signing key after initialization fails", asyn
   assert.throws(() => existing.reserve(randomUUID(), args, accounts, "executor"), /Unsafe native creation signing key/);
   assert.equal(fs.statSync(key).size, 0);
 });
+
+it("rejects same-inode receipt changes between inspection and opening", t => {
+  const f = fixture(t);
+  f.store.reserve(f.id, args, accounts, "executor");
+  const file = f.store.file(f.id);
+  const original = fs.openSync;
+  let changed = false;
+  fs.openSync = (candidate, ...options) => {
+    if (candidate === file && !changed) { changed = true; fs.appendFileSync(file, " "); }
+    return original(candidate, ...options);
+  };
+  try { assert.throws(() => f.store.read(f.id, accounts, f.hash), /receipt changed/); }
+  finally { fs.openSync = original; }
+});
+
+it("rejects signing key hardlinks added between inspection and opening", t => {
+  const f = fixture(t);
+  f.store.reserve(f.id, args, accounts, "executor");
+  const key = path.join(f.dir, "bridge-native-creation-authority", "signing-key");
+  const original = fs.openSync;
+  fs.openSync = (candidate, ...options) => {
+    if (path.basename(candidate) === "signing-key") fs.linkSync(candidate, path.join(f.dir, "linked-key"));
+    return original(candidate, ...options);
+  };
+  try { assert.throws(() => f.store.read(f.id, accounts, f.hash), /signing key changed/); }
+  finally { fs.openSync = original; }
+});
+
+it("treats Unicode quotation marks in Windows authority paths as literal data", { skip: process.platform !== "win32" }, t => {
+  const f = fixture(t);
+  const directory = path.join(f.dir, "owner\u2019s receipts");
+  fs.mkdirSync(directory);
+  const store = new NativeCreationReceipts({ directory: path.join(directory, "receipts") });
+  store.reserve(f.id, args, accounts, "executor");
+  assert.equal(store.read(f.id, accounts, f.hash).state, "pending");
+});

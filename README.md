@@ -8,6 +8,8 @@ Local Desktop handoff guides: [daily workflow and directory verification](docs/d
 
 [![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
 [![npm downloads](https://img.shields.io/npm/dt/@minhspark/codex-mcp-bridge?logo=npm&label=npm%20downloads&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
+[![npm downloads / month](https://img.shields.io/npm/dm/@minhspark/codex-mcp-bridge?logo=npm&label=npm%20downloads%20%2F%20month&color=CB3837)](https://www.npmcharts.com/compare/%40minhspark%2Fcodex-mcp-bridge?minimal=true)
+[![Used by repositories (Libraries.io)](https://img.shields.io/librariesio/dependent-repos/npm/@minhspark/codex-mcp-bridge?label=Used%20by&logo=github&color=0969da)](https://github.com/buidangminh23/codex-mcp-bridge/network/dependents)
 [![skills.sh installs](https://skills.sh/b/buidangminh23/codex-mcp-bridge?label=skills.sh)](https://skills.sh/buidangminh23/codex-mcp-bridge/codex-bridge)
 [![GitHub views / source window](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-github-views.svg)](https://buidangminh23.github.io/codex-mcp-bridge/)
 [![license](https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge)](LICENSE)
@@ -15,12 +17,6 @@ Local Desktop handoff guides: [daily workflow and directory verification](docs/d
 Send prompts and replies between **Claude and Codex**, keeping each conversation in its own app. Supports Windows, macOS, and Linux; native Desktop integration supports Windows and macOS.
 
 https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
-
-## Package activity
-
-[![npm download trend](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads.svg)](https://www.npmcharts.com/compare/%40minhspark%2Fcodex-mcp-bridge?minimal=true)
-
-[Explore the interactive npmcharts trend](https://www.npmcharts.com/compare/%40minhspark%2Fcodex-mcp-bridge?minimal=true) · [View public GitHub dependents](https://github.com/buidangminh23/codex-mcp-bridge/network/dependents). The chart uses the repository's hourly npm analytics snapshots; npm downloads include updates and automation.
 
 ## Release notifications
 

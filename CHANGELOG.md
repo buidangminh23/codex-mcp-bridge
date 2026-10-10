@@ -4,6 +4,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.21.3] - 2026-10-10
+
+### Changed
+
+- Replace the large README download chart with compact monthly npm downloads and dependent repository badges. The badges link to npmcharts and GitHub dependents.
+- Stop publishing the unused download chart to the analytics branch; the dashboard and archived daily download history remain available.
+
+### Upgrade notes
+
+- MCP behavior is unchanged. The next repository analytics refresh removes the old chart asset from the analytics branch.
+
 ## [1.21.2] - 2026-10-10
 
 ### Added

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { publicFiles, sanitizeAnalytics, publishAnalytics, renderGithubViewsBadge } from '../scripts/publish-repo-analytics.mjs';
+import { publicFiles, sanitizeAnalytics, publishAnalytics, renderGithubViewsBadge, renderNpmDownloadsChart } from '../scripts/publish-repo-analytics.mjs';
 
 const history = {
   schemaVersion: 1, repo: 'owner/repo', package: '@owner/pkg', updatedAt: '2026-09-15T12:00:00Z',
@@ -27,7 +27,7 @@ test('public data allowlists aggregate fields and excludes private identities/er
 
 test('dashboard escapes external text and renders all metric families without pretending missing is zero', () => {
   const files = publicFiles(history, usage);
-  assert.deepEqual(Object.keys(files).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html', 'stats-github-views.svg']);
+  assert.deepEqual(Object.keys(files).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html', 'stats-github-views.svg', 'stats-npm-downloads.svg']);
   const svg = files['dashboard.svg'];
   assert.ok(svg.includes('&lt;script&gt;&amp;&quot;.zip'));
   assert.ok(!svg.includes('<script>'));
@@ -40,7 +40,7 @@ test('dashboard escapes external text and renders all metric families without pr
   assert.ok(!JSON.stringify(files).includes('private-'));
 });
 
-test('first publication creates an isolated five-file tree and analytics ref only', async () => {
+test('first publication creates an isolated six-file tree and analytics ref only', async () => {
   const calls = [];
   const gh = async (endpoint, options) => {
     calls.push({ endpoint, ...options });
@@ -50,7 +50,7 @@ test('first publication creates an isolated five-file tree and analytics ref onl
   assert.equal(await publishAnalytics('owner/repo', publicFiles(history), gh), 'commit-sha');
   const tree = calls.find(call => call.endpoint.endsWith('/git/trees')).body;
   assert.equal(tree.base_tree, undefined);
-  assert.equal(tree.tree.length, 5);
+  assert.equal(tree.tree.length, 6);
   assert.deepEqual(calls.find(call => call.endpoint.endsWith('/git/commits')).body.parents, []);
   assert.equal(calls.at(-1).body.ref, 'refs/heads/analytics');
   assert.ok(!JSON.stringify(calls).includes('heads/main'));
@@ -230,4 +230,27 @@ test('views badge distinguishes a real zero from an unavailable source', () => {
   assert.match(renderGithubViewsBadge(data, { now: Date.parse(history.updatedAt) }), /GitHub views \/ 1d: 0"/);
   data.snapshots[0].views = null;
   assert.match(renderGithubViewsBadge(data), /GitHub views \/ window: Unavailable/);
+});
+
+test('npm trend plots verified daily counts and exposes source freshness', () => {
+  const source = structuredClone(history);
+  source.snapshots[0].npm = { start: '2026-09-12', end: '2026-09-14', downloads: [{ day: '2026-09-12', downloads: 0 }, { day: '2026-09-13', downloads: 12 }, { day: '2026-09-14', downloads: 5 }] };
+  source.daily.npm = { '2026-09-12': { downloads: 0 }, '2026-09-13': { downloads: 12 }, '2026-09-14': { downloads: 5 } };
+  const data = sanitizeAnalytics(source);
+  const chart = renderNpmDownloadsChart(data, { now: Date.parse(history.updatedAt) });
+  assert.match(chart, /17 downloads across 3 reported days/);
+  assert.match(chart, /2026-09-12: 0 downloads/);
+  assert.match(chart, /2026-09-13: 12 downloads/);
+  assert.match(chart, /npm API · Source collected · 2026-09-15 12:00 UTC/);
+  assert.equal((chart.match(/<circle /g) || []).length, 3);
+  assert.match(renderNpmDownloadsChart(data, { now: Date.parse('2026-09-15T16:00:00Z') }), /Source stale at generation/);
+  assert.ok(!chart.includes('private-'));
+});
+
+test('npm trend distinguishes missing data from a reported zero', () => {
+  const empty = sanitizeAnalytics(history);
+  assert.match(renderNpmDownloadsChart(empty), /No download history available/);
+  assert.match(renderNpmDownloadsChart(empty), /Source unavailable/);
+  empty.daily.npm['2026-09-14'] = { downloads: 0 };
+  assert.match(renderNpmDownloadsChart(empty), /0 downloads across 1 reported day/);
 });

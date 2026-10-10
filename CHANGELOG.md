@@ -11,6 +11,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Show an npm download trend in the repository README, with links to the interactive npmcharts view and GitHub dependents.
 - Publish a source-dated trend SVG from the existing hourly analytics history. Distinguish unavailable data from a reported zero and label stale sources at generation time.
 
+### Fixed
+
+- Preserve a telemetry lock replaced by another writer on Windows even when rapid file creation gives both locks the same reported file identity and birth time.
+
 ### Upgrade notes
 
 - MCP behavior is unchanged. The repository analytics workflow publishes the new SVG after this release reaches `main`.

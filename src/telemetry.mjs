@@ -51,11 +51,14 @@ async function locked(directory, action) {
     throw new Error('Telemetry settings are busy. Locks never expire automatically; inspect active telemetry processes before repairing a leftover lock.');
   }
   let owned;
-  try { owned = await lock.stat(); return await action(); }
+  const token = randomUUID();
+  try { await lock.writeFile(token); owned = await lock.stat(); return await action(); }
   finally {
     try {
       const current = await lstat(filename).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
-      if (owned && current?.isFile() && !current.isSymbolicLink() && current.nlink === 1 && owned.dev === current.dev && owned.ino === current.ino && owned.birthtimeMs === current.birthtimeMs) await unlink(filename);
+      const sameFile = owned && current?.isFile() && !current.isSymbolicLink() && current.nlink === 1 && owned.dev === current.dev && owned.ino === current.ino && owned.birthtimeMs === current.birthtimeMs;
+      const candidate = sameFile && current.size === token.length ? await readFile(filename, 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return null; }) : null;
+      if (sameFile && candidate === token) await unlink(filename);
     } finally { await lock.close(); }
   }
 }

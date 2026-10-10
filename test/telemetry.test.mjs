@@ -39,11 +39,12 @@ test('report cleanup preserves a lock replaced by another writer', async t => {
   await enableTelemetry(opts);
   const lock = path.join(opts.directory, '.telemetry.lock');
   assert.equal(await reportUsage({ ...opts, fetcher: async () => {
+    assert.match(await readFile(lock, 'utf8'), /^[0-9a-f-]{36}$/);
     await rename(lock, `${lock}.original`);
-    await writeFile(lock, 'replacement request');
+    await writeFile(lock, 'x'.repeat(36));
     return { ok: true };
   } }), true);
-  assert.equal(await readFile(lock, 'utf8'), 'replacement request');
+  assert.equal(await readFile(lock, 'utf8'), 'x'.repeat(36));
 });
 
 test('consent is explicit, enable is idempotent, disable removes identity', async t => {
@@ -146,6 +147,7 @@ test('long-running reporting checks hourly with an unreferenced timer and respec
   for (let attempt = 0; attempt < 100 && calls === 0; attempt++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(calls, 1);
   for (let attempt = 0; attempt < 100 && !(await getTelemetryStatus(opts)).lastReportDay; attempt++) await new Promise(resolve => setTimeout(resolve, 5));
+  for (let attempt = 0; attempt < 200 && (await readdir(opts.directory)).includes('.telemetry.lock'); attempt++) await new Promise(resolve => setTimeout(resolve, 10));
   await disableTelemetry(opts);
   tick();
   await new Promise(resolve => setTimeout(resolve, 20));

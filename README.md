@@ -16,6 +16,12 @@ Send prompts and replies between **Claude and Codex**, keeping each conversation
 
 https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 
+## Package activity
+
+[![npm download trend](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads.svg)](https://www.npmcharts.com/compare/%40minhspark%2Fcodex-mcp-bridge?minimal=true)
+
+[Explore the interactive npmcharts trend](https://www.npmcharts.com/compare/%40minhspark%2Fcodex-mcp-bridge?minimal=true) · [View public GitHub dependents](https://github.com/buidangminh23/codex-mcp-bridge/network/dependents). The chart uses the repository's hourly npm analytics snapshots; npm downloads include updates and automation.
+
 ## Release notifications
 
 To receive new release notifications, open [this repository](https://github.com/buidangminh23/codex-mcp-bridge), select **Watch → Custom → Releases**, then click **Apply**. Choose GitHub or email delivery in your [notification settings](https://github.com/settings/notifications).

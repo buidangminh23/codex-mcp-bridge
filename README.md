@@ -450,6 +450,14 @@ WHERE day >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - 29;
 
 ## Development
 
+### Glama directory
+
+The repository includes [glama.json](glama.json) with the maintainer's GitHub username, using [Glama's server schema](https://glama.ai/mcp/schemas/server.json). After changing it, use the listing's **Sync Server** action or repeat the ownership claim to refresh Glama's copy. See [Glama's manifest documentation](https://glama.ai/blog/2025-07-08-what-is-glamajson).
+
+Glama's recent usage signal measures calls observed by Glama, independently of npm downloads and the bridge's opt-in installation analytics. Use **Try in Browser** and the read-only `codex_bridge_status` tool to check a hosted release. A cloud container cannot access the Codex Desktop app or signed-in sessions on a user's machine; run the bridge locally for those workflows. Related servers are managed separately in Glama's listing.
+
+If a Glama test reports `DockerBuildError` with HTTP `502 Bad Gateway` and an empty build log, the Docker service request failed without an application build log. Retry when that service recovers. If it persists, provide Glama support with the test ID, timestamp, and error details. Changing `npm ci` or the launcher cannot repair that upstream failure; investigate repository build steps only when their logs identify an application error.
+
 ### Shared project scope for Desktop Code conversations
 
 See [Desktop handoff design and recovery](docs/desktop-handoff-design.md) for the failure cases, integration with current upstream, and validation limits.

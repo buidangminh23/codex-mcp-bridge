@@ -4,6 +4,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.21.4] - 2026-10-11
+
+### Added
+
+- Add the Glama ownership manifest to the repository and published package so the directory can identify the maintainer.
+- Document Glama metadata synchronization, hosted usage limitations, and Docker infrastructure failures.
+
+### Upgrade notes
+
+- MCP behavior is unchanged. Glama must synchronize the repository to detect the manifest; its Docker service must be available before a new hosted release can be built.
+
 ## [1.21.3] - 2026-10-10
 
 ### Changed

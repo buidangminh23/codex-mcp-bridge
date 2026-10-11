@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-10-11T08:54:21.068Z",
+  "updatedAt": "2026-10-11T15:43:01.297Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -11564,16 +11564,11 @@
       }
     },
     {
-      "collectedAt": "2026-10-11T08:54:21.068Z",
+      "collectedAt": "2026-10-11T15:43:01.297Z",
       "views": {
-        "count": 263,
-        "uniques": 85,
+        "count": 279,
+        "uniques": 87,
         "views": [
-          {
-            "timestamp": "2026-09-26T00:00:00Z",
-            "count": 4,
-            "uniques": 3
-          },
           {
             "timestamp": "2026-09-27T00:00:00Z",
             "count": 9,
@@ -11638,18 +11633,18 @@
             "timestamp": "2026-10-09T00:00:00Z",
             "count": 13,
             "uniques": 7
+          },
+          {
+            "timestamp": "2026-10-10T00:00:00Z",
+            "count": 20,
+            "uniques": 7
           }
         ]
       },
       "clones": {
-        "count": 4392,
-        "uniques": 588,
+        "count": 4689,
+        "uniques": 616,
         "clones": [
-          {
-            "timestamp": "2026-09-26T00:00:00Z",
-            "count": 82,
-            "uniques": 30
-          },
           {
             "timestamp": "2026-09-27T00:00:00Z",
             "count": 85,
@@ -11714,6 +11709,11 @@
             "timestamp": "2026-10-09T00:00:00Z",
             "count": 256,
             "uniques": 37
+          },
+          {
+            "timestamp": "2026-10-10T00:00:00Z",
+            "count": 379,
+            "uniques": 63
           }
         ]
       },
@@ -11723,13 +11723,9 @@
         "subscribers": 1
       },
       "npm": {
-        "start": "2026-09-10",
-        "end": "2026-10-09",
+        "start": "2026-09-11",
+        "end": "2026-10-10",
         "downloads": [
-          {
-            "day": "2026-09-10",
-            "downloads": 26
-          },
           {
             "day": "2026-09-11",
             "downloads": 45
@@ -11845,6 +11841,10 @@
           {
             "day": "2026-10-09",
             "downloads": 38
+          },
+          {
+            "day": "2026-10-10",
+            "downloads": 314
           }
         ]
       },
@@ -12134,11 +12134,11 @@
         }
       ],
       "sourceCollectedAt": {
-        "views": "2026-10-11T08:54:21.068Z",
-        "clones": "2026-10-11T08:54:21.068Z",
-        "npm": "2026-10-11T08:54:21.068Z",
-        "repository": "2026-10-11T08:54:21.068Z",
-        "releases": "2026-10-11T08:54:21.068Z"
+        "views": "2026-10-11T15:43:01.297Z",
+        "clones": "2026-10-11T15:43:01.297Z",
+        "npm": "2026-10-11T15:43:01.297Z",
+        "repository": "2026-10-11T15:43:01.297Z",
+        "releases": "2026-10-11T15:43:01.297Z"
       }
     }
   ],
@@ -12303,6 +12303,10 @@
       "2026-10-09": {
         "count": 13,
         "uniques": 7
+      },
+      "2026-10-10": {
+        "count": 20,
+        "uniques": 7
       }
     },
     "clones": {
@@ -12465,6 +12469,10 @@
       "2026-10-09": {
         "count": 256,
         "uniques": 37
+      },
+      "2026-10-10": {
+        "count": 379,
+        "uniques": 63
       }
     },
     "npm": {
@@ -12641,11 +12649,14 @@
       },
       "2026-10-09": {
         "downloads": 38
+      },
+      "2026-10-10": {
+        "downloads": 314
       }
     }
   },
   "usage": {
-    "collectedAt": "2026-10-11T08:54:22Z",
+    "collectedAt": "2026-10-11T15:43:05Z",
     "active": {
       "day": 0,
       "week": 0,

@@ -48,7 +48,8 @@
     "LICENSE",
     "CHANGELOG.md",
     "docs/daily-handoffs.md",
-    "docs/new-machine-setup.md",
+    "docs/new-windows-setup.md",
+    "docs/new-macos-setup.md",
     "docs/project-onboarding.md",
     "docs/desktop-handoff-design.md"
   ],

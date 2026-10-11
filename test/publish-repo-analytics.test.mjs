@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { publicFiles, sanitizeAnalytics, publishAnalytics, renderGithubViewsBadge } from '../scripts/publish-repo-analytics.mjs';
+import { publicFiles, sanitizeAnalytics, publishAnalytics, renderGithubViewsBadge, renderNpmDownloadsBadge } from '../scripts/publish-repo-analytics.mjs';
 
 const history = {
   schemaVersion: 1, repo: 'owner/repo', package: '@owner/pkg', updatedAt: '2026-09-15T12:00:00Z',
@@ -27,7 +27,7 @@ test('public data allowlists aggregate fields and excludes private identities/er
 
 test('dashboard escapes external text and renders all metric families without pretending missing is zero', () => {
   const files = publicFiles(history, usage);
-  assert.deepEqual(Object.keys(files).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html', 'stats-github-views.svg']);
+  assert.deepEqual(Object.keys(files).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html', 'stats-github-views.svg', 'stats-npm-downloads-month.svg', 'stats-npm-downloads.svg']);
   const svg = files['dashboard.svg'];
   assert.ok(svg.includes('&lt;script&gt;&amp;&quot;.zip'));
   assert.ok(!svg.includes('<script>'));
@@ -40,7 +40,7 @@ test('dashboard escapes external text and renders all metric families without pr
   assert.ok(!JSON.stringify(files).includes('private-'));
 });
 
-test('first publication creates an isolated five-file tree and analytics ref only', async () => {
+test('first publication creates an isolated seven-file tree and analytics ref only', async () => {
   const calls = [];
   const gh = async (endpoint, options) => {
     calls.push({ endpoint, ...options });
@@ -50,7 +50,7 @@ test('first publication creates an isolated five-file tree and analytics ref onl
   assert.equal(await publishAnalytics('owner/repo', publicFiles(history), gh), 'commit-sha');
   const tree = calls.find(call => call.endpoint.endsWith('/git/trees')).body;
   assert.equal(tree.base_tree, undefined);
-  assert.equal(tree.tree.length, 5);
+  assert.equal(tree.tree.length, 7);
   assert.deepEqual(calls.find(call => call.endpoint.endsWith('/git/commits')).body.parents, []);
   assert.equal(calls.at(-1).body.ref, 'refs/heads/analytics');
   assert.ok(!JSON.stringify(calls).includes('heads/main'));
@@ -230,4 +230,23 @@ test('views badge distinguishes a real zero from an unavailable source', () => {
   assert.match(renderGithubViewsBadge(data, { now: Date.parse(history.updatedAt) }), /GitHub views \/ 1d: 0"/);
   data.snapshots[0].views = null;
   assert.match(renderGithubViewsBadge(data), /GitHub views \/ window: Unavailable/);
+});
+
+test('npm badges total the archive and the latest source window without shields.io', () => {
+  const data = sanitizeAnalytics({ ...history, snapshots: [{ collectedAt: '2026-09-15T12:00:00Z', npm: { start: '2026-09-13', end: '2026-09-14', downloads: [{ day: '2026-09-13', downloads: 5 }, { day: '2026-09-14', downloads: 7 }] } }], daily: { npm: { '2026-08-20': { downloads: 1000 }, '2026-09-13': { downloads: 5 }, '2026-09-14': { downloads: 7 } } } });
+  const now = Date.parse(history.updatedAt);
+  const total = renderNpmDownloadsBadge(data, { now });
+  assert.match(total, /aria-label="npm downloads: 1,012"/);
+  assert.match(total, /2026-08-20 to 2026-09-14 UTC/);
+  assert.match(total, /fill="#CB3837"/);
+  assert.match(renderNpmDownloadsBadge(data, { now, period: 'window' }), /aria-label="npm downloads \/ 2d: 12"/);
+  assert.match(renderNpmDownloadsBadge(data, { now: now + 4 * 60 * 60 * 1000 }), /1,012 · stale/);
+});
+
+test('npm badges report a missing or incomplete source as unavailable, never zero', () => {
+  const data = sanitizeAnalytics(history);
+  assert.match(renderNpmDownloadsBadge(data), /npm downloads: Unavailable/);
+  assert.match(renderNpmDownloadsBadge(data, { period: 'window' }), /npm downloads \/ window: Unavailable/);
+  data.daily.npm = { '2026-09-13': { downloads: 5 }, '2026-09-14': { downloads: null } };
+  assert.match(renderNpmDownloadsBadge(data), /npm downloads: Unavailable/);
 });

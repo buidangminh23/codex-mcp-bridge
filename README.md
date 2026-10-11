@@ -7,8 +7,8 @@
 Local Desktop handoff guides: [daily workflow and directory verification](docs/daily-handoffs.md), [new-machine setup and permissions](docs/new-machine-setup.md), and [project onboarding](docs/project-onboarding.md).
 
 [![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
-[![npm downloads](https://img.shields.io/npm/dt/@minhspark/codex-mcp-bridge?logo=npm&label=npm%20downloads&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
-[![npm downloads / month](https://img.shields.io/npm/dm/@minhspark/codex-mcp-bridge?logo=npm&label=npm%20downloads%20%2F%20month&color=CB3837)](https://www.npmcharts.com/compare/%40minhspark%2Fcodex-mcp-bridge?minimal=true)
+[![npm downloads](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads.svg)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
+[![npm downloads / month](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads-month.svg)](https://www.npmcharts.com/compare/%40minhspark%2Fcodex-mcp-bridge?minimal=true)
 [![Used by repositories (Libraries.io)](https://img.shields.io/librariesio/dependent-repos/npm/@minhspark/codex-mcp-bridge?label=Used%20by&logo=github&color=0969da)](https://github.com/buidangminh23/codex-mcp-bridge/network/dependents)
 [![skills.sh installs](https://skills.sh/b/buidangminh23/codex-mcp-bridge?label=skills.sh)](https://skills.sh/buidangminh23/codex-mcp-bridge/codex-bridge)
 [![GitHub views / source window](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-github-views.svg)](https://buidangminh23.github.io/codex-mcp-bridge/)

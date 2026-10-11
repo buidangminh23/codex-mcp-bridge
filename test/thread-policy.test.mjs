@@ -122,12 +122,12 @@ describe("thread authorization policy", () => {
  * exercising the existing tools would ever notice.
  */
 describe("every thread tool is gated on the workspace", () => {
-  const source = fs.readFileSync(path.join(root, "src", "index.mjs"), "utf8");
-  const tools = source
-    .split(/(?:server\.)?registerTool\(/)
-    .slice(1)
-    .map((block) => ({ name: block.match(/^\s*"([^"]+)"/)?.[1] ?? "(unnamed)", body: block }))
-    .filter((tool) => /threadId: z\.string\(\)/.test(tool.body));
+  const tools = ["index.mjs", "desktop-read-tools.mjs"].flatMap((file) =>
+    fs.readFileSync(path.join(root, "src", file), "utf8")
+      .split(/(?:server\.)?registerTool\(/)
+      .slice(1)
+      .map((block) => ({ name: block.match(/^\s*"([^"]+)"/)?.[1] ?? "(unnamed)", body: block }))
+      .filter((tool) => /threadId: z\.string\(\)/.test(tool.body)));
 
   it("finds every tool that takes a thread id", () => {
     assert.deepEqual(tools.map((tool) => tool.name).sort(), [
@@ -152,6 +152,12 @@ describe("every thread tool is gated on the workspace", () => {
       );
     });
   }
+
+  it("authorizes before reading and checks the returned workspace before exposing messages", () => {
+    const read = tools.find((tool) => tool.name === "read_codex_thread").body;
+    assert.ok(read.indexOf("await assertThreadAccess(threadId)") < read.indexOf('client.call("thread/read"'));
+    assert.ok(read.indexOf("security.assertCwd(thread.cwd)") < read.indexOf("const items ="));
+  });
 
   /**
    * Attaching takes the per-thread writer lock from whoever else has the

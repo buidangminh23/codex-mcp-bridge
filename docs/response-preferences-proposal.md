@@ -160,7 +160,7 @@ enforcing the byte budget. A representative completed reply page is:
 | Existing request frames | 128 KiB, unchanged |
 | Native-pipe and companion-to-bridge response frames | 8 MiB each |
 | Cursor page, complete serialized MCP tool result | 64 KiB default; requestable from 8–96 KiB |
-| Non-paged opted-in result | 8 MiB including the serialized MCP tool result |
+| Non-paged opted-in result and plain Desktop read | 8 MiB including the serialized MCP tool result |
 | Snapshot cache | 32 MiB accounted serialized content/index bytes per bridge worker |
 | Snapshot lifetime | 30 minutes from creation, not extended by reads |
 
@@ -187,6 +187,8 @@ the failing boundary, byte count when known, and limit; malformed frames remain
 distinct. Use `INVALID_RESPONSE_PREFERENCES`, `INVALID_CURSOR`, and
 `CURSOR_EXPIRED` for the new contract. Oversize errors must not prescribe a relay
 restart or cause an automatic send retry.
+Schema-invalid arguments are rejected by the MCP SDK before the handler runs;
+runtime preference conflicts use the structured codes above.
 
 ## Compatibility and implementation sequence
 
@@ -215,8 +217,9 @@ release; absent preferences remain supported there.
    preferences to the native API. Inject authorization checks from existing
    delivery/receipt code rather than creating another permission system.
 4. **Wire read-only tools.** Extend only `read_codex_thread` and
-   `wait_codex_reply` in `src/index.mjs`. Keep the absent-preferences branches
-   and shared send/create `replyResult` behavior unchanged. Cursor reads do not
+   `wait_codex_reply` in `src/index.mjs`. Preserve absent-preferences response
+   shapes, adding a final byte guard against escaping/formatting expansion;
+   keep shared send/create `replyResult` behavior unchanged. Cursor reads do not
    call `wait`, send, or create. Reuse `codex-native-response.mjs` verification
    before projecting authoritative reply items. Publish schemas/descriptions
    and examples in `REFERENCE.md`; new modules need no dependency or config flag.

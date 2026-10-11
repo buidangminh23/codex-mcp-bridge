@@ -39,13 +39,10 @@ export const NATIVE_DISPATCH_METHOD = "tools/call";
 export const RELAY_PROTOCOL_VERSION = 1;
 export const ACCOUNT_RELAY_PROTOCOL_VERSION = 2;
 
-/**
- * A relay frame carries one chat message, so a megabyte-scale line is either a
- * bug or something trying to make the companion buffer without limit. The cap
- * is applied on both halves: the client refuses to send an oversized message,
- * and the companion refuses to accumulate one.
- */
-export const MAX_FRAME_BYTES = 128 * 1024;
+// Requests carry commands; responses may contain a long Desktop history.
+export const MAX_REQUEST_FRAME_BYTES = 128 * 1024;
+export const MAX_RESPONSE_FRAME_BYTES = 8 * 1024 * 1024;
+export const MAX_FRAME_BYTES = MAX_REQUEST_FRAME_BYTES;
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const RELAY_SOCKET_NAME = "native-relay.sock";
@@ -53,12 +50,19 @@ const WINDOWS_RELAY_SOCKET = "\\\\.\\pipe\\LOCAL\\codex-native-relay";
 const RELAY_CONFIG_NAME = "native-relay.json";
 
 export class NativeRelayError extends Error {
-  constructor(message, code, { reachedCompanion = false } = {}) {
+  constructor(message, code, { reachedCompanion = false, boundary, bytes, limit } = {}) {
     super(message);
     this.name = "NativeRelayError";
     this.code = code;
     this.reachedCompanion = reachedCompanion;
+    if (boundary !== undefined) this.boundary = boundary;
+    if (bytes !== undefined) this.bytes = bytes;
+    if (limit !== undefined) this.limit = limit;
   }
+}
+
+export function responseTooLargeError(boundary, bytes, limit = MAX_RESPONSE_FRAME_BYTES) {
+  return new NativeRelayError(`Response at ${boundary} exceeds ${limit} bytes (${bytes} bytes received or required)`, "RESPONSE_TOO_LARGE", { boundary, bytes, limit, reachedCompanion: true });
 }
 
 export function codexHome(env = process.env) {
@@ -86,7 +90,7 @@ export function relayAccountContext(value) {
 }
 
 function beforeWriteError(error) {
-  const failure = new NativeRelayError(error?.message ?? "Relay preflight failed before dispatch", typeof error?.code === "string" ? error.code : "RELAY_PREFLIGHT_FAILED", { reachedCompanion: false });
+  const failure = new NativeRelayError(error?.message ?? "Relay preflight failed before dispatch", typeof error?.code === "string" ? error.code : "RELAY_PREFLIGHT_FAILED", { ...error, reachedCompanion: false });
   failure.sent = false;
   return failure;
 }
@@ -617,7 +621,11 @@ export class NativeToolsClient {
         buffer = Buffer.concat([buffer, chunk]);
         while (buffer.length >= 4) {
           const length = buffer.readUInt32LE(0);
-          if (!length || length > MAX_FRAME_BYTES) {
+          if (length > MAX_RESPONSE_FRAME_BYTES) {
+            fail(responseTooLargeError("native-pipe", length));
+            return;
+          }
+          if (!length) {
             fail(new NativeRelayError("Invalid Codex Desktop native frame length", "NATIVE_BAD_RESPONSE"));
             return;
           }
@@ -675,7 +683,7 @@ export class NativeToolsClient {
       method: this.env.CODEX_NATIVE_RELAY_METHOD ?? NATIVE_DISPATCH_METHOD,
       params,
     }));
-    if (payload.length > MAX_FRAME_BYTES) {
+    if (payload.length > MAX_REQUEST_FRAME_BYTES) {
       throw new NativeRelayError("Native dispatch exceeds the frame limit", "RELAY_MESSAGE_TOO_LARGE");
     }
     try {
@@ -820,9 +828,9 @@ export class NativeDesktopRelay {
   async #request(request, timeoutMs, beforeSend) {
     validateBeforeSend(beforeSend);
     const line = `${JSON.stringify(request)}\n`;
-    if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES) {
+    if (Buffer.byteLength(line, "utf8") > MAX_REQUEST_FRAME_BYTES) {
       throw new NativeRelayError(
-        `Relay message is larger than ${MAX_FRAME_BYTES} bytes; shorten it before relaying.`,
+        `Relay message is larger than ${MAX_REQUEST_FRAME_BYTES} bytes; shorten it before relaying.`,
         "RELAY_MESSAGE_TOO_LARGE",
       );
     }
@@ -835,7 +843,7 @@ export class NativeDesktopRelay {
     const error = new NativeRelayError(
       response?.error?.message ?? "the Codex Desktop relay refused the message",
       response?.error?.code ?? "NATIVE_DISPATCH_FAILED",
-      { reachedCompanion: response?.error?.sent !== false },
+      { boundary: response?.error?.boundary, bytes: response?.error?.bytes, limit: response?.error?.limit, reachedCompanion: response?.error?.sent !== false },
     );
     if (response?.error?.sent === false) error.sent = false;
     throw error;
@@ -886,13 +894,8 @@ export class NativeDesktopRelay {
       });
       socket.on("data", (chunk) => {
         buffer = Buffer.concat([buffer, chunk]);
-        if (buffer.length > MAX_FRAME_BYTES) {
-          finish(
-            reject,
-            new NativeRelayError("The Codex Desktop relay answered with an oversized frame", "RELAY_BAD_RESPONSE", {
-              reachedCompanion: true,
-            }),
-          );
+        if (buffer.length > MAX_RESPONSE_FRAME_BYTES) {
+          finish(reject, responseTooLargeError("companion-to-bridge", buffer.length));
           return;
         }
         const index = buffer.indexOf(10);

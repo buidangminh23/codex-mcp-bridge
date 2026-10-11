@@ -12,6 +12,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 import {
   MAX_FRAME_BYTES,
+  MAX_RESPONSE_FRAME_BYTES,
   ACCOUNT_RELAY_PROTOCOL_VERSION,
   NATIVE_DISPATCH_METHOD,
   NativeToolsClient,
@@ -1784,11 +1785,50 @@ describe("native tools pipe protocol", () => {
     }
   });
 
+  it("accepts large responses through both hops with fragmented native UTF-8", async () => {
+    const text = "ế👋".repeat(40000);
+    const native = await nativePipe((request, socket) => {
+      const frame = nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true, contentItems: [{ type: "inputText", text: JSON.stringify({ text }) }] } });
+      const split = frame.indexOf(Buffer.from("ế")) + 1;
+      socket.write(frame.subarray(0, split));
+      setTimeout(() => socket.write(frame.subarray(split)), 5);
+    });
+    const client = new NativeToolsClient({ socketPath: native.socketPath, env: {} });
+    const server = new RelaySocketServer({ socketPath: tempSocket(), resolveExecutor: stubExecutor, dispatchDesktop: (args) => client.dispatchDesktop(args) });
+    await server.start();
+    try {
+      const response = await new NativeDesktopRelay({ socketPath: server.socketPath, env: {} }).requestDesktop("read_thread", { threadId: "target" });
+      assert.equal(response.result.text, text);
+      assert.equal(client.pending.size, 0);
+    } finally { server.stop(); client.close(); await native.close(); }
+  });
+
+  it("reports native response overflow precisely and clears all pending requests without replay", async () => {
+    let requests = 0;
+    const native = await nativePipe((_request, socket) => {
+      if (++requests !== 2) return;
+      const header = Buffer.alloc(4);
+      header.writeUInt32LE(MAX_RESPONSE_FRAME_BYTES + 1);
+      socket.write(header);
+    });
+    const client = new NativeToolsClient({ socketPath: native.socketPath, env: {} });
+    try {
+      const results = await Promise.allSettled(["first", "second"].map((message) => client.dispatch({ executorThreadId: "e", targetThreadId: "t", message })));
+      for (const result of results) {
+        assert.equal(result.status, "rejected");
+        assert.equal(result.reason.code, "RESPONSE_TOO_LARGE");
+        assert.equal(result.reason.boundary, "native-pipe");
+        assert.equal(result.reason.bytes, MAX_RESPONSE_FRAME_BYTES + 1);
+        assert.equal(result.reason.limit, MAX_RESPONSE_FRAME_BYTES);
+      }
+      assert.equal(client.pending.size, 0);
+      assert.equal(requests, 2);
+    } finally { client.close(); await native.close(); }
+  });
+
   it("rejects malformed native frames and clears every pending request", async () => {
-    const oversized = Buffer.alloc(4);
-    oversized.writeUInt32LE(MAX_FRAME_BYTES + 1);
     const malformed = Buffer.concat([Buffer.from([1, 0, 0, 0]), Buffer.from("{")]);
-    for (const response of [oversized, Buffer.alloc(4), malformed, nativeFrame({ id: 1, result: {} })]) {
+    for (const response of [Buffer.alloc(4), malformed, nativeFrame({ id: 1, result: {} })]) {
       const native = await nativePipe((_request, socket) => socket.write(response));
       const client = new NativeToolsClient({ socketPath: native.socketPath, timeoutMs: 500 });
       try {

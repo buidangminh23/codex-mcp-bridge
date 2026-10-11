@@ -112,6 +112,7 @@ export class DesktopTaskDelivery {
       });
       return includeRelayContext ? { result: response.result, executorThreadId: response.executorThreadId } : response.result;
     } catch (err) {
+      if (err.code === "RESPONSE_TOO_LARGE") throw err;
       if (err.code?.startsWith("PROJECT_SCOPE_") || err.code === "CLAUDE_SENDER_CONTEXT_UNVERIFIED") throw err;
       throw new Error(`Codex Desktop operation ${operation} failed: ${err.message}. Desktop-only mode will not start or use an external app-server. Open Codex Desktop and reconnect its native relay, then inspect the existing task before retrying a send.`, { cause: err });
     }
@@ -194,7 +195,7 @@ export class DesktopTaskDelivery {
     let response;
     try {
       this.security.assertThread(receipt.threadId, cwd);
-      response = await this.request("read_thread", { threadId: receipt.threadId, hostId: "local", turnLimit: 1 }, { deadline });
+      response = await this.request("read_thread", { threadId: receipt.threadId, hostId: "local", turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 1 }, { deadline });
     } catch (err) {
       throw new Error(`Existing Desktop task ${receipt.threadId} could not be verified. No prompt was resent and no duplicate task was created: ${err.message}`, { cause: err });
     }
@@ -364,7 +365,7 @@ export class DesktopTaskDelivery {
   }
 
   async #inspectMetadata(threadId, cwd, { deadline } = {}) {
-    const envelope = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1 }, { deadline, includeRelayContext: true });
+    const envelope = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 1 }, { deadline, includeRelayContext: true });
     const response = envelope.result;
     const thread = response?.thread;
     if (thread?.id !== threadId || thread.hostId !== "local" || !thread.cwd) throw new Error("Desktop did not confirm the task's local workspace.");

@@ -18,6 +18,8 @@ import fs from 'node:fs';
 import readline from 'node:readline';
 import { assertRoutingReload, createReloadControl } from './reload-control.mjs';
 import { desktopTasksConfigured } from ${JSON.stringify(new URL("../src/native-relay.mjs", import.meta.url).href)};
+import { ResponseSnapshots } from ${JSON.stringify(new URL("../src/response-preferences.mjs", import.meta.url).href)};
+const snapshots = new ResponseSnapshots();
 const VERSION = 'A';
 const ENTRY = process.env.TEST_ENTRY;
 const desktopMode = desktopTasksConfigured();
@@ -40,6 +42,12 @@ readline.createInterface({input: process.stdin}).on('line', async line => {
     else if (msg.method === 'ping') result = {};
     else result = await control.run(async () => {
       const name = msg.params.name;
+      if (name === 'snapshot') return snapshots.respond({ preferences: {delivery:{type:'cursorPagination',options:{maxBytes:8192}}}, binding:{caller:'fixture'}, selection:{threadId:'fixture'}, metadata:{threadId:'fixture'}, items:[{itemId:'large',item:{text:'x'.repeat(20000)}}] });
+      if (name === 'page') {
+        try { return snapshots.continue({preferences:{delivery:{type:'cursorPagination',options:{cursor:msg.params.arguments.cursor}}},binding:{caller:'fixture'},selection:{threadId:'fixture'}}); }
+        catch(error) { return {content:[{type:'text',text:error.message}],isError:true,structuredContent:{code:error.code}}; }
+      }
+
       if (name === 'hold') pending = true;
       if (name === 'release') pending = false;
       if (name === 'add' || name === 'slow' || name === 'crash') {
@@ -426,3 +434,17 @@ for (const [entry, statusName] of [["index.mjs", "codex_bridge_status"], ["claud
     if (entry === "native-relay-companion.mjs") assert.match(after.content[0].text, /account relay:.*\(protocol 2, listening\)/);
   });
 }
+
+it("reload discards response snapshots without delaying for live cursors", async t => {
+  const fixture = installation(t);
+  const api = await connect(t, fixture);
+  const first = await api.call("snapshot");
+  const cursor = first.structuredContent.page.nextCursor;
+  assert.ok(cursor);
+  assert.equal((await api.call("page", { cursor })).isError, undefined);
+  fixture.update("B");
+  await eventually(api.call, value => value.structuredContent.version === "B", api.stderr);
+  const expired = await api.call("page", { cursor });
+  assert.equal(expired.isError, true);
+  assert.equal(expired.structuredContent.code, "CURSOR_EXPIRED");
+});

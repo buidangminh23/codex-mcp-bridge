@@ -4,6 +4,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.21.5] - 2026-10-11
+
+### Fixed
+
+- README npm download badges no longer show "rate limited by upstream service". The total and monthly badges are now rendered from the archived daily npm totals and served from the analytics branch, refreshed hourly, instead of shields.io.
+
+### Upgrade notes
+
+- MCP behavior is unchanged.
+
 ## [1.21.4] - 2026-10-11
 
 ### Added

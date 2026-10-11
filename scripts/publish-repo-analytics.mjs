@@ -121,11 +121,31 @@ export function renderGithubViewsBadge(data, { now = Date.now() } = {}) {
   const message = format(value) + age;
   const color = value == null ? '#555' : stale || undated ? '#92400e' : '#0369a1';
   const detail = `${validWindow ? `${start} to ${end} UTC` : 'Source window unavailable'}. Source: ${displayTime(time)}. Archived badge; freshness is relative to generation time.`;
+  return renderBadge(label, message, color, detail);
+}
+
+function renderBadge(label, message, color, detail) {
   const labelWidth = Math.ceil([...label].length * 7.2 + 16);
   const messageWidth = Math.ceil([...message].length * 7.2 + 16);
   const width = labelWidth + messageWidth;
   const accessible = `${label}: ${message}`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="24" viewBox="0 0 ${width} 24" role="img" aria-label="${escapeXml(accessible)}"><title>${escapeXml(`${accessible}. ${detail}`)}</title><rect width="${width}" height="24" rx="4" fill="#555"/><path d="M${labelWidth} 0H${width - 4}Q${width} 0 ${width} 4V20Q${width} 24 ${width - 4} 24H${labelWidth}Z" fill="${color}"/><g fill="#fff" font-family="DejaVu Sans Mono,monospace" font-size="12" text-anchor="middle"><text x="${labelWidth / 2}" y="16">${escapeXml(label)}</text><text x="${labelWidth + messageWidth / 2}" y="16">${escapeXml(message)}</text></g></svg>\n`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="24" viewBox="0 0 ${width} 24" role="img" aria-label="${escapeXml(accessible)}"><title>${escapeXml(`${accessible}. ${detail}`)}</title><rect width="${width}" height="24" rx="4" fill="#555"/><path d="M${labelWidth} 0H${width - 4}Q${width} 0 ${width} 4V20Q${width} 24 ${width - 4} 24H${labelWidth}Z" fill="${color}"/><g fill="#fff" font-family="DejaVu Sans Mono,monospace" font-size="12" text-anchor="middle"><text x="${labelWidth / 2}" y="16">${escapeXml(label)}</text><text x="${labelWidth + messageWidth / 2}" y="16">${escapeXml(message)}</text></g></svg>
+`;
+}
+
+export function renderNpmDownloadsBadge(data, { now = Date.now(), period = 'archive' } = {}) {
+  const snapshot = [...data.snapshots].sort((a, b) => String(b.collectedAt).localeCompare(String(a.collectedAt))).find(row => row.npm);
+  const time = snapshot?.sourceCollectedAt?.npm;
+  const rows = period === 'window' ? snapshot?.npm?.downloads || [] : Object.entries(data.daily?.npm || {}).map(([day, row]) => ({ day, downloads: row.downloads }));
+  const days = rows.map(row => row.day).filter(Boolean).sort();
+  const value = rows.length && rows.every(row => row.downloads != null) ? rows.reduce((total, row) => total + row.downloads, 0) : null;
+  const label = period === 'window' ? `npm downloads / ${days.length ? `${days.length}d` : 'window'}` : 'npm downloads';
+  const undated = !date(time);
+  const stale = !undated && now - Date.parse(time) > staleAfter;
+  const message = format(value) + (value == null ? '' : undated ? ' · undated' : stale ? ' · stale' : '');
+  const color = value == null ? '#555' : stale || undated ? '#92400e' : '#CB3837';
+  const detail = `${days.length ? `${days[0]} to ${days.at(-1)} UTC` : 'Source window unavailable'}. Source: ${displayTime(time)}. Archived daily npm totals; freshness is relative to generation time.`;
+  return renderBadge(label, message, color, detail);
 }
 
 export function renderLiveDashboard(data) {
@@ -218,7 +238,7 @@ export function publicFiles(history, usage) {
   const table = ['| Date (UTC) | Views | Unique visitors | Clones | Unique cloners | npm downloads | Active installations |', '|---|---:|---:|---:|---:|---:|---:|', ...days.map(day => `| ${day} | ${[data.daily.views[day]?.count, data.daily.views[day]?.uniques, data.daily.clones[day]?.count, data.daily.clones[day]?.uniques, data.daily.npm[day]?.downloads, usageDays[day]].map(format).join(' | ')} |`)].join('\n');
   const readme = `# Public repository analytics\n\n![Repository dashboard](dashboard.svg)\n\n[Aggregate JSON history](data.json) · [Repository](https://github.com/${data.repo})\n\nAll dates and source windows use UTC. Source timestamps on the dashboard show when each metric was last available. Downloads and clones include automation and do not measure people. Unique visitors/cloners apply only to the source window; never sum daily unique counts across dates. Active installations cover consenting installations only, with distinct counts for each whole period. Operating system and version breakdowns cover 30 days; an installation may appear in multiple version groups after upgrading.\n\nThis branch contains only aggregate statistics. No installation identifiers, prompts, account details, credentials, private error messages, or local paths are published. Missing metrics mean unavailable, not zero.\n\n## Daily history\n\nEvery archived source day is listed below, newest first. Active installations count consenting installations that reported that UTC day.\n\n${table}\n`;
   const pagesUrl = `https://${data.repo.split('/')[0]}.github.io/${data.repo.split('/')[1]}/`;
-  return { 'stats-github-views.svg': renderGithubViewsBadge(data), 'dashboard.svg': renderPublicDashboard(data), 'README.md': readme.replace('![Repository dashboard]', `[Live dashboard · refreshes every 30 seconds](${pagesUrl})\n\n![Repository dashboard]`), 'data.json': `${JSON.stringify(data, null, 2)}\n`, 'index.html': renderLiveDashboard(data) };
+  return { 'stats-github-views.svg': renderGithubViewsBadge(data), 'stats-npm-downloads.svg': renderNpmDownloadsBadge(data), 'stats-npm-downloads-month.svg': renderNpmDownloadsBadge(data, { period: 'window' }), 'dashboard.svg': renderPublicDashboard(data), 'README.md': readme.replace('![Repository dashboard]', `[Live dashboard · refreshes every 30 seconds](${pagesUrl})\n\n![Repository dashboard]`), 'data.json': `${JSON.stringify(data, null, 2)}\n`, 'index.html': renderLiveDashboard(data) };
 }
 
 export function githubEnvironment(token, env = process.env) {

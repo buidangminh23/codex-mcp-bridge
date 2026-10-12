@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { it } from "node:test";
 
-import { RelaySocketServer, createNativeRelayLifecycle, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
+import { RelaySocketServer, createNativeRelayLifecycle, createNativeScopeAuthorizer, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
 import { createReloadControl } from "../src/reload-control.mjs";
 
 function fixture(t) {
@@ -32,6 +32,42 @@ async function waitUntil(predicate) {
 function relayOptions(socketPath) {
   return { socketPath, resolveExecutor: () => ({ threadId: "executor", source: "test" }), dispatch: async () => ({ success: true }) };
 }
+
+it("bounds scope metadata reads while requiring exact task and account identity", async () => {
+  const root = fs.realpathSync.native(process.cwd());
+  const accountContext = { claude: "a".repeat(64), codex: "b".repeat(64) };
+  const reads = [];
+  let wrongTarget = false;
+  const authorize = createNativeScopeAuthorizer({
+    env: {
+      CODEX_BRIDGE_HARDENED: "1", CODEX_BRIDGE_ALLOWED_ROOTS: root,
+      CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_THREAD_POLICY: "roots",
+      CODEX_BRIDGE_REMAP: "0", CODEX_BRIDGE_AUTOSTART: "0",
+    },
+    dispatchDesktop: async ({ executorThreadId, operation, arguments: args }, options) => {
+      assert.equal(executorThreadId, "executor");
+      assert.deepEqual(options.accountContext, accountContext);
+      if (operation === "list_projects") return { success: true, structuredContent: {
+        projects: [{ projectId: "project", projectKind: "local", hostId: "local", path: root }],
+      } };
+      assert.equal(operation, "read_thread");
+      reads.push(args);
+      return { success: true, structuredContent: { thread: {
+        id: wrongTarget && args.threadId === "target" ? "other" : args.threadId,
+        kind: "codex", hostId: "local", cwd: root, projectId: "project",
+      } } };
+    },
+  });
+  const request = { executorThreadId: "executor", operation: "read_thread", arguments: { threadId: "target" }, accountContext };
+  const result = await authorize(request);
+  assert.equal(result.executor.threadId, "executor");
+  assert.equal(result.targets[0].threadId, "target");
+  assert.deepEqual(reads, ["executor", "target"].map((threadId) => ({
+    threadId, hostId: "local", turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 1,
+  })));
+  wrongTarget = true;
+  await assert.rejects(() => authorize(request), { code: "NATIVE_SCOPE_UNVERIFIED" });
+});
 
 it("keeps disconnected native requests busy until dispatch finishes", async (t) => {
   let release;

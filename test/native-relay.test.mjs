@@ -12,6 +12,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 import {
   MAX_FRAME_BYTES,
+  MAX_RESPONSE_FRAME_BYTES,
   ACCOUNT_RELAY_PROTOCOL_VERSION,
   NATIVE_DISPATCH_METHOD,
   NativeToolsClient,
@@ -576,6 +577,78 @@ describe("relay socket round trip", () => {
         return true;
       },
     );
+  });
+
+  it("carries large Desktop read and observation results across both relay hops", async () => {
+    const text = "Chào sếp 👋".repeat(20000);
+    const native = await nativePipe((request, socket) => {
+      socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: {
+        success: true, structuredContent: { text, operation: request.params.tool },
+      } }));
+    });
+    const client = new NativeToolsClient({ env: {}, socketPath: native.socketPath });
+    const server = new RelaySocketServer({
+      socketPath: tempSocket(), resolveExecutor: stubExecutor,
+      dispatchDesktop: (args, options) => client.dispatchDesktop(args, options),
+    });
+    await server.start();
+    try {
+      assert.ok(Buffer.byteLength(text) > MAX_FRAME_BYTES);
+      const relay = new NativeDesktopRelay({ socketPath: server.socketPath, env: {} });
+      for (const [operation, args] of [
+        ["read_thread", { threadId: "task" }],
+        ["wait_threads", { targets: [{ threadId: "task" }], timeoutMs: 0 }],
+      ]) {
+        const response = await relay.requestDesktop(operation, args);
+        assert.deepEqual(response.result, { text, operation });
+      }
+    } finally {
+      server.stop();
+      client.close();
+      await native.close();
+    }
+  });
+
+  it("bounds companion responses and preserves uncertain delivery for oversized results", async () => {
+    let dispatches = 0;
+    const server = new RelaySocketServer({
+      socketPath: tempSocket(), resolveExecutor: stubExecutor,
+      dispatchDesktop: async () => {
+        dispatches += 1;
+        return { success: true, structuredContent: { text: "ế".repeat(MAX_RESPONSE_FRAME_BYTES / 3) } };
+      },
+    });
+    await server.start();
+    try {
+      const relay = new NativeDesktopRelay({ socketPath: server.socketPath, env: {} });
+      await assert.rejects(() => relay.requestDesktop("read_thread", { threadId: "task" }), (error) => {
+        assert.equal(error.code, "RELAY_RESPONSE_TOO_LARGE");
+        assert.equal(error.reachedCompanion, true);
+        assert.notEqual(error.sent, false);
+        assert.match(error.message, /reduce the requested turns or outputs/);
+        return true;
+      });
+      assert.equal(dispatches, 1);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it("rejects oversized unfinished responses from a companion", async () => {
+    const socketPath = tempSocket();
+    const server = net.createServer((socket) => {
+      socket.on("error", () => {});
+      socket.once("data", () => socket.end(Buffer.alloc(MAX_RESPONSE_FRAME_BYTES + 1, 120)));
+    });
+    await new Promise((resolve) => server.listen(socketPath, resolve));
+    try {
+      const relay = new NativeDesktopRelay({ socketPath, env: {} });
+      await assert.rejects(() => relay.requestDesktop("read_thread", { threadId: "task" }), {
+        code: "RELAY_RESPONSE_TOO_LARGE", reachedCompanion: true,
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   /**
@@ -1785,10 +1858,8 @@ describe("native tools pipe protocol", () => {
   });
 
   it("rejects malformed native frames and clears every pending request", async () => {
-    const oversized = Buffer.alloc(4);
-    oversized.writeUInt32LE(MAX_FRAME_BYTES + 1);
     const malformed = Buffer.concat([Buffer.from([1, 0, 0, 0]), Buffer.from("{")]);
-    for (const response of [oversized, Buffer.alloc(4), malformed, nativeFrame({ id: 1, result: {} })]) {
+    for (const response of [Buffer.alloc(4), malformed, nativeFrame({ id: 1, result: {} })]) {
       const native = await nativePipe((_request, socket) => socket.write(response));
       const client = new NativeToolsClient({ socketPath: native.socketPath, timeoutMs: 500 });
       try {
@@ -1798,6 +1869,47 @@ describe("native tools pipe protocol", () => {
         client.close();
         await native.close();
       }
+    }
+  });
+
+  it("rejects oversized native response headers before receiving their body", async () => {
+    const header = Buffer.alloc(4);
+    header.writeUInt32LE(MAX_RESPONSE_FRAME_BYTES + 1);
+    const requests = [];
+    const native = await nativePipe((request, socket) => {
+      requests.push(request);
+      if (requests.length === 2) socket.write(header);
+    });
+    const client = new NativeToolsClient({ env: {}, socketPath: native.socketPath });
+    try {
+      await Promise.all(["first", "second"].map((targetThreadId) => assert.rejects(
+        () => client.dispatch({ executorThreadId: "executor", targetThreadId, message: "hello" }),
+        { code: "NATIVE_RESPONSE_TOO_LARGE" },
+      )));
+      assert.equal(client.pending.size, 0);
+      assert.equal(requests.length, 2);
+      assert.equal(native.connectionCount, 1);
+    } finally {
+      client.close();
+      await native.close();
+    }
+  });
+
+  it("accepts a native response at the bounded response limit", async () => {
+    const native = await nativePipe((request, socket) => {
+      const response = { jsonrpc: "2.0", id: request.id, result: { success: true, text: "" } };
+      response.result.text = "x".repeat(MAX_RESPONSE_FRAME_BYTES - Buffer.byteLength(JSON.stringify(response)));
+      socket.write(nativeFrame(response));
+    });
+    const client = new NativeToolsClient({ env: {}, socketPath: native.socketPath });
+    try {
+      const result = await client.dispatchDesktop({ executorThreadId: "executor", operation: "read_thread", arguments: { threadId: "task" } });
+      assert.equal(result.success, true);
+      assert.ok(result.text.length > MAX_FRAME_BYTES);
+      assert.equal(client.pending.size, 0);
+    } finally {
+      client.close();
+      await native.close();
     }
   });
 

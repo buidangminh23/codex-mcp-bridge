@@ -39,13 +39,8 @@ export const NATIVE_DISPATCH_METHOD = "tools/call";
 export const RELAY_PROTOCOL_VERSION = 1;
 export const ACCOUNT_RELAY_PROTOCOL_VERSION = 2;
 
-/**
- * A relay frame carries one chat message, so a megabyte-scale line is either a
- * bug or something trying to make the companion buffer without limit. The cap
- * is applied on both halves: the client refuses to send an oversized message,
- * and the companion refuses to accumulate one.
- */
 export const MAX_FRAME_BYTES = 128 * 1024;
+export const MAX_RESPONSE_FRAME_BYTES = 8 * 1024 * 1024;
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const RELAY_SOCKET_NAME = "native-relay.sock";
@@ -617,7 +612,11 @@ export class NativeToolsClient {
         buffer = Buffer.concat([buffer, chunk]);
         while (buffer.length >= 4) {
           const length = buffer.readUInt32LE(0);
-          if (!length || length > MAX_FRAME_BYTES) {
+          if (length > MAX_RESPONSE_FRAME_BYTES) {
+            fail(new NativeRelayError(`Codex Desktop native response exceeds ${MAX_RESPONSE_FRAME_BYTES} bytes; reduce the requested turns or outputs`, "NATIVE_RESPONSE_TOO_LARGE"));
+            return;
+          }
+          if (!length) {
             fail(new NativeRelayError("Invalid Codex Desktop native frame length", "NATIVE_BAD_RESPONSE"));
             return;
           }
@@ -885,16 +884,19 @@ export class NativeDesktopRelay {
         })();
       });
       socket.on("data", (chunk) => {
-        buffer = Buffer.concat([buffer, chunk]);
-        if (buffer.length > MAX_FRAME_BYTES) {
+        if (settled) return;
+        const newline = chunk.indexOf(10);
+        const frameChunk = newline < 0 ? chunk : chunk.subarray(0, newline + 1);
+        if (buffer.length + frameChunk.length > MAX_RESPONSE_FRAME_BYTES) {
           finish(
             reject,
-            new NativeRelayError("The Codex Desktop relay answered with an oversized frame", "RELAY_BAD_RESPONSE", {
+            new NativeRelayError(`The Codex Desktop relay response exceeds ${MAX_RESPONSE_FRAME_BYTES} bytes; reduce the requested turns or outputs`, "RELAY_RESPONSE_TOO_LARGE", {
               reachedCompanion: true,
             }),
           );
           return;
         }
+        buffer = Buffer.concat([buffer, frameChunk]);
         const index = buffer.indexOf(10);
         if (index < 0) return;
         try {

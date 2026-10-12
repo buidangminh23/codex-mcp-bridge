@@ -9,6 +9,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
 import {
   MAX_FRAME_BYTES,
+  MAX_RESPONSE_FRAME_BYTES,
   NATIVE_DISPATCH_METHOD,
   NativeToolsClient,
   NativeRelayError,
@@ -36,7 +37,7 @@ import { NativeCreationReceipts, creationIdValid } from "./native-creation-recei
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.21.5";
+const VERSION = "1.21.6";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent) {
@@ -102,7 +103,7 @@ export function createNativeScopeAuthorizer({ dispatchDesktop, env = process.env
   };
   const threadFor = async (executorThreadId, threadId, accountContext, projects) => {
     if (typeof threadId !== "string" || !threadId) fail("Operation has no target task");
-    const result = await call(executorThreadId, "read_thread", { threadId, hostId: "local", turnLimit: 1 }, accountContext);
+    const result = await call(executorThreadId, "read_thread", { threadId, hostId: "local", turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 1 }, accountContext);
     return validateThread(result?.thread, threadId, projects);
   };
   const targetIds = (operation, args, targetThreadId) => {
@@ -613,7 +614,12 @@ export class RelaySocketServer {
 
   #reply(socket, response) {
     if (socket.destroyed) return;
-    socket.end(`${JSON.stringify(response)}\n`);
+    const frame = `${JSON.stringify(response)}\n`;
+    if (Buffer.byteLength(frame, "utf8") > MAX_RESPONSE_FRAME_BYTES) {
+      socket.end(`${JSON.stringify(errorResponse("RELAY_RESPONSE_TOO_LARGE", `The native relay response exceeds ${MAX_RESPONSE_FRAME_BYTES} bytes; reduce the requested turns or outputs`))}\n`);
+      return;
+    }
+    socket.end(frame);
   }
 
   stop() {

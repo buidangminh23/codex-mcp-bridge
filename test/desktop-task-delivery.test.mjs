@@ -52,6 +52,94 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, beforeWrit
 }
 
 describe("Desktop creation receipts and deadlines", () => {
+  it("continues with bounded snapshots after the wait renderer fails without resending", async (t) => {
+    let time = 0;
+    let snapshots = 0;
+    let waits = 0;
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      readResponse: () => ({ status: "completed", text: "Verified reply", assistantItems: [], replySha256: "a".repeat(64) }),
+      dispatch({ operation, args, cwd }) {
+        if (operation === "wait_threads") {
+          if (++waits === 1) return { polls: [{ thread: { id: "task", hostId: "local", status: { type: "active" } }, cursor: "before-resume", latestTurn: { id: "previous", status: "completed" } }] };
+          assert.equal(args.targets[0].afterCursor, "before-resume");
+          throw Object.assign(new Error("Codex app tool request failed"), { code: "NATIVE_DISPATCH_FAILED" });
+        }
+        if (operation === "read_thread") {
+          assert.equal(args.includeOutputs, false);
+          assert.equal(args.maxOutputCharsPerItem, 1);
+          snapshots++;
+          return { thread: { id: "task", hostId: "local", cwd, status: "idle" }, turns: [{ id: snapshots === 1 ? "previous" : "new-turn", status: "completed" }] };
+        }
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 5000, previousTurnId: "previous", responseObservation: {
+      threadId: "task", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+    } });
+    assert.equal(result.text, "Verified reply");
+    assert.equal(result.turnId, "new-turn");
+    assert.equal(time, 3000);
+    assert.equal(f.calls.filter((call) => call.operation === "wait_threads").length, 2);
+    assert.equal(f.calls.filter((call) => call.operation === "read_thread").length, 4);
+    assert.ok(f.calls.every((call) => ["wait_threads", "read_thread"].includes(call.operation)));
+  });
+
+  for (const code of ["PROJECT_SCOPE_DENIED", "CLAUDE_SENDER_CONTEXT_UNVERIFIED", "BRIDGE_ACCOUNT_CHANGED", "RELAY_UNREACHABLE", "NATIVE_BAD_RESPONSE"]) {
+    it(`does not mask ${code} with snapshot fallback`, async (t) => {
+      const f = fixture(t, { dispatch() {
+        throw Object.assign(new Error("Codex app tool request failed"), { code });
+      } });
+      await assert.rejects(f.delivery.wait("task"), /Codex app tool request failed/);
+      assert.deepEqual(f.calls.map((call) => call.operation), ["wait_threads"]);
+    });
+  }
+
+  for (const status of ["systemError", "waitingOnApproval", "waitingOnUserInput"]) {
+    it(`preserves ${status} in fallback snapshots`, async (t) => {
+      const f = fixture(t, { dispatch({ operation, cwd }) {
+        if (operation === "wait_threads") throw Object.assign(new Error("The app tool call ended before producing a result"), { code: "NATIVE_DISPATCH_FAILED" });
+        return { thread: { id: "task", hostId: "local", cwd, status }, turns: [{ id: "previous", status: "completed" }] };
+      } });
+      const result = await f.delivery.wait("task", { previousTurnId: "previous" });
+      assert.equal(result.status, status);
+      assert.equal(result.turnId, null);
+      assert.equal(result.text, "");
+    });
+  }
+
+  it("keeps the original deadline while snapshots still show the previous turn", async (t) => {
+    let time = 0;
+    const f = fixture(t, { now: () => time, sleep: async (ms) => { time += ms; }, dispatch({ operation, cwd }) {
+      if (operation === "wait_threads") throw Object.assign(new Error("Codex app tool request failed"), { code: "NATIVE_DISPATCH_FAILED" });
+      return { thread: { id: "task", hostId: "local", cwd }, turns: [{ id: "previous", status: "completed" }] };
+    } });
+    const result = await f.delivery.wait("task", { timeoutMs: 1800, previousTurnId: "previous" });
+    assert.equal(result.status, "timeout");
+    assert.equal(result.turnId, null);
+    assert.equal(time, 1800);
+  });
+
+  for (const mismatch of ["id", "hostId", "cwd"]) {
+    it(`rejects a fallback snapshot with changed ${mismatch}`, async (t) => {
+      const f = fixture(t, { dispatch({ operation, cwd }) {
+        if (operation === "wait_threads") throw Object.assign(new Error("Codex app tool request failed"), { code: "NATIVE_DISPATCH_FAILED" });
+        return { thread: { id: "task", hostId: "local", cwd, [mismatch]: mismatch === "cwd" ? path.dirname(cwd) : "other" }, turns: [] };
+      } });
+      await assert.rejects(f.delivery.wait("task"), /workspace/i);
+    });
+  }
+
+  it("revalidates access on the fallback read and propagates read failure", async (t) => {
+    const f = fixture(t, { beforeRequest({ operation }) {
+      if (operation === "read_thread") throw new Error("Account changed");
+    }, dispatch() {
+      throw Object.assign(new Error("Codex app tool request failed"), { code: "NATIVE_DISPATCH_FAILED" });
+    } });
+    await assert.rejects(f.delivery.wait("task"), /Account changed/);
+    assert.deepEqual(f.calls.map((call) => call.operation), ["wait_threads"]);
+  });
+
   it("keeps callers without a local receipt callback on the original fail-closed send contract", async (t) => {
     const f = fixture(t, { dispatch({ operation }) {
       if (operation === "send_message_to_thread") throw Object.assign(new Error("lost acknowledgement"), { code: "RELAY_TIMEOUT", reachedCompanion: true });

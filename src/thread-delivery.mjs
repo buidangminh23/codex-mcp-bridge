@@ -27,6 +27,13 @@ export const NATIVE_BACKEND = "codex-desktop-native";
 export const APP_SERVER_BACKEND = "app-server";
 export const DESKTOP_TOOL_BUDGET_MS = 40000;
 const RELEASE_STATUSES = new Set(["completed", "interrupted", "failed"]);
+const METADATA_READ_OPTIONS = { includeOutputs: false, maxOutputCharsPerItem: 1 };
+
+function unavailableWaitRenderer(error) {
+  const cause = error.cause ?? error;
+  return cause.code === "NATIVE_DISPATCH_FAILED" &&
+    /^(Codex app tool request failed\.?|The app tool call ended before producing a result\.?)$/.test(cause.message);
+}
 
 function sameAccountContext(expected, current) {
   return Boolean(expected && current && ["claude", "codex"].every((provider) =>
@@ -194,7 +201,7 @@ export class DesktopTaskDelivery {
     let response;
     try {
       this.security.assertThread(receipt.threadId, cwd);
-      response = await this.request("read_thread", { threadId: receipt.threadId, hostId: "local", turnLimit: 1 }, { deadline });
+      response = await this.request("read_thread", { threadId: receipt.threadId, hostId: "local", turnLimit: 1, ...METADATA_READ_OPTIONS }, { deadline });
     } catch (err) {
       throw new Error(`Existing Desktop task ${receipt.threadId} could not be verified. No prompt was resent and no duplicate task was created: ${err.message}`, { cause: err });
     }
@@ -364,7 +371,7 @@ export class DesktopTaskDelivery {
   }
 
   async #inspectMetadata(threadId, cwd, { deadline } = {}) {
-    const envelope = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1 }, { deadline, includeRelayContext: true });
+    const envelope = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1, ...METADATA_READ_OPTIONS }, { deadline, includeRelayContext: true });
     const response = envelope.result;
     const thread = response?.thread;
     if (thread?.id !== threadId || thread.hostId !== "local" || !thread.cwd) throw new Error("Desktop did not confirm the task's local workspace.");
@@ -471,23 +478,41 @@ export class DesktopTaskDelivery {
     const startedAt = this.now();
     let cursor;
     let turnId = null;
+    let readSnapshots = false;
+    const readSnapshot = async () => {
+      const result = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1, ...METADATA_READ_OPTIONS }, { deadline: startedAt + timeoutMs });
+      const thread = result?.thread;
+      if (thread?.id !== threadId || thread.hostId !== "local" || !thread.cwd) throw new Error("Desktop did not confirm the observed task's local workspace.");
+      this.security.assertCwd(thread.cwd);
+      this.security.assertThread(threadId, thread.cwd);
+      this.senderProjectScope(thread.cwd);
+      if (responseObservation?.expectedCwd && realpathSync.native(thread.cwd) !== responseObservation.expectedCwd) throw new Error("The selected native task workspace changed during observation");
+      return { polls: [{ thread, latestTurn: result.turns?.[0] ?? null }] };
+    };
     const expired = () => ({ threadId, turnId, status: "timeout", text: "", responseStatus: "unavailable", assistantItems: [], replySha256: null, activity: [], errors: [], durationMs: this.now() - startedAt });
     for (;;) {
       if (this.now() - startedAt >= timeoutMs) return expired();
       let response;
       try {
-        response = await this.request("wait_threads", {
+        response = readSnapshots ? await readSnapshot() : await this.request("wait_threads", {
           targets: [{ threadId, hostId: "local", ...(cursor ? { afterCursor: cursor } : {}) }], timeoutMs: 0,
         }, { deadline: startedAt + timeoutMs });
       } catch (err) {
         if (this.now() - startedAt >= timeoutMs) return expired();
-        throw err;
+        if (readSnapshots || !unavailableWaitRenderer(err)) throw err;
+        readSnapshots = true;
+        try {
+          response = await readSnapshot();
+        } catch (readError) {
+          if (this.now() - startedAt >= timeoutMs) return expired();
+          throw readError;
+        }
       }
       const poll = response?.polls?.find((item) => item.thread?.id === threadId && item.thread?.hostId === "local");
       if (response?.errors?.length || !poll) throw new Error(`Could not observe task ${threadId}; it may still be running. Read it before retrying: ${JSON.stringify(response)}`);
       cursor = poll.cursor;
       const turn = poll.latestTurn;
-      const threadStatus = poll.thread.status?.type;
+      const threadStatus = typeof poll.thread.status === "string" ? poll.thread.status : poll.thread.status?.type;
       if (["systemError", "waitingOnApproval", "waitingOnUserInput"].includes(threadStatus)) {
         return { threadId, turnId: turn?.id !== previousTurnId ? turn?.id ?? null : null, status: threadStatus, text: "", activity: [], errors: [], durationMs: this.now() - startedAt };
       }

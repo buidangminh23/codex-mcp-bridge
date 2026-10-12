@@ -61,12 +61,12 @@ describe("native Codex response observation", () => {
     it(`verifies Desktop memory citation representations: ${variant}`, (t) => {
       const f = fixture(t);
       const mark = f.capture();
-      const citation = `<oai-mem-citation>\n<citation_entries>\nMEMORY.md:2-4|note=[release guidance]\n</citation_entries>\n<rollout_ids>\n${PREVIOUS_TURN_ID}\n</rollout_ids>\n</oai-mem-citation>`;
+      const citation = `<oai-mem-citation>\n<citation_entries>\nnotes.md:2-4|note=[release guidance]\n</citation_entries>\n<rollout_ids>\n${PREVIOUS_TURN_ID}\n</rollout_ids>\n</oai-mem-citation>`;
       const body = "Verified response.\n\n";
       const records = f.turn({ content: [{ type: "output_text", text: body + citation }] });
       const event = { type: "event_msg", payload: { type: "item_completed", thread_id: THREAD_ID, turn_id: TURN_ID,
         item: { type: "AgentMessage", id: records[3].payload.id, phase: "final_answer", content: [{ type: "Text", text: body }],
-          memory_citation: { entries: [{ path: "MEMORY.md", lineStart: 2, lineEnd: 4, note: "release guidance" }], rolloutIds: [PREVIOUS_TURN_ID] } } } };
+          memory_citation: { entries: [{ path: "notes.md", lineStart: 2, lineEnd: 4, note: "release guidance" }], rolloutIds: [PREVIOUS_TURN_ID] } } } };
       if (variant === "changed_text") event.payload.item.content[0].text = "Different response.\n\n";
       if (variant === "changed_citation") event.payload.item.memory_citation.entries[0].note = "different guidance";
       if (variant === "missing_metadata") delete event.payload.item.memory_citation;

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-10-12T00:34:00.721Z",
+  "updatedAt": "2026-10-12T07:22:55.630Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -12142,7 +12142,7 @@
       }
     },
     {
-      "collectedAt": "2026-10-12T00:34:00.721Z",
+      "collectedAt": "2026-10-12T07:22:55.630Z",
       "views": {
         "count": 279,
         "uniques": 87,
@@ -12428,6 +12428,10 @@
       },
       "releases": [
         {
+          "tag": "v1.21.6",
+          "assets": []
+        },
+        {
           "tag": "v1.21.5",
           "assets": []
         },
@@ -12712,11 +12716,11 @@
         }
       ],
       "sourceCollectedAt": {
-        "views": "2026-10-12T00:34:00.721Z",
-        "clones": "2026-10-12T00:34:00.721Z",
-        "npm": "2026-10-12T00:34:00.721Z",
-        "repository": "2026-10-12T00:34:00.721Z",
-        "releases": "2026-10-12T00:34:00.721Z"
+        "views": "2026-10-12T07:22:55.630Z",
+        "clones": "2026-10-12T07:22:55.630Z",
+        "npm": "2026-10-12T07:22:55.630Z",
+        "repository": "2026-10-12T07:22:55.630Z",
+        "releases": "2026-10-12T07:22:55.630Z"
       }
     }
   ],
@@ -13234,7 +13238,7 @@
     }
   },
   "usage": {
-    "collectedAt": "2026-10-12T00:34:03Z",
+    "collectedAt": "2026-10-12T07:22:57Z",
     "active": {
       "day": 0,
       "week": 0,

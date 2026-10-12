@@ -280,7 +280,7 @@ describe("Desktop task MCP integration", () => {
       await withBridge(() => { throw new Error("Desktop integrity test must not reach an external app-server"); }, async ({ client, home, env }) => {
         let sentResult = await client.callTool({ name: String(resume).startsWith("creation") ? "delegate_to_codex" : "send_to_codex_thread", arguments: { ...(String(resume).startsWith("creation") ? { cwd: home, requestId: randomUUID() } : { threadId }), prompt, openInApp: false, ...(resume ? { timeoutSec: 10 } : {}) } });
         if (resume) {
-          assert.equal(sentResult.isError, undefined);
+          assert.equal(sentResult.isError, undefined, JSON.stringify(sentResult));
           assert.equal(sentResult.structuredContent.deliveryStatus, ["lost-ack", "creation-lost-ack"].includes(resume) ? "unconfirmed" : "accepted");
           assert.equal(sentResult.structuredContent.status, "timeout");
           assert.equal(sentResult.structuredContent.nextAction, "wait_codex_reply");
@@ -303,6 +303,16 @@ describe("Desktop task MCP integration", () => {
         assert.equal(authoritative.status, "completed");
         assert.deepEqual(authoritative.assistantItems, [{ id: itemId, text: reply }]);
         assert.equal(authoritative.replySha256, expectedHash);
+        if (!resume) {
+          for (const [name, selector] of [["read_codex_thread", { threadId, turnId }], ["wait_codex_reply", { deliveryId: sentResult.structuredContent.deliveryId }]]) {
+            const filtered = await client.callTool({ name, arguments: { ...selector, responsePreferences: { delivery: { type: "cursorPagination" } } } });
+            assert.equal(filtered.isError, undefined);
+            assert.equal(filtered.structuredContent.responseVersion, 1);
+            assert.equal(filtered.structuredContent.replySha256, expectedHash);
+            assert.equal(filtered.structuredContent.items[0].item.text, reply);
+            assert.deepEqual(JSON.parse(filtered.content[0].text), filtered.structuredContent);
+          }
+        }
         assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, String(resume).startsWith("creation") ? 0 : 1);
         assert.equal(calls.filter((operation) => operation === "create_thread").length, String(resume).startsWith("creation") ? 1 : 0);
         assert.equal(sentResult.structuredContent.deliveryStatus, "accepted");
@@ -617,7 +627,8 @@ describe("Desktop task MCP integration", () => {
         oversized = true;
         const largeRead = await client.callTool({ name: "read_codex_thread", arguments: { threadId: "target", limit: 1 } });
         assert.equal(largeRead.isError, true);
-        assert.match(largeRead.content[0].text, /DESKTOP_READ_RESPONSE_TOO_LARGE/);
+        assert.equal(largeRead.structuredContent.error.code, "RESPONSE_TOO_LARGE");
+        assert.match(largeRead.content[0].text, /Response requires .*limit is 8388608/);
         assert.ok(JSON.stringify(largeRead).length < 1024);
       }, async (home) => {
         relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {

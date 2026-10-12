@@ -4,6 +4,22 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-10-12
+
+### Added
+
+- Optional response preferences for Desktop reads and reply observation, with tool payload filtering and bounded, replayable cursor pages. Snapshots remain bound to the caller, accounts, workspace, selected task, and delivery receipt (#125).
+
+### Fixed
+
+- Accept completed Desktop replies whose memory citation is represented separately in the completion event, but appended to the authoritative response item. Require an exact reconstruction from validated citation metadata and preserve reply IDs, hashes, lifecycle checks, and conflict rejection (#123).
+- Preserve bounded default history reads while allowing explicit tool output selection. Return structured oversize errors across native transport and serialized MCP responses.
+
+### Upgrade notes
+
+- Update both bridge and native relay companion. Calls without response preferences retain existing response formats and the 2,000-character default item budget. Preferred history reads use a 16,000-character item budget; exact-turn reads retain authoritative assistant text.
+- Cursor pages default to 64 KiB and support 8–96 KiB budgets. Native responses above 8 MiB and authoritative replies above 1 MiB remain explicit limits.
+
 ## [1.21.6] - 2026-10-12
 
 ### Fixed

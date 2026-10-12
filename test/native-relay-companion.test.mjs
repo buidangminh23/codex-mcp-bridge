@@ -8,6 +8,7 @@ import { once } from "node:events";
 import { it } from "node:test";
 
 import { RelaySocketServer, createNativeRelayLifecycle, createNativeScopeAuthorizer, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
+import { NativeDesktopRelay, responseTooLargeError, MAX_RESPONSE_FRAME_BYTES } from "../src/native-relay.mjs";
 import { createReloadControl } from "../src/reload-control.mjs";
 
 function fixture(t) {
@@ -223,4 +224,49 @@ it("rejects listener state for a different endpoint", (t) => {
   for (const payload of [{}, { ownedSockets: ["unknown"] }, { ownedSockets: [], unexpected: true }, { ownedSockets: [server.socketPath, server.socketPath] }]) {
     assert.throws(() => lifecycle.restore(payload), /listener state/);
   }
+});
+
+it("bounds the serialized companion response before writing and preserves overflow details", async (t) => {
+  const result = { text: "x".repeat(MAX_RESPONSE_FRAME_BYTES) };
+  const server = new RelaySocketServer({ ...relayOptions(fixture(t)), dispatchDesktop: async () => ({ success: true, structuredContent: result }) });
+  await server.start();
+  t.after(() => server.stop());
+  const relay = new NativeDesktopRelay({ socketPath: server.socketPath, env: {} });
+  await assert.rejects(relay.requestDesktop("read_thread", { threadId: "target" }), (error) => {
+    assert.equal(error.code, "RESPONSE_TOO_LARGE");
+    assert.equal(error.boundary, "companion-to-bridge");
+    assert.equal(error.limit, MAX_RESPONSE_FRAME_BYTES);
+    assert.equal(error.bytes, Buffer.byteLength(JSON.stringify({ ok: true, v: 1, operation: "read_thread", executorThreadId: "executor", result }) + "\n"));
+    assert.equal(error.reachedCompanion, true);
+    return true;
+  });
+});
+
+it("carries native overflow through the companion without a resend", async (t) => {
+  let calls = 0;
+  const server = new RelaySocketServer({ ...relayOptions(fixture(t)), dispatchDesktop: async () => { calls++; throw responseTooLargeError("native-pipe", MAX_RESPONSE_FRAME_BYTES + 1); } });
+  await server.start();
+  t.after(() => server.stop());
+  const relay = new NativeDesktopRelay({ socketPath: server.socketPath, env: {} });
+  await assert.rejects(relay.requestDesktop("read_thread", { threadId: "target" }), { code: "RESPONSE_TOO_LARGE", boundary: "native-pipe", bytes: MAX_RESPONSE_FRAME_BYTES + 1, limit: MAX_RESPONSE_FRAME_BYTES });
+  assert.equal(calls, 1);
+});
+
+it("rejects over-limit bytes from an older companion response reader", async (t) => {
+  const socketPath = fixture(t);
+  const server = net.createServer((socket) => {
+    socket.on("error", () => {});
+    socket.once("data", () => socket.end(Buffer.alloc(MAX_RESPONSE_FRAME_BYTES + 1, 120)));
+  });
+  server.listen(socketPath);
+  await once(server, "listening");
+  t.after(() => server.close());
+  const relay = new NativeDesktopRelay({ socketPath, env: {} });
+  await assert.rejects(relay.requestDesktop("read_thread", { threadId: "target" }), (error) => {
+    assert.equal(error.code, "RESPONSE_TOO_LARGE");
+    assert.equal(error.boundary, "companion-to-bridge");
+    assert.equal(error.limit, MAX_RESPONSE_FRAME_BYTES);
+    assert.ok(error.bytes > MAX_RESPONSE_FRAME_BYTES);
+    return true;
+  });
 });

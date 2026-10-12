@@ -201,6 +201,17 @@ function completedEventText(entry) {
   return item.content.map((part) => part.text).join("");
 }
 
+function completedMemoryCitation(item) {
+  const citation = item.memory_citation;
+  if (!object(citation) || !Array.isArray(citation.entries) || !Array.isArray(citation.rolloutIds)) return null;
+  const singleLine = (value) => typeof value === "string" && !/[\r\n<>]/.test(value);
+  if (citation.entries.some((entry) => !object(entry) || !singleLine(entry.path) || !entry.path || !singleLine(entry.note) ||
+      !Number.isSafeInteger(entry.lineStart) || entry.lineStart < 1 || !Number.isSafeInteger(entry.lineEnd) || entry.lineEnd < entry.lineStart) ||
+      citation.rolloutIds.some((id) => typeof id !== "string" || !UUID.test(id))) return null;
+  const entries = citation.entries.map((entry) => `${entry.path}:${entry.lineStart}-${entry.lineEnd}|note=[${entry.note}]`).join("\n");
+  return `<oai-mem-citation>\n<citation_entries>\n${entries}\n</citation_entries>\n<rollout_ids>\n${citation.rolloutIds.join("\n")}\n</rollout_ids>\n</oai-mem-citation>`;
+}
+
 function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch } = {}) {
   const turns = records.filter((entry) => recordBelongsToTurn(entry, threadId, turnId));
   const starts = turns.filter(({ record }) => record.type === "event_msg" && STARTED.has(record.payload.type));
@@ -276,10 +287,11 @@ function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch } 
         contextByte: contexts[0].start, completionByte: completions[0].start,
       });
     }
-    eventItems.set(id, { text, start });
+    eventItems.set(id, { text, start, memoryCitation: completedMemoryCitation(eventItem) });
   }
   for (const item of assistantItems) {
-    if (eventItems.has(item.id) && eventItems.get(item.id).text !== item.text) throw validationError("The native assistant item representations conflict", "assistant_representation_text", {
+    const event = eventItems.get(item.id);
+    if (event && event.text !== item.text && (!event.memoryCitation || event.text + event.memoryCitation !== item.text)) throw validationError("The native assistant item representations conflict", "assistant_representation_text", {
       responseItemByte: ids.get(item.id).start, completedEventByte: eventItems.get(item.id).start,
     });
   }

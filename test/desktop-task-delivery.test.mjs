@@ -1032,3 +1032,19 @@ for (const scenario of ["valid", "restart", "tampered", "unsigned"]) {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 }
+
+it("trims metadata inspection without dropping identity or latest-turn status", async (t) => {
+  const f = fixture(t);
+  const inspected = await f.delivery.inspect("task", f.cwd);
+  assert.equal(inspected.thread.id, "task");
+  assert.equal(inspected.latestTurnId, "turn");
+  const read = f.calls.find((call) => call.operation === "read_thread");
+  assert.deepEqual(read.args, { threadId: "task", hostId: "local", turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 1 });
+});
+
+it("preserves oversize errors without misleading reconnect or resend advice", async (t) => {
+  const overflow = Object.assign(new Error("Response exceeds size limit"), { code: "RESPONSE_TOO_LARGE", boundary: "native-pipe", bytes: 8388609, limit: 8388608, reachedCompanion: true });
+  const f = fixture(t, { dispatch() { throw overflow; } });
+  await assert.rejects(f.delivery.inspect("task", f.cwd), (error) => error === overflow);
+  assert.equal(f.calls.length, 1);
+});

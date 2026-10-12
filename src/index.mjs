@@ -35,11 +35,12 @@ import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs"
 import { bridgeReadiness } from "./bridge-readiness.mjs";
 import { captureProjectScope } from "./project-scope.mjs";
 import { DesktopReplyReceipts } from "./desktop-reply-receipts.mjs";
+import { registerDesktopReadTools } from "./desktop-read-tools.mjs";
 import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.21.6";
+const VERSION = "1.22.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -109,7 +110,7 @@ function withheldDesktopResult(error, context) {
   const reason = (error?.message ?? "The calling session or accounts could not be reverified.").replace(/\s*No message was sent\./g, "");
   return {
     ...textResult(`${reason} ${context.dispatched ? "A Desktop operation may already have been dispatched. Its original destination and any creation receipt were preserved." : "No Desktop mutation was dispatched."} Reply content was withheld. Inspect the original task and do not resend automatically.`, true),
-    structuredContent: { accountContext: context.accounts, operation: { state: context.dispatched ? "dispatched_outcome_unverified" : "blocked", threadId: context.threadId ?? null } },
+    structuredContent: { ...failure(error).structuredContent, accountContext: context.accounts, operation: { state: context.dispatched ? "dispatched_outcome_unverified" : "blocked", threadId: context.threadId ?? null } },
   };
 }
 
@@ -137,7 +138,16 @@ const textResult = (text, isError = false) => ({
   ...(isError ? { isError: true } : {}),
 });
 
-const failure = (err) => textResult(`Codex bridge error: ${err?.message ?? String(err)}`, true);
+const failure = (err) => {
+  const result = textResult(`Codex bridge error: ${err?.message ?? String(err)}`, true);
+  for (let cause = err; cause; cause = cause.cause) {
+    if (["RESPONSE_TOO_LARGE", "INVALID_RESPONSE_PREFERENCES", "INVALID_CURSOR", "CURSOR_EXPIRED"].includes(cause.code)) {
+      result.structuredContent = { error: Object.fromEntries(["code", "boundary", "bytes", "limit"].filter((key) => cause[key] !== undefined).map((key) => [key, cause[key]])) };
+      break;
+    }
+  }
+  return result;
+};
 
 function replyResult(delivered, deliveryId, result, notes = []) {
   result = { activity: [], errors: [], ...result };
@@ -430,7 +440,7 @@ function registerTool(name, definition, handler) {
             await assertDesktopOperation(context);
             const result = await handler(...args);
             await assertDesktopOperation(context);
-            if (result.isError && !context.dispatched) {
+            if (result.isError && !context.dispatched && result.structuredContent?.responseVersion !== 1) {
               result.structuredContent = { ...result.structuredContent, accountContext: context.accounts, operation: { state: "blocked", threadId: context.threadId ?? null } };
             }
             return result;
@@ -446,6 +456,12 @@ function registerTool(name, definition, handler) {
     }
   });
 }
+
+registerDesktopReadTools(registerTool, {
+  desktopTasksEnabled, desktopTasks, replyReceipts, security, client,
+  context: () => desktopOperation.getStore(), assertOperation: assertDesktopOperation,
+  assertThreadAccess, normalizeThreadCwd, textResult, replyResult, failure,
+});
 
 registerProjectOnboardingTools(registerTool, { beforePrepare: async () => {
   if (!desktopTasksEnabled || !desktopOperation.getStore()?.caller) throw new Error("Project onboarding requires a verified Desktop caller");
@@ -691,35 +707,6 @@ registerTool(
   },
 );
 
-registerTool(
-  "wait_codex_reply",
-  {
-    title: "Continue waiting for a Codex reply",
-    description: "Continue a Desktop creation or send using its deliveryId; an unconfirmed acknowledgement does not prove delivery, including after MCP reconnect. Never sends a message or creates a task. On timeout, call again with the same deliveryId; do not ask the user to fetch the answer or resend. Stops for approval, user input or a verification error. Only the original verified Claude session and accounts can use the receipt.",
-    inputSchema: {
-      deliveryId: z.string().uuid().describe("Exact deliveryId returned by send_to_codex_thread, delegate_to_codex or start_codex_thread"),
-      timeoutSec: z.number().int().min(1).max(40).optional().describe("Bounded observation time, default 40 seconds; repeat with the same receipt if still running"),
-    },
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
-  },
-  async ({ deliveryId }) => {
-    if (!desktopTasksEnabled) return failure(new Error("Reply continuations require Desktop native delivery"));
-    const context = desktopOperation.getStore();
-    let delivered = replyReceipts.read(deliveryId, context);
-    if (delivered.creationObservation) {
-      const resolved = await desktopTasks.resolveCreation(delivered, { deadline: context.deadline });
-      if (!resolved) return replyResult(delivered, deliveryId, { threadId: null, status: "timeout", responseStatus: "unavailable", text: "" });
-      delivered = resolved;
-    }
-    const { threadId } = delivered;
-    const expired = () => replyResult(delivered, deliveryId, { threadId, status: "timeout", responseStatus: "unavailable", text: "" });
-    return desktopTasks.withThread(threadId, async () => {
-      await desktopTasks.inspect(threadId, delivered.cwd, { deadline: context.deadline });
-      const result = await desktopTasks.wait(threadId, { timeoutMs: Math.max(0, context.deadline - Date.now()), previousTurnId: delivered.previousTurnId, responseObservation: delivered.responseObservation });
-      return replyResult(delivered, deliveryId, result);
-    }, { deadline: context.deadline, onDeadline: expired });
-  },
-);
 
 registerTool(
   "list_codex_threads",
@@ -851,61 +838,6 @@ registerTool(
   },
 );
 
-registerTool(
-  "read_codex_thread",
-  {
-    title: "Read a Codex thread",
-    description: "Read a Codex thread without sending anything. In Desktop mode, pass the exact turnId returned by send_to_codex_thread for authoritative assistant item IDs, text, and reply hash; without turnId the native recent-history view may omit items.",
-    inputSchema: {
-      threadId: z.string().describe("Codex thread id"),
-      turnId: z.string().optional().describe("Exact turn id to inspect authoritatively in Codex Desktop mode"),
-      limit: z.number().int().min(1).max(50).optional().describe("How many recent messages to show (default 10)"),
-    },
-    annotations: {
-      readOnlyHint: true,
-      openWorldHint: true,
-    },
-  },
-  async ({ threadId, turnId, limit }) => {
-    try {
-      if (desktopTasksEnabled) {
-        const deadline = desktopOperation.getStore()?.deadline ?? Date.now() + DESKTOP_TOOL_BUDGET_MS;
-        if (turnId) {
-          const response = await desktopTasks.inspectNativeTurn(threadId, turnId, undefined, { deadline });
-          return textResult(JSON.stringify(response, null, 2), response.status === "unavailable");
-        }
-        await desktopTasks.inspect(threadId, undefined, { deadline });
-        const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10), includeOutputs: false, maxOutputCharsPerItem: 2000 }, { deadline });
-        const result = textResult(JSON.stringify(response, null, 2));
-        if (Buffer.byteLength(JSON.stringify(result), "utf8") > 8 * 1024 * 1024) {
-          return textResult("DESKTOP_READ_RESPONSE_TOO_LARGE: The formatted Desktop read exceeds 8 MiB. Read fewer turns with limit: 1 or select a specific turnId.", true);
-        }
-        return result;
-      }
-      await assertThreadAccess(threadId);
-      const res = await client.call("thread/read", { threadId, includeTurns: true });
-      const thread = normalizeThreadCwd(res?.thread ?? res ?? {}, { strict: true });
-      security.assertCwd(thread.cwd);
-      const items = (thread.turns ?? []).flatMap((t) => t.items ?? []);
-      const msgs = items
-        .filter((i) => i?.type === "agentMessage" || i?.type === "userMessage")
-        .slice(-(limit ?? 10))
-        .map((i) => {
-          const body =
-            i.type === "userMessage"
-              ? (i.content ?? [])
-                  .map((c) => (c.type === "text" ? c.text : `<${c.type}>`))
-                  .join(" ")
-              : (i.text ?? "");
-          return `[${i.type === "userMessage" ? "user" : "codex"}] ${body.trim()}`;
-        });
-      const header = `thread ${threadId}\n  title: ${thread.name ?? "(unnamed)"}\n  cwd: ${thread.cwd ?? "?"}\n  status: ${thread.status?.type ?? "?"}`;
-      return textResult(msgs.length ? `${header}\n\n${msgs.join("\n\n")}` : `${header}\n\n(no messages found)`);
-    } catch (err) {
-      return failure(err);
-    }
-  },
-);
 
 registerTool(
   "interrupt_codex_turn",

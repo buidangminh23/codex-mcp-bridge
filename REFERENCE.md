@@ -42,6 +42,94 @@ Desktop mode never contacts, starts, or falls back to an external app-server, in
 
 `list_codex_threads` filters Desktop's recent/pinned task snapshot by authorization, workspace/title, and result limit. The snapshot can omit agent-created tasks visible in the sidebar and does not cover the complete archive. Absence from this list does not mean creation failed: read the returned task ID directly. Desktop does not expose the external server's `loadedOnly` state; requesting it returns an explanation without contacting that server.
 
+### Bounded reads and response preferences
+
+In Desktop mode, `read_codex_thread` and `wait_codex_reply` accept optional
+`responsePreferences`. Without it, existing response formats and selection
+behavior remain unchanged. Legacy app-server mode rejects preferences. Check
+the tool's advertised input schema before sending them: older bridges may
+silently discard unknown arguments, and some clients reject them locally.
+
+```json
+{
+  "threadId": "...",
+  "responsePreferences": {
+    "delivery": {
+      "type": "cursorPagination",
+      "options": { "maxBytes": 65536 }
+    },
+    "filter": {
+      "includeReasoning": true,
+      "includeToolPayloads": false
+    }
+  }
+}
+```
+
+With preferences present, omitted filter fields default to reasoning included
+and tool payloads excluded. Preferred history reads request up to 16,000
+characters per native item and include native outputs only when tool payloads
+are explicitly enabled. Desktop history can still truncate source items; use
+an exact `turnId` for authoritative assistant text. Payload exclusion removes arguments, commands,
+outputs, delegated prompts, and patch bodies, while retaining execution
+identity/status/timing and file-change paths/kinds. Unknown item types retain
+only recognized metadata. Filtering is not a secrecy boundary: retained
+messages and reasoning can describe tool activity. Omission counts identify
+what the filter reduced. `responsePreferences: {}` selects these defaults
+without paging; the complete filtered selection is returned or an oversize
+error is reported. Unknown preferences and unsupported delivery modes fail.
+Malformed preference fields are rejected by MCP input validation; runtime
+preference and cursor conflicts return structured error codes.
+
+Cursor delivery defaults to a **64 KiB** page; `maxBytes` accepts **8–96 KiB**.
+The budget includes the complete MCP tool result, including its JSON text and
+`structuredContent` copies. Opted-in results have `responseVersion: 1`,
+`appliedResponsePreferences`, snapshot/turn metadata, `items`, and `page` fields
+`complete`, `nextCursor`, `remainingItems`, and `expiresAt`. Execution completion
+is independent of page completion. History pages show the newest activity
+first and retain source indices; exact final replies retain reading order.
+
+Continue with the same tool and original `threadId` or `deliveryId`:
+
+```json
+{
+  "threadId": "...",
+  "responsePreferences": {
+    "delivery": {
+      "type": "cursorPagination",
+      "options": { "cursor": "..." }
+    }
+  }
+}
+```
+
+The cursor retains selection, filters, and budget. Conflicting overrides fail;
+omit `timeoutSec` on a wait continuation because it reads a frozen page rather
+than waiting again. A wait timeout has no content cursor; keep its `deliveryId`
+to observe the original operation without resending. Each cached page still
+requires live caller, account, workspace, and receipt authorization.
+
+An oversized item is returned as JSON text fragments with the same item ID and
+source index, plus byte offsets and total size; concatenate the UTF-8 segments
+before parsing the item. `remainingItems` includes partially delivered items.
+Page completion covers only the selected history window; `sourceHasMore`
+identifies older native history outside that window. Paging cannot restore
+content Desktop already omitted or truncated.
+
+Cursors expire 30 minutes after creation and can expire earlier after cache
+eviction, restart, or hot reload. `CURSOR_EXPIRED` requires a fresh read; a
+cursor never silently switches to new activity. Start a read without a cursor
+to obtain current progress. Filtered snapshots use a bounded 32 MiB cache per
+worker. An empty filtered current turn reports its status, not an older answer.
+
+Both internal response hops allow **8 MiB**, while requests remain limited to
+**128 KiB**. Non-paged opted-in results and plain Desktop reads also have an
+8 MiB serialized result limit, so formatting and escaping cannot overflow the
+supervisor's 16 MiB frame limit.
+`RESPONSE_TOO_LARGE` reports the boundary and size/limit when known. Responses
+above the native limit still fail before bridge-side filtering or paging can
+help. This is a size failure, not an instruction to reconnect or repeat a send.
+
 ### Switching Desktop accounts
 
 Desktop calls reread both applications' stored account identity on every invocation and immediately before dispatch. Switching A → B → A does not require a manual peer binding. For Codex → Claude, use `send_to_claude_session` with `target: "auto"` and the exact `expectedCwd`; it selects the current account's only live Code task in that directory. Supply `expectedTaskId` when several tasks match. An explicit task ID stays pinned to that task; if its CLI process restarts, the bridge can rediscover the same native task without choosing a different one.
@@ -579,9 +667,9 @@ The companion uses `CODEX_APP_TOOLS_PIPE_PATH` when inherited. Desktop builds th
 
 The native pipe uses a 4-byte UInt32LE payload length followed by UTF-8 JSON-RPC, and delivery requires `response.result.success === true`. `callId` and `turnId` are fresh for each dispatch. The local bridge-to-companion protocol remains NDJSON. Both transports preserve Unicode across arbitrary stream chunk boundaries. This wire format follows [Seb's measured prototype in issue #23](https://github.com/buidangminh23/codex-mcp-bridge/issues/23#issuecomment-5547163688).
 
-**Security.** On macOS/Linux the relay socket is mode `0600` inside `~/.codex`; Windows uses the Claude-compatible local named-pipe namespace. Anything able to open the relay can put text into a Codex thread, so the endpoint is feature-detected and the companion validates its request shape, caps requests at 128 KiB and responses at 8 MiB on both hops, and refuses a destination that is its own executor thread — otherwise a mistaken bind would deliver into the invisible relay thread and report success.
+**Security.** On macOS/Linux the relay socket is mode `0600` inside `~/.codex`; Windows uses the Claude-compatible local named-pipe namespace. Requests remain capped at 128 KiB; native and companion response frames are capped separately at 8 MiB. The companion validates its allowlisted operation shapes and account/project bindings, and refuses a message destination that is its own executor thread — otherwise a mistaken bind would deliver into the invisible relay thread and report success.
 
-**Desktop observation limits.** Default `read_codex_thread` snapshots omit tool outputs and cap each included item at 2,000 characters. Internal receipt, scope, and observation reads request one turn with outputs omitted and a one-character item budget; authoritative assistant replies still come from the verified rollout. Formatted snapshot results above 8 MiB return `DESKTOP_READ_RESPONSE_TOO_LARGE`; reduce `limit` or inspect an exact `turnId`. Native frames above 8 MiB, rollout files above 16 MiB, and authoritative replies above 1 MiB remain explicit limits. When the `wait_threads` renderer reports that it failed to produce a result, observation switches to bounded `read_thread` snapshots for that wait, preserving the original deadline and all reply validation. It never resends the prompt. Other failures, including authorization and account errors, remain errors. Rollout validation diagnostics identify checks and record byte offsets without exposing message contents.
+**Desktop observation limits.** Default `read_codex_thread` snapshots omit tool outputs and cap each included item at 2,000 characters. Internal receipt, scope, and observation reads request one turn with outputs omitted and a one-character item budget; authoritative assistant replies still come from the verified rollout. Formatted snapshot results above 8 MiB return `RESPONSE_TOO_LARGE`; reduce `limit` or inspect an exact `turnId`. Native frames above 8 MiB, rollout files above 16 MiB, and authoritative replies above 1 MiB remain explicit limits. When the `wait_threads` renderer reports that it failed to produce a result, observation switches to bounded `read_thread` snapshots for that wait, preserving the original deadline and all reply validation. It never resends the prompt. Other failures, including authorization and account errors, remain errors. Rollout validation diagnostics identify checks and record byte offsets without exposing message contents.
 
 ### Caveats
 

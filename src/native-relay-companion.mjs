@@ -8,8 +8,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import {
-  MAX_FRAME_BYTES,
+  MAX_REQUEST_FRAME_BYTES,
   MAX_RESPONSE_FRAME_BYTES,
+  responseTooLargeError,
   NATIVE_DISPATCH_METHOD,
   NativeToolsClient,
   NativeRelayError,
@@ -37,11 +38,12 @@ import { NativeCreationReceipts, creationIdValid } from "./native-creation-recei
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.21.6";
+const VERSION = "1.22.0";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
-function errorResponse(code, message, sent) {
-  return { ok: false, v: RELAY_PROTOCOL_VERSION, error: { code, message, ...(sent === false ? { sent: false } : {}) } };
+function errorResponse(code, message, sent, details) {
+  const size = code === "RESPONSE_TOO_LARGE" && details ? { boundary: details.boundary, bytes: details.bytes, limit: details.limit } : {};
+  return { ok: false, v: RELAY_PROTOCOL_VERSION, error: { code, message, ...size, ...(sent === false ? { sent: false } : {}) } };
 }
 
 function boundRequest(payload) {
@@ -266,7 +268,7 @@ export async function handleRelayRequest(
     var authorization;
     if (strict) authorization = await authorize({ executorThreadId, targetThreadId, operation: "send_message_to_thread", accountContext });
   } catch (err) {
-    return errorResponse(errorCode(err), err.message, false);
+    return errorResponse(errorCode(err), err.message, false, err);
   }
 
   /**
@@ -294,7 +296,7 @@ export async function handleRelayRequest(
     }
     return { ok: true, v: boundRequest(payload) ? ACCOUNT_RELAY_PROTOCOL_VERSION : RELAY_PROTOCOL_VERSION, targetThreadId, executorThreadId, result: result ?? null };
   } catch (err) {
-    return errorResponse(errorCode(err), err?.message ?? String(err), err?.sent === false && err?.reachedCompanion !== true ? false : undefined);
+    return errorResponse(errorCode(err), err?.message ?? String(err), err?.sent === false && err?.reachedCompanion !== true ? false : undefined, err);
   }
 }
 
@@ -311,7 +313,7 @@ async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor,
     try {
       accountContext = await checkAccountContext(payload, assertAccount);
     } catch (error) {
-      return errorResponse(errorCode(error), error.message, false);
+      return errorResponse(errorCode(error), error.message, false, error);
     }
     if (typeof dispatchDesktop !== "function") {
       return errorResponse("NATIVE_OPERATION_UNAVAILABLE", "This companion does not support Desktop operations; reload the native relay");
@@ -365,7 +367,7 @@ async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor,
       throw error;
     }
   } catch (err) {
-    return errorResponse(errorCode(err), err?.message ?? String(err), err?.sent === false && err?.reachedCompanion !== true ? false : undefined);
+    return errorResponse(errorCode(err), err?.message ?? String(err), err?.sent === false && err?.reachedCompanion !== true ? false : undefined, err);
   }
 }
 
@@ -568,9 +570,9 @@ export class RelaySocketServer {
     socket.on("data", (chunk) => {
       if (handled) return;
       buffer = Buffer.concat([buffer, chunk]);
-      if (buffer.length > MAX_FRAME_BYTES) {
+      if (buffer.length > MAX_REQUEST_FRAME_BYTES) {
         handled = true;
-        this.#reply(socket, errorResponse("RELAY_MESSAGE_TOO_LARGE", `a relay frame may not exceed ${MAX_FRAME_BYTES} bytes`));
+        this.#reply(socket, errorResponse("RELAY_MESSAGE_TOO_LARGE", `a relay frame may not exceed ${MAX_REQUEST_FRAME_BYTES} bytes`));
         return;
       }
       const index = buffer.indexOf(10);
@@ -614,12 +616,13 @@ export class RelaySocketServer {
 
   #reply(socket, response) {
     if (socket.destroyed) return;
-    const frame = `${JSON.stringify(response)}\n`;
-    if (Buffer.byteLength(frame, "utf8") > MAX_RESPONSE_FRAME_BYTES) {
-      socket.end(`${JSON.stringify(errorResponse("RELAY_RESPONSE_TOO_LARGE", `The native relay response exceeds ${MAX_RESPONSE_FRAME_BYTES} bytes; reduce the requested turns or outputs`))}\n`);
-      return;
+    let line = `${JSON.stringify(response)}\n`;
+    const bytes = Buffer.byteLength(line, "utf8");
+    if (bytes > MAX_RESPONSE_FRAME_BYTES) {
+      const error = responseTooLargeError("companion-to-bridge", bytes);
+      line = `${JSON.stringify({ ...errorResponse(error.code, error.message, undefined, error), v: response.v })}\n`;
     }
-    socket.end(frame);
+    socket.end(line);
   }
 
   stop() {

@@ -62,7 +62,7 @@ export class NativeRelayError extends Error {
 }
 
 export function responseTooLargeError(boundary, bytes, limit = MAX_RESPONSE_FRAME_BYTES) {
-  return new NativeRelayError(`Response at ${boundary} exceeds ${limit} bytes (${bytes} bytes received or required)`, "RESPONSE_TOO_LARGE", { boundary, bytes, limit, reachedCompanion: true });
+  return new NativeRelayError(`Response at ${boundary} exceeds ${limit} bytes (${bytes} bytes received or required); reduce the requested turns or outputs`, "RESPONSE_TOO_LARGE", { boundary, bytes, limit, reachedCompanion: true });
 }
 
 export function codexHome(env = process.env) {
@@ -893,11 +893,14 @@ export class NativeDesktopRelay {
         })();
       });
       socket.on("data", (chunk) => {
-        buffer = Buffer.concat([buffer, chunk]);
-        if (buffer.length > MAX_RESPONSE_FRAME_BYTES) {
-          finish(reject, responseTooLargeError("companion-to-bridge", buffer.length));
+        if (settled) return;
+        const newline = chunk.indexOf(10);
+        const frameChunk = newline < 0 ? chunk : chunk.subarray(0, newline + 1);
+        if (buffer.length + frameChunk.length > MAX_RESPONSE_FRAME_BYTES) {
+          finish(reject, responseTooLargeError("companion-to-bridge", buffer.length + frameChunk.length));
           return;
         }
+        buffer = Buffer.concat([buffer, frameChunk]);
         const index = buffer.indexOf(10);
         if (index < 0) return;
         try {

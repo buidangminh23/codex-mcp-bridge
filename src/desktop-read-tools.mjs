@@ -69,7 +69,7 @@ export function registerDesktopReadTools(registerTool, {
         metadata: { ...metadata, threadId, turnId, turnStatus: response.turnStatus ?? (["completed", "completed_no_reply"].includes(response.status) ? "completed" : null) },
         items: projectReply(assistantItems ?? [], turnId) });
     }
-    const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10) }, { deadline });
+    const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10), includeOutputs: preferences.filter.includeToolPayloads, maxOutputCharsPerItem: 16000 }, { deadline });
     const projected = projectHistory(response.turns ?? [], preferences.filter);
     return respond({ preferences, owner, selection: { ...selection, limit: limit ?? 10 }, auth,
       metadata: { threadId, turnId: response.turns?.[0]?.id ?? null, turnStatus: response.turns?.[0]?.status ?? null,
@@ -178,7 +178,7 @@ registerTool(
           return assertResponseResultSize(textResult(JSON.stringify(response, null, 2), response.status === "unavailable"));
         }
         await desktopTasks.inspect(threadId, undefined, { deadline });
-        const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10) }, { deadline });
+        const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10), includeOutputs: false, maxOutputCharsPerItem: 2000 }, { deadline });
         return assertResponseResultSize(textResult(JSON.stringify(response, null, 2)));
       }
       await assertThreadAccess(threadId);

@@ -47,8 +47,9 @@ async function fixture(t, { desktop = true, realObservation = false } = {}) {
       const result = { thread: { id: threadId, cwd, hostId: 'local' }, latestTurnId: state.turnId, projectScope: captureProjectScope(context.caller.cwd, cwd) };
       state.afterInspect?.(); return result;
     },
-    async request(operation) {
+    async request(operation, args) {
       state.calls.push(operation);
+      state.lastReadArguments = args;
       if (realObservation && operation === 'wait_threads') return { polls: [{ thread: { id: 'thread', hostId: 'local', status: { type: 'idle' } }, latestTurn: { id: 'current', status: 'completed' } }] };
       assert.equal(operation, 'read_thread');
       return { thread: { id: 'thread', cwd }, turns: state.turns, page: { hasMore: true, nextCursor: "native-history-cursor" } };
@@ -92,14 +93,21 @@ it('advertises strict preferences and preserves the absent-preference desktop re
     assert.equal(tool.inputSchema.properties.responsePreferences.properties.filter.additionalProperties, false);
   }
   const legacy = await f.call('read_codex_thread', { threadId: 'thread' });
+  assert.equal(f.state.lastReadArguments.includeOutputs, false);
+  assert.equal(f.state.lastReadArguments.maxOutputCharsPerItem, 2000);
   assert.equal(legacy.structuredContent, undefined);
   assert.match(legacy.content[0].text, /hidden-command/);
   const preferred = await f.call('read_codex_thread', { threadId: 'thread', responsePreferences: {} });
+  assert.equal(f.state.lastReadArguments.includeOutputs, false);
+  assert.equal(f.state.lastReadArguments.maxOutputCharsPerItem, 16000);
   assert.equal(preferred.structuredContent.responseVersion, 1);
   assert.doesNotMatch(preferred.content[0].text, /hidden-command|hidden-output/);
   assert.match(preferred.content[0].text, /working now/);
   assert.equal(preferred.structuredContent.sourceHasMore, true);
   assert.deepEqual(JSON.parse(preferred.content[0].text), preferred.structuredContent);
+  const withTools = await f.call('read_codex_thread', { threadId: 'thread', responsePreferences: { filter: { includeToolPayloads: true } } });
+  assert.equal(f.state.lastReadArguments.includeOutputs, true);
+  assert.match(withTools.content[0].text, /hidden-output/);
 });
 
 it('rejects escape-expanded legacy history before it can poison the supervisor connection', async t => {

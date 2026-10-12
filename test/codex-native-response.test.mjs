@@ -57,6 +57,29 @@ function fixture(t) {
 }
 
 describe("native Codex response observation", () => {
+  for (const variant of ["matching", "changed_text", "changed_citation", "missing_metadata", "invalid_lines", "missing_response"]) {
+    it(`verifies Desktop memory citation representations: ${variant}`, (t) => {
+      const f = fixture(t);
+      const mark = f.capture();
+      const citation = `<oai-mem-citation>\n<citation_entries>\nMEMORY.md:2-4|note=[release guidance]\n</citation_entries>\n<rollout_ids>\n${PREVIOUS_TURN_ID}\n</rollout_ids>\n</oai-mem-citation>`;
+      const body = "Verified response.\n\n";
+      const records = f.turn({ content: [{ type: "output_text", text: body + citation }] });
+      const event = { type: "event_msg", payload: { type: "item_completed", thread_id: THREAD_ID, turn_id: TURN_ID,
+        item: { type: "AgentMessage", id: records[3].payload.id, phase: "final_answer", content: [{ type: "Text", text: body }],
+          memory_citation: { entries: [{ path: "MEMORY.md", lineStart: 2, lineEnd: 4, note: "release guidance" }], rolloutIds: [PREVIOUS_TURN_ID] } } } };
+      if (variant === "changed_text") event.payload.item.content[0].text = "Different response.\n\n";
+      if (variant === "changed_citation") event.payload.item.memory_citation.entries[0].note = "different guidance";
+      if (variant === "missing_metadata") delete event.payload.item.memory_citation;
+      if (variant === "invalid_lines") event.payload.item.memory_citation.entries[0].lineStart = -1;
+      records.splice(3, variant === "missing_response" ? 1 : 0, event);
+      f.append(records);
+      const result = f.read(mark);
+      assert.equal(result.status, variant === "matching" ? "completed" : "unavailable", result.reason);
+      assert.equal(result.text, variant === "matching" ? body + citation : "");
+      if (variant === "matching") assert.equal(result.replySha256, crypto.createHash("sha256").update(body + citation).digest("hex"));
+    });
+  }
+
   it("correlates a confirmed creation to create_thread only, with exact sender and prompt", (t) => {
     const f = fixture(t);
     const records = f.turn();
@@ -315,6 +338,100 @@ describe("native Codex response observation", () => {
     } });
     f.append(records);
     assert.equal(inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env }).status, "unavailable");
+  });
+
+  it("pinpoints failed lifecycle checks and record offsets without exposing record contents", (t) => {
+    const cases = [
+      { check: "lifecycle_start_count", mutate: (records) => records.shift(), detail: /count=0; recordBytes=none/ },
+      { check: "lifecycle_context_count", mutate: (records) => records.splice(1, 0, structuredClone(records[1])), detail: /count=2; recordBytes=\d+,\d+/ },
+      { check: "lifecycle_completion_count", mutate: (records) => records.pop(), detail: /count=0; recordBytes=none/ },
+      { check: "lifecycle_failure", mutate: (records) => records.splice(4, 0, { type: "event_msg", payload: { type: "turn_failed", turn_id: TURN_ID, error: "private-error-text" } }), detail: /count=1; eventBytes=\d+/ },
+      { check: "lifecycle_order", mutate: (records) => [records[0], records[1]] = [records[1], records[0]], detail: /startByte=\d+; contextByte=\d+; completionByte=\d+/ },
+    ];
+    for (const { check, mutate, detail } of cases) {
+      const f = fixture(t);
+      const watermark = f.capture();
+      const records = f.turn();
+      mutate(records);
+      f.append(records);
+      for (const result of [f.read(watermark), inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env })]) {
+        assert.equal(result.status, "unavailable", check);
+        assert.ok(result.reason.includes(`check=${check};`), result.reason);
+        assert.match(result.reason, detail);
+        for (const secret of [f.cwd, PROMPT, "private-error-text", "Received safely"]) assert.ok(!result.reason.includes(secret));
+        assert.deepEqual(result.assistantItems, []);
+        assert.equal(result.text, "");
+      }
+    }
+  });
+
+  it("locates both conflicting assistant representations using exact byte offsets", (t) => {
+    const f = fixture(t);
+    const watermark = f.capture();
+    const records = f.turn({ content: [{ type: "output_text", text: "private-reply-\u00e9" }] });
+    records[3].payload.id = "private-item-id-\n-do-not-disclose";
+    records.splice(4, 0, { type: "event_msg", payload: {
+      type: "item_completed", turn_id: TURN_ID,
+      item: { type: "AgentMessage", id: records[3].payload.id, content: [{ type: "Text", text: "private-conflicting-text" }], phase: "final_answer" },
+    } });
+    const responseOffset = Buffer.byteLength(line(f.session) + records.slice(0, 3).map(line).join(""));
+    const eventOffset = Buffer.byteLength(line(f.session) + records.slice(0, 4).map(line).join(""));
+    f.append(records);
+    const result = f.read(watermark);
+    assert.equal(result.status, "unavailable");
+    assert.ok(result.reason.includes(`check=assistant_representation_text; responseItemByte=${responseOffset}; completedEventByte=${eventOffset}`), result.reason);
+    for (const secret of [f.cwd, "private-reply", "private-item-id", "private-conflicting-text", PROMPT]) assert.ok(!result.reason.includes(secret));
+    assert.equal(result.text, "");
+  });
+
+  it("identifies unmatched authoritative items and malformed content without returning their contents", (t) => {
+    for (const variant of ["unmatched", "event_content", "response_content", "phase", "duplicate"]) {
+      const f = fixture(t);
+      const watermark = f.capture();
+      const records = f.turn();
+      const event = { type: "event_msg", payload: {
+        type: "item_completed", turn_id: TURN_ID,
+        item: { type: "AgentMessage", id: records[3].payload.id, phase: "final_answer", content: [{ type: "Text", text: "Received safely" }] },
+      } };
+      let check;
+      if (variant === "unmatched") {
+        event.payload.item.id = "private-unmatched-id";
+        check = "authoritative_response_missing";
+      } else if (variant === "event_content") {
+        event.payload.item.content.push({ type: "private-unsupported-type", text: "private-content" });
+        check = "completed_content";
+      } else if (variant === "response_content") {
+        records[3].payload.content.push({ type: "private-unsupported-type", text: "private-content" });
+        check = "response_content";
+      } else if (variant === "phase") {
+        event.payload.item.phase = "private-unsupported-phase";
+        check = "assistant_representation_type_phase";
+      } else {
+        records.splice(4, 0, structuredClone(records[3]));
+        check = "response_item_id_duplicate";
+      }
+      records.splice(-1, 0, event);
+      f.append(records);
+      const result = f.read(watermark);
+      assert.equal(result.status, "unavailable", variant);
+      assert.ok(result.reason.includes(`check=${check};`), result.reason);
+      assert.match(result.reason, /(?:responseItemByte|completedEventByte)=\d+/);
+      if (variant.endsWith("content")) assert.match(result.reason, /contentPart=1/);
+      assert.ok(!result.reason.includes("private-"));
+      assert.equal(result.text, "");
+    }
+  });
+
+  it("bounds ambiguous lifecycle diagnostics even with many duplicate records", (t) => {
+    const f = fixture(t);
+    const watermark = f.capture();
+    const records = f.turn();
+    records.splice(0, 0, ...Array.from({ length: 100 }, () => structuredClone(records[0])));
+    f.append(records);
+    const result = f.read(watermark);
+    assert.equal(result.status, "unavailable");
+    assert.match(result.reason, /check=lifecycle_start_count; count=101; recordBytes=\d+,\d+,\d+\]/);
+    assert.ok(result.reason.length < 256);
   });
 
   it("rejects matching assistant IDs with contradictory event phase or type", (t) => {

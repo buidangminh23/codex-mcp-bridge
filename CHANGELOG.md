@@ -4,6 +4,35 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-10-12
+
+### Added
+
+- Optional response preferences for Desktop reads and reply observation, with tool payload filtering and bounded, replayable cursor pages. Snapshots remain bound to the caller, accounts, workspace, selected task, and delivery receipt (#125).
+
+### Fixed
+
+- Accept completed Desktop replies whose memory citation is represented separately in the completion event, but appended to the authoritative response item. Require an exact reconstruction from validated citation metadata and preserve reply IDs, hashes, lifecycle checks, and conflict rejection (#123).
+- Preserve bounded default history reads while allowing explicit tool output selection. Return structured oversize errors across native transport and serialized MCP responses.
+
+### Upgrade notes
+
+- Update both bridge and native relay companion. Calls without response preferences retain existing response formats and the 2,000-character default item budget. Preferred history reads use a 16,000-character item budget; exact-turn reads retain authoritative assistant text.
+- Cursor pages default to 64 KiB and support 8–96 KiB budgets. Native responses above 8 MiB and authoritative replies above 1 MiB remain explicit limits.
+
+## [1.21.6] - 2026-10-12
+
+### Fixed
+
+- Continue observing a delivered Desktop task through bounded `read_thread` snapshots when the `wait_threads` renderer stops returning results after relay recovery. Preserve the original deadline, access checks, and authoritative reply validation without resending the prompt (#122, #123).
+- Keep native requests capped at 128 KiB while accepting responses up to 8 MiB on both relay hops. Reject larger responses explicitly, trim internal metadata reads, omit tool output from default transcript reads, and bound the serialized MCP read result (#123).
+- Identify failed rollout validation checks and record byte offsets in bounded diagnostics without exposing reply contents. Validation requirements remain unchanged; unsupported rollout sequences still fail closed pending concrete evidence (#123).
+
+### Upgrade notes
+
+- Update both the bridge and native relay companion. Default Desktop transcript reads omit tool outputs and cap each included item at 2,000 characters; use an exact `turnId` for authoritative assistant response inspection.
+- Native frames above 8 MiB, rollout files above 16 MiB, and authoritative replies above 1 MiB remain explicit limits.
+
 ## [1.21.5] - 2026-10-11
 
 ### Fixed

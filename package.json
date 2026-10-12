@@ -1,6 +1,6 @@
 {
   "name": "@minhspark/codex-mcp-bridge",
-  "version": "1.21.5",
+  "version": "1.22.0",
   "description": "Two-way MCP bridge between Claude and Codex: prompts into a live Codex thread, messages into a running Claude Code session.",
   "keywords": [
     "mcp",
@@ -48,7 +48,8 @@
     "LICENSE",
     "CHANGELOG.md",
     "docs/daily-handoffs.md",
-    "docs/new-machine-setup.md",
+    "docs/new-windows-setup.md",
+    "docs/new-macos-setup.md",
     "docs/project-onboarding.md",
     "docs/desktop-handoff-design.md"
   ],

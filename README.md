@@ -4,7 +4,7 @@
 
 <h1 align="center">codex-mcp-bridge</h1>
 
-Local Desktop handoff guides: [daily workflow and directory verification](docs/daily-handoffs.md), [new-machine setup and permissions](docs/new-machine-setup.md), and [project onboarding](docs/project-onboarding.md).
+Local Desktop handoff guides: [daily workflow and directory verification](docs/daily-handoffs.md), [Windows setup](docs/new-windows-setup.md), [macOS setup](docs/new-macos-setup.md), and [project onboarding](docs/project-onboarding.md).
 
 [![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
 [![npm downloads](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads.svg)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)

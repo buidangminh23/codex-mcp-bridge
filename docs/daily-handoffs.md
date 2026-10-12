@@ -3,7 +3,7 @@
 Install the messaging MCP entries first. Local Card Bridge Desktop is optional
 and is needed only for automatic task-card startup and its settings UI. Neither
 component uploads an entire local project. For initial installation see
-[new-machine setup](new-machine-setup.md); for grants see
+[Windows setup](new-windows-setup.md) or [macOS setup](new-macos-setup.md); for grants see
 [project onboarding](project-onboarding.md).
 
 Workspace trust, project authorization and host tool permission are separate.

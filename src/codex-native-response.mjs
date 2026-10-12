@@ -21,6 +21,15 @@ function unavailable(reason) {
   return { status: "unavailable", reason: reason?.message ?? String(reason) };
 }
 
+function validationError(message, check, fields = {}) {
+  const details = Object.entries({ check, ...fields }).map(([key, value]) => `${key}=${value}`).join("; ");
+  return new Error(`${message} [${details}]`);
+}
+
+function recordOffsets(entries) {
+  return entries.slice(0, 3).map(({ start }) => start).join(",") || "none";
+}
+
 function configuredSessions(env) {
   const configuredHome = env.CODEX_HOME || path.join(env.HOME || env.USERPROFILE || os.homedir(), ".codex");
   if (!path.isAbsolute(configuredHome)) throw new Error("The configured Codex home must be absolute");
@@ -165,25 +174,42 @@ function recordBelongsToTurn(entry, threadId, turnId) {
   const metadata = object(payload.internal_chat_message_metadata_passthrough) ? payload.internal_chat_message_metadata_passthrough : {};
   const turnFields = [payload.turn_id, payload.root_turn_id, metadata.turn_id, metadata.root_turn_id].filter((value) => value !== undefined);
   if (!turnFields.includes(turnId)) return false;
-  if (turnFields.some((value) => value !== turnId)) throw new Error("The native response contains contradictory turn identity");
+  if (turnFields.some((value) => value !== turnId)) throw validationError("The native response contains contradictory turn identity", "turn_identity", { recordByte: entry.start });
   const threadFields = [payload.thread_id, metadata.thread_id].filter((value) => value !== undefined);
-  if (threadFields.some((value) => value !== threadId)) throw new Error("The native response contains contradictory task identity");
+  if (threadFields.some((value) => value !== threadId)) throw validationError("The native response contains contradictory task identity", "task_identity", { recordByte: entry.start });
   return true;
 }
 
-function responseItemText(payload) {
-  if (!Array.isArray(payload.content) || payload.content.some((item) => !object(item) || item.type !== "output_text" || typeof item.text !== "string")) {
-    throw new Error("The native final response contains unsupported content");
+function responseItemText(entry) {
+  const { payload } = entry.record;
+  const invalidPart = Array.isArray(payload.content)
+    ? payload.content.findIndex((item) => !object(item) || item.type !== "output_text" || typeof item.text !== "string") : "not_array";
+  if (invalidPart !== -1) {
+    throw validationError("The native final response contains unsupported content", "response_content", { responseItemByte: entry.start, contentPart: invalidPart });
   }
   return payload.content.map((item) => item.text).join("");
 }
 
-function completedEventText(item) {
+function completedEventText(entry) {
+  const item = entry.record.payload.item;
   if (!object(item) || item.type !== "AgentMessage" || item.phase !== "final_answer") return null;
-  if (!Array.isArray(item.content) || item.content.some((part) => !object(part) || part.type !== "Text" || typeof part.text !== "string")) {
-    throw new Error("The native completed assistant item contains unsupported content");
+  const invalidPart = Array.isArray(item.content)
+    ? item.content.findIndex((part) => !object(part) || part.type !== "Text" || typeof part.text !== "string") : "not_array";
+  if (invalidPart !== -1) {
+    throw validationError("The native completed assistant item contains unsupported content", "completed_content", { completedEventByte: entry.start, contentPart: invalidPart });
   }
   return item.content.map((part) => part.text).join("");
+}
+
+function completedMemoryCitation(item) {
+  const citation = item.memory_citation;
+  if (!object(citation) || !Array.isArray(citation.entries) || !Array.isArray(citation.rolloutIds)) return null;
+  const singleLine = (value) => typeof value === "string" && !/[\r\n<>]/.test(value);
+  if (citation.entries.some((entry) => !object(entry) || !singleLine(entry.path) || !entry.path || !singleLine(entry.note) ||
+      !Number.isSafeInteger(entry.lineStart) || entry.lineStart < 1 || !Number.isSafeInteger(entry.lineEnd) || entry.lineEnd < entry.lineStart) ||
+      citation.rolloutIds.some((id) => typeof id !== "string" || !UUID.test(id))) return null;
+  const entries = citation.entries.map((entry) => `${entry.path}:${entry.lineStart}-${entry.lineEnd}|note=[${entry.note}]`).join("\n");
+  return `<oai-mem-citation>\n<citation_entries>\n${entries}\n</citation_entries>\n<rollout_ids>\n${citation.rolloutIds.join("\n")}\n</rollout_ids>\n</oai-mem-citation>`;
 }
 
 function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch } = {}) {
@@ -193,10 +219,16 @@ function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch } 
   const completions = turns.filter(({ record }) => record.type === "event_msg" && COMPLETED.has(record.payload.type));
   const failures = turns.filter(({ record }) => record.type === "event_msg" &&
     (FAILED.has(record.payload.type) || record.payload.error || ["failed", "aborted", "interrupted"].includes(record.payload.status)));
-  if (failures.length || starts.length !== 1 || contexts.length !== 1 || completions.length !== 1 ||
-      canonicalDirectory(contexts[0].record.payload.cwd, "The observed turn workspace") !== cwd ||
-      starts[0].start >= contexts[0].start || contexts[0].start >= completions[0].start) {
-    throw new Error("The native turn lifecycle is missing, ambiguous, failed, or out of order");
+  const lifecycleError = (check, fields) => validationError("The native turn lifecycle is missing, ambiguous, failed, or out of order", check, fields);
+  if (failures.length) throw lifecycleError("lifecycle_failure", { count: failures.length, eventBytes: recordOffsets(failures) });
+  for (const [kind, entries] of [["start", starts], ["context", contexts], ["completion", completions]]) {
+    if (entries.length !== 1) throw lifecycleError(`lifecycle_${kind}_count`, { count: entries.length, recordBytes: recordOffsets(entries) });
+  }
+  if (canonicalDirectory(contexts[0].record.payload.cwd, "The observed turn workspace") !== cwd) {
+    throw lifecycleError("lifecycle_workspace", { contextByte: contexts[0].start });
+  }
+  if (starts[0].start >= contexts[0].start || contexts[0].start >= completions[0].start) {
+    throw lifecycleError("lifecycle_order", { startByte: starts[0].start, contextByte: contexts[0].start, completionByte: completions[0].start });
   }
 
   let dispatch = null;
@@ -205,47 +237,67 @@ function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch } 
       record.payload.namespace === "codex_app" && record.payload.name === (requireDispatch.operation ?? "send_message_to_thread"));
     if (dispatches.length !== 1 || !requireDispatch.outputs.includes(dispatches[0].record.payload.output) ||
         contexts[0].start >= dispatches[0].start || dispatches[0].start >= completions[0].start) {
-      throw new Error("The newly observed turn is not correlated to the exact native dispatch");
+      throw validationError("The newly observed turn is not correlated to the exact native dispatch", "dispatch_correlation", {
+        count: dispatches.length, dispatchBytes: recordOffsets(dispatches), contextByte: contexts[0].start, completionByte: completions[0].start,
+      });
     }
     dispatch = dispatches[0];
   }
 
   const allAssistantEntries = turns.filter(({ record }) => record.type === "response_item" && record.payload.type === "message" && record.payload.role === "assistant");
   const finalEntries = allAssistantEntries.filter(({ record }) => record.payload.phase === "final_answer");
-  if (!finalEntries.length && allAssistantEntries.length) throw new Error("The completed native turn has assistant items but no final assistant reply");
+  if (!finalEntries.length && allAssistantEntries.length) throw validationError("The completed native turn has assistant items but no final assistant reply", "missing_final_phase", {
+    count: allAssistantEntries.length, responseItemBytes: recordOffsets(allAssistantEntries),
+  });
   const assistantItems = [];
-  const ids = new Set();
+  const ids = new Map();
   for (const entry of finalEntries) {
     const { payload } = entry.record;
     if (typeof payload.id !== "string" || !payload.id.trim() || ids.has(payload.id) ||
         entry.start <= (dispatch?.start ?? contexts[0].start) || entry.start >= completions[0].start) {
-      throw new Error("The native final response item identity is missing, duplicated, or out of order");
+      const check = typeof payload.id !== "string" || !payload.id.trim() ? "response_item_id_missing" : ids.has(payload.id) ? "response_item_id_duplicate" : "response_item_order";
+      throw validationError("The native final response item identity is missing, duplicated, or out of order", check, {
+        responseItemByte: entry.start, previousItemByte: ids.get(payload.id)?.start ?? "none",
+        afterByte: dispatch?.start ?? contexts[0].start, completionByte: completions[0].start,
+      });
     }
-    ids.add(payload.id);
-    const text = responseItemText(payload);
-    if (!text.trim()) throw new Error("The native final response item is empty");
+    ids.set(payload.id, entry);
+    const text = responseItemText(entry);
+    if (!text.trim()) throw validationError("The native final response item is empty", "response_item_empty", { responseItemByte: entry.start });
     assistantItems.push({ id: payload.id, text });
   }
 
   const eventItems = new Map();
-  for (const { record, start } of turns) {
+  for (const entry of turns) {
+    const { record, start } = entry;
     if (record.type !== "event_msg" || record.payload.type !== "item_completed") continue;
     const eventItem = record.payload.item;
     if (ids.has(eventItem?.id) && (eventItem.type !== "AgentMessage" || eventItem.phase !== "final_answer")) {
-      throw new Error("The native assistant item representations conflict in type or phase");
+      throw validationError("The native assistant item representations conflict in type or phase", "assistant_representation_type_phase", {
+        responseItemByte: ids.get(eventItem.id).start, completedEventByte: start,
+      });
     }
-    const text = completedEventText(record.payload.item);
+    const text = completedEventText(entry);
     if (text === null) continue;
     const id = record.payload.item.id;
     if (typeof id !== "string" || !id.trim() || eventItems.has(id) || start <= contexts[0].start || start >= completions[0].start) {
-      throw new Error("The native completed assistant item identity is missing, duplicated, or out of order");
+      const check = typeof id !== "string" || !id.trim() ? "completed_item_id_missing" : eventItems.has(id) ? "completed_item_id_duplicate" : "completed_item_order";
+      throw validationError("The native completed assistant item identity is missing, duplicated, or out of order", check, {
+        completedEventByte: start, previousEventByte: eventItems.get(id)?.start ?? "none",
+        contextByte: contexts[0].start, completionByte: completions[0].start,
+      });
     }
-    eventItems.set(id, text);
+    eventItems.set(id, { text, start, memoryCitation: completedMemoryCitation(eventItem) });
   }
   for (const item of assistantItems) {
-    if (eventItems.has(item.id) && eventItems.get(item.id) !== item.text) throw new Error("The native assistant item representations conflict");
+    const event = eventItems.get(item.id);
+    if (event && event.text !== item.text && (!event.memoryCitation || event.text + event.memoryCitation !== item.text)) throw validationError("The native assistant item representations conflict", "assistant_representation_text", {
+      responseItemByte: ids.get(item.id).start, completedEventByte: eventItems.get(item.id).start,
+    });
   }
-  if ([...eventItems.keys()].some((id) => !ids.has(id))) throw new Error("The native completed assistant item has no matching authoritative response item");
+  for (const [id, event] of eventItems) {
+    if (!ids.has(id)) throw validationError("The native completed assistant item has no matching authoritative response item", "authoritative_response_missing", { completedEventByte: event.start });
+  }
 
   const text = assistantItems.map((item) => item.text).join("\n\n");
   if (Buffer.byteLength(text, "utf8") > MAX_REPLY_BYTES) throw new Error("The native final response exceeds the bounded reply limit");

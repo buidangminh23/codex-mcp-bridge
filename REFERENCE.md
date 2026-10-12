@@ -67,7 +67,10 @@ silently discard unknown arguments, and some clients reject them locally.
 ```
 
 With preferences present, omitted filter fields default to reasoning included
-and tool payloads excluded. Payload exclusion removes arguments, commands,
+and tool payloads excluded. Preferred history reads request up to 16,000
+characters per native item and include native outputs only when tool payloads
+are explicitly enabled. Desktop history can still truncate source items; use
+an exact `turnId` for authoritative assistant text. Payload exclusion removes arguments, commands,
 outputs, delegated prompts, and patch bodies, while retaining execution
 identity/status/timing and file-change paths/kinds. Unknown item types retain
 only recognized metadata. Filtering is not a secrecy boundary: retained
@@ -665,6 +668,8 @@ The companion uses `CODEX_APP_TOOLS_PIPE_PATH` when inherited. Desktop builds th
 The native pipe uses a 4-byte UInt32LE payload length followed by UTF-8 JSON-RPC, and delivery requires `response.result.success === true`. `callId` and `turnId` are fresh for each dispatch. The local bridge-to-companion protocol remains NDJSON. Both transports preserve Unicode across arbitrary stream chunk boundaries. This wire format follows [Seb's measured prototype in issue #23](https://github.com/buidangminh23/codex-mcp-bridge/issues/23#issuecomment-5547163688).
 
 **Security.** On macOS/Linux the relay socket is mode `0600` inside `~/.codex`; Windows uses the Claude-compatible local named-pipe namespace. Requests remain capped at 128 KiB; native and companion response frames are capped separately at 8 MiB. The companion validates its allowlisted operation shapes and account/project bindings, and refuses a message destination that is its own executor thread — otherwise a mistaken bind would deliver into the invisible relay thread and report success.
+
+**Desktop observation limits.** Default `read_codex_thread` snapshots omit tool outputs and cap each included item at 2,000 characters. Internal receipt, scope, and observation reads request one turn with outputs omitted and a one-character item budget; authoritative assistant replies still come from the verified rollout. Formatted snapshot results above 8 MiB return `RESPONSE_TOO_LARGE`; reduce `limit` or inspect an exact `turnId`. Native frames above 8 MiB, rollout files above 16 MiB, and authoritative replies above 1 MiB remain explicit limits. When the `wait_threads` renderer reports that it failed to produce a result, observation switches to bounded `read_thread` snapshots for that wait, preserving the original deadline and all reply validation. It never resends the prompt. Other failures, including authorization and account errors, remain errors. Rollout validation diagnostics identify checks and record byte offsets without exposing message contents.
 
 ### Caveats
 

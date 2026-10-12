@@ -585,6 +585,7 @@ describe("Desktop task MCP integration", () => {
 
   it("uses only Desktop for status, filtered listing, read, and open even when legacy autostart is requested", async () => {
     const calls = [];
+    let oversized = false;
     let relay;
     const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
     const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-diagnostics-${randomUUID()}` : path.join(socketRoot, "d.sock");
@@ -613,14 +614,23 @@ describe("Desktop task MCP integration", () => {
         assert.match(stopped.content[0].text, /left unchanged/);
         assert.deepEqual(calls, ["list_projects", "list_threads", "read_thread", "read_thread", "read_thread", "read_thread", "read_thread", "navigate_to_codex_page"]);
         assert.equal(server.connections, 0);
+        oversized = true;
+        const largeRead = await client.callTool({ name: "read_codex_thread", arguments: { threadId: "target", limit: 1 } });
+        assert.equal(largeRead.isError, true);
+        assert.match(largeRead.content[0].text, /DESKTOP_READ_RESPONSE_TOO_LARGE/);
+        assert.ok(JSON.stringify(largeRead).length < 1024);
       }, async (home) => {
-        relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation }) => {
+        relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
           calls.push(operation);
           const target = { id: "target", kind: "codex", hostId: "local", cwd: home, title: "Target task", summary: "misleading-summary", status: "active", updatedAt: 1788597586 };
           let result;
           if (operation === "list_projects") result = { projects: [{ projectId: "project-id", projectKind: "local", hostId: "local", path: home }] };
           else if (operation === "list_threads") result = { pinnedThreads: [target], threads: [target, { ...target, id: "hidden-remote", hostId: "remote" }, { ...target, id: "hidden-chat", kind: "chatgpt" }, { ...target, id: "hidden-outside", cwd: root }] };
-          else if (operation === "read_thread") result = { thread: target, turns: [] };
+          else if (operation === "read_thread") {
+            assert.equal(args.includeOutputs, false);
+            assert.ok([1, 2000].includes(args.maxOutputCharsPerItem));
+            result = { thread: target, turns: oversized && args.maxOutputCharsPerItem === 2000 ? Array(1000000).fill({}) : [] };
+          }
           else if (operation === "navigate_to_codex_page") result = { navigated: true };
           else throw new Error(`Unexpected operation ${operation}`);
           return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };

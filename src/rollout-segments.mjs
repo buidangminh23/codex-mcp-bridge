@@ -37,7 +37,7 @@ export function findRolloutSegments(sessions, threadId) {
       }
     }
   }
-  if (!matches.length) throw new Error("No rollout matches the calling Codex task");
+  if (!matches.length) throw new Error(`No rollout matches the calling Codex task [check=rollout_discovery; directoriesScanned=${directories}; entriesScanned=${entries}; layout=sessions/YYYY/MM/DD/rollout-*-taskId[_continuationId].jsonl]`);
   return matches.sort();
 }
 

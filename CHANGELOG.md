@@ -4,6 +4,19 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.21.6] - 2026-10-12
+
+### Fixed
+
+- Continue observing a delivered Desktop task through bounded `read_thread` snapshots when the `wait_threads` renderer stops returning results after relay recovery. Preserve the original deadline, access checks, and authoritative reply validation without resending the prompt (#122, #123).
+- Keep native requests capped at 128 KiB while accepting responses up to 8 MiB on both relay hops. Reject larger responses explicitly, trim internal metadata reads, omit tool output from default transcript reads, and bound the serialized MCP read result (#123).
+- Identify failed rollout validation checks and record byte offsets in bounded diagnostics without exposing reply contents. Validation requirements remain unchanged; unsupported rollout sequences still fail closed pending concrete evidence (#123).
+
+### Upgrade notes
+
+- Update both the bridge and native relay companion. Default Desktop transcript reads omit tool outputs and cap each included item at 2,000 characters; use an exact `turnId` for authoritative assistant response inspection.
+- Native frames above 8 MiB, rollout files above 16 MiB, and authoritative replies above 1 MiB remain explicit limits.
+
 ## [1.21.5] - 2026-10-11
 
 ### Fixed

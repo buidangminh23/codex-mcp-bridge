@@ -39,7 +39,7 @@ import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-o
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.21.5";
+const VERSION = "1.21.6";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -875,8 +875,12 @@ registerTool(
           return textResult(JSON.stringify(response, null, 2), response.status === "unavailable");
         }
         await desktopTasks.inspect(threadId, undefined, { deadline });
-        const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10) }, { deadline });
-        return textResult(JSON.stringify(response, null, 2));
+        const response = await desktopTasks.request("read_thread", { threadId, hostId: "local", turnLimit: Math.min(limit ?? 10, 10), includeOutputs: false, maxOutputCharsPerItem: 2000 }, { deadline });
+        const result = textResult(JSON.stringify(response, null, 2));
+        if (Buffer.byteLength(JSON.stringify(result), "utf8") > 8 * 1024 * 1024) {
+          return textResult("DESKTOP_READ_RESPONSE_TOO_LARGE: The formatted Desktop read exceeds 8 MiB. Read fewer turns with limit: 1 or select a specific turnId.", true);
+        }
+        return result;
       }
       await assertThreadAccess(threadId);
       const res = await client.call("thread/read", { threadId, includeTurns: true });

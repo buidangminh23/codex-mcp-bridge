@@ -43,6 +43,17 @@ it("rejects segment changes and new continuations after the stable snapshot", (t
   assert.throws(() => assertRolloutSetStable(f.root, ID, snapshots), /segment changed/);
 });
 
+it("describes a missing rollout discovery without disclosing paths or unrelated task IDs", (t) => {
+  const f = fixture(t);
+  f.write(`rollout-private-unrelated-${SEGMENT}.jsonl`);
+  assert.throws(() => findRolloutSegments(f.root, ID), (error) => {
+    assert.match(error.message, /No rollout matches.*check=rollout_discovery; directoriesScanned=4; entriesScanned=4/);
+    assert.match(error.message, /layout=sessions\/YYYY\/MM\/DD/);
+    for (const secret of [f.root, ID, SEGMENT, "private-unrelated"]) assert.ok(!error.message.includes(secret));
+    return true;
+  });
+});
+
 it("bounds segment discovery and refuses matching directories", (t) => {
   const f = fixture(t);
   fs.mkdirSync(path.join(f.date, `${f.base}.jsonl`));

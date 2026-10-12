@@ -1,4 +1,4 @@
-# New-machine setup and initial permissions
+# New Windows setup and initial permissions
 
 This is a Windows local Desktop source-install guide, not evidence of testing
 on a second machine. Use a pinned source revision containing these scripts;

@@ -63,5 +63,5 @@ For workspace trust, shared project grants, and optional messaging automation,
 use [project onboarding](project-onboarding.md). For target selection,
 permission mismatches, and uncertain deliveries, use
 [daily Desktop handoffs](daily-handoffs.md) and the
-[technical reference](../REFERENCE.md). Tool discovery or a connected socket
+[technical reference](https://github.com/buidangminh23/codex-mcp-bridge/blob/main/REFERENCE.md). Tool discovery or a connected socket
 alone does not establish a completed exchange.

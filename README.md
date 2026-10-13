@@ -6,13 +6,16 @@
 
 Local Desktop handoff guides: [daily workflow and directory verification](docs/daily-handoffs.md), [Windows setup](docs/new-windows-setup.md), [macOS setup](docs/new-macos-setup.md), and [project onboarding](docs/project-onboarding.md).
 
-[![npm](https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&color=CB3837)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
-[![npm downloads](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads.svg)](https://www.npmjs.com/package/@minhspark/codex-mcp-bridge)
-[![npm downloads / month](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads-month.svg)](https://www.npmcharts.com/compare/%40minhspark%2Fcodex-mcp-bridge?minimal=true)
-[![Used by repositories (Libraries.io)](https://img.shields.io/librariesio/dependent-repos/npm/@minhspark/codex-mcp-bridge?label=Used%20by&logo=github&color=0969da)](https://github.com/buidangminh23/codex-mcp-bridge/network/dependents)
-[![skills.sh installs](https://skills.sh/b/buidangminh23/codex-mcp-bridge?label=skills.sh)](https://skills.sh/buidangminh23/codex-mcp-bridge/codex-bridge)
-[![GitHub views / source window](https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-github-views.svg)](https://buidangminh23.github.io/codex-mcp-bridge/)
-[![license](https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge)](LICENSE)
+<p align="center">
+  <a href="https://www.npmjs.com/package/@minhspark/codex-mcp-bridge"><img src="https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&amp;color=CB3837" height="24" alt="npm" /></a>
+  <a href="https://www.npmjs.com/package/@minhspark/codex-mcp-bridge"><img src="https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads.svg" height="24" alt="npm downloads" /></a>
+  <a href="https://www.npmcharts.com/compare/%40minhspark%2Fcodex-mcp-bridge?minimal=true"><img src="https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads-month.svg" height="24" alt="npm downloads / month" /></a>
+  <br />
+  <a href="https://github.com/buidangminh23/codex-mcp-bridge/network/dependents"><img src="https://img.shields.io/librariesio/dependent-repos/npm/@minhspark/codex-mcp-bridge?label=Used%20by&amp;logo=github&amp;color=0969da" height="24" alt="Used by repositories (Libraries.io)" /></a>
+  <a href="https://skills.sh/buidangminh23/codex-mcp-bridge/codex-bridge"><img src="https://skills.sh/b/buidangminh23/codex-mcp-bridge?label=skills.sh" height="24" alt="skills.sh installs" /></a>
+  <a href="https://buidangminh23.github.io/codex-mcp-bridge/"><img src="https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-github-views.svg" height="24" alt="GitHub views / source window" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge" height="24" alt="license" /></a>
+</p>
 
 Send prompts and replies between **Claude and Codex**, keeping each conversation in its own app. Supports Windows, macOS, and Linux; native Desktop integration supports Windows and macOS.
 

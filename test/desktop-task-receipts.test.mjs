@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs/promises";
+import { promises } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -30,6 +32,44 @@ it("preserves a replaced creation lock even when its token is copied", async () 
     await fs.writeFile(file, token);
   }), /lock changed/);
   assert.equal(await fs.readFile(file, "utf8"), token);
+});
+
+it("preserves replacement locks whose file IDs collide as Numbers", async (t) => {
+  const { store, key } = fixture();
+  await store.ensureDirectory(true);
+  const file = path.join(store.directory, `${key}.lock`);
+  const probe = await fs.open(path.join(store.directory, "probe"), "wx");
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const originalStat = prototype.stat;
+  const originalLstat = promises.lstat;
+  const ownedId = 9007199254740992n;
+  const replacementId = ownedId + 1n;
+  assert.equal(Number(ownedId), Number(replacementId));
+  const statMock = t.mock.method(prototype, "stat", async function (options) {
+    const info = await originalStat.call(this, options);
+    info.ino = options?.bigint ? ownedId : Number(ownedId);
+    return info;
+  });
+  const lstatMock = t.mock.method(promises, "lstat", async function (target, options) {
+    const info = await originalLstat.call(this, target, options);
+    if (target === file) info.ino = options?.bigint ? replacementId : Number(replacementId);
+    return info;
+  });
+  syncBuiltinESMExports();
+  let token;
+  try {
+    await assert.rejects(store.withLock(key, async () => {
+      token = await fs.readFile(file, "utf8");
+      await fs.rename(file, `${file}.original`);
+      await fs.writeFile(file, token);
+    }), /lock changed/);
+    assert.equal(await fs.readFile(file, "utf8"), token);
+  } finally {
+    statMock.mock.restore();
+    lstatMock.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 it("rejects receipt growth and disappearance during a bounded read", async (t) => {

@@ -76,23 +76,23 @@ export class DesktopTaskReceipts {
     const file = path.join(this.directory, `${key}.json`);
     let handle;
     try {
-      const info = await fs.lstat(file);
-      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw unsafeReceipt(key);
+      const info = await fs.lstat(file, { bigint: true });
+      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n) throw unsafeReceipt(key);
       handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      const opened = await handle.stat();
-      const fields = ["dev", "ino", "size", "mtimeMs", "ctimeMs"];
+      const opened = await handle.stat({ bigint: true });
+      const fields = ["dev", "ino", "size", "mtimeNs", "ctimeNs"];
       const matches = (left, right) => fields.every((field) => left[field] === right[field]);
-      if (!opened.isFile() || opened.nlink !== 1 || opened.size > 65536 || !matches(info, opened)) throw unsafeReceipt(key);
-      const data = Buffer.alloc(opened.size);
+      if (!opened.isFile() || opened.nlink !== 1n || opened.size > 65536n || !matches(info, opened)) throw unsafeReceipt(key);
+      const data = Buffer.alloc(Number(opened.size));
       let offset = 0;
       while (offset < data.length) {
         const { bytesRead } = await handle.read(data, offset, data.length - offset, offset);
         if (!bytesRead) throw unsafeReceipt(key);
         offset += bytesRead;
       }
-      const after = await handle.stat();
-      const current = await fs.lstat(file);
-      if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !matches(opened, after) || !matches(after, current)) throw unsafeReceipt(key);
+      const after = await handle.stat({ bigint: true });
+      const current = await fs.lstat(file, { bigint: true });
+      if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n || !matches(opened, after) || !matches(after, current)) throw unsafeReceipt(key);
       return validateReceipt(key, JSON.parse(data.toString("utf8")));
     } catch (err) {
       if (err.code === "ENOENT" && !handle) return null;
@@ -150,11 +150,11 @@ export class DesktopTaskReceipts {
       return await callback();
     } finally {
       try {
-        const owned = await handle.stat();
+        const owned = await handle.stat({ bigint: true });
         const data = Buffer.alloc(Buffer.byteLength(token));
         const { bytesRead } = await handle.read(data, 0, data.length, 0);
-        const current = await fs.lstat(file);
-        if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || owned.dev !== current.dev || owned.ino !== current.ino || owned.size !== data.length || current.size !== data.length || bytesRead !== data.length || data.toString("utf8") !== token) {
+        const current = await fs.lstat(file, { bigint: true });
+        if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n || owned.dev !== current.dev || owned.ino !== current.ino || owned.size !== BigInt(data.length) || current.size !== BigInt(data.length) || bytesRead !== data.length || data.toString("utf8") !== token) {
           throw new Error("Desktop task creation lock changed; inspect the existing task before repairing the lock");
         }
         await fs.unlink(file);

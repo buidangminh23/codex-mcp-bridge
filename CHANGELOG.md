@@ -4,6 +4,25 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.2] - 2026-10-13
+
+### Fixed
+
+- Preserve exact filesystem identities when checking Desktop creation locks and receipts. Large file IDs can collide when represented as JavaScript Numbers; BigInt stat values prevent a replaced lock with a copied token from being mistaken for the owned file.
+- Clarify the shared sending-tool guidance: agent-authored handoffs must identify their actual Codex or Claude author in the first line and use English throughout, including the header purpose, instructions, constraints, and reply format.
+- Require sufficient measured context, file boundaries, validation steps, and completion criteria for a receiving agent to act without guessing.
+
+### Verification
+
+- A deterministic regression uses two distinct file IDs above the safe integer limit. It fails against the previous implementation and passes with exact BigInt comparisons; the real filesystem replacement test remains enabled.
+- Full Node test suite on macOS: 1,276 passed, 23 skipped, zero failures. A clean archived checkout passed 1,268 tests with 23 skipped and zero failures; Git-dependent tests are not registered outside a Git checkout.
+
+### Upgrade notes
+
+- The handoff changes update prompt guidance, not automatic translation or payload validation. Verbatim user text and exact identifiers retain their original content.
+- The native host may still display its own generic attribution label. A sender header inside the prompt does not rename that label or alter permission checks. Cowork/Dispatch support is unchanged.
+- Reconnect the MCP client to load the updated tool descriptions; installing the package does not hot-reload an existing process.
+
 ## [1.22.1] - 2026-10-13
 
 ### Fixed

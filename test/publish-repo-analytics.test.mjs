@@ -40,6 +40,19 @@ test('dashboard escapes external text and renders all metric families without pr
   assert.ok(!JSON.stringify(files).includes('private-'));
 });
 
+test('all public badges intrinsically match flat badges without distorting their artwork', () => {
+  const files = publicFiles(history, usage);
+  const badges = Object.entries(files).filter(([name]) => name.startsWith('stats-'));
+  assert.equal(badges.length, 3);
+  for (const [name, svg] of badges) {
+    const dimensions = svg.match(/^<svg\b[^>]* width="([\d.]+)" height="([\d.]+)" viewBox="0 0 ([\d.]+) ([\d.]+)"/);
+    assert.ok(dimensions, `${name} declares intrinsic dimensions and a viewBox`);
+    const [width, height, viewWidth, viewHeight] = dimensions.slice(1).map(Number);
+    assert.equal(height, 20, `${name} matches standard flat badges under height:auto`);
+    assert.ok(Math.abs(width / height - viewWidth / viewHeight) < 1e-9, `${name} preserves its aspect ratio`);
+  }
+});
+
 test('first publication creates an isolated seven-file tree and analytics ref only', async () => {
   const calls = [];
   const gh = async (endpoint, options) => {
@@ -211,7 +224,7 @@ test('views badge retains the source period, count and collection time', () => {
   assert.match(svg, /aria-label="GitHub views \/ 1d: 20"/);
   assert.match(svg, /2026-09-14 to 2026-09-14 UTC/);
   assert.match(svg, /Source: 2026-09-15 12:00 UTC/);
-  assert.match(svg, /height="24"/);
+  assert.match(svg, /^<svg\b[^>]* height="20"/);
   assert.ok(!svg.includes('private-'));
 });
 

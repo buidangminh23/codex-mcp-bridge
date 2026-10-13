@@ -4,6 +4,21 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.1] - 2026-10-13
+
+### Fixed
+
+- Align the README badges in two centered rows. Render the three custom analytics badges at an intrinsic height of 20 pixels to match the standard flat badges even when GitHub overrides HTML height attributes. Scale both SVG dimensions together to preserve the artwork proportions.
+
+### Verification
+
+- Regression coverage checks the intrinsic height and aspect ratio of all three generated analytics badges. The existing analytics tests retain coverage for source dates, stale values, missing data, and aggregate privacy.
+- `npm test` passes from a clean archived checkout: 1,267 passed, 23 platform skips, and no failures. The Repository analytics workflow publishes the updated SVGs from the existing source data.
+
+### Upgrade notes
+
+- This release updates README presentation and the bundled analytics publisher. MCP behavior is unchanged; it does not add or validate a Desktop handoff feature. GitHub may cache badge images until its image proxy refreshes them.
+
 ## [1.22.0] - 2026-10-12
 
 ### Added

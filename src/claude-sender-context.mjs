@@ -265,6 +265,17 @@ function senderFailureCode(error) {
   return "UNAVAILABLE";
 }
 
+const METADATA_FAILURE_CODES = new Set(["METADATA_CHANGED", "FILE_LIMIT", "IDENTITY_LIMIT", "SCAN_LIMIT", "UNREADABLE_METADATA", "MISSING", "MISMATCH", "AMBIGUOUS", "UNAVAILABLE"]);
+const INSPECTION_FAILURE_CODES = new Set(["INSPECTOR_START_TIMEOUT", "INSPECTION_TIMEOUT", "OUTPUT_LIMIT", "ENOENT", "EACCES", "EPERM", "NATIVE_EXIT", "INVALID_JSON", "UNAVAILABLE"]);
+
+function safeSenderDiagnostic(diagnostic) {
+  if (!diagnostic || typeof diagnostic !== "object") return null;
+  const { stage, code } = diagnostic;
+  if (stage === "task_metadata" && (METADATA_FAILURE_CODES.has(code) || INSPECTION_FAILURE_CODES.has(code))) return { stage, code };
+  if (["session_registry", "process_inspection", "ancestry_validation"].includes(stage) && INSPECTION_FAILURE_CODES.has(code)) return { stage, code };
+  return null;
+}
+
 export async function readClaudeSenderContext({ account, parentPid = process.ppid, readAncestry = readProcessAncestry, listSessions = listClaudeSessions, readContext = readClaudeDesktopContext } = {}) {
   if (account?.status !== "verified" || !account.fingerprint) return senderResult("unavailable", "The calling Claude account is not verified.");
   let stage = "session_registry";
@@ -291,7 +302,12 @@ export async function readClaudeSenderContext({ account, parentPid = process.ppi
     if (session.processStart && session.processStart !== process.processStart) return senderResult("unavailable", "The calling Claude session's registered process identity changed.");
     stage = "task_metadata";
     const context = readContext(session, { account });
-    if (context.status !== "matched") return senderResult("unavailable", "The calling Claude Code session is not confirmed in the currently signed-in account.");
+    if (context.status !== "matched") {
+      const code = context.diagnostic?.stage === "task_metadata" && METADATA_FAILURE_CODES.has(context.diagnostic.code)
+        ? context.diagnostic.code
+        : ["missing", "mismatch", "ambiguous"].includes(context.status) ? context.status.toUpperCase() : "UNAVAILABLE";
+      return senderResult("unavailable", `The calling Claude Code session is not confirmed in the currently signed-in account. (${stage}:${code})`, { diagnostic: { stage, code } });
+    }
     return senderResult("verified", "The calling MCP process belongs to a live Claude Desktop Code session in the selected account.", {
       pid: session.pid, sessionId: session.sessionId, taskId: context.taskId, cwd: context.cwd,
       processStart: process.processStart, accountFingerprint: account.fingerprint,
@@ -307,6 +323,8 @@ export function requireClaudeSenderContext(sender) {
   if (sender?.status !== "verified") {
     const error = new Error(sender?.reason ?? "The calling Claude Desktop Code session is unverified.");
     error.code = "CLAUDE_SENDER_CONTEXT_UNVERIFIED";
+    const diagnostic = safeSenderDiagnostic(sender?.diagnostic);
+    if (diagnostic) error.diagnostic = diagnostic;
     throw error;
   }
   return sender;

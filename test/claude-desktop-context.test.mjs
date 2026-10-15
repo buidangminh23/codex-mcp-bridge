@@ -231,6 +231,50 @@ describe("Claude Desktop task identity", () => {
     assert.equal(resolve().status, "mismatch");
   });
 
+  it("restarts the complete identity snapshot after an unrelated task changes once", () => {
+    writeTask();
+    writeTask({ cliSessionId: OTHER_SESSION, bridgeSessionIds: [] }, { taskId: OTHER_TASK });
+    const original = fs.readdirSync;
+    let rootReads = 0;
+    mock.method(fs, "readdirSync", (...args) => {
+      if (args[0] === root && ++rootReads === 2) {
+        writeTask({ cliSessionId: OTHER_SESSION, bridgeSessionIds: [], title: "Updated unrelated task" }, { taskId: OTHER_TASK });
+      }
+      return original(...args);
+    });
+    assert.equal(resolve().status, "matched");
+    assert.equal(rootReads, 4);
+  });
+
+  it("bounds retries when unrelated metadata keeps changing", () => {
+    writeTask();
+    writeTask({ cliSessionId: OTHER_SESSION, bridgeSessionIds: [] }, { taskId: OTHER_TASK });
+    const original = fs.readdirSync;
+    let rootReads = 0;
+    mock.method(fs, "readdirSync", (...args) => {
+      if (args[0] === root && ++rootReads % 2 === 0) {
+        writeTask({ cliSessionId: OTHER_SESSION, bridgeSessionIds: [], title: `Update ${rootReads}` }, { taskId: OTHER_TASK });
+      }
+      return original(...args);
+    });
+    const actual = resolve();
+    assert.equal(actual.status, "mismatch");
+    assert.deepEqual(actual.diagnostic, { stage: "task_metadata", code: "METADATA_CHANGED" });
+    assert.equal(rootReads, 6);
+  });
+
+  it("rejects an archived sender after restarting a changed snapshot", () => {
+    writeTask();
+    const original = fs.readdirSync;
+    let rootReads = 0;
+    mock.method(fs, "readdirSync", (...args) => {
+      if (args[0] === root && ++rootReads === 2) writeTask({ isArchived: true });
+      return original(...args);
+    });
+    assert.equal(resolve().status, "mismatch");
+    assert.equal(rootReads, 4);
+  });
+
   /**
    * A same-size rewrite inside one filesystem timestamp tick leaves every stat
    * field unchanged, which is what made this detection flaky on Windows CI.
@@ -263,7 +307,7 @@ describe("Claude Desktop task identity", () => {
       if (args[0] === root && ++rootReads === 2) writeTask({}, { taskId: OTHER_TASK });
       return original(...args);
     });
-    assert.equal(resolve().status, "mismatch");
+    assert.equal(resolve().status, "ambiguous");
   });
 
   it("bounds metadata reads", () => {

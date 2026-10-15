@@ -309,4 +309,47 @@ describe("Claude Desktop caller account and process binding", () => {
     f.session.sessionId = "replacement-session";
     await assert.rejects(assertClaudeSenderContext(original, f.options), /changed while this operation/);
   });
+
+  it("preserves allowlisted metadata failures without exposing task metadata or changing the sender guard", async () => {
+    const f = fixture();
+    const original = requireClaudeSenderContext(await readClaudeSenderContext(f.options));
+    for (const code of ["METADATA_CHANGED", "FILE_LIMIT", "IDENTITY_LIMIT", "SCAN_LIMIT", "UNREADABLE_METADATA"]) {
+      const diagnostic = { stage: "task_metadata", code, token: "PRIVATE_TOKEN" };
+      const options = { ...f.options, readContext: () => ({ status: "mismatch", reason: "PRIVATE_METADATA", diagnostic }) };
+      const sender = await readClaudeSenderContext(options);
+      assert.equal(sender.status, "unavailable");
+      assert.equal(sender.sessionId, null);
+      assert.deepEqual(sender.diagnostic, { stage: "task_metadata", code });
+      assert.match(sender.reason, /currently signed-in account/);
+      assert.ok(sender.reason.includes(`task_metadata:${code}`));
+      assert.doesNotMatch(JSON.stringify(sender), /PRIVATE_/);
+      const checkError = (error) => {
+        assert.equal(error.code, "CLAUDE_SENDER_CONTEXT_UNVERIFIED");
+        assert.deepEqual(error.diagnostic, { stage: "task_metadata", code });
+        assert.doesNotMatch(JSON.stringify(error), /PRIVATE_/);
+        return true;
+      };
+      assert.throws(() => requireClaudeSenderContext(sender), checkError);
+      await assert.rejects(assertClaudeSenderContext(original, options), checkError);
+    }
+  });
+
+  it("uses safe metadata status codes when diagnostic fields are absent or untrusted", async () => {
+    const f = fixture();
+    for (const [status, code] of [["missing", "MISSING"], ["mismatch", "MISMATCH"], ["ambiguous", "AMBIGUOUS"], ["__proto__", "UNAVAILABLE"], ["PRIVATE_STATUS", "UNAVAILABLE"]]) {
+      for (const diagnostic of [undefined, { stage: "PRIVATE_STAGE", code: "FILE_LIMIT" }, { stage: "task_metadata", code: "PRIVATE_CODE" }]) {
+        const sender = await readClaudeSenderContext({ ...f.options, readContext: () => ({ status, diagnostic, reason: "PRIVATE_REASON" }) });
+        assert.equal(sender.status, "unavailable");
+        assert.deepEqual(sender.diagnostic, { stage: "task_metadata", code });
+        assert.doesNotMatch(JSON.stringify(sender), /PRIVATE_|__proto__/);
+      }
+    }
+    for (const diagnostic of [{ stage: "PRIVATE_STAGE", code: "MISSING" }, { stage: "task_metadata", code: "PRIVATE_CODE" }]) {
+      assert.throws(() => requireClaudeSenderContext({ status: "unavailable", diagnostic }), (error) => {
+        assert.equal(error.code, "CLAUDE_SENDER_CONTEXT_UNVERIFIED");
+        assert.equal(error.diagnostic, undefined);
+        return true;
+      });
+    }
+  });
 });

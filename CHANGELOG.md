@@ -4,6 +4,22 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.3] - 2026-10-15
+
+### Fixed
+
+- Retry the complete Claude Desktop identity snapshot up to three times when task metadata changes during inspection. An unrelated active chat updating its metadata no longer causes an immediate sender rejection; persistent changes, conflicting identities, archived tasks, and invalid metadata still fail closed.
+- Include bounded metadata diagnostic codes in sender-verification failures instead of discarding the underlying failure category behind a generic account message. Diagnostics exclude task contents and untrusted error text.
+
+### Verification
+
+- Regression tests reproduce a one-time unrelated metadata update, persistent updates, archive changes, duplicate identities, and diagnostic sanitization.
+- A live Windows check from the originally affected Claude Code session completed two reads, one diagnostic send to its existing Codex task, and reply observation through the returned delivery receipt. The exact diagnostic reply was verified in the destination task.
+
+### Upgrade notes
+
+- Existing supervisors load the updated source when safe. Shared Desktop MCP entries still cannot identify a Code task's process ancestry; use the per-Code bridge registration. The repair does not resend earlier work or weaken account, process, or project checks.
+
 ## [1.22.2] - 2026-10-13
 
 ### Fixed

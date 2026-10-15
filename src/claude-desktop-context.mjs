@@ -132,7 +132,14 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
   try {
     const directory = root ?? (account ? path.join(account.root, "claude-code-sessions") : sessionsRoot(platform, env));
     if (!fs.existsSync(directory)) return result("missing", "Claude Desktop task metadata is not available on this host.");
-    records = readClaudeDesktopTasks({ platform, env, root, account });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        records = readClaudeDesktopTasks({ platform, env, root, account });
+        break;
+      } catch (error) {
+        if (error.message !== "metadata changed" || attempt === 2) throw error;
+      }
+    }
   } catch (error) {
     const detail = {
       "file limit": " A task metadata file exceeds the 4 MiB per-file limit.",
@@ -140,7 +147,13 @@ export function readClaudeDesktopContext(session, { platform = process.platform,
       "scan limit": " The task directory exceeds the 8192-entry scan limit.",
       "metadata changed": " Task metadata changed during inspection; retry discovery.",
     }[error.message] ?? "";
-    return result("mismatch", `Claude Desktop task metadata could not be read completely and consistently; no task identity is confirmed.${detail}`);
+    const code = {
+      "file limit": "FILE_LIMIT",
+      "identity limit": "IDENTITY_LIMIT",
+      "scan limit": "SCAN_LIMIT",
+      "metadata changed": "METADATA_CHANGED",
+    }[error.message] ?? "UNREADABLE_METADATA";
+    return { ...result("mismatch", `Claude Desktop task metadata could not be read completely and consistently; no task identity is confirmed.${detail}`), diagnostic: { stage: "task_metadata", code } };
   }
 
   const primary = records.filter((record) => record.cliSessionId === session.sessionId);

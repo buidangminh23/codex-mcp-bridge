@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-10-16T12:27:13.818Z",
+  "updatedAt": "2026-10-16T17:25:47.975Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -14514,7 +14514,7 @@
       }
     },
     {
-      "collectedAt": "2026-10-16T12:27:13.818Z",
+      "collectedAt": "2026-10-16T17:25:47.975Z",
       "views": {
         "count": 337,
         "uniques": 85,
@@ -14668,7 +14668,7 @@
         ]
       },
       "repository": {
-        "stars": 25,
+        "stars": 26,
         "forks": 11,
         "subscribers": 0
       },
@@ -15104,11 +15104,11 @@
         }
       ],
       "sourceCollectedAt": {
-        "views": "2026-10-16T12:27:13.818Z",
-        "clones": "2026-10-16T12:27:13.818Z",
-        "npm": "2026-10-16T12:27:13.818Z",
-        "repository": "2026-10-16T12:27:13.818Z",
-        "releases": "2026-10-16T12:27:13.818Z"
+        "views": "2026-10-16T17:25:47.975Z",
+        "clones": "2026-10-16T17:25:47.975Z",
+        "npm": "2026-10-16T17:25:47.975Z",
+        "repository": "2026-10-16T17:25:47.975Z",
+        "releases": "2026-10-16T17:25:47.975Z"
       }
     }
   ],
@@ -15672,7 +15672,7 @@
     }
   },
   "usage": {
-    "collectedAt": "2026-10-16T12:27:15Z",
+    "collectedAt": "2026-10-16T17:25:50Z",
     "active": {
       "day": 0,
       "week": 0,

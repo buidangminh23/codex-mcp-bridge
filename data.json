@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-10-17T13:44:31.824Z",
+  "updatedAt": "2026-10-17T17:12:12.498Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -15112,7 +15112,7 @@
       }
     },
     {
-      "collectedAt": "2026-10-17T13:44:31.824Z",
+      "collectedAt": "2026-10-17T17:12:12.498Z",
       "views": {
         "count": 330,
         "uniques": 88,
@@ -15439,7 +15439,7 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.3.zip",
-              "downloads": 1
+              "downloads": 2
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.3.zip.sha256",
@@ -15491,7 +15491,7 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.20.1.zip",
-              "downloads": 3
+              "downloads": 4
             },
             {
               "name": "codex-mcp-bridge-plugin-1.20.1.zip.sha256",
@@ -15702,11 +15702,11 @@
         }
       ],
       "sourceCollectedAt": {
-        "views": "2026-10-17T13:44:31.824Z",
-        "clones": "2026-10-17T13:44:31.824Z",
-        "npm": "2026-10-17T13:44:31.824Z",
-        "repository": "2026-10-17T13:44:31.824Z",
-        "releases": "2026-10-17T13:44:31.824Z"
+        "views": "2026-10-17T17:12:12.498Z",
+        "clones": "2026-10-17T17:12:12.498Z",
+        "npm": "2026-10-17T17:12:12.498Z",
+        "repository": "2026-10-17T17:12:12.498Z",
+        "releases": "2026-10-17T17:12:12.498Z"
       }
     }
   ],
@@ -16278,7 +16278,7 @@
     }
   },
   "usage": {
-    "collectedAt": "2026-10-17T13:44:34Z",
+    "collectedAt": "2026-10-17T17:12:14Z",
     "active": {
       "day": 0,
       "week": 0,

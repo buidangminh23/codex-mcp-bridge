@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.5] - 2026-10-19
+
 ### Fixed
 
 - Persist confirmed Desktop send acceptance in the original owner-bound receipt so a later wait or MCP restart does not revert it to unconfirmed.
@@ -11,6 +13,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Include the advertised peer name in Claude's supported message envelope so the native recipient can identify the sender instead of showing an unnamed session. Codex Desktop's fixed sender badge remains controlled by the host; author headers identify the actual collaborator without impersonating user input.
 - Follow verified native Claude compaction continuations when correlating an outstanding peer reply, while retaining interruption and identity checks.
 - Return an unavailable reply at the observation deadline without losing accepted delivery state; continue rejecting identity and permission failures even when they occur after that deadline.
+
+### Verification
+
+- The receipt fixes passed the full CI matrix on Windows, macOS and Linux with Node 22 and 24, including restart, compaction and deadline-boundary regressions.
+- Live Desktop peer exchanges confirmed both directions, durable acceptance and recovery of a historical final response. Project authorization remained unchanged.
+
+### Upgrade notes
+
+- A worker with an unresolved peer receipt can defer automatic reload. Verify the loaded version from the actual MCP after reconnecting; retain the original receipt and inspect the existing conversation before any follow-up.
+- Native sender labels remain host-controlled. Claude can display the advertised peer name; Codex retains its native cross-chat label alongside the actual author header. This release does not add Cowork or Dispatch connectivity.
 
 ## [1.22.4] - 2026-10-19
 

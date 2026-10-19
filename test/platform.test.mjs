@@ -317,6 +317,8 @@ describe("workspace resolution", () => {
         path.join(first, "in-both"),
         "the configured order decides, not the filesystem",
       );
+      assert.throws(() => resolveWorkspacePath("/Volumes/Shared/in-both", { requireUnique: true }), /Multiple usable workspace/);
+      assert.equal(resolveWorkspacePath("/Volumes/Shared/only-here", { requireUnique: true }).path, path.join(second, "only-here"));
     } finally {
       delete process.env.CODEX_BRIDGE_WORKSPACE_ROOTS;
     }

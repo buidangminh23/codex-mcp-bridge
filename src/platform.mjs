@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, readdirSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -338,7 +338,7 @@ function remapCandidates(input) {
  * checkout is unavailable locally. UNC shares are tried after local remap
  * candidates so a disconnected network location cannot stall the bridge.
  */
-export function resolveWorkspacePath(input) {
+export function resolveWorkspacePath(input, { requireUnique = false } = {}) {
   if (!input) return { path: input, remapped: false, writable: false, note: null };
   const original = input;
   const mapped = pathMapCandidates(input);
@@ -348,7 +348,11 @@ export function resolveWorkspacePath(input) {
     : [...mapped, input, ...remapped];
   const ordered = candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
 
-  const writable = ordered.find((candidate) => existsSync(candidate) && isWritableDir(candidate));
+  const usable = requireUnique ? ordered.filter((candidate) => existsSync(candidate) && isWritableDir(candidate)) : null;
+  if (usable && new Set(usable.map(candidate => realpathSync.native(candidate))).size > 1) {
+    throw new Error("Multiple usable workspace directories match; select an unambiguous project path");
+  }
+  const writable = usable ? usable[0] : ordered.find((candidate) => existsSync(candidate) && isWritableDir(candidate));
   if (writable) {
     return {
       path: path.resolve(writable),

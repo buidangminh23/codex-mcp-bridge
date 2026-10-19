@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { ClaudeSessionCreation } from "../src/claude-session-creation.mjs";
 import { createProjectScope, editProjectGrant, updateProjectPolicy } from "../src/project-policy.mjs";
+import { discoverClaudeProject } from "../src/claude-project-discovery.mjs";
 
 const id = "c264a6f1-0945-47b1-b3c1-810bf4f33312";
 const secondId = "c264a6f1-0945-47b1-b3c1-810bf4f33313";
@@ -36,6 +37,103 @@ function fixture(overrides = {}) {
 
 async function blocked(promise, code) {
   await assert.rejects(promise, (error) => error.code === code);
+}
+
+function relocatedFixture(t, phase, mutation) {
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "creation-project-source-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const original = path.join(root, "previous");
+  const current = path.join(root, "current");
+  const alternate = path.join(root, "alternate");
+  fs.mkdirSync(original);
+  fs.mkdirSync(alternate);
+  const file = path.join(root, "policy.json");
+  const edit = (action, directory) => updateProjectPolicy(file, policy => editProjectGrant(policy, action, directory));
+  edit("allow-project", original);
+  fs.renameSync(original, current);
+  edit("allow-project", current);
+  edit("allow-project", alternate);
+  const policy = createProjectScope(file);
+  let destination = current;
+  let changed = false;
+  const effects = [];
+  const change = () => {
+    if (changed) return;
+    changed = true;
+    if (mutation === "revoke") edit("revoke", original);
+    if (mutation === "archive") f.state.tasks[0].isArchived = true;
+    if (mutation === "remap") destination = alternate;
+  };
+  const f = fixture({
+    platform: process.platform,
+    realpath: async directory => fs.realpathSync.native(directory),
+    resolveProject: async task => discoverClaudeProject(task, {
+      policy,
+      resolveWorkspace: () => ({ path: destination, remapped: true, writable: true }),
+    })?.cwd ?? null,
+    open: async () => {
+      effects.push("open");
+      if (phase === "after_open") change();
+    },
+    trust: async () => {
+      effects.push("trust");
+      if (phase === "after_trust") change();
+      return { status: "trusted" };
+    },
+    submit: async ({ beforeSubmit }) => {
+      effects.push("submit_callback");
+      if (phase === "submit_callback") change();
+      await beforeSubmit();
+      effects.push("send");
+      return { status: "submitted" };
+    },
+  });
+  f.state.tasks = [{ taskId: "old-task", fileTaskId: "old-task", cwd: original, isArchived: false }];
+  const beforeOpen = async () => {
+    if (phase === "before_trust" && effects.includes("open")) change();
+  };
+  return { ...f, current, original, effects, change, beforeOpen };
+}
+
+for (const phase of ["after_open", "before_trust", "after_trust", "submit_callback"]) {
+  for (const mutation of ["revoke", "archive", "remap"]) {
+    it(`revalidates saved project source across lifecycle: ${phase}/${mutation}`, async t => {
+      const f = relocatedFixture(t, phase, mutation);
+      const operation = f.creation.start({ ...args, cwd: f.current, autoSubmit: true, trustProject: true, beforeOpen: f.beforeOpen });
+      if (phase === "submit_callback") {
+        const receipt = await operation;
+        assert.equal(receipt.status, "submission_uncertain");
+        assert.equal(receipt.promptSubmitted, false);
+        assert.deepEqual(f.effects, ["open", "trust", "submit_callback"]);
+        assert.deepEqual(await f.creation.start({ ...args, cwd: f.current, autoSubmit: true, trustProject: true }), receipt);
+      } else {
+        await blocked(operation, "CLAUDE_CREATION_PROJECT_NOT_FOUND");
+        assert.deepEqual(f.effects, phase === "after_trust" ? ["open", "trust"] : ["open"]);
+        assert.equal(f.creation.exportState().requests[0].submissionAttempted, undefined);
+      }
+      assert.equal(f.effects.includes("send"), false);
+      assert.equal(f.effects.filter(effect => effect === "open").length, 1);
+    });
+  }
+}
+
+for (const mutation of ["revoke", "archive", "remap"]) {
+  it(`revalidates saved project source on restored pending retry: ${mutation}`, async t => {
+    const f = relocatedFixture(t, "restored", mutation);
+    const pending = await f.creation.start({ ...args, cwd: f.current });
+    assert.equal(pending.status, "awaiting_user");
+    const saved = f.creation.exportState();
+    const expectedSource = { taskId: "old-task", fileTaskId: "old-task", cwd: f.original };
+    assert.deepEqual(saved.requests[0].projectSource, expectedSource);
+    const restored = new ClaudeSessionCreation(f.dependencies);
+    restored.restoreState(saved);
+    saved.requests[0].projectSource.cwd = f.current;
+    assert.deepEqual(restored.exportState().requests[0].projectSource, expectedSource);
+    f.change();
+    await blocked(restored.start({ ...args, cwd: f.current, autoSubmit: true, trustProject: true }), "CLAUDE_CREATION_PROJECT_NOT_FOUND");
+    assert.deepEqual(f.effects, ["open"]);
+    assert.equal(restored.exportState().requests[0].submissionAttempted, undefined);
+  });
 }
 
 for (const phase of ["open", "trust", "submit", "composer"]) {
@@ -101,7 +199,77 @@ for (const phase of ["open", "trust", "submit", "composer"]) {
   }
 }
 
+for (const phase of ["before_open", "after_open"]) {
+  it(`retains creation root bindings only for retained requests after ${phase} failure`, async t => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "creation-retained-binding-")));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const cwd = path.join(root, "project");
+    fs.mkdirSync(cwd);
+    const policyFile = path.join(root, "policy.json");
+    updateProjectPolicy(policyFile, policy => editProjectGrant(policy, "allow-project", cwd));
+    const rootPolicy = createProjectScope(policyFile);
+    const bindings = new Map();
+    const sender = { cwd, threadId: "sender-a", status: "verified" };
+    const f = fixture({
+      platform: process.platform,
+      listTasks: async () => [{ taskId: "old-task", cwd, isArchived: false }],
+      realpath: async directory => fs.realpathSync.native(directory),
+      open: async url => {
+        f.state.opened.push(url);
+        f.state.account = { ...account, fingerprint: "account-b" };
+      },
+      submit: async () => assert.fail("The failed creation must not submit"),
+    });
+    const source = fs.readFileSync(new URL("../src/claude-bridge.mjs", import.meta.url), "utf8");
+    const implementation = source.slice(source.indexOf("function assertCreationRoots("), source.indexOf("function forwardToCodexThread("));
+    const names = ["runtime", "desktopOnly", "assertSender", "readBridgeAccounts", "requireBridgeAccounts", "rootPolicy", "creations", "creationRootBindings", "assertAccountIdentity", "recheckScopeBindings", "textResult"];
+    const api = new Function(...names, implementation + "\nreturn { startClaudeCreation, inspectClaudeCreation };")(
+      { assertCurrent() {} }, true, async () => sender, () => ({ claude: f.state.account }), value => value,
+      rootPolicy, f.creation, bindings,
+      () => { if (phase === "before_open") throw Error("account changed before open"); },
+      value => { rootPolicy.recheck(value?.sender); rootPolicy.recheck(value?.recipient); },
+      value => ({ content: [{ type: "text", text: value }] }),
+    );
+    await assert.rejects(api.startClaudeCreation({ requestId: id, cwd, prompt: args.prompt, autoSubmit: true }, {}), /account changed/i);
+    assert.equal(f.creation.requests.has(id), phase === "after_open");
+    assert.equal(bindings.has(id), phase === "after_open");
+    assert.equal(f.state.opened.length, phase === "after_open" ? 1 : 0);
+    if (phase === "after_open") {
+      f.state.account = account;
+      const originalBinding = bindings.get(id);
+      const inspected = await api.inspectClaudeCreation(id, {});
+      assert.equal(inspected.structuredContent.creation.requestId, id);
+      await api.startClaudeCreation({ requestId: id, cwd, prompt: args.prompt, autoSubmit: false }, {});
+      assert.equal(bindings.get(id), originalBinding);
+      assert.equal(f.state.opened.length, 1);
+    }
+  });
+}
+
 describe("Claude native new session lifecycle", () => {
+  it("uses a relocated project hint only for creation and retains the original task baseline", async () => {
+    const { creation, state, connect } = fixture({
+      resolveProject: async task => task.cwd === "/missing" ? "/project" : task.cwd,
+    });
+    state.tasks[0].cwd = "/missing";
+    await creation.start(args);
+    assert.equal(new URL(state.opened[0]).searchParams.get("folder"), "/project");
+    assert.equal(state.tasks[0].cwd, "/missing");
+    connect("old-task", "old-cli");
+    assert.notEqual((await creation.inspect(id, args)).status, "created");
+    state.sessions = [];
+    connect();
+    assert.equal((await creation.inspect(id, args)).status, "created");
+  });
+
+  it("rejects relocated hints for a different target and rechecks before opening", async () => {
+    let lookups = 0;
+    const { creation, state } = fixture({ resolveProject: async () => ++lookups === 1 ? "/project" : "/elsewhere" });
+    state.tasks[0].cwd = "/missing";
+    await blocked(creation.start(args), "CLAUDE_CREATION_PROJECT_NOT_FOUND");
+    assert.equal(state.opened.length, 0);
+  });
+
   it("awaits sender revalidation before opening and before automatic trust or submission", async () => {
     let checked = 0;
     const { creation, state } = fixture({

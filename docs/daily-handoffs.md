@@ -45,6 +45,14 @@ message and does not establish a native sender label. If a handoff requires the
 recipient's peer sender attribution, use `send_to_claude_session` with a verified
 live task. Do not substitute composer submission or a text header for that route.
 
+Peer messages include the bridge's advertised name through Claude's supported
+`from-name` envelope field. Claude determines the native wording and verifies
+the peer; the bridge does not set trusted-origin flags. Codex Desktop currently
+uses its own fixed `Sent by ... from another chat` label and exposes no sender-name
+override. Keep the actual `[From Claude ...]` or `[From Codex ...]` author header
+in the message. A body header does not rename a native badge, and applications'
+private data must not be patched to make that claim.
+
 If a link was already opened, retain its requestId and inspect its receipt.
 `promptSubmitted=false` with `submissionStatus=not_observed` means submission
 was not verified, not that nothing was delivered. A wrong-directory task can
@@ -68,6 +76,12 @@ new task, account, process, prompt and directory to match.
    deliveryId. For Codex-to-Claude, retain the original msgId and inspect its
    receipt. An unconfirmed acknowledgement is not proof of delivery; observe
    the original receipt instead of resending an uncertain task.
+   Confirmed native acceptance is retained across reconnects. A message injected
+   into an active Codex turn can return that turn's final answer with
+   `responseScope: same_turn_final`; it may cover other peer messages in that
+   turn. The exact dispatch must occur after the saved watermark, and commentary
+   alone is never a final reply. Receipt observation resolves that exact dispatch
+   even after newer turns start; it does not substitute the latest turn's answer.
 5. An `interrupted` receipt ends observation only: task outcome is unknown and
    background work may continue. Inspect the existing task before a scoped
    follow-up; do not repeat card creation or file operations.

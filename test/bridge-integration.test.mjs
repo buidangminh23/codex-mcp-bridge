@@ -282,14 +282,22 @@ describe("Desktop task MCP integration", () => {
         if (resume) {
           assert.equal(sentResult.isError, undefined, JSON.stringify(sentResult));
           assert.equal(sentResult.structuredContent.deliveryStatus, ["lost-ack", "creation-lost-ack"].includes(resume) ? "unconfirmed" : "accepted");
+          assert.match(sentResult.content[0].text, new RegExp(`deliveryStatus: ${sentResult.structuredContent.deliveryStatus}`));
           assert.equal(sentResult.structuredContent.status, "timeout");
           assert.equal(sentResult.structuredContent.nextAction, "wait_codex_reply");
           const { deliveryId } = sentResult.structuredContent;
           assert.ok(deliveryId);
           await client.close();
-          completed = true;
           const restarted = await additionalBridgeProcess({ home, env });
           try {
+            if (resume === true) {
+              const pending = await restarted.client.callTool({ name: "wait_codex_reply", arguments: { deliveryId, timeoutSec: 10 } });
+              assert.equal(pending.isError, undefined, JSON.stringify(pending));
+              assert.equal(pending.structuredContent.deliveryStatus, "accepted");
+              assert.match(pending.content[0].text, /deliveryStatus: accepted/);
+              assert.equal(pending.structuredContent.nextAction, "wait_codex_reply");
+            }
+            completed = true;
             sentResult = await restarted.client.callTool({ name: "wait_codex_reply", arguments: { deliveryId } });
             assert.equal(sentResult.structuredContent.deliveryId, deliveryId);
             assert.equal(sentResult.structuredContent.nextAction, "none");
@@ -321,11 +329,20 @@ describe("Desktop task MCP integration", () => {
         fs.mkdirSync(directory, { recursive: true });
         const rollout = path.join(directory, `rollout-2026-09-09T11-44-55-${threadId}.jsonl`);
         const append = (record) => fs.appendFileSync(rollout, `${JSON.stringify(record)}\n`);
+        let completionRecorded = false;
+        const completeTurn = () => {
+          if (!sent || !completed || completionRecorded) return;
+          append({ type: "event_msg", payload: { type: "item_completed", thread_id: threadId, turn_id: turnId, item: { type: "AgentMessage", id: itemId, content: [{ type: "Text", text: reply }], phase: "final_answer" } } });
+          append({ type: "response_item", payload: { type: "message", id: itemId, role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: reply }], internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
+          append({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId } });
+          completionRecorded = true;
+        };
         append({ type: "session_meta", payload: { id: threadId, originator: "Codex Desktop", source: "vscode", cwd: home } });
         relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: executorThreadId }), dispatchDesktop: async ({ operation, arguments: args }) => {
           calls.push(operation);
+          completeTurn();
           let result;
-          if (operation === "read_thread") result = { thread: { id: threadId, hostId: "local", cwd: home }, turns: [{ id: sent ? turnId : previousTurnId, status: sent ? "completed" : "completed" }] };
+          if (operation === "read_thread") result = { thread: { id: threadId, hostId: "local", cwd: home }, turns: [{ id: sent ? turnId : previousTurnId, status: !sent || completed ? "completed" : "inProgress" }] };
           else if (operation === "list_projects" && String(resume).startsWith("creation")) result = { projects: [{ projectId: "fixture-project", projectKind: "local", hostId: "local", path: home }] };
           else if (operation === "send_message_to_thread" || operation === "create_thread" && String(resume).startsWith("creation")) {
             if (resume === "creation-lost-ack") await new Promise(resolve => setTimeout(resolve, 11000));
@@ -333,9 +350,7 @@ describe("Desktop task MCP integration", () => {
             append({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } });
             append({ type: "turn_context", payload: { turn_id: turnId, cwd: home } });
             append({ type: "response_item", payload: { type: "function_call_output", id: randomUUID(), namespace: "codex_app", name: operation, output: `<codex_delegation>\n  <source_thread_id>${executorThreadId}</source_thread_id>\n  <input>${prompt}</input>\n</codex_delegation>`, internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
-            append({ type: "event_msg", payload: { type: "item_completed", thread_id: threadId, turn_id: turnId, item: { type: "AgentMessage", id: itemId, content: [{ type: "Text", text: reply }], phase: "final_answer" } } });
-            append({ type: "response_item", payload: { type: "message", id: itemId, role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: reply }], internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
-            append({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId } });
+            completeTurn();
             if (resume === "lost-ack") await new Promise((resolve) => setTimeout(resolve, 11000));
             result = { threadId, hostId: "local", status: "accepted", firstTurn: { status: "accepted" } };
           } else if (operation === "wait_threads") result = { polls: [{ thread: { id: threadId, hostId: "local", status: { type: completed ? "idle" : "active" } }, latestTurn: { id: turnId, status: completed ? "completed" : "inProgress" }, latestAssistantMessage: { turnId: previousTurnId, phase: "final_answer", text: "must not be used" } }] };

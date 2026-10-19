@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { scanRollout } from "./rollout-reader.mjs";
 import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable } from "./rollout-segments.mjs";
 
@@ -81,20 +82,22 @@ function samePathBoundary(expected, current) {
       entry.path === current.ancestors[index].path && entry.dev === current.ancestors[index].dev && entry.ino === current.ancestors[index].ino);
 }
 
-function readStable(found, maxBytes, { threadId, turnId, afterOffset = 0, prefixSize } = {}) {
+function readStable(found, maxBytes, { threadId, turnId, afterOffset = 0, prefixSize, dispatchOutputs, dispatchAfterOffset = afterOffset } = {}) {
   for (let attempt = 0; ; attempt++) {
-    try { return readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize }); }
+    try { return readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize, dispatchOutputs, dispatchAfterOffset }); }
     catch (error) {
       if (attempt >= 2 || !/changed while (reading|opening)|incomplete final record/.test(error.message)) throw error;
     }
   }
 }
 
-function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize }) {
+function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize, dispatchOutputs, dispatchAfterOffset }) {
   const { file, sessions } = found;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ROLLOUT_BYTES) throw new Error("The Codex rollout read limit is invalid");
   const beforeBoundary = capturePathBoundary(file, sessions);
   const records = [];
+  const dispatches = [];
+  const otherTurnStarts = [];
   const digest = crypto.createHash("sha256");
   let session, latestContext, retainedBytes = 0, turnBeforeWatermark = false;
   const snapshot = scanRollout(file, {
@@ -111,6 +114,19 @@ function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefix
       }
       if (record.type === "turn_context") latestContext = record.payload;
       const entry = { record, start };
+      if (start >= dispatchAfterOffset && dispatchOutputs && record.type === "response_item" && record.payload.type === "function_call_output" &&
+          record.payload.namespace === "codex_app" && record.payload.name === "send_message_to_thread" && dispatchOutputs.includes(record.payload.output)) {
+        const metadata = record.payload.internal_chat_message_metadata_passthrough;
+        const selectedTurnId = record.payload.turn_id ?? record.payload.root_turn_id ?? metadata?.turn_id ?? metadata?.root_turn_id;
+        if (!UUID.test(selectedTurnId) || !recordBelongsToTurn(entry, threadId, selectedTurnId)) throw new Error("The native dispatch has no consistent turn identity");
+        dispatches.push({ turnId: selectedTurnId, start });
+        if (dispatches.length > 1) throw new Error("Multiple post-send native dispatches match the reply receipt");
+      }
+      if (turnId && start >= afterOffset && (record.type === "turn_context" || record.type === "event_msg" && STARTED.has(record.payload.type)) &&
+          !recordBelongsToTurn(entry, threadId, turnId)) {
+        otherTurnStarts.push(start);
+        if (otherTurnStarts.length > 65536) throw new Error("The native turn boundary count exceeds its read limit");
+      }
       if (turnId && recordBelongsToTurn(entry, threadId, turnId)) {
         if (start < afterOffset) { turnBeforeWatermark = true; return; }
         retainedBytes += bytes;
@@ -123,7 +139,7 @@ function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefix
   if (!samePathBoundary(beforeBoundary, afterBoundary) || snapshot.identity.dev !== beforeBoundary.file.dev || snapshot.identity.ino !== beforeBoundary.file.ino) {
     throw new Error("The Codex rollout changed while reading");
   }
-  return { ...snapshot, file, sessions, records, retainedBytes, session, latestContext, turnBeforeWatermark, prefixSha256: digest.digest("hex") };
+  return { ...snapshot, file, sessions, records, dispatches, otherTurnStarts, retainedBytes, session, latestContext, turnBeforeWatermark, prefixSha256: digest.digest("hex") };
 }
 
 function canonicalDirectory(value, label) {
@@ -209,10 +225,11 @@ function completedMemoryCitation(item) {
       !Number.isSafeInteger(entry.lineStart) || entry.lineStart < 1 || !Number.isSafeInteger(entry.lineEnd) || entry.lineEnd < entry.lineStart) ||
       citation.rolloutIds.some((id) => typeof id !== "string" || !UUID.test(id))) return null;
   const entries = citation.entries.map((entry) => `${entry.path}:${entry.lineStart}-${entry.lineEnd}|note=[${entry.note}]`).join("\n");
-  return `<oai-mem-citation>\n<citation_entries>\n${entries}\n</citation_entries>\n<rollout_ids>\n${citation.rolloutIds.join("\n")}\n</rollout_ids>\n</oai-mem-citation>`;
+  const rolloutIds = citation.rolloutIds.join("\n");
+  return `<oai-mem-citation>\n<citation_entries>\n${entries ? `${entries}\n` : ""}</citation_entries>\n<rollout_ids>\n${rolloutIds ? `${rolloutIds}\n` : ""}</rollout_ids>\n</oai-mem-citation>`;
 }
 
-function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch } = {}) {
+function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch, otherTurnStarts = [] } = {}) {
   const turns = records.filter((entry) => recordBelongsToTurn(entry, threadId, turnId));
   const starts = turns.filter(({ record }) => record.type === "event_msg" && STARTED.has(record.payload.type));
   const contexts = turns.filter(({ record }) => record.type === "turn_context");
@@ -222,26 +239,39 @@ function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch } 
   const lifecycleError = (check, fields) => validationError("The native turn lifecycle is missing, ambiguous, failed, or out of order", check, fields);
   if (failures.length) throw lifecycleError("lifecycle_failure", { count: failures.length, eventBytes: recordOffsets(failures) });
   for (const [kind, entries] of [["start", starts], ["context", contexts], ["completion", completions]]) {
-    if (entries.length !== 1) throw lifecycleError(`lifecycle_${kind}_count`, { count: entries.length, recordBytes: recordOffsets(entries) });
+    if (entries.length !== 1 && (kind !== "context" || !entries.length)) throw lifecycleError(`lifecycle_${kind}_count`, { count: entries.length, recordBytes: recordOffsets(entries) });
+  }
+  if (contexts.some((entry) => !isDeepStrictEqual(entry.record.payload, contexts[0].record.payload))) {
+    throw lifecycleError("lifecycle_context_changed", { count: contexts.length, recordBytes: recordOffsets(contexts) });
   }
   if (canonicalDirectory(contexts[0].record.payload.cwd, "The observed turn workspace") !== cwd) {
     throw lifecycleError("lifecycle_workspace", { contextByte: contexts[0].start });
   }
-  if (starts[0].start >= contexts[0].start || contexts[0].start >= completions[0].start) {
+  if (contexts.some((entry) => starts[0].start >= entry.start || entry.start >= completions[0].start)) {
     throw lifecycleError("lifecycle_order", { startByte: starts[0].start, contextByte: contexts[0].start, completionByte: completions[0].start });
   }
 
   let dispatch = null;
   if (requireDispatch) {
     const dispatches = turns.filter(({ record }) => record.type === "response_item" && record.payload.type === "function_call_output" &&
-      record.payload.namespace === "codex_app" && record.payload.name === (requireDispatch.operation ?? "send_message_to_thread"));
-    if (dispatches.length !== 1 || !requireDispatch.outputs.includes(dispatches[0].record.payload.output) ||
+      record.payload.namespace === "codex_app" && record.payload.name === (requireDispatch.operation ?? "send_message_to_thread") &&
+      (!requireDispatch.existingTurn || requireDispatch.outputs.includes(record.payload.output)));
+    if (dispatches.length !== 1 || !requireDispatch.outputs.includes(dispatches[0].record.payload.output) || dispatches[0].start < (requireDispatch.afterOffset ?? 0) ||
+        (requireDispatch.existingTurn && contexts[0].start >= requireDispatch.afterOffset) ||
         contexts[0].start >= dispatches[0].start || dispatches[0].start >= completions[0].start) {
       throw validationError("The newly observed turn is not correlated to the exact native dispatch", "dispatch_correlation", {
         count: dispatches.length, dispatchBytes: recordOffsets(dispatches), contextByte: contexts[0].start, completionByte: completions[0].start,
       });
     }
     dispatch = dispatches[0];
+    if (otherTurnStarts.some((start) => start > dispatch.start && start < completions[0].start)) {
+      throw validationError("Another native turn superseded the dispatch before completion", "dispatch_superseded");
+    }
+    if (requireDispatch.existingTurn && turns.some(({ record, start }) => start > dispatch.start &&
+        (record.type === "response_item" && record.payload.type === "message" && record.payload.role === "user" ||
+         record.type === "event_msg" && record.payload.type === "user_message"))) {
+      throw validationError("New user input superseded the native dispatch in the active turn", "dispatch_superseded");
+    }
   }
 
   const allAssistantEntries = turns.filter(({ record }) => record.type === "response_item" && record.payload.type === "message" && record.payload.role === "assistant");
@@ -378,10 +408,52 @@ export function inspectCodexNativeTurn({ threadId, turnId, expectedCwd, desktopE
   }
 }
 
+export function resolveCodexNativeDispatchResponse(binding, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
+  const { threadId, expectedCwd, executorThreadId, prompt, watermark, desktopEvidence } = binding;
+  let turnId = null;
+  try {
+    if (!UUID.test(threadId) || !UUID.test(executorThreadId) || typeof prompt !== "string" || !prompt.length) throw new Error("The native dispatch identity is invalid");
+    if (!object(watermark) || watermark.status !== "available" || watermark.threadId !== threadId) throw new Error("No trusted pre-send rollout watermark is available");
+    const cwd = canonicalDirectory(expectedCwd, "The selected native task workspace");
+    if (watermark.cwd !== cwd) throw new Error("The selected native task workspace changed after dispatch");
+    const marks = watermark.segments ?? [watermark];
+    if (!Array.isArray(marks) || !marks.length || marks.length > 64 || new Set(marks.map((mark) => mark.file)).size !== marks.length ||
+        !marks.some((mark) => mark.file === watermark.file && mark.size === watermark.size && mark.prefixSha256 === watermark.prefixSha256) ||
+        marks.some((mark) => !Number.isSafeInteger(mark.size) || mark.size < 1)) throw new Error("The pre-send segment watermarks are invalid");
+    const found = findRollouts(threadId, env);
+    if (marks.some((mark) => !found.some(({ file }) => file === mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
+    const outputs = delegationOutputs(executorThreadId, prompt);
+    const snapshots = found.map((entry) => {
+      const mark = marks.find(({ file }) => file === entry.file);
+      const snapshot = readStable(entry, maxRolloutBytes, { threadId, afterOffset: mark?.size ?? 0, prefixSize: mark?.size, dispatchOutputs: outputs });
+      if (mark) {
+        if (snapshot.identity.dev !== mark.identity?.dev || snapshot.identity.ino !== mark.identity?.ino || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
+        if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
+      }
+      validateIdentity(snapshot, threadId, cwd, desktopEvidence);
+      return snapshot;
+    });
+    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
+    const matches = snapshots.flatMap((snapshot) => snapshot.dispatches.map((dispatch) => ({ snapshot, dispatch })));
+    if (!matches.length) return { status: "pending", threadId, turnId: null, text: "", assistantItems: [], replySha256: null };
+    if (matches.length !== 1) throw new Error("Multiple post-send native dispatches match the reply receipt");
+    validateSession(matches[0].snapshot, threadId, cwd, desktopEvidence);
+    turnId = matches[0].dispatch.turnId;
+    const result = readCodexNativeTurnResponse({ ...binding, turnId }, { env, maxRolloutBytes });
+    if (result.status === "unavailable" && result.dispatchObserved && /check=lifecycle_completion_count; count=0;/.test(result.reason)) {
+      return { status: "pending", threadId, turnId, dispatchObserved: true, text: "", assistantItems: [], replySha256: null };
+    }
+    return result;
+  } catch (error) {
+    return { ...unavailable(error), threadId, turnId, source: "codex_desktop_rollout", assistantItems: [], text: "", replySha256: null };
+  }
+}
+
 export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, expectedCwd, executorThreadId, prompt, watermark, desktopEvidence }, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
+  let dispatchObserved = false;
   try {
     if (!UUID.test(threadId) || !UUID.test(turnId) || !UUID.test(executorThreadId)) throw new Error("The native response identity is invalid");
-    if (turnId === previousTurnId) throw new Error("The observed turn was already present before dispatch");
+    const existingTurn = turnId === previousTurnId;
     if (typeof prompt !== "string" || !prompt.length) throw new Error("The exact dispatched prompt is unavailable");
     if (!object(watermark) || watermark.status !== "available" || watermark.threadId !== threadId) throw new Error("No trusted pre-send rollout watermark is available");
     const cwd = canonicalDirectory(expectedCwd, "The selected native task workspace");
@@ -393,10 +465,11 @@ export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, 
     for (const mark of marks) if (!Number.isSafeInteger(mark.size) || mark.size < 1) throw new Error("The pre-send rollout watermark size is invalid");
     const found = findRollouts(threadId, env);
     if (marks.some((mark) => !found.some(({ file }) => file === mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
+    const outputs = delegationOutputs(executorThreadId, prompt);
     let retainedBytes = 0;
     const snapshots = found.map((entry) => {
       const mark = marks.find(({ file }) => file === entry.file);
-      const snapshot = readStable(entry, maxRolloutBytes, { threadId, turnId, afterOffset: mark?.size ?? 0, prefixSize: mark?.size });
+      const snapshot = readStable(entry, maxRolloutBytes, { threadId, turnId, afterOffset: existingTurn ? 0 : mark?.size ?? 0, prefixSize: mark?.size, dispatchOutputs: outputs, dispatchAfterOffset: mark?.size ?? 0 });
       retainedBytes += snapshot.retainedBytes;
       if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
       if (mark) {
@@ -409,12 +482,20 @@ export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, 
     });
     assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
     const selected = uniqueTurn(snapshots);
+    const matchedDispatches = snapshots.flatMap((snapshot) => snapshot.dispatches);
+    if (matchedDispatches.length !== 1 || matchedDispatches[0].turnId !== turnId) throw new Error("The observed turn is not uniquely correlated to the exact native dispatch");
     validateSession(selected, threadId, cwd, desktopEvidence);
+    const selectedMark = marks.find(({ file }) => file === selected.file);
+    if (existingTurn && !selectedMark) throw new Error("The active native turn has no pre-send rollout watermark");
+    dispatchObserved = selected.records.some(({ record, start }) => start >= (selectedMark?.size ?? 0) &&
+      record.type === "response_item" && record.payload.type === "function_call_output" &&
+      record.payload.namespace === "codex_app" && record.payload.name === "send_message_to_thread" && outputs.includes(record.payload.output));
     const inspected = inspectTurnRecords(selected.records, threadId, turnId, cwd, {
-      requireDispatch: { outputs: delegationOutputs(executorThreadId, prompt) },
+      requireDispatch: { outputs, afterOffset: selectedMark?.size ?? 0, existingTurn },
+      otherTurnStarts: selected.otherTurnStarts,
     });
-    return { ...inspected, observationStatus: inspected.status };
+    return { ...inspected, observationStatus: inspected.status, ...(existingTurn ? { responseScope: "same_turn_final" } : {}) };
   } catch (error) {
-    return { ...unavailable(error), threadId, turnId, source: "codex_desktop_rollout", assistantItems: [], text: "", replySha256: null };
+    return { ...unavailable(error), ...(dispatchObserved ? { dispatchObserved: true } : {}), threadId, turnId, source: "codex_desktop_rollout", assistantItems: [], text: "", replySha256: null };
   }
 }

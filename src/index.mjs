@@ -151,11 +151,12 @@ const failure = (err) => {
 
 function replyResult(delivered, deliveryId, result, notes = []) {
   result = { activity: [], errors: [], ...result };
+  const deliveryStatus = ["completed", "completed_no_reply"].includes(result.responseStatus) ? "accepted" : delivered.deliveryStatus ?? "accepted";
   const pending = result.status === "timeout";
   const continuation = deliveryId ? `deliveryId: ${deliveryId}\n${pending ? "Continue automatically with wait_codex_reply and this deliveryId; it only observes the original send. Do not resend the prompt." : "Keep this deliveryId to inspect the same send after reconnecting."}` : "";
   return {
-    ...textResult([...notes, formatTurn(result, { desktop: true }), continuation].filter(Boolean).join("\n"), result.status === "failed" || result.status === "systemError"),
-    structuredContent: { ...result, threadId: delivered.threadId, deliveryStatus: result.responseStatus === "completed" || result.responseStatus === "completed_no_reply" ? "accepted" : delivered.deliveryStatus ?? "accepted", ...(deliveryId ? { deliveryId } : {}), nextAction: pending && deliveryId ? "wait_codex_reply" : "none" },
+    ...textResult([...notes, `deliveryStatus: ${deliveryStatus}`, formatTurn(result, { desktop: true }), continuation].filter(Boolean).join("\n"), result.status === "failed" || result.status === "systemError"),
+    structuredContent: { ...result, threadId: delivered.threadId, deliveryStatus, ...(deliveryId ? { deliveryId } : {}), nextAction: pending && deliveryId ? "wait_codex_reply" : "none" },
   };
 }
 
@@ -625,6 +626,7 @@ registerTool(
             acceptedDelivery = prepared;
           } });
           acceptedDelivery = delivered;
+          if (delivered.deliveryStatus === "accepted") replyReceipts.acknowledge(deliveryId, delivered, desktopOperation.getStore());
           notes.push(delivered.deliveryStatus === "unconfirmed" ? "Desktop delivery acknowledgement timed out; delivery is unconfirmed. Continue observing this receipt; do not resend." : "sent through Codex Desktop; no external app-server writer", `cwd: ${delivered.cwd}`);
           if (delivered.deliveryStatus === "unconfirmed") return replyResult(delivered, deliveryId, { threadId, status: "timeout", responseStatus: "unavailable", text: "" }, notes);
           if (shouldOpen) {
@@ -694,7 +696,7 @@ registerTool(
         const held = shouldOpen && !shouldRelease && client.holdsThread(threadId) ? writerLockWarning(threadId) : "";
         return textResult(`${notes.length ? `${notes.join("\n")}\n` : ""}${body}${held}`, failed);
       } catch (err) {
-        if (acceptedDelivery?.deliveryStatus === "accepted") return textResult(`threadId: ${threadId}\nTask was accepted, but its reply receipt could not be prepared: ${err.message}. Inspect the existing task; do not resend.`, true);
+        if (acceptedDelivery?.deliveryStatus === "accepted") return textResult(`threadId: ${threadId}\ndeliveryId: ${deliveryId}\nTask was accepted, but its reply receipt could not be updated: ${err.message}. Inspect the existing task; do not resend.`, true);
         return failure(err);
       }
     }, {

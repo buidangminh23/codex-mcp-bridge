@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse, readCodexNativeCreationResponse } from "../src/codex-native-response.mjs";
+import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse, readCodexNativeCreationResponse, resolveCodexNativeDispatchResponse } from "../src/codex-native-response.mjs";
 
 const THREAD_ID = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
 const TURN_ID = "01a087df-8988-7433-b08b-d85692b1f41a";
@@ -53,10 +53,135 @@ function fixture(t) {
     { type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
   ];
   const append = (records) => fs.appendFileSync(file, records.map(line).join(""));
-  return { home, cwd, directory, file, env, capture, read, turn, append, session };
+  const resolve = (watermark, overrides = {}) => resolveCodexNativeDispatchResponse({ threadId: THREAD_ID, previousTurnId: PREVIOUS_TURN_ID,
+    expectedCwd: cwd, executorThreadId: EXECUTOR_ID, prompt: PROMPT, watermark, ...overrides }, { env });
+  return { home, cwd, directory, file, env, capture, read, turn, append, session, resolve };
 }
 
 describe("native Codex response observation", () => {
+  for (const variant of ["identical", "permission_changed", "workspace_changed", "identity_changed", "after_completion"]) {
+    it(`validates refreshed turn contexts after compaction: ${variant}`, (t) => {
+      const f = fixture(t);
+      const records = f.turn();
+      Object.assign(records[1].payload, { approval_policy: "never", sandbox_policy: { type: "danger-full-access" }, permission_profile: { type: "disabled" } });
+      f.append(records.slice(0, 2));
+      const mark = f.capture();
+      const refreshed = structuredClone(records[1]);
+      if (variant === "permission_changed") refreshed.payload.permission_profile.type = "read-only";
+      if (variant === "workspace_changed") refreshed.payload.cwd = f.home;
+      if (variant === "identity_changed") refreshed.payload.root_turn_id = EXECUTOR_ID;
+      f.append(variant === "after_completion" ? [...records.slice(2), refreshed] : [records[2], refreshed, ...records.slice(3)]);
+      const result = f.resolve(mark, { previousTurnId: TURN_ID });
+      assert.equal(result.status, variant === "identical" ? "completed" : "unavailable", result.reason);
+      assert.equal(result.text, variant === "identical" ? "Received safely" : "");
+    });
+  }
+
+  for (const sameTurn of [false, true]) it(`resolves the exact historical dispatch after later turns start: same turn ${sameTurn}`, (t) => {
+    const f = fixture(t);
+    const records = f.turn();
+    if (sameTurn) f.append(records.slice(0, 2));
+    const mark = f.capture();
+    f.append(sameTurn ? records.slice(2) : records);
+    f.append(f.turn({ turnId: EXECUTOR_ID, prompt: "An unrelated follow-up" }));
+    f.append(f.turn({ turnId: PREVIOUS_TURN_ID, prompt: "Current task" }).slice(0, 2));
+    const result = f.resolve(mark, { previousTurnId: sameTurn ? TURN_ID : null });
+    assert.equal(result.status, "completed", result.reason);
+    assert.equal(result.turnId, TURN_ID);
+    assert.equal(result.text, "Received safely");
+  });
+
+  it("keeps a matching active dispatch pending without promoting commentary", (t) => {
+    const f = fixture(t);
+    const mark = f.capture();
+    assert.equal(f.resolve(mark).status, "pending");
+    f.append(f.turn({ phase: "commentary" }).slice(0, 4));
+    const result = f.resolve(mark);
+    assert.equal(result.status, "pending", result.reason);
+    assert.equal(result.turnId, TURN_ID);
+    assert.equal(result.text, "");
+  });
+
+  for (const variant of ["duplicate", "duplicate_other_turn", "wrong_sender", "wrong_prompt", "old_dispatch", "prefix_changed", "superseding_turn", "contradictory_id", "aborted"]) {
+    it(`rejects unsafe historical dispatch resolution: ${variant}`, (t) => {
+      const f = fixture(t);
+      if (variant === "old_dispatch") f.append(f.turn());
+      const mark = f.capture();
+      const records = f.turn();
+      if (variant === "duplicate") records.splice(3, 0, structuredClone(records[2]));
+      if (variant === "wrong_sender") records[2] = f.turn({ executorThreadId: PREVIOUS_TURN_ID })[2];
+      if (variant === "wrong_prompt") records[2] = f.turn({ prompt: "Different prompt" })[2];
+      if (variant === "superseding_turn") records.splice(3, 0, ...f.turn({ turnId: EXECUTOR_ID }).slice(0, 2));
+      if (variant === "contradictory_id") records[2].payload.root_turn_id = EXECUTOR_ID;
+      if (variant === "aborted") records.splice(3, 0, { type: "event_msg", payload: { type: "task_aborted", turn_id: TURN_ID } });
+      if (variant !== "old_dispatch") f.append(records);
+      if (variant === "duplicate_other_turn") f.append(f.turn({ turnId: EXECUTOR_ID }));
+      if (variant === "prefix_changed") fs.writeFileSync(f.file, fs.readFileSync(f.file, "utf8").replace("Codex Desktop", "codex_work_desktop"));
+      const result = f.resolve(mark);
+      assert.equal(result.status, ["wrong_sender", "wrong_prompt", "old_dispatch"].includes(variant) ? "pending" : "unavailable", result.reason);
+      assert.equal(result.text, "");
+      assert.equal(result.replySha256, null);
+    });
+  }
+
+  it("verifies exact memory citation text with an empty rollout list", (t) => {
+    const f = fixture(t);
+    const mark = f.capture();
+    const body = "Verified response.\n\n";
+    const citation = "<oai-mem-citation>\n<citation_entries>\nnotes.md:2-4|note=[release guidance]\n</citation_entries>\n<rollout_ids>\n</rollout_ids>\n</oai-mem-citation>";
+    const records = f.turn({ content: [{ type: "output_text", text: body + citation }] });
+    records.splice(3, 0, { type: "event_msg", payload: { type: "item_completed", thread_id: THREAD_ID, turn_id: TURN_ID,
+      item: { type: "AgentMessage", id: records[3].payload.id, phase: "final_answer", content: [{ type: "Text", text: body }],
+        memory_citation: { entries: [{ path: "notes.md", lineStart: 2, lineEnd: 4, note: "release guidance" }], rolloutIds: [] } } } });
+    f.append(records);
+    const result = f.read(mark);
+    assert.equal(result.status, "completed", result.reason);
+    assert.equal(result.text, body + citation);
+  });
+
+  it("observes a same-turn final after the exact peer dispatch and preserves distinct peer messages", (t) => {
+    const f = fixture(t);
+    const records = f.turn();
+    f.append(records.slice(0, 2));
+    const mark = f.capture();
+    const other = f.turn({ prompt: "Separate peer update" })[2];
+    f.append([records[2], other, ...records.slice(3)]);
+    const result = f.read(mark, { previousTurnId: TURN_ID });
+    assert.equal(result.status, "completed", result.reason);
+    assert.equal(result.responseScope, "same_turn_final");
+    assert.equal(result.text, "Received safely");
+    assert.equal(result.assistantItems[0].id, records[3].payload.id);
+    assert.equal(result.replySha256, crypto.createHash("sha256").update("Received safely").digest("hex"));
+  });
+
+  for (const variant of ["duplicate", "wrong_sender", "wrong_prompt", "old_dispatch", "old_final", "commentary", "user_message", "user_event", "aborted", "prefix_changed"]) {
+    it(`withholds an unsafe same-turn response: ${variant}`, (t) => {
+      const f = fixture(t);
+      const records = f.turn();
+      const prefix = records.slice(0, 2);
+      if (variant === "old_dispatch") prefix.push(records[2]);
+      if (variant === "old_final") prefix.push(records[3]);
+      f.append(prefix);
+      const mark = f.capture();
+      const suffix = records.slice(2);
+      if (variant === "duplicate") suffix.splice(1, 0, structuredClone(records[2]));
+      if (variant === "wrong_sender") suffix[0] = f.turn({ executorThreadId: PREVIOUS_TURN_ID })[2];
+      if (variant === "wrong_prompt") suffix[0] = f.turn({ prompt: "Other request" })[2];
+      if (variant === "old_dispatch") suffix.shift();
+      if (variant === "old_final") suffix.splice(1, 1);
+      if (variant === "commentary") suffix[1].payload.phase = "commentary";
+      if (variant === "user_message") suffix.splice(1, 0, { type: "response_item", payload: { type: "message", role: "user", turn_id: TURN_ID, content: [{ type: "input_text", text: "Do something else" }] } });
+      if (variant === "user_event") suffix.splice(1, 0, { type: "event_msg", payload: { type: "user_message", turn_id: TURN_ID, message: "Do something else" } });
+      if (variant === "aborted") suffix.splice(1, 0, { type: "event_msg", payload: { type: "task_aborted", turn_id: TURN_ID } });
+      f.append(suffix);
+      if (variant === "prefix_changed") fs.writeFileSync(f.file, fs.readFileSync(f.file, "utf8").replace("task_started", "turn_started"));
+      const result = f.read(mark, { previousTurnId: TURN_ID });
+      assert.equal(result.status, "unavailable");
+      assert.equal(result.text, "");
+      assert.equal(result.replySha256, null);
+    });
+  }
+
   for (const variant of ["matching", "changed_text", "changed_citation", "missing_metadata", "invalid_lines", "missing_response"]) {
     it(`verifies Desktop memory citation representations: ${variant}`, (t) => {
       const f = fixture(t);
@@ -343,7 +468,8 @@ describe("native Codex response observation", () => {
   it("pinpoints failed lifecycle checks and record offsets without exposing record contents", (t) => {
     const cases = [
       { check: "lifecycle_start_count", mutate: (records) => records.shift(), detail: /count=0; recordBytes=none/ },
-      { check: "lifecycle_context_count", mutate: (records) => records.splice(1, 0, structuredClone(records[1])), detail: /count=2; recordBytes=\d+,\d+/ },
+      { check: "lifecycle_context_count", mutate: (records) => records.splice(1, 1), detail: /count=0; recordBytes=none/ },
+      { check: "lifecycle_context_changed", mutate: (records) => records.splice(1, 0, { ...records[1], payload: { ...records[1].payload, approval_policy: "different" } }), detail: /count=2; recordBytes=\d+,\d+/ },
       { check: "lifecycle_completion_count", mutate: (records) => records.pop(), detail: /count=0; recordBytes=none/ },
       { check: "lifecycle_failure", mutate: (records) => records.splice(4, 0, { type: "event_msg", payload: { type: "turn_failed", turn_id: TURN_ID, error: "private-error-text" } }), detail: /count=1; eventBytes=\d+/ },
       { check: "lifecycle_order", mutate: (records) => [records[0], records[1]] = [records[1], records[0]], detail: /startByte=\d+; contextByte=\d+; completionByte=\d+/ },

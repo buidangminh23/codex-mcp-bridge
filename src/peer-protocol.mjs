@@ -38,9 +38,11 @@ const projectsDir = () => path.join(homeDir(), ".claude", "projects");
  * listens for peer messages on a local socket or Windows named pipe. Messages are newline-delimited
  * JSON; the wrapper element is what Claude renders in its chat surface.
  */
-export function buildFrame({ text, fromSocket, priority = "next", permissionMode }) {
+export function buildFrame({ text, fromSocket, fromName, priority = "next", permissionMode }) {
   const msgId = crypto.randomUUID();
   const from = `uds:${fromSocket.replace(/[^A-Za-z0-9:_/.\-]/gu, (character) => Array.from(Buffer.from(character), (byte) => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`).join(""))}`;
+  const displayName = typeof fromName === "string" ? fromName.replace(/["<>\p{Cf}\p{Cc}\p{Cs}\p{Zl}\p{Zp}]/gu, "").trim() : "";
+  const name = displayName ? ` from-name="${displayName}"` : "";
   const mode = ["bypass", "prompting"].includes(permissionMode) ? ` from-mode="${permissionMode}"` : "";
   return {
     msgV: PEER_PROTOCOL_VERSION,
@@ -49,7 +51,7 @@ export function buildFrame({ text, fromSocket, priority = "next", permissionMode
     type: "user",
     message: {
       role: "user",
-      content: `<cross-session-message from="${from}"${mode}>\n${text}\n</cross-session-message>`,
+      content: `<cross-session-message from="${from}"${name}${mode}>\n${text}\n</cross-session-message>`,
     },
     priority,
     from,
@@ -858,7 +860,7 @@ export class PeerEndpoint {
 
   async send(targetSocket, text, { priority = "next", msgId, permissionMode = this.permissionMode, beforeSend } = {}) {
     if (this.reloadPaused) throw new Error("The peer endpoint is quiesced; no message was sent");
-    const frame = buildFrame({ text, fromSocket: this.socketPath, priority, permissionMode });
+    const frame = buildFrame({ text, fromSocket: this.socketPath, fromName: this.name, priority, permissionMode });
     if (msgId) frame.uuid = frame.msg_id = msgId;
     const token = readPeerToken(targetSocket);
     const line = (token ? JSON.stringify({ type: "auth", token }) + "\n" : "") + JSON.stringify(frame) + "\n";

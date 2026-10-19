@@ -38,9 +38,11 @@ const projectsDir = () => path.join(homeDir(), ".claude", "projects");
  * listens for peer messages on a local socket or Windows named pipe. Messages are newline-delimited
  * JSON; the wrapper element is what Claude renders in its chat surface.
  */
-export function buildFrame({ text, fromSocket, priority = "next", permissionMode }) {
+export function buildFrame({ text, fromSocket, fromName, priority = "next", permissionMode }) {
   const msgId = crypto.randomUUID();
   const from = `uds:${fromSocket.replace(/[^A-Za-z0-9:_/.\-]/gu, (character) => Array.from(Buffer.from(character), (byte) => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`).join(""))}`;
+  const displayName = typeof fromName === "string" ? fromName.replace(/["<>\p{Cf}\p{Cc}\p{Cs}\p{Zl}\p{Zp}]/gu, "").trim() : "";
+  const name = displayName ? ` from-name="${displayName}"` : "";
   const mode = ["bypass", "prompting"].includes(permissionMode) ? ` from-mode="${permissionMode}"` : "";
   return {
     msgV: PEER_PROTOCOL_VERSION,
@@ -49,7 +51,7 @@ export function buildFrame({ text, fromSocket, priority = "next", permissionMode
     type: "user",
     message: {
       role: "user",
-      content: `<cross-session-message from="${from}"${mode}>\n${text}\n</cross-session-message>`,
+      content: `<cross-session-message from="${from}"${name}${mode}>\n${text}\n</cross-session-message>`,
     },
     priority,
     from,
@@ -413,6 +415,38 @@ function isImageToolCompanion(entry, entriesById) {
         && typeof tool.id === "string" && tool.id === part.tool_use_id));
 }
 
+function compactContinuation(entry, root, entriesById, sessionId, cwd) {
+  if (entry.type !== "system" || entry.subtype !== "compact_boundary" || entry.parentUuid !== null
+      || typeof entry.logicalParentUuid !== "string") return null;
+  const sameIdentity = (record) => record?.entrypoint === "claude-desktop"
+    && record.sessionId === sessionId && record.cwd === root.cwd;
+  if (!sameIdentity(root) || !sameIdentity(entry) || typeof root.cwd !== "string"
+      || path.resolve(root.cwd) !== path.resolve(cwd)) return null;
+  const segment = entry.compactMetadata?.preservedSegment;
+  const preserved = entry.compactMetadata?.preservedMessages;
+  const ids = preserved?.uuids;
+  if (!Array.isArray(ids) || !ids.length || ids.length > 65536
+      || ids.some((id) => typeof id !== "string" || !id) || new Set(ids).size !== ids.length
+      || !Array.isArray(preserved.allUuids) || preserved.allUuids.length !== ids.length
+      || ids.some((id, index) => preserved.allUuids[index] !== id)
+      || !ids.includes(root.uuid) || segment?.headUuid !== ids[0]
+      || segment.tailUuid !== ids.at(-1) || segment.tailUuid !== entry.logicalParentUuid
+      || typeof segment.anchorUuid !== "string" || preserved.anchorUuid !== segment.anchorUuid) return null;
+  if (ids.some((id, index) => !sameIdentity(entriesById.get(id))
+      || index > 0 && entriesById.get(id).parentUuid !== ids[index - 1])
+      || ids.includes(entriesById.get(ids[0]).parentUuid)) return null;
+  const summary = entriesById.get(segment.anchorUuid);
+  if (!sameIdentity(summary) || summary.type !== "user" || summary.message?.role !== "user"
+      || summary.isCompactSummary !== true || summary.isVisibleInTranscriptOnly !== true
+      || summary.turnOrigin !== "peer" || summary.origin != null || summary.promptSource != null) return null;
+  let ancestor = entriesById.get(summary.parentUuid);
+  for (let depth = 0; depth < 64 && ancestor?.type === "attachment"; depth++) {
+    if (!sameIdentity(ancestor)) return null;
+    ancestor = entriesById.get(ancestor.parentUuid);
+  }
+  return ancestor === entry ? summary.uuid : null;
+}
+
 // Interruption closes reply observation, not execution. Never attach a later
 // user turn's answer to the original request or claim its side effects stopped.
 export function readTranscriptOutcome(sessionId, cwd, msgId) {
@@ -445,6 +479,7 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
   const openLeaves = new Set();
   const passiveLeaves = new Set();
   const interruptions = [];
+  const compactSummaries = new Set();
   const interrupt = (entry, outstanding) => {
     if (typeof entry.uuid !== "string" || !entry.uuid.trim()) return;
     openLeaves.delete(entry.parentUuid);
@@ -452,7 +487,16 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
   };
   for (const entry of entries) {
     if (entry === root) { descendants.set(entry.uuid, new Map()); openLeaves.add(entry.uuid); continue; }
-    if (!descendants.has(entry.parentUuid)) continue;
+    let parentUuid = entry.parentUuid;
+    if (!ambiguous && !interruptions.length && descendants.has(entry.logicalParentUuid)
+        && openLeaves.has(entry.logicalParentUuid)) {
+      const summaryId = compactContinuation(entry, root, entriesById, sessionId, cwd);
+      if (summaryId) {
+        parentUuid = entry.logicalParentUuid;
+        compactSummaries.add(summaryId);
+      }
+    }
+    if (!descendants.has(parentUuid)) continue;
     if (entry.type === "attachment" && entry.attachment?.type === "queued_command") {
       // Only a native command record is a boundary. Its text is never used as
       // proof of authorization, cancellation, or successful task completion.
@@ -469,10 +513,10 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
     }
     const role = entry.message?.role;
     const content = entry.message?.content;
-    const outstanding = new Map(descendants.get(entry.parentUuid));
+    const outstanding = new Map(descendants.get(parentUuid));
     const toolResults = Array.isArray(content) && content.length > 0 && content.every((part) => part?.type === "tool_result");
     const imageCompanion = isImageToolCompanion(entry, entriesById);
-    if (role === "user" && !toolResults && !imageCompanion) {
+    if (role === "user" && !toolResults && !imageCompanion && !compactSummaries.has(entry.uuid)) {
       const notificationText = typeof content === "string" ? content
         : Array.isArray(content) ? content.filter((part) => typeof part?.text === "string").map((part) => part.text).join("\n") : "";
       const nativeHuman = entry.origin?.kind === "human" && entry.promptSource === "sdk" && entry.turnOrigin === "human";
@@ -524,7 +568,7 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
       && ["hook_success", "total_tokens_reminder", "deferred_tools_record"].includes(entry.attachment?.type)) {
       passiveLeaves.add(entry.uuid);
     }
-    openLeaves.delete(entry.parentUuid);
+    openLeaves.delete(parentUuid);
     openLeaves.add(entry.uuid);
     if (role !== "assistant" || !["end_turn", "stop_sequence"].includes(entry.message.stop_reason)) continue;
     if (outstanding.size > 0) continue;
@@ -858,7 +902,7 @@ export class PeerEndpoint {
 
   async send(targetSocket, text, { priority = "next", msgId, permissionMode = this.permissionMode, beforeSend } = {}) {
     if (this.reloadPaused) throw new Error("The peer endpoint is quiesced; no message was sent");
-    const frame = buildFrame({ text, fromSocket: this.socketPath, priority, permissionMode });
+    const frame = buildFrame({ text, fromSocket: this.socketPath, fromName: this.name, priority, permissionMode });
     if (msgId) frame.uuid = frame.msg_id = msgId;
     const token = readPeerToken(targetSocket);
     const line = (token ? JSON.stringify({ type: "auth", token }) + "\n" : "") + JSON.stringify(frame) + "\n";

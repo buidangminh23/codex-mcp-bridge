@@ -12,7 +12,7 @@ import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
 import { captureCodexRolloutWatermark } from "../src/codex-native-response.mjs";
 import { createProjectScope, editProjectGrant, updateProjectPolicy } from "../src/project-policy.mjs";
 
-function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, beforeWrite, accountContext, senderContext, captureResponse, readResponse, inspectResponse, securityFactory } = {}) {
+function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, beforeWrite, accountContext, senderContext, captureResponse, readResponse, inspectResponse, resolveResponse, securityFactory } = {}) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "desktop-receipt-delivery-")));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const cwd = path.join(directory, "project");
@@ -47,11 +47,182 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, beforeWrit
     throw new Error(`Unexpected operation ${operation}`);
   } };
   const receipts = new DesktopTaskReceipts({ directory: path.join(directory, "receipts") });
-  const createDelivery = () => new DesktopTaskDelivery({ relay, security: securityFactory?.(cwd) ?? security, now, sleep, beforeRequest, accountContext, senderContext, captureResponse, readResponse, inspectResponse, receipts: new DesktopTaskReceipts({ directory: receipts.directory }) });
+  const createDelivery = () => new DesktopTaskDelivery({ relay, security: securityFactory?.(cwd) ?? security, now, sleep, beforeRequest, accountContext, senderContext, captureResponse, readResponse, inspectResponse, resolveResponse, receipts: new DesktopTaskReceipts({ directory: receipts.directory }) });
   return { directory, cwd, calls, registered, receipts, createDelivery, delivery: createDelivery(), setState(nextStatus, nextTurn) { status = nextStatus; turnStatus = nextTurn; } };
 }
 
 describe("Desktop creation receipts and deadlines", () => {
+  for (const resolveDispatch of [true, false]) {
+    for (const boundary of ["initial_read", "confirmation_read", "relay_timeout", "relay_send_deadline"]) it(`withholds an unverified reply when ${boundary} exhausts observation time: resolver=${resolveDispatch}`, async (t) => {
+      let time = 0;
+      let reads = 0;
+      let parsed = false;
+      const read = () => {
+        parsed = true;
+        if (boundary === "confirmation_read") time = 1000;
+        return { status: "completed", turnId: "turn", text: "Not yet verified", assistantItems: [{ id: "item", text: "Not yet verified" }] };
+      };
+      const f = fixture(t, {
+        now: () => time,
+        readResponse: read,
+        ...(resolveDispatch ? { resolveResponse: read } : {}),
+        beforeRequest({ operation, phase }) {
+          if (boundary === "initial_read" && operation === "read_thread" && !phase) time = 1000;
+        },
+        dispatch({ operation }) {
+          if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "idle" }, latestTurn: { id: "turn", status: "completed" } }] };
+          if (operation === "read_thread" && ++reads === 2 && boundary.startsWith("relay_")) {
+            time = 1000;
+            throw boundary === "relay_timeout" ? Object.assign(new Error("Relay response timed out"), { code: "RELAY_TIMEOUT" })
+              : Object.assign(new Error("The Codex Desktop relay send deadline elapsed before dispatch"), { code: "RELAY_UNREACHABLE" });
+          }
+        },
+      });
+      const result = await f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "old-turn", responseObservation: {
+        expectedCwd: f.cwd, watermark: { status: "available" },
+      } });
+      assert.equal(result.status, "timeout");
+      assert.equal(result.text, "");
+      assert.deepEqual(result.assistantItems, []);
+      assert.equal(result.replySha256, null);
+      assert.equal(parsed, boundary !== "initial_read");
+      assert.equal(reads, boundary === "initial_read" ? 0 : boundary === "confirmation_read" ? 1 : 2);
+      assert.equal(f.calls.some(({ operation }) => ["send_message_to_thread", "create_thread"].includes(operation)), false);
+    });
+  }
+
+  for (const phase of ["poll", "observe", "confirmation"]) {
+    for (const code of ["PROJECT_SCOPE_DENIED", "ACCOUNT_CHANGED", "NATIVE_DISPATCH_FAILED", "RELAY_UNREACHABLE"]) it(`preserves ${code} errors at the ${phase} deadline`, async (t) => {
+      let time = 0;
+      let parsed = false;
+      const f = fixture(t, {
+        now: () => time,
+        resolveResponse: () => { parsed = true; return { status: "pending", turnId: null }; },
+        beforeRequest({ operation, phase: requestPhase }) {
+          if (requestPhase === "observe" && (phase === "observe" || phase === "confirmation" && parsed)) {
+            time = 1000;
+            throw Object.assign(new Error(`Verification failed: ${code}`), { code });
+          }
+        },
+        dispatch({ operation }) {
+          if (operation === "wait_threads") {
+            if (phase === "poll") {
+              time = 1000;
+              throw Object.assign(new Error(`Verification failed: ${code}`), { code });
+            }
+            return { polls: [{ thread: { id: "task", hostId: "local", status: "active" }, latestTurn: { id: "turn", status: "inProgress" } }] };
+          }
+        },
+      });
+      await assert.rejects(f.delivery.wait("task", { timeoutMs: 1000, responseObservation: {
+        expectedCwd: f.cwd, watermark: { status: "available" },
+      } }), new RegExp(`Verification failed: ${code}`));
+    });
+  }
+
+  for (const status of ["waitingOnApproval", "waitingOnUserInput", "systemError"]) {
+    for (const completed of [true, false]) it(`preserves receipt progress independently of a newer ${status} turn: ${completed}`, async (t) => {
+      const f = fixture(t, {
+        resolveResponse: () => completed ? { status: "completed", text: "Historic final", turnId: "historic-turn", assistantItems: [{ id: "historic-item", text: "Historic final" }] } : { status: "pending", turnId: null },
+        dispatch({ operation }) {
+          if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status }, latestTurn: { id: "newer-turn", status: "inProgress" } }] };
+        },
+      });
+      const result = await f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "old-turn", responseObservation: {
+        threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+      } });
+      assert.equal(result.status, completed ? "completed" : status);
+      assert.equal(result.turnId, completed ? "historic-turn" : "newer-turn");
+      assert.equal(result.text, completed ? "Historic final" : "");
+      assert.equal(f.calls.some(({ operation }) => ["send_message_to_thread", "create_thread"].includes(operation)), false);
+    });
+  }
+
+  for (const variant of ["completed", "pending", "account_changed", "latest_changed", "workspace_changed", "unavailable"]) {
+    it(`observes a receipt's exact historic turn while a later native turn is active: ${variant}`, async (t) => {
+      let time = 0;
+      let resolved = false;
+      let accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
+      const f = fixture(t, {
+        now: () => time,
+        sleep: async (ms) => { time += ms; },
+        accountContext: () => accounts,
+        resolveResponse: (binding) => {
+          assert.equal(binding.turnId, null);
+          assert.equal(binding.prompt, "exact historic request");
+          resolved = true;
+          if (variant === "account_changed") accounts = { ...accounts, codex: "c".repeat(64) };
+          return variant === "pending" ? { status: "pending", turnId: null } : variant === "unavailable" ? { status: "unavailable", reason: "Ambiguous dispatch", turnId: null }
+            : { status: "completed", text: "Historic final", turnId: "historic-turn", assistantItems: [{ id: "historic-item", text: "Historic final" }], replySha256: "e".repeat(64) };
+        },
+        dispatch({ operation, cwd }) {
+          if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "active" }, latestTurn: { id: "latest-turn", status: "inProgress" } }] };
+          if (operation === "read_thread") return { thread: { id: "task", hostId: "local", cwd: resolved && variant === "workspace_changed" ? f.directory : cwd }, turns: [{ id: resolved && variant === "latest_changed" ? "another-turn" : "latest-turn" }] };
+        },
+      });
+      const pending = f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "old-turn", responseObservation: {
+        threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "exact historic request", accountContext: { ...accounts }, watermark: { status: "available" },
+      } });
+      if (variant.endsWith("changed")) await assert.rejects(pending, /account changed|task changed|workspace/i);
+      else {
+        const result = await pending;
+        assert.equal(result.status, variant === "pending" ? "timeout" : variant === "unavailable" ? "failed" : "completed");
+        assert.equal(result.turnId, variant === "completed" ? "historic-turn" : null);
+        assert.equal(result.text, variant === "completed" ? "Historic final" : "");
+      }
+      assert.equal(f.calls.some(({ operation }) => ["send_message_to_thread", "create_thread"].includes(operation)), false);
+    });
+  }
+
+  for (const status of ["inProgress", "interrupted"]) it(`keeps active-turn delivery and completion distinct: ${status}`, async (t) => {
+    let time = 0;
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      readResponse: () => ({ status: "unavailable", dispatchObserved: true, reason: "The correlated turn was aborted" }),
+      dispatch({ operation }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "active" }, latestTurn: { id: "turn", status } }] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "turn", responseObservation: {
+      threadId: "task", previousTurnId: "turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+    } });
+    assert.equal(result.status, status === "inProgress" ? "timeout" : "interrupted");
+    assert.equal(result.turnId, status === "inProgress" ? null : "turn");
+    assert.equal(result.text, "");
+  });
+
+  for (const matched of [true, false]) it(`observes active-turn steering only with an exact response binding: ${matched}`, async (t) => {
+    let time = 0;
+    let polls = 0;
+    let reads = 0;
+    const accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      accountContext: () => accounts,
+      readResponse: (binding) => {
+        reads++;
+        assert.equal(binding.turnId, "turn");
+        assert.equal(binding.previousTurnId, "turn");
+        return matched ? { status: "completed", text: "Same turn final", assistantItems: [{ id: "final", text: "Same turn final" }], responseScope: "same_turn_final" }
+          : { status: "unavailable", reason: "No matching post-watermark dispatch" };
+      },
+      dispatch({ operation }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "active" }, latestTurn: { id: "turn", status: ++polls === 1 ? "inProgress" : "completed" } }] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 3000, previousTurnId: "turn", responseObservation: {
+      threadId: "task", previousTurnId: "turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", accountContext: { ...accounts }, watermark: { status: "available" },
+    } });
+    assert.equal(reads, 1);
+    assert.equal(result.status, matched ? "completed" : "timeout");
+    assert.equal(result.text, matched ? "Same turn final" : "");
+    assert.equal(result.responseScope, matched ? "same_turn_final" : undefined);
+    assert.equal(result.turnId, matched ? "turn" : null);
+    assert.equal(f.calls.some(({ operation }) => ["create_thread", "send_message_to_thread"].includes(operation)), false);
+  });
+
   it("continues with bounded snapshots after the wait renderer fails without resending", async (t) => {
     let time = 0;
     let snapshots = 0;
@@ -808,7 +979,7 @@ describe("Desktop creation receipts and deadlines", () => {
       if (operation === "list_projects") time += 7000;
       if (operation === "create_thread") time += 20000;
       if (operation === "navigate_to_codex_page") time += 5000;
-      if (operation === "wait_threads") { time += options.timeoutMs; throw new Error("Native response timeout"); }
+      if (operation === "wait_threads") { time += options.timeoutMs; throw Object.assign(new Error("Native response timeout"), { code: "RELAY_TIMEOUT" }); }
     } });
     const deadline = time + DESKTOP_TOOL_BUDGET_MS;
     const created = await f.delivery.create({ cwd: f.cwd, prompt: "Task", deadline });

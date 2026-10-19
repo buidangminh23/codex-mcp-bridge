@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { creationRequestHash, creationIdValid } from "./native-creation-receipts.mjs";
 import { homeDir } from "./platform.mjs";
 
@@ -50,6 +51,33 @@ export class DesktopReplyReceipts {
     finally { fs.closeSync(fd); }
     fs.renameSync(temporary, file);
     return id;
+  }
+
+  acknowledge(id, delivered, context) {
+    const previous = this.read(id, context);
+    const acknowledgement = JSON.parse(JSON.stringify(delivered));
+    if (acknowledgement.deliveryStatus !== "accepted" || previous.creationObservation ||
+        !["unconfirmed", "accepted"].includes(previous.deliveryStatus) ||
+        !isDeepStrictEqual({ ...acknowledgement, deliveryStatus: previous.deliveryStatus }, previous)) {
+      throw new Error("Delivery acknowledgement does not match the original reply binding");
+    }
+    if (previous.deliveryStatus === "accepted") return;
+    const file = this.file(id);
+    const bytes = Buffer.from(JSON.stringify({ version: 1, deliveryId: id, owner: owner(context), delivered: acknowledgement }));
+    if (bytes.length > LIMIT) throw new Error("Reply observation binding exceeds the receipt limit");
+    const temporary = `${file}.${randomUUID()}.pending`;
+    const fd = fs.openSync(temporary, "wx", 0o600);
+    try {
+      try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); }
+      finally { fs.closeSync(fd); }
+      if (!isDeepStrictEqual(this.read(id, context), previous) || this.file(id) !== file) {
+        throw new Error("Reply receipt changed before acknowledgement");
+      }
+      fs.renameSync(temporary, file);
+    } finally {
+      try { fs.unlinkSync(temporary); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
   }
 
   read(id, context) {

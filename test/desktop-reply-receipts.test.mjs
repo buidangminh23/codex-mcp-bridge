@@ -23,6 +23,39 @@ it("preserves the exact response binding across a fresh store instance", (t) => 
   assert.deepEqual(new DesktopReplyReceipts({ directory: f.directory }).read(id, f.context), f.delivered);
 });
 
+it("preserves accepted delivery across restart without changing its observation binding", (t) => {
+  const f = fixture(t);
+  const prepared = { ...f.delivered, deliveryStatus: "unconfirmed" };
+  const id = f.store.create(prepared, f.context);
+  const accepted = { ...prepared, deliveryStatus: "accepted" };
+  f.store.acknowledge(id, { ...accepted, name: undefined }, f.context);
+  const restarted = new DesktopReplyReceipts({ directory: f.directory });
+  assert.deepEqual(restarted.read(id, f.context), accepted);
+  restarted.acknowledge(id, accepted, f.context);
+  assert.deepEqual(restarted.read(id, f.context), accepted);
+  assert.throws(() => restarted.acknowledge(id, prepared, f.context), /does not match/);
+  assert.deepEqual(fs.readdirSync(f.directory), [`${id}.json`]);
+});
+
+it("refuses acknowledgement from another owner or for changed dispatch bindings", (t) => {
+  const f = fixture(t);
+  const prepared = { ...f.delivered, deliveryStatus: "unconfirmed" };
+  const id = f.store.create(prepared, f.context);
+  const accepted = { ...prepared, deliveryStatus: "accepted" };
+  for (const [group, key] of [["caller", "sessionId"], ["caller", "taskId"], ["accounts", "claude"], ["accounts", "codex"]]) {
+    const other = structuredClone(f.context);
+    other[group][key] = "different";
+    assert.throws(() => f.store.acknowledge(id, accepted, other), /another sender or account/);
+  }
+  for (const mutation of [
+    { ...accepted, threadId: "other-target" },
+    { ...accepted, cwd: path.dirname(f.directory) },
+    { ...accepted, previousTurnId: "other-turn" },
+    { ...accepted, responseObservation: { ...accepted.responseObservation, prompt: "other prompt" } },
+  ]) assert.throws(() => f.store.acknowledge(id, mutation, f.context), /does not match/);
+  assert.deepEqual(f.store.read(id, f.context), prepared);
+});
+
 it("refuses another sender, task or account even with the receipt identifier", (t) => {
   const f = fixture(t);
   const id = f.store.create(f.delivered, f.context);

@@ -4,6 +4,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Persist confirmed Desktop send acceptance in the original owner-bound receipt so a later wait or MCP restart does not revert it to unconfirmed.
+- Resolve exact peer dispatches from their original rollout watermark, including messages injected into an active Codex turn and completed replies followed by newer turns. Preserve sender, account, project and response-integrity checks, mark same-turn finals and retain exact empty memory-citation formatting.
+- Include the advertised peer name in Claude's supported message envelope so the native recipient can identify the sender instead of showing an unnamed session. Codex Desktop's fixed sender badge remains controlled by the host; author headers identify the actual collaborator without impersonating user input.
+- Follow verified native Claude compaction continuations when correlating an outstanding peer reply, while retaining interruption and identity checks.
+- Return an unavailable reply at the observation deadline without losing accepted delivery state; continue rejecting identity and permission failures even when they occur after that deadline.
+
 ## [1.22.4] - 2026-10-19
 
 ### Fixed

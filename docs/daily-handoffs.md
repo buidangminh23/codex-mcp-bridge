@@ -27,6 +27,24 @@ session identity, Git root if applicable, and Remote Control state. Compare
 Pin `expectedCwd` and `expectedTaskId` before dispatching production work.
 Reuse this verified parent for subsequent handoffs.
 
+If a saved Claude project's directory has moved, discovery reports a separate
+`relocatedProjects` candidate when the old directory is missing and the workspace
+resolver finds one writable replacement authorized by the shared project policy.
+Revoked original paths, revoked targets, ambiguous replacements and existing old
+directories do not qualify. Hardened deployments do not remap projects.
+
+The candidate can establish the project for an explicitly authorized new Code
+conversation. It cannot resume the old task or authorize a live session: the
+new native task, account, process, actual cwd and initial message must still match.
+Discovery does not rewrite Claude metadata, create grants or clear revocations.
+The saved source and its authorization are rechecked before opening, trusting and
+submitting, including after a pending request is restored.
+
+Native composer creation submits an initial user prompt; it is not a peer
+message and does not establish a native sender label. If a handoff requires the
+recipient's peer sender attribution, use `send_to_claude_session` with a verified
+live task. Do not substitute composer submission or a text header for that route.
+
 If a link was already opened, retain its requestId and inspect its receipt.
 `promptSubmitted=false` with `submissionStatus=not_observed` means submission
 was not verified, not that nothing was delivered. A wrong-directory task can

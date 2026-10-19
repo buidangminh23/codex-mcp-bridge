@@ -26,6 +26,7 @@ import { submitClaudeCodeComposer, trustClaudeCodeComposer } from "./claude-comp
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
 import { registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
+import { discoverClaudeProject } from "./claude-project-discovery.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -71,7 +72,8 @@ const creations = new ClaudeSessionCreation({
   submit: submitClaudeCodeComposer,
   trust: trustClaudeCodeComposer,
   settle: () => delay(2500),
-  listTasks: (account) => readClaudeDesktopTasks({ account }).filter((task) => rootPolicy.allows(task.cwd)),
+  listTasks: (account) => readClaudeDesktopTasks({ account }),
+  resolveProject: (task) => discoverClaudeProject(task, { policy: rootPolicy })?.cwd ?? null,
   listSessions: () => listClaudeSessions().filter((session) => rootPolicy.allows(session.cwd)),
   readContext: (session, account) => readClaudeDesktopContext(session, { account }),
   readTranscript: (...args) => {
@@ -254,21 +256,25 @@ async function startClaudeCreation({ requestId, cwd, prompt, autoSubmit = proces
     sender: rootPolicy.capture(sender.cwd, "Codex sender working directory"),
     recipient: rootPolicy.capture(cwd, "Claude creation working directory"),
   } : null;
-  const receipt = await creations.start({ requestId, cwd, prompt, autoSubmit, trustProject, account: accounts.claude, senderThreadId: sender.threadId,
-    beforeOpen: async () => {
-      runtime.assertCurrent();
-      assertAccountIdentity(selectedAccounts);
-      recheckScopeBindings(scopeBindings);
-      if (rootPolicy.enabled && !rootPolicy.same(cwd, scopeBindings.recipient.path)) throw new Error("The Claude creation working directory changed before opening Desktop");
-      const current = await assertSender(meta);
-      if (JSON.stringify(current) !== JSON.stringify(sender)) throw new Error("The calling Codex turn changed before opening Claude Desktop");
-      runtime.assertCurrent();
-      assertAccountIdentity(selectedAccounts);
-      recheckScopeBindings(scopeBindings);
-      if (rootPolicy.enabled && !rootPolicy.same(cwd, scopeBindings.recipient.path)) throw new Error("The Claude creation working directory changed before opening Desktop");
-    },
-  });
-  if (rootPolicy.enabled) creationRootBindings.set(requestId, scopeBindings);
+  let receipt;
+  try {
+    receipt = await creations.start({ requestId, cwd, prompt, autoSubmit, trustProject, account: accounts.claude, senderThreadId: sender.threadId,
+      beforeOpen: async () => {
+        runtime.assertCurrent();
+        assertAccountIdentity(selectedAccounts);
+        recheckScopeBindings(scopeBindings);
+        if (rootPolicy.enabled && !rootPolicy.same(cwd, scopeBindings.recipient.path)) throw new Error("The Claude creation working directory changed before opening Desktop");
+        const current = await assertSender(meta);
+        if (JSON.stringify(current) !== JSON.stringify(sender)) throw new Error("The calling Codex turn changed before opening Claude Desktop");
+        runtime.assertCurrent();
+        assertAccountIdentity(selectedAccounts);
+        recheckScopeBindings(scopeBindings);
+        if (rootPolicy.enabled && !rootPolicy.same(cwd, scopeBindings.recipient.path)) throw new Error("The Claude creation working directory changed before opening Desktop");
+      },
+    });
+  } finally {
+    if (rootPolicy.enabled && creations.requests.has(requestId) && !creationRootBindings.has(requestId)) creationRootBindings.set(requestId, scopeBindings);
+  }
   return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { creation: receipt } };
 }
 
@@ -414,13 +420,18 @@ registerTool(
         if (expectedCwd !== undefined) { try { assertClaudeSessionCwd(task, expectedCwd); } catch { return false; } }
         return true;
       }).map(({ taskId, title, cwd }) => ({ taskId, title, cwd, alive: sessions.some((session) => session.desktop?.taskId === taskId) }));
+      const relocatedProjects = saved.flatMap(task => {
+        const candidate = discoverClaudeProject(task, { policy: rootPolicy });
+        if (!candidate?.relocated || (expectedCwd !== undefined && !rootPolicy.same(candidate.cwd, expectedCwd))) return [];
+        return [{ taskId: task.taskId, originalCwd: candidate.originalCwd, resolvedCwd: candidate.cwd, liveVerified: false, resumable: false }];
+      });
       const summary = sessions.length
         ? `${sessions.length} Claude${desktopOnly ? " Desktop" : ""} session(s):\n\n${sessions.map(formatSessionRow).join("\n")}`
         : discovery.excluded.length
           ? `Found ${discovery.candidateCount} registered Claude Desktop candidate(s) with messaging endpoints, but their Desktop task identities could not be verified. Delivery remains blocked.`
           : desktopOnly ? missingDesktopSession : "No live Claude Code session found.";
-      return { ...textResult([summary, ...discoveryDetails(discovery), ...(savedTasks.length ? [`Saved Desktop tasks (resume unfinished work with target auto and expectedTaskId):\n${JSON.stringify(savedTasks, null, 2)}`] : [])].join("\n")),
-        structuredContent: { account: publicAccountState(account), sessions: sessions.map(({ socket, bridgeSessionId, ...session }) => session), savedTasks, discovery } };
+      return { ...textResult([summary, ...discoveryDetails(discovery), ...(savedTasks.length ? [`Saved Desktop tasks (resume unfinished work with target auto and expectedTaskId):\n${JSON.stringify(savedTasks, null, 2)}`] : []), ...(relocatedProjects.length ? [`Relocated project candidates (new conversation only when authorized; old tasks are not verified or resumable at the new path):\n${JSON.stringify(relocatedProjects, null, 2)}`] : [])].join("\n")),
+        structuredContent: { account: publicAccountState(account), sessions: sessions.map(({ socket, bridgeSessionId, ...session }) => session), savedTasks, relocatedProjects, discovery } };
     } catch (err) {
       return failure(err);
     }

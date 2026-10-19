@@ -4,6 +4,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Discover moved Claude project directories for authorized new Desktop conversations using the workspace resolver and shared project policy. Report candidates separately from live sessions and resumable tasks; preserve original task IDs, account checks, directory bindings, revocations and exact new-session verification.
+- Reject ambiguous workspace replacements during Claude project discovery and recheck the saved project before opening, trusting and submitting, including restored requests. Preserve original-path revocations across ancestor junction changes.
+- Retain creation scope bindings when an error occurs after opening the native composer, so the original request remains inspectable without reopening or resending.
+
 ## [1.22.3] - 2026-10-15
 
 ### Fixed

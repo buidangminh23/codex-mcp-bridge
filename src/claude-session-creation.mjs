@@ -60,7 +60,7 @@ function receipt(request) {
 }
 
 export class ClaudeSessionCreation {
-  constructor({ open, submit, trust, settle = async () => {}, listTasks, listSessions, readContext, readTranscript, readAccount, assertProcess, realpath = (directory) => {
+  constructor({ open, submit, trust, settle = async () => {}, listTasks, listSessions, readContext, readTranscript, readAccount, assertProcess, resolveProject, realpath = (directory) => {
     const canonical = fs.realpathSync.native(directory);
     if (!fs.statSync(canonical).isDirectory()) throw new Error("Not a directory");
     return canonical;
@@ -68,7 +68,7 @@ export class ClaudeSessionCreation {
     for (const [name, dependency] of Object.entries({ open, listTasks, listSessions, readContext, readTranscript, readAccount, assertProcess, realpath })) {
       if (typeof dependency !== "function") throw new TypeError(`${name} must be a function`);
     }
-    Object.assign(this, { open, submit, trust, settle, listTasks, listSessions, readContext, readTranscript, readAccount, assertProcess, realpath, platform });
+    Object.assign(this, { open, submit, trust, settle, listTasks, listSessions, readContext, readTranscript, readAccount, assertProcess, resolveProject, realpath, platform });
     this.requests = new Map();
     this.queue = Promise.resolve();
   }
@@ -83,6 +83,7 @@ export class ClaudeSessionCreation {
   }
 
   sameCwd(left, right) {
+    if (typeof left !== "string" || typeof right !== "string") return false;
     return this.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
   }
 
@@ -123,11 +124,14 @@ export class ClaudeSessionCreation {
       if (sameAccount(existing.account, identity) && PENDING.has(existing.status) && !composerReleased) fail("CLAUDE_CREATION_PENDING", "A creation request is already pending for this account; inspect or explicitly abandon that request before opening another project in the shared composer.");
     }
     const tasks = await this.listTasks(account);
-    if (!Array.isArray(tasks) || tasks.length > MAX_TASKS || tasks.some((task) => !string(task?.taskId, 256) || (task.fileTaskId !== undefined && task.fileTaskId !== task.taskId))) fail("CLAUDE_CREATION_TASKS_INVALID", "The existing native task baseline cannot be verified.");
-    let existingProject = false;
+    const validTasks = value => Array.isArray(value) && value.length <= MAX_TASKS && value.every(task => string(task?.taskId, 256) && (task.fileTaskId === undefined || task.fileTaskId === task.taskId)) && new Set(value.map(task => task.taskId)).size === value.length;
+    if (!validTasks(tasks)) fail("CLAUDE_CREATION_TASKS_INVALID", "The existing native task baseline cannot be verified.");
+    const baseline = new Set(tasks.map(task => task.taskId));
+    const projectCwd = async task => this.resolveProject ? this.resolveProject(task) : this.canonical(task.cwd);
+    let existingProject;
     for (const task of tasks) {
       if (task.isArchived !== false) continue;
-      try { if (this.sameCwd(await this.canonical(task.cwd), canonical)) existingProject = true; } catch {}
+      try { if (this.sameCwd(await projectCwd(task), canonical)) { existingProject = task; break; } } catch {}
     }
     if (!existingProject) fail("CLAUDE_CREATION_PROJECT_NOT_FOUND", "The canonical directory must already belong to a nonarchived Claude Desktop task.");
     if (autoSubmit && typeof this.submit !== "function") fail("CLAUDE_CREATION_SUBMIT_UNAVAILABLE", "Native composer submission is not available.");
@@ -139,7 +143,20 @@ export class ClaudeSessionCreation {
       if (typeof beforeOpen !== "function") fail("CLAUDE_CREATION_PREFLIGHT_INVALID", "beforeOpen must be a function.");
       await beforeOpen();
     }
-    const request = { requestId, cwd: canonical, prompt, initialMessage, account: identity, senderThreadId, baseline: [...new Set(tasks.map((task) => task.taskId))], status: "launch_uncertain", reason: "The Desktop launch outcome is uncertain; inspect this request before taking further action." };
+    if (this.resolveProject) {
+      const currentTasks = await this.listTasks(account);
+      if (!validTasks(currentTasks)) fail("CLAUDE_CREATION_TASKS_INVALID", "The current native task baseline cannot be verified.");
+      const matches = currentTasks.filter(task => task.taskId === existingProject.taskId && task.fileTaskId === existingProject.fileTaskId && task.cwd === existingProject.cwd && task.isArchived === false);
+      if (matches.length !== 1 || !this.sameCwd(await projectCwd(matches[0]), canonical)) {
+        fail("CLAUDE_CREATION_PROJECT_NOT_FOUND", "The saved project or its authorized current directory changed before opening Desktop.");
+      }
+      for (const task of currentTasks) baseline.add(task.taskId);
+      if (baseline.size > MAX_TASKS) fail("CLAUDE_CREATION_TASKS_INVALID", "The native task baseline exceeds the creation limit.");
+      if (beforeOpen) await beforeOpen();
+    }
+    const projectSource = this.resolveProject ? { taskId: existingProject.taskId, fileTaskId: existingProject.fileTaskId, cwd: existingProject.cwd } : undefined;
+    const request = { requestId, cwd: canonical, prompt, initialMessage, account: identity, senderThreadId, baseline: [...baseline], ...(projectSource ? { projectSource } : {}), status: "launch_uncertain", reason: "The Desktop launch outcome is uncertain; inspect this request before taking further action." };
+    await this.revalidateProjectSource(request, account);
     this.requests.set(requestId, request);
     try {
       await this.open(url);
@@ -155,11 +172,25 @@ export class ClaudeSessionCreation {
     return receipt(request);
   }
 
+  async revalidateProjectSource(request, account) {
+    if (!this.resolveProject) return;
+    const source = request.projectSource;
+    if (!source) fail("CLAUDE_CREATION_PROJECT_NOT_FOUND", "The original saved project source is unavailable; submission is not authorized.");
+    const tasks = await this.listTasks(account);
+    if (!Array.isArray(tasks) || tasks.length > MAX_TASKS) fail("CLAUDE_CREATION_TASKS_INVALID", "The saved project source cannot be verified.");
+    const matches = tasks.filter(task => task?.taskId === source.taskId);
+    if (matches.length !== 1 || matches[0].fileTaskId !== source.fileTaskId || matches[0].cwd !== source.cwd || matches[0].isArchived !== false ||
+        !this.sameCwd(await this.resolveProject(matches[0]), request.cwd)) {
+      fail("CLAUDE_CREATION_PROJECT_NOT_FOUND", "The original saved project or its authorization changed; submission is not authorized.");
+    }
+  }
+
   async completeRequest(request, { account, senderThreadId, beforeOpen, trustProject }) {
     if (typeof this.submit !== "function") fail("CLAUDE_CREATION_SUBMIT_UNAVAILABLE", "Native composer submission is not available.");
     if (trustProject && typeof this.trust !== "function") fail("CLAUDE_CREATION_TRUST_UNAVAILABLE", "Authorized project trust preparation is not available.");
     await this.checkAccount(account, request.account);
     if (beforeOpen) await beforeOpen();
+    await this.revalidateProjectSource(request, account);
     if (trustProject) {
       const trusted = await this.trust({ cwd: request.cwd, prompt: request.initialMessage });
       if (!["trusted", "absent"].includes(trusted?.status)) {
@@ -171,6 +202,7 @@ export class ClaudeSessionCreation {
     }
     await this.checkAccount(account, request.account);
     if (beforeOpen) await beforeOpen();
+    await this.revalidateProjectSource(request, account);
     request.submissionAttempted = true;
     request.status = "submission_uncertain";
     request.reason = "Native submission was attempted; inspect this request before retrying. The bridge will not press Send again.";
@@ -178,6 +210,7 @@ export class ClaudeSessionCreation {
       const submission = await this.submit({ prompt: request.initialMessage, cwd: request.cwd, beforeSubmit: async () => {
         await this.checkAccount(account, request.account);
         if (beforeOpen) await beforeOpen();
+        await this.revalidateProjectSource(request, account);
       } });
       if (submission?.status === "blocked" && submission.submissionAttempted === false) delete request.submissionAttempted;
       request.status = submission?.status === "submitted" ? "awaiting_session" : submission?.status === "blocked" ? "awaiting_user" : "submission_uncertain";
@@ -263,7 +296,10 @@ export class ClaudeSessionCreation {
       if ((request.status === "awaiting_project_confirmation" || request.observedCwd !== undefined) && (!string(request.observedCwd, 8192) || !paths.isAbsolute(request.observedCwd))) fail("CLAUDE_CREATION_STATE_INVALID", "A retained observed directory is invalid.");
       if (request.status === "awaiting_project_confirmation" && (request.submissionObserved !== true || this.sameCwd(request.cwd, request.observedCwd))) fail("CLAUDE_CREATION_STATE_INVALID", "A pending project confirmation is invalid.");
       if (request.ambiguitySeen !== undefined && typeof request.ambiguitySeen !== "boolean") fail("CLAUDE_CREATION_STATE_INVALID", "A retained ambiguity marker is invalid.");
-      restored.set(request.requestId, structuredClone({ requestId: request.requestId, cwd: request.cwd, prompt: request.prompt, initialMessage: request.initialMessage, account: { fingerprint: request.account.fingerprint, root: request.account.root }, senderThreadId: request.senderThreadId, baseline: request.baseline, status: request.status, reason: request.reason, ...(request.submissionAttempted ? { submissionAttempted: true } : {}), ...(request.ambiguitySeen || request.status === "ambiguous" ? { ambiguitySeen: true } : {}), ...(request.submissionObserved ? { submissionObserved: true } : {}), ...(request.observedCwd ? { observedCwd: request.observedCwd } : {}), ...(hasSession ? { sessionId: request.sessionId, taskId: request.taskId, title: request.title } : {}) }));
+      if (request.projectSource !== undefined && (!string(request.projectSource?.taskId, 256) || !request.baseline.includes(request.projectSource.taskId) ||
+          (request.projectSource.fileTaskId !== undefined && request.projectSource.fileTaskId !== request.projectSource.taskId) ||
+          !string(request.projectSource.cwd, 8192) || !paths.isAbsolute(request.projectSource.cwd))) fail("CLAUDE_CREATION_STATE_INVALID", "A retained project source is invalid.");
+      restored.set(request.requestId, structuredClone({ requestId: request.requestId, cwd: request.cwd, prompt: request.prompt, initialMessage: request.initialMessage, account: { fingerprint: request.account.fingerprint, root: request.account.root }, senderThreadId: request.senderThreadId, baseline: request.baseline, ...(request.projectSource ? { projectSource: { taskId: request.projectSource.taskId, fileTaskId: request.projectSource.fileTaskId, cwd: request.projectSource.cwd } } : {}), status: request.status, reason: request.reason, ...(request.submissionAttempted ? { submissionAttempted: true } : {}), ...(request.ambiguitySeen || request.status === "ambiguous" ? { ambiguitySeen: true } : {}), ...(request.submissionObserved ? { submissionObserved: true } : {}), ...(request.observedCwd ? { observedCwd: request.observedCwd } : {}), ...(hasSession ? { sessionId: request.sessionId, taskId: request.taskId, title: request.title } : {}) }));
     }
     this.requests = restored;
   }

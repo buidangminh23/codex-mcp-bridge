@@ -150,6 +150,15 @@ export function createProjectScope(file, options = {}) {
     assert: (candidate, label) => capture(candidate, label).path,
     allows(candidate) { try { capture(candidate); return true; } catch { return false; } },
     capture,
+    assertDiscoverySource(candidate) {
+      const original = canonicalPolicyPath(candidate);
+      const namespaces = [path.resolve(candidate), original];
+      const { policy } = readProjectPolicy(file);
+      if (policy.denies.some(entry => namespaces.some(source => inside(entry.path, source) || entry.worktrees?.some(root => inside(root.path, source))))) {
+        throw new Error("The original project path was revoked; relocation discovery is not authorized");
+      }
+      return original;
+    },
     recheck(binding, label = "Working directory") {
       if (!binding?.identity) throw new Error(`${label} has no original directory identity`);
       const now = capture(binding.path, label);

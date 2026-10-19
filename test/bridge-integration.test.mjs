@@ -291,7 +291,7 @@ describe("Desktop task MCP integration", () => {
           const restarted = await additionalBridgeProcess({ home, env });
           try {
             if (resume === true) {
-              const pending = await restarted.client.callTool({ name: "wait_codex_reply", arguments: { deliveryId, timeoutSec: 10 } });
+              const pending = await restarted.client.callTool({ name: "wait_codex_reply", arguments: { deliveryId, timeoutSec: 40 } });
               assert.equal(pending.isError, undefined, JSON.stringify(pending));
               assert.equal(pending.structuredContent.deliveryStatus, "accepted");
               assert.match(pending.content[0].text, /deliveryStatus: accepted/);

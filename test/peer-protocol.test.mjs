@@ -700,6 +700,72 @@ describe("peer endpoint", () => {
     assert.equal(readTranscriptReply("boundaries", "unused", "request")?.text, "answer", "a separate command branch must not cut the original branch");
   });
 
+  it("correlates native Desktop compaction through the exact preserved peer ancestry", () => {
+    const dir = path.join(projectsDir, "compact-replies");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "compacted.jsonl");
+    const identity = { sessionId: "compacted", cwd: sandbox, entrypoint: "claude-desktop" };
+    const rows = [
+      { uuid: "request", type: "user", origin: { kind: "peer", msg_id: "request" }, message: { role: "user", content: "request" } },
+      { uuid: "tail", parentUuid: "request", type: "attachment", attachment: { type: "skill_listing" } },
+      { uuid: "boundary", parentUuid: null, logicalParentUuid: "tail", type: "system", subtype: "compact_boundary", compactMetadata: {
+        preservedSegment: { headUuid: "request", tailUuid: "tail", anchorUuid: "summary" },
+        preservedMessages: { anchorUuid: "summary", uuids: ["request", "tail"], allUuids: ["request", "tail"] },
+      } },
+      { uuid: "instructions", parentUuid: "boundary", type: "attachment", attachment: { type: "instructions" } },
+      { uuid: "summary", parentUuid: "instructions", type: "user", isCompactSummary: true, isVisibleInTranscriptOnly: true, turnOrigin: "peer", message: { role: "user", content: "summary" } },
+      { uuid: "answer", parentUuid: "summary", type: "assistant", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "verified reply" }] } },
+    ].map((row) => ({ ...identity, ...row }));
+    const write = (records) => fs.writeFileSync(file, records.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    write(rows.slice(0, -1));
+    assert.equal(readTranscriptOutcome("compacted", sandbox, "request"), null);
+    write(rows);
+    assert.equal(readTranscriptReply("compacted", sandbox, "request")?.text, "verified reply");
+    for (const [name, change] of [
+      ["missing metadata", (records) => { delete records[2].compactMetadata; }],
+      ["wrong logical parent", (records) => { records[2].logicalParentUuid = "unrelated"; }],
+      ["wrong preserved tail", (records) => { records[2].compactMetadata.preservedSegment.tailUuid = "request"; }],
+      ["wrong anchor", (records) => { records[2].compactMetadata.preservedMessages.anchorUuid = "wrong"; }],
+      ["missing peer root", (records) => { records[2].compactMetadata.preservedMessages.uuids = ["tail"]; }],
+      ["different preserved identities", (records) => { records[2].compactMetadata.preservedMessages.allUuids = ["other", "tail"]; }],
+      ["changed session", (records) => { records[2].sessionId = "other"; }],
+      ["changed preserved session", (records) => { records[1].sessionId = "other"; }],
+      ["changed preserved workspace", (records) => { records[1].cwd = path.join(sandbox, "other"); }],
+      ["non-Desktop preserved record", (records) => { records[1].entrypoint = "cli"; }],
+      ["cyclic preserved ancestry", (records) => { records[0].parentUuid = "tail"; }],
+      ["changed workspace", (records) => { records[4].cwd = path.join(sandbox, "other"); }],
+      ["non-Desktop boundary", (records) => { records[2].entrypoint = "cli"; }],
+      ["spoofed summary text", (records) => { delete records[4].isCompactSummary; }],
+      ["human summary", (records) => { records[4].turnOrigin = "human"; }],
+      ["peer input as summary", (records) => { records[4].origin = { kind: "peer", msg_id: "other" }; }],
+      ["cyclic summary ancestry", (records) => { records[3].parentUuid = "instructions"; }],
+      ["duplicate identity", (records) => { records.push(structuredClone(records[1])); }],
+    ]) {
+      const records = structuredClone(rows);
+      change(records);
+      write(records);
+      assert.equal(readTranscriptReply("compacted", sandbox, "request"), null, name);
+    }
+    const human = { ...identity, uuid: "human", parentUuid: "summary", type: "user", message: { role: "user", content: "new question" } };
+    write([...rows.slice(0, -1), human, { ...rows.at(-1), parentUuid: "human" }]);
+    assert.equal(readTranscriptOutcome("compacted", sandbox, "request")?.status, "interrupted");
+    assert.equal(readTranscriptReply("compacted", sandbox, "request"), null);
+    const beforeCompact = structuredClone(rows);
+    beforeCompact[1] = { ...human, uuid: "tail", parentUuid: "request" };
+    write(beforeCompact);
+    assert.equal(readTranscriptReply("compacted", sandbox, "request"), null, "compaction cannot reconnect an interrupted request");
+    const background = structuredClone(rows);
+    background.splice(1, 0,
+      { ...identity, uuid: "call", parentUuid: "request", type: "assistant", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", name: "Bash", id: "background-call" }] } },
+      { ...identity, uuid: "result", parentUuid: "call", type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "background-call", content: "running" }] }, toolUseResult: { backgroundTaskId: "background-task" } },
+    );
+    background[3].parentUuid = "result";
+    background[4].compactMetadata.preservedMessages.uuids = ["request", "call", "result", "tail"];
+    background[4].compactMetadata.preservedMessages.allUuids = ["request", "call", "result", "tail"];
+    write(background);
+    assert.equal(readTranscriptReply("compacted", sandbox, "request"), null, "compaction preserves outstanding background work");
+  });
+
   it("handles malformed transcript records and content without crashing", () => {
     const dir = path.join(projectsDir, "malformed-replies");
     fs.mkdirSync(dir, { recursive: true });

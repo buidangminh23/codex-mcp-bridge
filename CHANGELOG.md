@@ -4,11 +4,23 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.4] - 2026-10-19
+
 ### Fixed
 
 - Discover moved Claude project directories for authorized new Desktop conversations using the workspace resolver and shared project policy. Report candidates separately from live sessions and resumable tasks; preserve original task IDs, account checks, directory bindings, revocations and exact new-session verification.
 - Reject ambiguous workspace replacements during Claude project discovery and recheck the saved project before opening, trusting and submitting, including restored requests. Preserve original-path revocations across ancestor junction changes.
 - Retain creation scope bindings when an error occurs after opening the native composer, so the original request remains inspectable without reopening or resending.
+
+### Verification
+
+- CI passed on Windows, macOS and Linux with Node 22 and 24, including project revocation, source replacement, restored-request and receipt-binding regressions.
+- A live Windows Desktop peer message received its correlated Claude reply, and the reverse Claude message arrived in the originating Codex chat with the same nonce. Account, process, task, project and permission checks remained enabled.
+
+### Upgrade notes
+
+- Existing supervisors load updated source when safe. Relocation discovery requires the shared project policy and does not make a dormant or moved task a verified live recipient.
+- Peer sender attribution requires a verified live Claude Code task. Native composer creation remains a separate operation; it does not substitute for a peer message or its native sender label. This release does not establish Cowork or Dispatch connectivity.
 
 ## [1.22.3] - 2026-10-15
 

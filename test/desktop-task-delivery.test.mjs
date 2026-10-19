@@ -52,6 +52,74 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, beforeWrit
 }
 
 describe("Desktop creation receipts and deadlines", () => {
+  for (const resolveDispatch of [true, false]) {
+    for (const boundary of ["initial_read", "confirmation_read", "relay_timeout", "relay_send_deadline"]) it(`withholds an unverified reply when ${boundary} exhausts observation time: resolver=${resolveDispatch}`, async (t) => {
+      let time = 0;
+      let reads = 0;
+      let parsed = false;
+      const read = () => {
+        parsed = true;
+        if (boundary === "confirmation_read") time = 1000;
+        return { status: "completed", turnId: "turn", text: "Not yet verified", assistantItems: [{ id: "item", text: "Not yet verified" }] };
+      };
+      const f = fixture(t, {
+        now: () => time,
+        readResponse: read,
+        ...(resolveDispatch ? { resolveResponse: read } : {}),
+        beforeRequest({ operation, phase }) {
+          if (boundary === "initial_read" && operation === "read_thread" && !phase) time = 1000;
+        },
+        dispatch({ operation }) {
+          if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "idle" }, latestTurn: { id: "turn", status: "completed" } }] };
+          if (operation === "read_thread" && ++reads === 2 && boundary.startsWith("relay_")) {
+            time = 1000;
+            throw boundary === "relay_timeout" ? Object.assign(new Error("Relay response timed out"), { code: "RELAY_TIMEOUT" })
+              : Object.assign(new Error("The Codex Desktop relay send deadline elapsed before dispatch"), { code: "RELAY_UNREACHABLE" });
+          }
+        },
+      });
+      const result = await f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "old-turn", responseObservation: {
+        expectedCwd: f.cwd, watermark: { status: "available" },
+      } });
+      assert.equal(result.status, "timeout");
+      assert.equal(result.text, "");
+      assert.deepEqual(result.assistantItems, []);
+      assert.equal(result.replySha256, null);
+      assert.equal(parsed, boundary !== "initial_read");
+      assert.equal(reads, boundary === "initial_read" ? 0 : boundary === "confirmation_read" ? 1 : 2);
+      assert.equal(f.calls.some(({ operation }) => ["send_message_to_thread", "create_thread"].includes(operation)), false);
+    });
+  }
+
+  for (const phase of ["poll", "observe", "confirmation"]) {
+    for (const code of ["PROJECT_SCOPE_DENIED", "ACCOUNT_CHANGED", "NATIVE_DISPATCH_FAILED", "RELAY_UNREACHABLE"]) it(`preserves ${code} errors at the ${phase} deadline`, async (t) => {
+      let time = 0;
+      let parsed = false;
+      const f = fixture(t, {
+        now: () => time,
+        resolveResponse: () => { parsed = true; return { status: "pending", turnId: null }; },
+        beforeRequest({ operation, phase: requestPhase }) {
+          if (requestPhase === "observe" && (phase === "observe" || phase === "confirmation" && parsed)) {
+            time = 1000;
+            throw Object.assign(new Error(`Verification failed: ${code}`), { code });
+          }
+        },
+        dispatch({ operation }) {
+          if (operation === "wait_threads") {
+            if (phase === "poll") {
+              time = 1000;
+              throw Object.assign(new Error(`Verification failed: ${code}`), { code });
+            }
+            return { polls: [{ thread: { id: "task", hostId: "local", status: "active" }, latestTurn: { id: "turn", status: "inProgress" } }] };
+          }
+        },
+      });
+      await assert.rejects(f.delivery.wait("task", { timeoutMs: 1000, responseObservation: {
+        expectedCwd: f.cwd, watermark: { status: "available" },
+      } }), new RegExp(`Verification failed: ${code}`));
+    });
+  }
+
   for (const status of ["waitingOnApproval", "waitingOnUserInput", "systemError"]) {
     for (const completed of [true, false]) it(`preserves receipt progress independently of a newer ${status} turn: ${completed}`, async (t) => {
       const f = fixture(t, {
@@ -911,7 +979,7 @@ describe("Desktop creation receipts and deadlines", () => {
       if (operation === "list_projects") time += 7000;
       if (operation === "create_thread") time += 20000;
       if (operation === "navigate_to_codex_page") time += 5000;
-      if (operation === "wait_threads") { time += options.timeoutMs; throw new Error("Native response timeout"); }
+      if (operation === "wait_threads") { time += options.timeoutMs; throw Object.assign(new Error("Native response timeout"), { code: "RELAY_TIMEOUT" }); }
     } });
     const deadline = time + DESKTOP_TOOL_BUDGET_MS;
     const created = await f.delivery.create({ cwd: f.cwd, prompt: "Task", deadline });

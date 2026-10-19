@@ -294,6 +294,9 @@ describe("Desktop task MCP integration", () => {
               const pending = await restarted.client.callTool({ name: "wait_codex_reply", arguments: { deliveryId, timeoutSec: 40 } });
               assert.equal(pending.isError, undefined, JSON.stringify(pending));
               assert.equal(pending.structuredContent.deliveryStatus, "accepted");
+              assert.equal(pending.structuredContent.status, "timeout");
+              assert.deepEqual(pending.structuredContent.assistantItems ?? [], []);
+              assert.equal(pending.structuredContent.replySha256 ?? null, null);
               assert.match(pending.content[0].text, /deliveryStatus: accepted/);
               assert.equal(pending.structuredContent.nextAction, "wait_codex_reply");
             }

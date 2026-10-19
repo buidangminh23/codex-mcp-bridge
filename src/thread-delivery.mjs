@@ -102,7 +102,7 @@ export class DesktopTaskDelivery {
       const projectScope = expectedScope ?? await this.mutationProjectScope(operation, args, { deadline });
       if (expectedScope) recheckProjectScope(expectedScope, this.senderProjectScope(expectedScope.recipient.input));
       const remaining = deadline === undefined ? undefined : deadline - this.now();
-      if (remaining !== undefined && remaining <= 0) throw new Error("The bridge's response deadline has elapsed; this operation was not sent");
+      if (remaining !== undefined && remaining <= 0) throw Object.assign(new Error("The bridge's response deadline has elapsed; this operation was not sent"), { code: "DESKTOP_RESPONSE_DEADLINE" });
       const accountContext = this.accountContext?.();
       const response = await this.relay.requestDesktop(operation, args, {
         ...(remaining === undefined ? {} : { timeoutMs: remaining }),
@@ -492,6 +492,19 @@ export class DesktopTaskDelivery {
       return { polls: [{ thread, latestTurn: result.turns?.[0] ?? null }] };
     };
     const expired = () => ({ threadId, turnId, status: "timeout", text: "", responseStatus: "unavailable", assistantItems: [], replySha256: null, activity: [], errors: [], durationMs: this.now() - startedAt });
+    const deadlineError = (error) => {
+      const cause = error.cause ?? error;
+      return this.now() - startedAt >= timeoutMs && (["DESKTOP_RESPONSE_DEADLINE", "RELAY_TIMEOUT"].includes(cause.code) ||
+        cause.code === "RELAY_UNREACHABLE" && cause.message === "The Codex Desktop relay send deadline elapsed before dispatch");
+    };
+    const observe = async (selectedTurnId, resolveDispatch = false) => {
+      try {
+        return await this.observeNativeResponse(threadId, selectedTurnId, responseObservation, { deadline: startedAt + timeoutMs, resolveDispatch });
+      } catch (error) {
+        if (deadlineError(error)) return null;
+        throw error;
+      }
+    };
     for (;;) {
       if (this.now() - startedAt >= timeoutMs) return expired();
       let response;
@@ -500,13 +513,13 @@ export class DesktopTaskDelivery {
           targets: [{ threadId, hostId: "local", ...(cursor ? { afterCursor: cursor } : {}) }], timeoutMs: 0,
         }, { deadline: startedAt + timeoutMs });
       } catch (err) {
-        if (this.now() - startedAt >= timeoutMs) return expired();
+        if (deadlineError(err)) return expired();
         if (readSnapshots || !unavailableWaitRenderer(err)) throw err;
         readSnapshots = true;
         try {
           response = await readSnapshot();
         } catch (readError) {
-          if (this.now() - startedAt >= timeoutMs) return expired();
+          if (deadlineError(readError)) return expired();
           throw readError;
         }
       }
@@ -518,7 +531,8 @@ export class DesktopTaskDelivery {
       const needsAttention = ["systemError", "waitingOnApproval", "waitingOnUserInput"].includes(threadStatus);
       const attention = () => ({ threadId, turnId: turn?.id !== previousTurnId ? turn?.id ?? null : null, status: threadStatus, text: "", activity: [], errors: [], durationMs: this.now() - startedAt });
       if (this.resolveResponse && responseObservation?.watermark?.status === "available" && responseObservation.operation !== "create_thread") {
-        const observed = await this.observeNativeResponse(threadId, null, responseObservation, { deadline: startedAt + timeoutMs, resolveDispatch: true });
+        const observed = await observe(null, true);
+        if (!observed) return expired();
         turnId = observed.turnId ?? null;
         if (observed.status !== "pending") {
           return {
@@ -543,7 +557,8 @@ export class DesktopTaskDelivery {
         if (!existingTurn) turnId = turn.id;
         const status = turn.status;
         if (RELEASE_STATUSES.has(status)) {
-          const observed = await this.observeNativeResponse(threadId, turn.id, responseObservation, { deadline: startedAt + timeoutMs });
+          const observed = await observe(turn.id);
+          if (!observed) return expired();
           const responseStatus = observed.status;
           if (existingTurn && !observed.dispatchObserved && !["completed", "completed_no_reply"].includes(responseStatus)) {
             turnId = null;

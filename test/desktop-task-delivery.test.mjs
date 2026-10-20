@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "../src/thread-delivery.mjs";
+import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS, UNASSIGNED_WORKSPACE_GRACE_MS } from "../src/thread-delivery.mjs";
 import { DesktopTaskReceipts } from "../src/desktop-task-receipts.mjs";
 import { NativeCreationReceipts } from "../src/native-creation-receipts.mjs";
 import { handleRelayRequest, createNativeScopeAuthorizer } from "../src/native-relay-companion.mjs";
@@ -1153,6 +1153,169 @@ for (const mismatch of ["id", "host", "cwd", "executor", "account", "receipt"]) 
     assert.equal(f.calls.filter(c => c.operation === "create_thread").length, 1);
   });
 }
+
+describe("Desktop workspace not yet assigned after creation", () => {
+  const accounts = { claude: "a".repeat(64), codex: "b".repeat(64) };
+  const confirmedCreation = (t, { readCwd, now, sleep, accountContext = () => accounts, loseCreateAck = false } = {}) => {
+    let reads = 0;
+    let dispatched = false;
+    const f = fixture(t, {
+      now, sleep,
+      securityFactory: (cwd) => new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: cwd }),
+      accountContext,
+      dispatch({ operation, args, cwd }) {
+        if (operation === "create_thread") {
+          dispatched = true;
+          if (loseCreateAck) throw Object.assign(Error("ack lost"), { code: "RELAY_TIMEOUT", reachedCompanion: true });
+        }
+        if (operation === "get_creation_receipt") return dispatched
+          ? { status: "completed", result: { threadId: "task-1", hostId: "local", firstTurn: { status: "accepted" } } }
+          : { status: "missing" };
+        if (operation === "read_thread") {
+          reads += 1;
+          return { thread: { id: args.threadId, hostId: "local", cwd: readCwd(reads, cwd) }, turns: [{ id: "turn", status: "inProgress" }] };
+        }
+      },
+    });
+    return { f, reads: () => reads };
+  };
+  const createConfirmed = async (f, { expectedThreadId = "task-1" } = {}) => {
+    let prepared;
+    const created = await f.delivery.create({ cwd: f.cwd, prompt: "original", requestId: randomUUID(), onPrepared: (d) => { prepared = d; return randomUUID(); } });
+    assert.equal(created.threadId, expectedThreadId);
+    return prepared;
+  };
+
+  for (const reported of [...new Set([path.parse(process.cwd()).root, "/"])]) {
+    it(`keeps observing a confirmed creation while Desktop briefly reports ${JSON.stringify(reported)}`, async (t) => {
+      const { f, reads } = confirmedCreation(t, { readCwd: (count, cwd) => count === 1 ? reported : cwd, sleep: async () => {} });
+      const prepared = await createConfirmed(f);
+      const observer = f.createDelivery();
+      const resolved = await observer.resolveCreation(prepared);
+      assert.equal(resolved.threadId, "task-1");
+      assert.equal(resolved.cwd, f.cwd);
+      assert.equal(reads(), 2);
+      assert.equal(observer.security.isThreadAuthorized("task-1", f.cwd), true);
+      assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+    });
+  }
+
+  it("returns a pending result, not an error, when the workspace stays unassigned until the deadline", async (t) => {
+    let time = 0;
+    const { f, reads } = confirmedCreation(t, { readCwd: () => "/", now: () => time, sleep: async (ms) => { time += Math.max(ms, 1); } });
+    const prepared = await createConfirmed(f);
+    const observer = f.createDelivery();
+    assert.equal(await observer.resolveCreation(prepared, { deadline: 5000 }), null);
+    assert.ok(reads() >= 2);
+    assert.equal(observer.security.isThreadAuthorized("task-1", f.cwd), false);
+    assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+  });
+
+  it("fails closed for a real workspace outside the allowed roots but keeps the accepted task identity", async (t) => {
+    const outside = fs.realpathSync.native(os.tmpdir());
+    const { f } = confirmedCreation(t, { readCwd: () => outside, sleep: async () => {} });
+    const prepared = await createConfirmed(f);
+    const observer = f.createDelivery();
+    const error = await observer.resolveCreation(prepared).then(() => assert.fail("Unexpected success"), (err) => err);
+    assert.match(error.message, /outside CODEX_BRIDGE_ALLOWED_ROOTS/);
+    assert.match(error.message, /threadId: task-1/);
+    assert.match(error.message, /Task was accepted; do not resend/);
+    assert.equal(error.threadId, "task-1");
+    assert.equal(observer.security.isThreadAuthorized("task-1", f.cwd), false);
+    assert.equal(f.calls.filter((call) => call.operation === "create_thread").length, 1);
+  });
+
+  it("keeps the normal allowed-roots refusal before sending into a task that reports a root workspace", async (t) => {
+    const f = fixture(t, {
+      securityFactory: (cwd) => new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: cwd }),
+      dispatch({ operation, args }) {
+        if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: "/" }, turns: [] };
+      },
+    });
+    for (const cwd of [f.cwd, undefined]) {
+      await assert.rejects(f.delivery.send({ threadId: "task", prompt: "Do not deliver", cwd }), /Working directory is outside CODEX_BRIDGE_ALLOWED_ROOTS: \//);
+    }
+    assert.equal(f.calls.some((call) => call.operation === "send_message_to_thread"), false);
+  });
+
+  it("fails closed once a root workspace report outlasts the grace period after creation", async (t) => {
+    let time = 0;
+    const { f } = confirmedCreation(t, { readCwd: () => "/", now: () => time, sleep: async (ms) => { time += Math.max(ms, 1); } });
+    const prepared = await createConfirmed(f);
+    time = UNASSIGNED_WORKSPACE_GRACE_MS;
+    const observer = f.createDelivery();
+    const error = await observer.resolveCreation(prepared, { deadline: time + 5000 }).then(() => assert.fail("Unexpected success"), (err) => err);
+    assert.match(error.message, /outside CODEX_BRIDGE_ALLOWED_ROOTS: \//);
+    assert.match(error.message, /threadId: task-1/);
+    assert.match(error.message, /Task was accepted; do not resend/);
+    assert.equal(observer.security.isThreadAuthorized("task-1", f.cwd), false);
+  });
+
+  it("keeps a confirmed task identity when a later check fails after waiting for its workspace", async (t) => {
+    let switched = false;
+    const { f, reads } = confirmedCreation(t, {
+      loseCreateAck: true,
+      sleep: async () => { switched = true; },
+      accountContext: () => ({ ...accounts, codex: (switched ? "c" : "b").repeat(64) }),
+      readCwd: () => "/",
+    });
+    const prepared = await createConfirmed(f, { expectedThreadId: null });
+    switched = false;
+    const observer = f.createDelivery();
+    const error = await observer.resolveCreation(prepared).then(() => assert.fail("Unexpected success"), (err) => err);
+    assert.equal(reads(), 1);
+    assert.match(error.message, /Creation receipt account changed/);
+    assert.match(error.message, /threadId: task-1/);
+    assert.match(error.message, /Task was accepted; do not resend/);
+    assert.equal(error.threadId, "task-1");
+    assert.equal(observer.security.isThreadAuthorized("task-1", f.cwd), false);
+  });
+
+  it("stops treating a root workspace as unassigned during reply observation after the grace period", async (t) => {
+    let time = 0;
+    const f = fixture(t, {
+      securityFactory: (cwd) => new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: cwd }),
+      now: () => time,
+      sleep: async (ms) => { time += Math.max(ms, 1); },
+      readResponse: () => ({ status: "completed", turnId: "turn", text: "Withheld", assistantItems: [{ id: "item", text: "Withheld" }] }),
+      dispatch({ operation, args }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "idle" }, latestTurn: { id: "turn", status: "completed" } }] };
+        if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: "/", status: "idle" }, turns: [{ id: "turn", status: "completed" }] };
+      },
+    });
+    f.delivery.security.registerThread("task");
+    await assert.rejects(f.delivery.wait("task", { timeoutMs: UNASSIGNED_WORKSPACE_GRACE_MS * 2, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request",
+    } }), /outside CODEX_BRIDGE_ALLOWED_ROOTS: \//);
+    assert.ok(time >= UNASSIGNED_WORKSPACE_GRACE_MS);
+  });
+
+  for (const path_ of ["observe", "snapshot"]) {
+    it(`keeps observing a reply while Desktop briefly reports an unassigned workspace: ${path_}`, async (t) => {
+      let reads = 0;
+      const f = fixture(t, {
+        sleep: async () => {},
+        readResponse: () => ({ status: "completed", turnId: "turn", text: "Final answer", assistantItems: [{ id: "item", text: "Final answer" }] }),
+        dispatch({ operation, args, cwd }) {
+          if (operation === "wait_threads") {
+            if (path_ === "snapshot") throw Object.assign(new Error("Codex app tool request failed."), { code: "NATIVE_DISPATCH_FAILED" });
+            return { polls: [{ thread: { id: "task", hostId: "local", status: "idle" }, latestTurn: { id: "turn", status: "completed" } }] };
+          }
+          if (operation === "read_thread") {
+            reads += 1;
+            return { thread: { id: args.threadId, hostId: "local", cwd: reads === 1 ? "/" : cwd, status: "idle" }, turns: [{ id: "turn", status: "completed" }] };
+          }
+        },
+      });
+      const result = await f.delivery.wait("task", { timeoutMs: 5000, previousTurnId: "old-turn", responseObservation: {
+        threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request",
+      } });
+      assert.equal(result.status, "completed");
+      assert.equal(result.text, "Final answer");
+      assert.ok(reads >= 2);
+    });
+  }
+});
 
 for (const scenario of ["valid", "restart", "tampered", "unsigned"]) {
   it(`authenticates native ownership recovery through the strict companion: ${scenario}`, async () => {

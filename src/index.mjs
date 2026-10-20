@@ -211,6 +211,25 @@ function threadNameFor({ cwd, prompt, name }) {
   );
 }
 
+/**
+ * Once a Desktop creation was dispatched, a later verification failure must
+ * never read like a refusal: the caller keeps the task and receipt identity
+ * and is told not to resend. Verification still fails closed; only the report
+ * changes.
+ */
+function creationVerificationFailure({ created, deliveryId, requestId, err }) {
+  const threadId = created.threadId ?? err?.threadId ?? null;
+  const lines = threadId
+    ? ["Codex Desktop accepted the task, but post-creation verification failed.", `threadId: ${threadId}`]
+    : ["Codex Desktop creation was dispatched, but its outcome is not yet confirmed."];
+  lines.push(...(requestId ? [`requestId: ${requestId}`] : []), `cwd: ${created.cwd}`, ...(deliveryId ? [`deliveryId: ${deliveryId}`] : []), `error: ${err?.message ?? String(err)}`,
+    threadId ? "Task was accepted; do not resend. Resolve the verification error, then continue observing with wait_codex_reply and this deliveryId." : "Do not resend or create again. Continue observing with wait_codex_reply and this deliveryId.");
+  return {
+    ...textResult(lines.join("\n"), true),
+    structuredContent: { ...failure(err).structuredContent, threadId, deliveryStatus: threadId ? "accepted" : "unconfirmed", ...(deliveryId ? { deliveryId } : {}), nextAction: deliveryId ? "wait_codex_reply" : "none" },
+  };
+}
+
 async function delegateDesktopTask({ cwd, prompt, name, requestId, model, effort, timeoutSec, openInApp, waitForReply = true }) {
   const deadline = desktopOperation.getStore()?.deadline ?? Date.now() + Math.min((timeoutSec ?? 40) * 1000, DESKTOP_TOOL_BUDGET_MS);
   const workspace = resolveWorkspacePath(cwd);
@@ -222,8 +241,17 @@ async function delegateDesktopTask({ cwd, prompt, name, requestId, model, effort
   const deliveryId = created.deliveryId;
   let delivered = deliveryId ? replyReceipts.read(deliveryId, desktopOperation.getStore()) : null;
   if (delivered?.creationObservation) {
-    const resolved = await desktopTasks.resolveCreation(delivered, { deadline });
-    if (!resolved) return replyResult(delivered, deliveryId, { threadId: null, status: "timeout", responseStatus: "unavailable", text: "" }, ["Creation acknowledgement pending; do not create again."]);
+    let resolved;
+    try {
+      resolved = await desktopTasks.resolveCreation(delivered, { deadline });
+    } catch (err) {
+      return creationVerificationFailure({ created, deliveryId, requestId, err });
+    }
+    if (!resolved) {
+      const threadId = created.threadId ?? null;
+      return replyResult({ ...delivered, threadId, ...(threadId ? { deliveryStatus: "accepted" } : {}) }, deliveryId, { threadId, status: "timeout", responseStatus: "unavailable", text: "" },
+        [...(threadId ? [`threadId: ${threadId}`, "Task was accepted; Codex Desktop has not yet confirmed its workspace or creation receipt."] : []), "Creation acknowledgement pending; do not create again."]);
+    }
     delivered = resolved;
     created.threadId = resolved.threadId;
   }

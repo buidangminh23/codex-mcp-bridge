@@ -561,6 +561,50 @@ describe("Desktop task MCP integration", () => {
     });
   });
 
+  for (const scenario of ["transient-root", "outside-root"]) {
+    it(`reports a confirmed creation with its task identity when Desktop's workspace report is ${scenario}`, { timeout: 20000 }, async () => {
+      const calls = [];
+      let reads = 0;
+      const outside = fs.realpathSync.native(os.tmpdir());
+      await withDesktopReceiptBridge(async ({ operation }, home) => {
+        calls.push(operation);
+        if (operation === "list_projects") return { projects: [{ projectId: "receipt-project", projectKind: "local", hostId: "local", path: home }] };
+        if (operation === "create_thread") return { threadId: "unassigned-task", hostId: "local", firstTurn: { status: "accepted" } };
+        if (operation === "read_thread") {
+          reads += 1;
+          const cwd = scenario === "outside-root" ? outside : reads === 1 ? "/" : home;
+          return { thread: { id: "unassigned-task", hostId: "local", cwd, title: "Unassigned title", status: "idle" }, turns: [{ id: "unassigned-turn", status: "completed" }] };
+        }
+        if (operation === "list_threads") return { pinnedThreads: [], threads: [{ id: "unassigned-task", kind: "codex", hostId: "local", cwd: home, projectId: "receipt-project" }] };
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "unassigned-task", hostId: "local", status: "idle" }, latestTurn: { id: "unassigned-turn", status: "completed" } }] };
+        throw new Error(`Unexpected operation ${operation}`);
+      }, async ({ client, home, server }) => {
+        const requestId = randomUUID();
+        const result = await client.callTool({ name: "delegate_to_codex", arguments: { cwd: home, requestId, name: "Unassigned title", prompt: "Original brief", openInApp: false, timeoutSec: 10 } });
+        const text = result.content[0].text;
+        assert.doesNotMatch(text, /^Codex bridge error:/);
+        assert.match(text, /threadId: unassigned-task/);
+        if (scenario === "transient-root") {
+          assert.notEqual(result.isError, true, text);
+          assert.ok(reads >= 2);
+        } else {
+          assert.equal(result.isError, true);
+          assert.match(text, /outside CODEX_BRIDGE_ALLOWED_ROOTS/);
+          assert.match(text, /Task was accepted; do not resend/);
+          assert.match(text, /deliveryId: [0-9a-f-]{36}/);
+          assert.equal(result.structuredContent.threadId, "unassigned-task");
+          assert.equal(result.structuredContent.deliveryStatus, "accepted");
+          assert.equal(result.structuredContent.nextAction, "wait_codex_reply");
+          assert.match(result.structuredContent.deliveryId, /^[0-9a-f-]{36}$/);
+          assert.equal(calls.includes("wait_threads"), false);
+        }
+        assert.equal(calls.filter((operation) => operation === "create_thread").length, 1);
+        assert.deepEqual(creationReceipts(home).map(({ state, threadId }) => ({ state, threadId })), [{ state: "known", threadId: "unassigned-task" }]);
+        assert.equal(server.connections, 0);
+      });
+    });
+  }
+
   it("shares a ten-second budget between creation and observation while preserving its task for restart reuse", { timeout: 20000 }, async () => {
     const calls = [];
     let releaseWait;

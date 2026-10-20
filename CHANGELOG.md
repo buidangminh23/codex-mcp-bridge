@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.10] - 2026-10-20
+
 ### Fixed
 
 - Re-read the whole rollout set when Codex appends between per-segment reads. The pre-send watermark, dispatch, turn and creation readers and Codex sender verification now repeat find, read and set check together, up to three times, instead of failing with `A rollout segment changed while reading`. Only read races qualify: identity, history, account, workspace and dispatch mismatches still fail at once.
@@ -13,6 +15,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 - 8 new regression tests reproduce the append during the set check for the watermark, the turn and dispatch reply readers, sender verification and both wait paths; all fail on v1.22.8. Two more pin that a permanently incomplete rollout is reported without waiting, and a unit test pins which messages are retried.
 - Two rounds of independent review shaped the wait behavior. A deferred released turn stays the observed turn even if a newer turn starts. The deferral reason is cleared after a clean read, and a timeout reports it as an unavailable observation. Only the set level retries, so an actively written rollout is scanned at most three times per observation. Deferral is limited to `changed while reading`, because `incomplete final record` can be permanent. Each of these has a regression test that fails without its fix.
+
+### Limitations
+
+- The original race was seen once in a live Desktop send and cannot be triggered on demand; the regression tests reproduce it deterministically by appending to the rollout during the set check. A Codex Desktop or MCP restart still ends in-memory peer receipts, as before.
 
 ## [1.22.9] - 2026-10-20
 

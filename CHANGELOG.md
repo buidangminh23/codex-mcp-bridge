@@ -4,6 +4,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Compare file identities with exact 64-bit values everywhere. Reply and native creation receipts, the creation signing key, Codex rollout watermarks and segment checks, Codex account evidence, Claude Desktop task metadata and account state, project repository metadata, and the Sites connector's private files read `dev`, `ino`, `size` and nanosecond `mtime`/`ctime` as bigint. Number stats round inodes above 2^53, which NTFS file IDs and some macOS volumes (such as `/tmp` on the sealed system volume) exceed, so a replaced file or directory could pass as unchanged; this made `rejects replacement of a pinned receipt directory` fail intermittently on Windows CI.
+
+### Security
+
+- A rollout watermark now stores its file identity as exact decimal strings. A reply receipt written by an earlier version still matches only when its numeric identity is an exactly representable integer equal to the current file; a rounded identity no longer matches, and the observation reports the rollout as changed instead.
+
 ## [1.22.7] - 2026-10-20
 
 ### Added
@@ -15,11 +23,6 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Record Homebrew's stable `opt` paths instead of a versioned Cellar keg when the Claude Desktop, Codex and native relay installers and `bridge-projects register-manager` write a client configuration, for both the bridge and Homebrew's Node.js. A keg path broke every registration as soon as `brew upgrade` removed the old keg. Paths outside a Homebrew keg are written exactly as before.
 - Start the supervisor when its path reaches the installation through a symbolic link, such as Homebrew's `opt` alias. The direct-execution check compared the unresolved command-line path with the resolved module path, so the process exited at once without serving MCP.
 - Follow a Homebrew upgrade in a running supervisor: it watches the `opt` alias, reloads the new keg like any other installed update, and forks workers with the stable Node.js path, instead of reporting "Installation is not ready" after the old keg is removed.
-- Compare file identities with exact 64-bit values everywhere. Reply and native creation receipts, the creation signing key, Codex rollout watermarks and segment checks, Codex account evidence, Claude Desktop task metadata and account state, project repository metadata, and the Sites connector's private files read `dev`, `ino`, `size` and nanosecond `mtime`/`ctime` as bigint. Number stats round inodes above 2^53, which NTFS file IDs and some macOS volumes (such as `/tmp` on the sealed system volume) exceed, so a replaced file or directory could pass as unchanged; this made `rejects replacement of a pinned receipt directory` fail intermittently on Windows CI.
-
-### Security
-
-- A rollout watermark now stores its file identity as exact decimal strings. A reply receipt written by an earlier version still matches only when its numeric identity is an exactly representable integer equal to the current file; a rounded identity no longer matches, and the observation reports the rollout as changed instead.
 
 ### Verification
 

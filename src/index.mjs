@@ -40,7 +40,7 @@ import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-o
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.6";
+const VERSION = "1.22.7";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 

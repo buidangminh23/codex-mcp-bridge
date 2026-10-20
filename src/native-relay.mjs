@@ -462,7 +462,7 @@ export function nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentP
   }
   if (command !== "app-server") return null;
   const candidates = snapshot.pipes.filter((pipe) => pipe?.serverPid === desktop.pid
-    && typeof pipe.path === "string" && /^\\\\\.\\pipe\\codex-browser-use-[a-z0-9-]+$/i.test(pipe.path));
+    && typeof pipe.path === "string" && /^\\\\\.\\pipe\\codex-(?:app-tools|browser-use)-[a-z0-9-]+$/i.test(pipe.path));
   const paths = [...new Set(candidates.map((pipe) => pipe.path))].sort();
   return paths;
 }
@@ -493,7 +493,7 @@ public static class CodexNativePipeOwner {
   public static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint serverProcessId);
 }
 '@
-  $names = @([System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match '^\\\\\.\\pipe\\codex-browser-use-[a-zA-Z0-9-]+$' } | Sort-Object | Select-Object -First 128)
+  $names = @([System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match '^\\\\\.\\pipe\\codex-(?:app-tools|browser-use)-[a-zA-Z0-9-]+$' } | Sort-Object | Select-Object -First 128)
   foreach ($pipePath in $names) {
       $client = $null
       try {

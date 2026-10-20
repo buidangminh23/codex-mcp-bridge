@@ -4,6 +4,21 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.13] - 2026-10-20
+
+### Fixed
+
+- Find the Codex Desktop native tools pipe on Desktop 26.1013. That build serves the native app tools on `\\.\pipe\codex-app-tools-<id>` and no longer passes `CODEX_APP_TOOLS_PIPE_PATH` on the app-server command line. Windows discovery only looked at `codex-browser-use-*` pipes, which answer `No handler registered for method: tools/call`, so the relay companion never opened `codex-native-relay-accounts-v2` and every Claude-to-Codex send failed with `RELAY_UNAVAILABLE` (`connect ENOENT`). Discovery now also accepts `codex-app-tools-*` pipes. The existing checks still apply: the pipe must be local, owned by the exact `ChatGPT.exe` ancestor of the companion's app-server, and answer a read-only `list_projects` call. `codex-app-tools-*` sorts first, so it is tried before the browser pipes.
+
+### Verification
+
+- One new test covers a Desktop 26.1013 snapshot with both pipe kinds and checks that only the app-tools pipe is probed. It fails on v1.22.12. A pipe with another `codex-` prefix, and an app-tools pipe owned by another process, are still rejected.
+- On a Windows machine running Codex Desktop 26.1013.4894.0, `resolveNativeToolsPipePath` from v1.22.12 returned `null` and the fixed code returned the live `codex-app-tools-*` pipe, owned by the Desktop process that started the app-server. `list_projects` through that pipe returned the saved projects; the five `codex-browser-use-*` pipes returned `No handler registered for method: tools/call`.
+
+### Limitations
+
+- A running companion keeps its old discovery code until it reloads. After updating, restart Codex Desktop, or let automatic reload pick up the new source, then check `native_relay_status`.
+
 ## [1.22.12] - 2026-10-20
 
 ### Fixed

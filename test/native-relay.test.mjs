@@ -1574,7 +1574,8 @@ describe("native tools pipe discovery", () => {
     for (const pipes of [
       [{ path: modernPipe, serverPid: 99 }],
       [{ path: modernPipe, serverPid: 20 }],
-      [{ path: modernPipe.replace("codex-browser-use-", "codex-app-tools-"), serverPid: 30 }],
+      [{ path: modernPipe.replace("codex-browser-use-", "codex-other-"), serverPid: 30 }],
+      [{ path: modernPipe.replace("codex-browser-use-", "codex-app-tools-"), serverPid: 99 }],
       [{ path: modernPipe.replace("\\\\.\\", "\\\\remote\\"), serverPid: 30 }],
     ]) {
       snapshot.pipes = pipes;
@@ -1582,6 +1583,21 @@ describe("native tools pipe discovery", () => {
     }
     snapshot.pipes = [{ path: `${modernPipe}-second`, serverPid: 30 }, { path: modernPipe, serverPid: 30 }];
     assert.deepEqual(nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentPid: 10, localAppData }), [modernPipe, `${modernPipe}-second`]);
+  });
+
+  it("discovers the Desktop 26.1013 app-tools pipe ahead of browser-only pipes", async () => {
+    const appToolsPipe = String.raw`\\.\pipe\codex-app-tools-d1c7d26e-dc74-4758`;
+    const snapshot = modernSnapshot();
+    snapshot.ancestors[2].executablePath = desktopPath.replace("26.908.4834.0", "26.1013.4894.0");
+    snapshot.pipes = [{ path: modernPipe, serverPid: 30 }, { path: appToolsPipe, serverPid: 30 }];
+    assert.deepEqual(nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentPid: 10, localAppData }), [appToolsPipe, modernPipe]);
+    const probes = [];
+    const resolved = await resolveNativeToolsPipePath({ env: { LOCALAPPDATA: localAppData }, parentPid: 10, platform: "win32",
+      readParentCommandLine: async () => null, readWindowsSnapshot: async () => snapshot,
+      probeWindowsPipe: async (pipe) => { probes.push(pipe); return pipe === appToolsPipe; },
+    });
+    assert.equal(resolved, appToolsPipe);
+    assert.deepEqual(probes, [appToolsPipe]);
   });
 
   it("keeps inherited and legacy pipe precedence and never probes Windows ancestors on Unix", async () => {

@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.8] - 2026-10-20
+
 ### Fixed
 
 - Compare file identities with exact 64-bit values everywhere. Reply and native creation receipts, the creation signing key, Codex rollout watermarks and segment checks, Codex account evidence, Claude Desktop task metadata and account state, project repository metadata, and the Sites connector's private files read `dev`, `ino`, `size` and nanosecond `mtime`/`ctime` as bigint. Number stats round inodes above 2^53, which NTFS file IDs and some macOS volumes (such as `/tmp` on the sealed system volume) exceed, so a replaced file or directory could pass as unchanged; this made `rejects replacement of a pinned receipt directory` fail intermittently on Windows CI.
@@ -11,6 +13,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 ### Security
 
 - A rollout watermark now stores its file identity as exact decimal strings. A reply receipt written by an earlier version still matches only when its numeric identity is an exactly representable integer equal to the current file; a rounded identity no longer matches, and the observation reports the rollout as changed instead.
+
+### Verification
+
+- 7 new regression tests. Two identities that differ only below Number precision (`2^60` and `2^60 + 1`) compare as different for both `ino` and `dev`; the reply and native creation receipt stores reject a pinned directory whose inode changes only below 2^53, and both store tests fail on v1.22.7. The rollout watermark keeps exact string identities through JSON and honors only exactly representable legacy numbers.
+- A review of the change found a test that now passed without reaching its byte comparison: its mock returned Number stats to code that requests bigint. It was fixed and checked by removing the comparison, which makes the test fail.
+- CI passed on macOS, Ubuntu and Windows with Node 22 and 24, including `test (windows-latest, 22)` where the flake appeared. CodeQL re-reported 12 `js/path-injection` flows on the edited stat lines; each source is operator `process.env` configuration, matching the earlier dismissals, and they were dismissed as false positives.
+
+### Limitations
+
+- The 64-bit NTFS case runs for real only on Windows CI; local tests simulate it with mocked bigint stats. A reply observation whose earlier receipt stored a rounded rollout identity reports the rollout as changed; inspect that task instead of resending.
 
 ## [1.22.7] - 2026-10-20
 

@@ -4,6 +4,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Read the Claude Desktop configuration with exact bigint stats in `codex-mcp-bridge-install`, so a configuration file replaced during the installer's read is detected even when the two inodes differ only beyond Number precision. v1.22.8 converted the runtime stores but missed this installer.
+- Notice a new reply in a Claude Code transcript when the file changes within the same millisecond and keeps its size. The reply poll now compares the file's device, inode, nanosecond modification and change times, and size instead of only the millisecond modification time and size.
+
 ## [1.22.8] - 2026-10-20
 
 ### Fixed

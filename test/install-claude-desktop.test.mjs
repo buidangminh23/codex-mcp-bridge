@@ -89,6 +89,29 @@ fs.writeFileSync = function (file, ...args) {
   assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), { concurrent: true });
 });
 
+it("rejects a Desktop config replaced by a file whose identity differs only below Number precision", () => {
+  const config = configWith({ preserved: true });
+  const preload = path.join(sandbox, "precision-config-swap.mjs");
+  fs.writeFileSync(preload, `import fs from 'node:fs';
+const original = fs.lstatSync;
+const base = 2n ** 60n;
+let calls = 0;
+fs.lstatSync = function (file, options) {
+  const status = original.call(this, file, options);
+  if (String(file) !== process.env.CLAUDE_DESKTOP_CONFIG) return status;
+  const ino = base + (calls++ === 0 ? 0n : 1n);
+  return new Proxy(status, { get: (value, key) => key === 'ino' ? (options?.bigint ? ino : Number(ino)) : Reflect.get(value, key) });
+};
+const originalFstat = fs.fstatSync;
+fs.fstatSync = function (descriptor, options) {
+  const status = originalFstat.call(this, descriptor, options);
+  return new Proxy(status, { get: (value, key) => key === 'ino' ? (options?.bigint ? base : Number(base)) : Reflect.get(value, key) });
+};`);
+  assert.equal(Number(2n ** 60n), Number(2n ** 60n + 1n));
+  assert.throws(() => install({ config, env: { NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` } }), /configuration changed during access/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), { preserved: true });
+});
+
 describe("claude desktop installer", () => {
   it("enables Full access and repairs the managed policy when explicitly requested", { skip: process.platform !== "win32" }, () => {
     const home = fs.mkdtempSync(path.join(sandbox, "full-access-home-"));

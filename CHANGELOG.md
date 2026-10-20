@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.7] - 2026-10-20
+
 ### Added
 
 - Install with Homebrew: `brew install buidangminh23/tap/codex-mcp-bridge`. The formula in [buidangminh23/homebrew-tap](https://github.com/buidangminh23/homebrew-tap) follows each npm release.
@@ -13,6 +15,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Record Homebrew's stable `opt` paths instead of a versioned Cellar keg when the Claude Desktop, Codex and native relay installers and `bridge-projects register-manager` write a client configuration, for both the bridge and Homebrew's Node.js. A keg path broke every registration as soon as `brew upgrade` removed the old keg. Paths outside a Homebrew keg are written exactly as before.
 - Start the supervisor when its path reaches the installation through a symbolic link, such as Homebrew's `opt` alias. The direct-execution check compared the unresolved command-line path with the resolved module path, so the process exited at once without serving MCP.
 - Follow a Homebrew upgrade in a running supervisor: it watches the `opt` alias, reloads the new keg like any other installed update, and forks workers with the stable Node.js path, instead of reporting "Installation is not ready" after the old keg is removed.
+
+### Verification
+
+- 9 new regression tests: Cellar to `opt` mapping, a custom `HOMEBREW_PREFIX`, the main-module check through a symlink and a respelled path, a running supervisor following a bridge keg switch, and one following a Node.js keg replacement. The supervisor tests fail on v1.22.6 and pass here.
+- End to end on macOS with a local tap: two packed versions installed with brew, the three installers run against an isolated home, and every recorded path was `opt/codex-mcp-bridge` and `opt/node` (the relay keeps Codex Desktop's Node). A bridge launched from the recorded Claude Desktop entry kept its supervisor through `brew upgrade` and `brew cleanup` and reloaded the new keg; fresh launches from the recorded paths answered `initialize`.
+- An independent adversarial review confirmed two defects in the first draft, a main-module regression for respelled paths and a worker Node path resolved too late, and both were fixed before merge.
+
+### Limitations
+
+- Registrations written from a Homebrew keg by an earlier version still name that keg; run the installers once after upgrading. `codex-native-relay-install` still refuses to rewrite an entry that has `env_vars`, so edit that entry's path by hand.
 
 ## [1.22.6] - 2026-10-20
 

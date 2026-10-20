@@ -675,3 +675,27 @@ it("supports an explicit absolute Codex home and ignores unrelated conversation 
   assert.equal(f.read({ env: { CODEX_HOME: path.join(f.home, ".codex") } }).mode, "bypass");
   assert.equal(f.read({ env: { CODEX_HOME: "relative" } }).status, "unavailable");
 });
+
+it("re-reads every segment when the caller's rollout grows during the set check", (t) => {
+  for (const continuous of [false, true]) {
+    const f = fixture();
+    const readdir = fs.readdirSync;
+    let directoryReads = 0;
+    const mock = t.mock.method(fs, "readdirSync", (directory, ...rest) => {
+      if (fs.realpathSync.native(String(directory)) === fs.realpathSync.native(f.directory) && ++directoryReads % 2 === 0 && (continuous || directoryReads === 2)) {
+        fs.appendFileSync(f.file, `${JSON.stringify({ type: "event_msg", payload: { type: "token_count", turn_id: turnId } })}\n`);
+      }
+      return readdir.call(fs, directory, ...rest);
+    });
+    const state = f.read();
+    mock.mock.restore();
+    if (continuous) {
+      assert.equal(state.status, "unavailable");
+      assert.match(state.reason, /A rollout segment changed while reading/);
+      assert.equal(directoryReads, 6);
+    } else {
+      assert.equal(state.status, "verified", state.reason);
+      assert.equal(directoryReads, 4);
+    }
+  }
+});

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { it } from "node:test";
-import { findRolloutSegments, assertRolloutSetStable } from "../src/rollout-segments.mjs";
+import { findRolloutSegments, assertRolloutSetStable, retryRolloutRead, isTransientRolloutRead } from "../src/rollout-segments.mjs";
 import { scanRollout } from "../src/rollout-reader.mjs";
 
 const ID = "01a079a8-eba3-7480-b626-32cae9ec26a9";
@@ -61,4 +61,23 @@ it("bounds segment discovery and refuses matching directories", (t) => {
   fs.rmdirSync(path.join(f.date, `${f.base}.jsonl`));
   for (let i = 0; i < 65; i++) f.write(`${f.base}_${i.toString(16).padStart(8, "0")}-e6b3-71a3-8793-76394a9c2138.jsonl`);
   assert.throws(() => findRolloutSegments(f.root, ID), /64-segment/);
+});
+
+it("retries only transient rollout reads, within a fixed bound", () => {
+  let calls = 0;
+  assert.equal(retryRolloutRead(() => { if (++calls < 3) throw new Error("The rollout changed while reading"); return "stable"; }), "stable");
+  assert.equal(calls, 3);
+  calls = 0;
+  assert.throws(() => retryRolloutRead(() => { calls++; throw new Error("A rollout segment changed while reading"); }), /segment changed while reading/);
+  assert.equal(calls, 3);
+  for (const message of ["The selected native task rollout identity changed after dispatch", "The pre-send Codex rollout history changed after dispatch", "The Codex task identity is invalid"]) {
+    calls = 0;
+    assert.throws(() => retryRolloutRead(() => { calls++; throw new Error(message); }), (error) => error.message === message);
+    assert.equal(calls, 1, message);
+    assert.equal(isTransientRolloutRead(message), false, message);
+  }
+  for (const message of ["The rollout segment set changed while reading", "The Codex rollout changed while opening", "The rollout has an incomplete final record"]) {
+    assert.equal(isTransientRolloutRead(new Error(message)), true, message);
+  }
+  assert.equal(isTransientRolloutRead(undefined), false);
 });

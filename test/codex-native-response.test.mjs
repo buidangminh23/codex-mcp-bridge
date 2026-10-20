@@ -91,6 +91,50 @@ describe("native Codex response observation", () => {
     assert.equal(result.text, "Received safely");
   });
 
+  for (const variant of ["single_write", "continuous_writes"]) it(`re-reads the whole rollout set when Codex appends during the set check: ${variant}`, (t) => {
+    const f = fixture(t);
+    f.append(f.turn({ turnId: PREVIOUS_TURN_ID }));
+    const readdir = fs.readdirSync;
+    let directoryReads = 0;
+    t.mock.method(fs, "readdirSync", (directory, ...rest) => {
+      if (fs.realpathSync.native(String(directory)) === fs.realpathSync.native(f.directory) && ++directoryReads % 2 === 0 &&
+          (variant === "continuous_writes" || directoryReads === 2)) {
+        f.append([{ type: "event_msg", payload: { type: "token_count", turn_id: PREVIOUS_TURN_ID } }]);
+      }
+      return readdir.call(fs, directory, ...rest);
+    });
+    const mark = f.capture();
+    if (variant === "single_write") {
+      assert.equal(mark.status, "available", mark.reason);
+      assert.equal(mark.size, fs.statSync(f.file).size);
+      assert.equal(directoryReads, 4);
+    } else {
+      assert.equal(mark.status, "unavailable");
+      assert.match(mark.reason, /A rollout segment changed while reading/);
+      assert.equal(directoryReads, 6);
+    }
+  });
+
+  for (const reader of ["turn", "dispatch"]) it(`re-reads the rollout set when Codex appends while a reply is read: ${reader}`, (t) => {
+    const f = fixture(t);
+    f.append(f.turn({ turnId: PREVIOUS_TURN_ID }));
+    const mark = f.capture();
+    assert.equal(mark.status, "available", mark.reason);
+    f.append(f.turn());
+    const readdir = fs.readdirSync;
+    let directoryReads = 0;
+    t.mock.method(fs, "readdirSync", (directory, ...rest) => {
+      if (fs.realpathSync.native(String(directory)) === fs.realpathSync.native(f.directory) && ++directoryReads === 2) {
+        f.append([{ type: "event_msg", payload: { type: "token_count", turn_id: PREVIOUS_TURN_ID } }]);
+      }
+      return readdir.call(fs, directory, ...rest);
+    });
+    const result = reader === "turn" ? f.read(mark) : f.resolve(mark);
+    assert.equal(result.status, "completed", result.reason);
+    assert.equal(result.text, "Received safely");
+    assert.ok(directoryReads >= 4);
+  });
+
   it("keeps a matching active dispatch pending without promoting commentary", (t) => {
     const f = fixture(t);
     const mark = f.capture();

@@ -4,12 +4,12 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { it } from "node:test";
 
 import { RelaySocketServer, createNativeRelayLifecycle, createNativeScopeAuthorizer, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
 import { NativeDesktopRelay, responseTooLargeError, MAX_RESPONSE_FRAME_BYTES } from "../src/native-relay.mjs";
-import { createReloadControl } from "../src/reload-control.mjs";
+import { createReloadControl, exitWhenClientCloses } from "../src/reload-control.mjs";
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-reload-"));
@@ -68,6 +68,50 @@ it("bounds scope metadata reads while requiring exact task and account identity"
   })));
   wrongTarget = true;
   await assert.rejects(() => authorize(request), { code: "NATIVE_SCOPE_UNVERIFIED" });
+});
+
+it("drains an accepted delivery before exiting when the MCP client closes", async (t) => {
+  let release;
+  let dispatched;
+  const started = new Promise((resolve) => { dispatched = resolve; });
+  const pending = new Promise((resolve) => { release = resolve; });
+  const server = new RelaySocketServer({
+    ...relayOptions(fixture(t)),
+    dispatch: async () => { dispatched(); await pending; return { success: true }; },
+  });
+  const lifecycle = createNativeRelayLifecycle({ nativeTools: nativeStub(), relays: [server] });
+  t.after(() => { release(); return lifecycle.stop(); });
+  await lifecycle.activate();
+  const stdin = new EventEmitter();
+  const channel = new EventEmitter();
+  const exits = [];
+  const shutdown = exitWhenClientCloses({ prepare: () => lifecycle.refuseNewDeliveries(), busy: lifecycle.deliveryReason, stop: lifecycle.stop,
+    stdin, channel, pollMs: 5, drainMs: 5000, stopMs: 2000, exit: (code) => exits.push(code) });
+  const client = net.connect(server.socketPath);
+  client.on("error", () => {});
+  await once(client, "connect");
+  const reply = new Promise((resolve) => { let data = ""; client.on("data", (chunk) => { data += chunk; }); client.on("end", () => resolve(data)); });
+  client.write(`${JSON.stringify({ targetThreadId: "destination", message: "once" })}\n`);
+  await started;
+  stdin.emit("end");
+  channel.emit("disconnect");
+  const late = net.connect(server.socketPath);
+  late.on("error", () => {});
+  const [refusal] = await once(late, "data");
+  assert.equal(JSON.parse(refusal).error.code, "RELAY_STOPPING");
+  assert.equal(JSON.parse(refusal).error.sent, false);
+  late.destroy();
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+  assert.deepEqual(exits, []);
+  assert.equal(server.started, true);
+  await assert.rejects(lifecycle.activate(), /shutting down/);
+  assert.equal(server.accepting, false);
+  release();
+  assert.equal(JSON.parse(await reply).ok, true);
+  await shutdown.close();
+  assert.deepEqual(exits, [0]);
+  assert.equal(server.started, false);
+  if (process.platform !== "win32") assert.equal(fs.existsSync(server.socketPath), false);
 });
 
 it("keeps disconnected native requests busy until dispatch finishes", async (t) => {

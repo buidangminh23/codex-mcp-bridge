@@ -616,6 +616,7 @@ export class PeerEndpoint {
     this.connections = new Set();
     this.activityRevision = 0;
     this.reloadPaused = false;
+    this.intakeClosed = false;
     this.processHandlersRegistered = false;
     this.strict = hardenedBridgeEnabled(env);
     this.protectSocket = protectSocket ?? (hardenedBridgeEnabled(env) ? protectCurrentUserPipe : null);
@@ -655,6 +656,7 @@ export class PeerEndpoint {
 
   start() {
     if (this.reloadPaused) throw new Error("The peer endpoint is quiesced for reload");
+    if (this.intakeClosed) throw new Error("The peer endpoint is shutting down because its MCP client closed");
     if (this.started) return;
     if (this.startPromise) return this.startPromise;
     const starting = this.#startOnce();
@@ -1148,6 +1150,12 @@ export class PeerEndpoint {
     this.started = false;
     this.#removeRegistration();
     if (revision !== this.activityRevision || this.reloadReason()) throw new Error("Peer activity raced with reload; the endpoint remains quiesced");
+  }
+
+  closeIntake() {
+    this.intakeClosed = true;
+    this.#removeRegistration();
+    if (this.server?.listening) this.server.close();
   }
 
   async resume() {

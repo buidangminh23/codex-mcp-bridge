@@ -28,7 +28,7 @@ import {
 import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { assertAccountIdentity } from "./bridge-account-context.mjs";
-import { createReloadControl } from "./reload-control.mjs";
+import { createReloadControl, exitWhenClientCloses } from "./reload-control.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
 import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
@@ -38,13 +38,16 @@ import { NativeCreationReceipts, creationIdValid } from "./native-creation-recei
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.10";
+const VERSION = "1.22.11";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent, details) {
   const size = code === "RESPONSE_TOO_LARGE" && details ? { boundary: details.boundary, bytes: details.bytes, limit: details.limit } : {};
   return { ok: false, v: RELAY_PROTOCOL_VERSION, error: { code, message, ...size, ...(sent === false ? { sent: false } : {}) } };
 }
+
+const RELAY_RELOADING_REFUSAL = Object.freeze({ code: "RELAY_RELOADING", message: "The native relay is reloading; no message was sent" });
+const RELAY_STOPPING_REFUSAL = Object.freeze({ code: "RELAY_STOPPING", message: "The native relay is shutting down because its MCP client closed; no message was sent" });
 
 function boundRequest(payload) {
   return payload?.v === ACCOUNT_RELAY_PROTOCOL_VERSION;
@@ -411,6 +414,7 @@ export class RelaySocketServer {
     this.connections = new Set();
     this.handlers = new Set();
     this.accepting = true;
+    this.refusal = RELAY_RELOADING_REFUSAL;
     this.closed = Promise.resolve();
     this.processHandlers = new Map();
     this.aclReady = !IS_WINDOWS || !strict;
@@ -558,7 +562,7 @@ export class RelaySocketServer {
     }
     if (!this.accepting) {
       socket.on("error", () => {});
-      socket.end(`${JSON.stringify(errorResponse("RELAY_RELOADING", "The native relay is reloading; no message was sent", false))}\n`);
+      socket.end(`${JSON.stringify(errorResponse(this.refusal.code, this.refusal.message, false))}\n`);
       return;
     }
     let buffer = Buffer.alloc(0);
@@ -712,10 +716,16 @@ export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = (
   const servers = [...new Set(relays)];
   let startups = [];
   let ownedSockets = [];
-  const inspect = () => {
+  let stopping = false;
+  const deliveryReason = () => {
     if (servers.some((relay) => relay.handlers.size)) return "Native relay requests are still active";
     if (servers.some((relay) => relay.connections.size)) return "Native relay clients are still connected";
     if (nativeTools.pending.size) return "Native Desktop dispatches are still pending";
+    return null;
+  };
+  const inspect = () => {
+    const reason = deliveryReason();
+    if (reason) return reason;
     if (nativeTools.connecting || startups.some((startup) => startup.busy)) return "Native relay startup is still pending";
     return null;
   };
@@ -729,6 +739,8 @@ export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = (
     nativeTools.close();
   };
   const activate = async () => {
+    if (stopping) throw new Error("The native relay is shutting down because its MCP client closed");
+    for (const relay of servers) relay.refusal = RELAY_RELOADING_REFUSAL;
     if (startups.length) {
       for (const relay of servers) relay.accepting = true;
       return;
@@ -745,8 +757,16 @@ export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = (
   };
   return {
     inspect,
+    deliveryReason,
     activate,
     stop,
+    refuseNewDeliveries() {
+      stopping = true;
+      for (const relay of servers) {
+        relay.refusal = RELAY_STOPPING_REFUSAL;
+        relay.accepting = false;
+      }
+    },
     async quiesce() {
       for (const relay of servers) relay.accepting = false;
       const reason = inspect();
@@ -861,6 +881,7 @@ if (invokedDirectly) {
   if (!reload.staged) void lifecycle.activate().catch((error) => log(`native relay startup failed: ${error.message}`));
   mcp.server.onclose = () => { void lifecycle.stop(); };
   await mcp.connect(new StdioServerTransport());
+  exitWhenClientCloses({ prepare: () => lifecycle.refuseNewDeliveries(), busy: lifecycle.deliveryReason, stop: lifecycle.stop, log });
   reload.listen();
   log(`ready on ${PLATFORM_LABEL} (${strictDesktop ? accountRelay.socketPath : relay.started ? relay.socketPath : "socket down"})`);
 }

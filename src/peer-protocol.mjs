@@ -860,7 +860,7 @@ export class PeerEndpoint {
       const { sessionId, cwd } = pending.transcriptSession;
       const file = findTranscriptFile(sessionId, cwd);
       let stamp;
-      try { const stat = fs.statSync(file); stamp = `${stat.mtimeMs}:${stat.size}`; }
+      try { const stat = fs.statSync(file, { bigint: true }); stamp = `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`; }
       catch { continue; }
       if (stamp === pending.transcriptStamp) continue;
       pending.transcriptStamp = stamp;

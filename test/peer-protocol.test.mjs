@@ -590,6 +590,27 @@ describe("peer endpoint", () => {
     }
   });
 
+  it("observes a transcript reply even when the millisecond mtime and size stay unchanged", async (t) => {
+    const isolated = new PeerEndpoint({ name: "stamp-fixture", cwd: sandbox });
+    t.after(() => isolated.stop());
+    const dir = path.join(projectsDir, "stamp-endpoint");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "stamp-endpoint.jsonl");
+    const originalStat = fs.statSync;
+    t.mock.method(fs, "statSync", function (target, options) {
+      const status = originalStat.call(this, target, options);
+      if (path.resolve(String(target)) !== path.resolve(file) || options?.bigint) return status;
+      return new Proxy(status, { get: (value, key) => key === "mtimeMs" ? 1 : key === "size" ? 1 : Reflect.get(value, key) });
+    });
+    t.mock.method(isolated, "send", async (target, text, { msgId }) => {
+      fs.appendFileSync(file, JSON.stringify({ uuid: msgId, message: { role: "user", content: text } }) + "\n");
+      setTimeout(() => fs.appendFileSync(file, JSON.stringify({ uuid: "stamp-answer", parentUuid: msgId, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "observed after the first poll" }] } }) + "\n"), 700);
+      return msgId;
+    });
+    const result = await isolated.sendAndWait("stamp-peer", "hello", { timeoutMs: 4000, transcriptSession: { sessionId: "stamp-endpoint", cwd: "unused" } });
+    assert.equal(result.reply?.text, "observed after the first poll");
+  });
+
   it("retains interrupted receipts, releases only reply waiting, and permits a separate follow-up", async (t) => {
     const isolated = new PeerEndpoint({ name: "interruption-fixture", cwd: sandbox });
     t.after(() => isolated.stop());

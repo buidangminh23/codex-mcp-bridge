@@ -45,23 +45,23 @@ fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
 function readConfig() {
   let descriptor;
   try {
-    const before = fs.lstatSync(cfgPath);
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 4 * 1024 * 1024) throw new Error("Unsafe Desktop configuration file");
+    const before = fs.lstatSync(cfgPath, { bigint: true });
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size > 4n * 1024n * 1024n) throw new Error("Unsafe Desktop configuration file");
     descriptor = fs.openSync(cfgPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-    const opened = fs.fstatSync(descriptor);
-    const fields = ["dev", "ino", "size", "mtimeMs", "ctimeMs"];
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    const fields = ["dev", "ino", "size", "mtimeNs", "ctimeNs"];
     const matches = (left, right) => fields.every(field => left[field] === right[field]);
-    if (!opened.isFile() || opened.nlink !== 1 || !matches(before, opened)) throw new Error("Desktop configuration changed during access");
-    const data = Buffer.alloc(opened.size);
+    if (!opened.isFile() || opened.nlink !== 1n || !matches(before, opened)) throw new Error("Desktop configuration changed during access");
+    const data = Buffer.alloc(Number(opened.size));
     let offset = 0;
     while (offset < data.length) {
       const count = fs.readSync(descriptor, data, offset, data.length - offset, offset);
       if (!count) throw new Error("Desktop configuration changed during access");
       offset += count;
     }
-    const after = fs.fstatSync(descriptor);
-    const current = fs.lstatSync(cfgPath);
-    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !matches(opened, after) || !matches(after, current)) throw new Error("Desktop configuration changed during access");
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    const current = fs.lstatSync(cfgPath, { bigint: true });
+    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n || !matches(opened, after) || !matches(after, current)) throw new Error("Desktop configuration changed during access");
     return { data, version: fields.map(field => current[field]) };
   } catch (error) {
     if (error.code === "ENOENT" && descriptor === undefined) return null;

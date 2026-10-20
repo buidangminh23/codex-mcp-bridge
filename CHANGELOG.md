@@ -4,6 +4,28 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.12] - 2026-10-20
+
+### Fixed
+
+- Move directly registered Codex entries to the supervisor. `claude-mcp-bridge-install` and `codex-native-relay-install` used to refuse an existing `codex-native-relay` entry that had `env_vars`, the very setting the README told users to add, and `codex mcp add` drops `env_vars` and every comment in `config.toml`. When the environment does not change, the installers now edit only `command` and `args` of the existing table in place, read the entry back through `codex mcp get --json`, and restore the previous file if anything differs. Seen on 2026-10-20: both Codex-side entries still pointed at `src/claude-bridge.mjs` and `src/native-relay-companion.mjs`, so `claude-bridge` stayed `1.22.8 STALE` after v1.22.10 until Codex Desktop restarted.
+- On Windows and macOS, `codex-native-relay-install` adds `CODEX_APP_TOOLS_PIPE_PATH` to the relay's `env_vars` itself, by name only, instead of asking for a hand edit.
+- An entry written as an inline table or with dotted keys, which the in-place edit does not handle, still goes through `codex mcp add` when that loses nothing; if the relay's `env_vars` cannot then be added, the installer says so instead of failing. Datetimes written with a space instead of `T` no longer stop the scan.
+- Keep relay requests and peer messages that reach the listener while a reload quiesces. A client whose connection was still in the kernel's accept queue when the listener closed was reset: the relay client reported `RELAY_DELIVERY_UNCONFIRMED` for a request the companion never read, and a Claude peer message was lost after a successful write. Quiesce now removes the socket path first, waits a few event-loop turns for queued connections, answers relay clients with `RELAY_RELOADING` (no message sent), and reads peer messages into the inbox that the next worker restores. A relay client answered with `RELAY_RELOADING` during reload also no longer keeps the old listener from closing. The relay now binds a private name and hard-links it to the public path, because closing a Unix socket server unlinks the path it was bound to; a companion that binds the public path while a reload drains keeps its socket.
+
+### Verification
+
+- 18 new tests. The installer tests run both installers against a fake `codex` and a live-shaped `config.toml`; 7 tests fail on v1.22.10. The race tests block the event loop while a client connects and writes, then quiesce; the relay and peer cases fail on v1.22.10 with `write EPIPE` and an empty inbox. A successor companion's socket survives the old listener closing; that test fails when the relay binds the public path directly.
+- Both installers were also run against the real Codex CLI 0.163.0 with a temporary `CODEX_HOME`, covering a CRLF file, a multi-line `args` array with comments, a rerun and a fresh install. Only `command`, `args` and the added `env_vars` changed.
+- An independent review of reload safety covered the relay, the peer endpoint and the supervisor. Two of five claims survived two refutation attempts each; both are fixed above. A second review of this change found three more defects that survived refutation: inline-table entries refused, space-separated datetimes refused, and the close-time unlink of a successor's socket. All three are fixed, each with a test.
+
+- CodeQL reported a file-system race in the first version of the config write: it checked the file, then wrote it by path. The installer now reads `config.toml` through one file descriptor, keeps its device, inode, mode and contents, and checks all four again through a new descriptor just before the atomic rename. The remaining `js/path-injection` reports on the config and relay socket paths come from operator configuration (`CODEX_HOME`, `CODEX_NATIVE_RELAY_SOCKET` or the home directory) and were dismissed as false positives, as in earlier releases.
+
+### Limitations
+
+- Windows named pipes cannot be removed from the namespace before the listener closes, so a client that connects in the last moment before close can still be reset there. It is reported as unconfirmed, never as delivered.
+- Moving an entry to the supervisor needs one Codex Desktop restart. The installer does not touch an entry whose environment must also change while it has custom `env_vars`, `cwd`, tool filters or timeouts; it prints the exact `command` and `args` to set by hand.
+
 ## [1.22.11] - 2026-10-20
 
 ### Fixed

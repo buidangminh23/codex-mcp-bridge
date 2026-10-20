@@ -17,14 +17,14 @@ import {
   spawnEnv,
 } from "../src/platform.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
-import { stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
+import { applyStdioMcpRegistration, stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
-import { enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
+import { codexAccessPaths, enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
 import { stableInstallPath } from "../src/install-paths.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.11";
+const VERSION = "1.22.12";
 const root = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const entry = path.join(root, "src", "mcp-supervisor.mjs");
 const entryArgs = ["native-relay-companion.mjs"];
@@ -80,16 +80,12 @@ const existingServer = servers.some((server) => server.name === serverName)
  */
 const runtime = resolveCodexDesktopNodeBin();
 
-if (IS_MACOS || IS_WINDOWS) {
-  console.log(`Native Desktop setup: in ${path.join(homeDir(), ".codex", "config.toml")} (or CODEX_HOME/config.toml), add env_vars = ["CODEX_APP_TOOLS_PIPE_PATH"] to the existing [mcp_servers.${serverName}] entry after registration.`);
-  console.log("Preserve existing settings and append the name to any existing env_vars list; do not save the temporary pipe path. Reconnect the relay or restart Codex Desktop after active work finishes, then check native_relay_status in the existing task.");
-}
-
 const registration = stdioMcpRegistration({ name: serverName, existing: existingServer, node: runtime.path, entry, entryArgs, envOverrides: {
   ...(process.env.CLAUDE_DESKTOP_USER_DATA !== undefined ? { CLAUDE_DESKTOP_USER_DATA: process.env.CLAUDE_DESKTOP_USER_DATA } : {}),
 } });
 createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...registration.environment }) });
-run(registration.args);
+const ensureEnvVars = IS_MACOS || IS_WINDOWS ? ["CODEX_APP_TOOLS_PIPE_PATH"] : [];
+const applied = applyStdioMcpRegistration({ name: serverName, registration, existing: existingServer, run, configPath: codexAccessPaths().config, ensureEnvVars });
 
 console.log(`platform: ${PLATFORM_LABEL}`);
 console.log(`relay runtime: ${runtime.path} (${runtime.source})`);
@@ -105,8 +101,10 @@ if (runtime.source === "process.execPath" && hasCodexDesktopApp()) {
   );
   console.log("runtime shipped inside Codex Desktop if that happens.");
 }
-console.log(`registered MCP server "${serverName}" with Codex:`);
+console.log(`registered MCP server "${serverName}" with Codex (${applied.mode === "retarget" ? "existing entry retargeted in place; its other settings were kept" : "codex mcp add"}):`);
 console.log(run(["mcp", "get", serverName]));
+if (applied.notice) console.log(`NOTE: ${applied.notice}`);
+else if (ensureEnvVars.length) console.log(`env_vars includes ${ensureEnvVars.join(", ")}; the temporary pipe path itself is never saved.`);
 
 const existing = readRelayConfig()?.relayThreadId;
 if (existing) {
@@ -134,5 +132,5 @@ if (process.argv.includes("--desktop-tasks")) {
   writeRelayConfig({ ...readRelayConfig(), desktopTasks: true });
   console.log("Desktop task creation enabled: exact saved local projects, immediate visibility, Codex Desktop permissions.");
 }
-console.log("Reconnect codex-native-relay once in the existing Codex Desktop task to load the supervisor, then verify native_relay_status reports autoReload enabled. Subsequent compatible installed-source updates reload automatically when safely idle.");
+console.log("One-time step: after active Codex work finishes, quit and reopen Codex Desktop once so it starts the supervisor. Then call native_relay_status in an existing task: it must report \"automatic reload: current\" with a supervisor pid. Later compatible installed updates reload automatically when the relay is idle.");
 console.log("remove: node scripts/install-native-relay.mjs --remove");

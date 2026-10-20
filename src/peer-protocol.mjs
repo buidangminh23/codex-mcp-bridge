@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { homeDir, IS_WINDOWS } from "./platform.mjs";
-import { cloneReloadState } from "./reload-control.mjs";
+import { cloneReloadState, drainPendingAccepts } from "./reload-control.mjs";
 import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
 
@@ -586,6 +586,8 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
   return null;
 }
 
+const RELOAD_DRAIN_MS = 1000;
+
 /**
  * Registers this process as a peer that Claude sessions can see in their agent
  * list and reply to. Without a registered socket, Claude has no address to
@@ -1140,6 +1142,19 @@ export class PeerEndpoint {
   async quiesce() {
     const reason = this.reloadReason();
     if (reason) throw new Error(reason);
+    const withdrawn = this.started && !IS_WINDOWS;
+    if (withdrawn) { try { fs.rmSync(this.socketPath, { force: true }); } catch {} }
+    await drainPendingAccepts();
+    const deadline = Date.now() + RELOAD_DRAIN_MS;
+    while (this.connections.size && Date.now() < deadline) await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
+    const late = this.reloadReason();
+    if (late) {
+      if (withdrawn) {
+        try { this.server?.close(); } catch {}
+        this.started = false;
+      }
+      throw new Error(late);
+    }
     const revision = this.activityRevision;
     this.reloadPaused = true;
     globalThis.clearInterval(this.responsePoll);

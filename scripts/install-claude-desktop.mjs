@@ -9,10 +9,11 @@ import { desktopTasksConfigured } from "../src/native-relay.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
 import { enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
+import { stableInstallPath, stableNodeBin } from "../src/install-paths.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();
 const reset = process.argv.includes("--reset");
 const forceDesktopTasks = process.argv.includes("--desktop-tasks");
@@ -29,7 +30,7 @@ if (fullAccess) enableCodexFullAccess();
  */
 const defaultRoots = "*";
 
-const nodeBin = process.env.NODE_EXE ?? process.execPath;
+const nodeBin = process.env.NODE_EXE ?? stableNodeBin();
 const codexBin = resolveCodexBin(process.env.CODEX_EXE);
 
 if (!fs.existsSync(nodeBin)) throw new Error(`node executable not found: ${nodeBin}`);

@@ -4,6 +4,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Added
+
+- Install with Homebrew: `brew install buidangminh23/tap/codex-mcp-bridge`. The formula in [buidangminh23/homebrew-tap](https://github.com/buidangminh23/homebrew-tap) follows each npm release.
+
+### Fixed
+
+- Record Homebrew's stable `opt` paths instead of a versioned Cellar keg when the Claude Desktop, Codex and native relay installers and `bridge-projects register-manager` write a client configuration, for both the bridge and Homebrew's Node.js. A keg path broke every registration as soon as `brew upgrade` removed the old keg. Paths outside a Homebrew keg are written exactly as before.
+- Start the supervisor when its path reaches the installation through a symbolic link, such as Homebrew's `opt` alias. The direct-execution check compared the unresolved command-line path with the resolved module path, so the process exited at once without serving MCP.
+- Follow a Homebrew upgrade in a running supervisor: it watches the `opt` alias, reloads the new keg like any other installed update, and forks workers with the stable Node.js path, instead of reporting "Installation is not ready" after the old keg is removed.
+
 ## [1.22.6] - 2026-10-20
 
 ### Fixed

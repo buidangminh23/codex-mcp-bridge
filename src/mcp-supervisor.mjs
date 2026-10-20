@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createReleaseSnapshot, sourceRevision } from "./release-snapshot.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
+import { isMainModule, stableInstallPath } from "./install-paths.mjs";
 
 const ENTRIES = new Set(["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs"]);
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
@@ -40,7 +41,7 @@ class Worker {
     this.retiring = false;
     this.closed = false;
     this.process = fork(path.join(release.directory, "src", entry), [], {
-      execPath: process.execPath, execArgv: [], cwd: process.cwd(), windowsHide: true,
+      execPath: stableInstallPath(process.execPath), execArgv: [], cwd: process.cwd(), windowsHide: true,
       env: { ...env, CODEX_BRIDGE_WORKER: "1", CODEX_BRIDGE_STAGED: "1" },
       stdio: ["pipe", "pipe", "pipe", "ipc"], serialization: "json",
     });
@@ -133,14 +134,16 @@ class Worker {
 
 export async function runSupervisor(entry, options = {}) {
   if (!ENTRIES.has(entry)) throw new Error("Expected index.mjs, claude-bridge.mjs, or native-relay-companion.mjs");
-  const root = fs.realpathSync.native(options.root ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+  const installRoot = stableInstallPath(fs.realpathSync.native(options.root ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")));
+  const currentRoot = () => fs.realpathSync.native(installRoot);
+  const root = currentRoot();
   if (process.argv.includes("--version") || process.argv.includes("-v")) {
     process.stdout.write(`${JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version}\n`);
     return;
   }
   const log = (message) => process.stderr.write(`[bridge-supervisor] ${message}\n`);
   const output = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
-  const env = { ...process.env, CODEX_BRIDGE_SOURCE_ROOT: root };
+  const env = { ...process.env, CODEX_BRIDGE_SOURCE_ROOT: installRoot };
   const routingConfiguration = () => entry === "native-relay-companion.mjs" ? null : desktopTasksConfigured(env);
   if (entry === "native-relay-companion.mjs" && !env.CODEX_APP_TOOLS_PIPE_PATH) {
     const { resolveNativeToolsPipePath } = await import("./native-relay.mjs");
@@ -226,9 +229,10 @@ export async function runSupervisor(entry, options = {}) {
   };
   const check = async () => {
     if (switching || !ready || stopping || failure) return;
+    let source;
     let revision;
     let routing;
-    try { revision = sourceRevision(root); routing = routingConfiguration(); }
+    try { source = currentRoot(); revision = sourceRevision(source); routing = routingConfiguration(); }
     catch (error) { reason = `Installation is not ready: ${error.message}`; return; }
     if (observed !== revision || observedRouting !== routing) { observed = revision; observedRouting = routing; observedAt = Date.now(); retryAt = 0; }
     if (revision === active.release.revision && routing === active.routingConfiguration) { reason = null; return; }
@@ -241,7 +245,7 @@ export async function runSupervisor(entry, options = {}) {
     try {
       const state = await previous.control("inspect");
       if (!state.reloadable) { reason = state.reason ?? "Pending deliveries prevent a safe reload"; return; }
-      const release = createReleaseSnapshot(root, { expectedRevision: revision });
+      const release = createReleaseSnapshot(source, { expectedRevision: revision });
       candidate = spawn(release, routing);
       const initialized = await candidate.rpc("initialize", initializeParams);
       if (initialized.protocolVersion !== initializeResult.protocolVersion || JSON.stringify(initialized.capabilities) !== JSON.stringify(initializeResult.capabilities)) {
@@ -251,7 +255,7 @@ export async function runSupervisor(entry, options = {}) {
       const catalog = await candidate.rpc("tools/list", {});
       if (!Array.isArray(catalog.tools) || !catalog.tools.length || catalog.nextCursor) throw new Error("The candidate tool catalog is incomplete");
       const oldCatalog = await previous.rpc("tools/list", {});
-      if (sourceRevision(root) !== revision) throw new Error("The installation changed before activation");
+      if (sourceRevision(currentRoot()) !== revision) throw new Error("The installation changed before activation");
       if (routingConfiguration() !== routing) throw new Error("The routing configuration changed before activation");
       quiesced = true;
       const exported = await previous.control("quiesce");
@@ -339,6 +343,6 @@ export async function runSupervisor(entry, options = {}) {
   log(`supervising ${entry}; installed updates activate after pending work completes`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(process.argv[1], import.meta.url)) {
   await runSupervisor(process.argv[2]);
 }

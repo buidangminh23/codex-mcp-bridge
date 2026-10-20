@@ -1286,8 +1286,10 @@ it("stops peer intake on client close while keeping accepted connections open", 
     accepted.on("error", () => {});
     await new Promise((resolve) => accepted.once("connect", resolve));
     while (!endpoint.connections.size) await yieldToEvents();
+    const registered = () => listClaudeSessions({ includeBridges: true }).some((row) => row.socket === endpoint.socketPath);
+    assert.equal(registered(), true);
     endpoint.closeIntake();
-    assert.equal(fs.existsSync(endpoint.registryPath), false);
+    assert.equal(registered(), false);
     assert.throws(() => endpoint.start(), /shutting down because its MCP client closed/);
     const late = net.connect(endpoint.socketPath);
     const lateResult = await new Promise((resolve) => { late.once("error", (error) => resolve(error.code)); late.once("connect", () => { late.destroy(); resolve("connected"); }); });

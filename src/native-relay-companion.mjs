@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -28,7 +29,7 @@ import {
 import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { assertAccountIdentity } from "./bridge-account-context.mjs";
-import { createReloadControl, exitWhenClientCloses } from "./reload-control.mjs";
+import { createReloadControl, drainPendingAccepts, exitWhenClientCloses } from "./reload-control.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
 import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
@@ -421,6 +422,14 @@ export class RelaySocketServer {
     this.provisionalSockets = new Set();
     this.startGeneration = 0;
     this.startPromise = null;
+    this.withdrawn = false;
+    this.boundIdentity = null;
+  }
+
+  withdraw() {
+    if (!this.started || IS_WINDOWS || this.withdrawn || !this.#ownsPublicPath()) return;
+    this.withdrawn = true;
+    try { fs.rmSync(this.socketPath, { force: true }); } catch {}
   }
 
   start() {
@@ -438,6 +447,8 @@ export class RelaySocketServer {
     if (!IS_WINDOWS) fs.mkdirSync(path.dirname(this.socketPath), { recursive: true });
 
     const generation = ++this.startGeneration;
+    this.withdrawn = false;
+    this.boundIdentity = null;
     this.aclReady = !IS_WINDOWS || !this.strict;
     this.server = net.createServer((socket) => this.#handleConnection(socket));
     await this.#listen({ replaceStale: true });
@@ -504,7 +515,54 @@ export class RelaySocketServer {
    * swept, an accepted one means a live companion already has the socket and
    * this process leaves it alone.
    */
+  #bind(target) {
+    return new Promise((resolve, reject) => {
+      this.server.once("error", reject);
+      this.server.listen(target, () => {
+        this.server.off("error", reject);
+        resolve();
+      });
+    });
+  }
+
+  #ownsPublicPath() {
+    if (!this.boundIdentity) return false;
+    try {
+      const current = fs.lstatSync(this.socketPath, { bigint: true });
+      return current.dev === this.boundIdentity.dev && current.ino === this.boundIdentity.ino;
+    } catch { return false; }
+  }
+
+  async #listenLinked(replaceStale) {
+    const privatePath = path.join(path.dirname(this.socketPath), `.${randomBytes(6).toString("hex")}.sock`);
+    try { await this.#bind(privatePath); }
+    catch (error) {
+      if (["ENAMETOOLONG", "EINVAL"].includes(error.code)) return false;
+      throw error;
+    }
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try { fs.linkSync(privatePath, this.socketPath); break; }
+        catch (error) {
+          if (error.code !== "EEXIST") throw error;
+          if (!replaceStale || attempt || await this.#socketIsLive()) throw new Error(`another native relay companion already owns ${this.socketPath}`);
+          this.log(`removing the stale relay socket left at ${this.socketPath}`);
+          fs.rmSync(this.socketPath, { force: true });
+        }
+      }
+      const identity = fs.lstatSync(this.socketPath, { bigint: true });
+      this.boundIdentity = { dev: identity.dev, ino: identity.ino };
+    } catch (error) {
+      await this.#closeServer();
+      throw error;
+    } finally {
+      fs.rmSync(privatePath, { force: true });
+    }
+    return true;
+  }
+
   async #listen({ replaceStale }) {
+    if (!IS_WINDOWS && await this.#listenLinked(replaceStale)) return;
     try {
       await new Promise((resolve, reject) => {
         this.server.once("error", reject);
@@ -562,6 +620,8 @@ export class RelaySocketServer {
     }
     if (!this.accepting) {
       socket.on("error", () => {});
+      socket.setTimeout(5000, () => socket.destroy());
+      socket.resume();
       socket.end(`${JSON.stringify(errorResponse(this.refusal.code, this.refusal.message, false))}\n`);
       return;
     }
@@ -645,7 +705,7 @@ export class RelaySocketServer {
       catch { resolve(); }
     });
     try {
-      if (this.started && !IS_WINDOWS) fs.rmSync(this.socketPath, { force: true });
+      if (this.started && !IS_WINDOWS && !this.withdrawn && (!this.boundIdentity || this.#ownsPublicPath())) fs.rmSync(this.socketPath, { force: true });
     } catch {}
     this.started = false;
   }
@@ -772,7 +832,11 @@ export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = (
       const reason = inspect();
       if (reason) throw new Error(reason);
       ownedSockets = servers.filter((relay) => relay.started).map((relay) => relay.socketPath);
+      for (const relay of servers) relay.withdraw();
+      await drainPendingAccepts();
+      const late = inspect();
       await stop();
+      if (late) throw new Error(late);
     },
     exportState: () => ({ ownedSockets }),
     restore(payload) {

@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 import { PLATFORM_LABEL, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
-import { codexMcpRegistration } from "../src/codex-mcp-registration.mjs";
+import { applyStdioMcpRegistration, codexMcpRegistration } from "../src/codex-mcp-registration.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
-import { enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
+import { codexAccessPaths, enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
 import { stableInstallPath, stableNodeBin } from "../src/install-paths.mjs";
 
 exitForVersionRequest(import.meta.url);
@@ -43,12 +43,12 @@ const existing = servers.some((server) => server.name === serverName)
   ? JSON.parse(run(["mcp", "get", serverName, "--json"])) : null;
 const registration = codexMcpRegistration({ name: serverName, existing, node: nodeBin, entry, entryArgs, env: process.env, desktopOnly: desktopTasksConfigured() });
 createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...registration.environment }) });
-run(registration.args);
+const applied = applyStdioMcpRegistration({ name: serverName, registration, existing, run, configPath: codexAccessPaths().config });
 
 console.log(`platform: ${PLATFORM_LABEL}`);
-console.log(`registered MCP server "${serverName}" with Codex:`);
+console.log(`registered MCP server "${serverName}" with Codex (${applied.mode === "retarget" ? "existing entry retargeted in place; its other settings were kept" : "codex mcp add"}):`);
 console.log(`command: ${nodeBin} ${entry} ${entryArgs.join(" ")}`);
 console.log(`environment keys: ${registration.environmentKeys.join(", ")}`);
-console.log("\nReconnect claude-bridge once in the existing Codex Desktop task to load the supervisor. Subsequent compatible installed-source updates reload automatically when the worker is safely idle. Do not create a replacement task.");
-console.log("Verify claude_bridge_status from that task: autoReload must be enabled, runtime state must be current, and the session policy must match this installation. A separate diagnostic process does not verify the app's loaded MCP process.");
+console.log("\nOne-time step: after active Codex work finishes, quit and reopen Codex Desktop once so it starts the supervisor. Later compatible installed updates reload automatically when the worker is idle. Do not create a replacement task.");
+console.log("Verify claude_bridge_status from an existing task: it must report \"automatic reload: current\" with a supervisor pid, runtime state current, and the session policy of this installation. A separate diagnostic process does not verify the app's loaded MCP process.");
 console.log(`remove: node scripts/install-codex-mcp.mjs --remove`);

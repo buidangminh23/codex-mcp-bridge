@@ -116,14 +116,14 @@ Separate multiple allowed directories with `;` on Windows or `:` on macOS/Linux.
 
 ### Native relay pipe forwarding
 
-Add this to the relay's **existing** entry in `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`), keeping its `command`, `args`, and other settings:
+On Windows and macOS, `codex-native-relay-install` adds this to the relay's entry in `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`) and keeps its other settings:
 
 ```toml
 [mcp_servers.codex-native-relay]
 env_vars = ["CODEX_APP_TOOLS_PIPE_PATH"]
 ```
 
-Append the variable name if `env_vars` already exists. Reconnect the relay in Codex Desktop after editing.
+If you register the relay by hand, add the same line and append the variable name if `env_vars` already exists. Only the name is saved, never the temporary pipe path. Restart Codex Desktop after active work finishes so it relaunches the relay.
 
 ### Linux / WSL (Bash)
 

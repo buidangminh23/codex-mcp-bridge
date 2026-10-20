@@ -22,10 +22,11 @@ connector. For a local Desktop installation, use the following path instead:
    `CODEX_BRIDGE_ALLOWED_ROOTS`, rather than the example's entire home directory;
    macOS separates multiple roots with `:`. Preserve an existing entry's
    custom settings.
-4. Add [native relay pipe forwarding](../README.md#native-relay-pipe-forwarding)
-   to the existing relay entry. Forward `CODEX_APP_TOOLS_PIPE_PATH` by name,
-   not its temporary value. The relay needs the trusted app-bundled Node runtime
-   selected by the installer; do not substitute an arbitrary Homebrew/nvm Node.
+4. Check that the relay entry has
+   [native relay pipe forwarding](../README.md#native-relay-pipe-forwarding).
+   The installer adds `CODEX_APP_TOOLS_PIPE_PATH` by name, never its temporary
+   value. The relay needs the trusted app-bundled Node runtime selected by the
+   installer; do not substitute an arbitrary Homebrew/nvm Node.
 5. Reconnect the affected MCP servers in the actual Desktop Code conversations,
    or restart the affected app after active work finishes. Complete
    [installation verification](../README.md#verify-the-installation), including

@@ -21,6 +21,10 @@ export function clientReloadReason(client) {
   return null;
 }
 
+export async function drainPendingAccepts(turns = 3) {
+  for (let turn = 0; turn < turns; turn++) await new Promise((resolve) => setImmediate(resolve));
+}
+
 export function createReloadControl({ entry, inspect = () => null, quiesce = () => {}, exportState = () => ({}), restore = () => {}, activate = () => {}, resume = activate, env = process.env, channel = process } = {}) {
   if (!["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs"].includes(entry)) throw new Error("Invalid reload entry point");
   const enabled = env.CODEX_BRIDGE_WORKER === "1" && typeof channel.send === "function";

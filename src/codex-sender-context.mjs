@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { scanRollout } from "./rollout-reader.mjs";
-import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable } from "./rollout-segments.mjs";
+import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable, retryRolloutRead } from "./rollout-segments.mjs";
 
 const METADATA_KEY = "x-codex-turn-metadata";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -43,14 +43,9 @@ export function findRollout(sessions, threadId) {
 }
 
 export function readState(file, maxBytes) {
-  for (let attempt = 0; ; attempt++) {
-    try { return readStateOnce(file, maxBytes); }
-    catch (error) {
-      // A live Desktop task can append its tool event during verification.
-      // Retry the entire scan, never reuse partially observed permissions.
-      if (attempt >= 2 || !/changed while (reading|opening)|incomplete final record/.test(error.message)) throw error;
-    }
-  }
+  // A live Desktop task can append its tool event during verification.
+  // Retry the entire scan, never reuse partially observed permissions.
+  return retryRolloutRead(() => readStateOnce(file, maxBytes));
 }
 
 function readStateOnce(file, maxBytes) {
@@ -182,15 +177,18 @@ export function readCodexSenderContext(meta, { env = process.env, maxRolloutByte
     const configuredHome = env.CODEX_HOME || path.join(env.HOME || env.USERPROFILE || os.homedir(), ".codex");
     if (!path.isAbsolute(configuredHome)) throw new Error("The configured Codex home must be absolute");
     const sessions = path.join(configuredHome, "sessions");
-    const matches = [], snapshots = [];
-    for (const file of findRolloutSegments(sessions, identity.threadId)) {
-      const state = readState(file, Math.min(MAX_ROLLOUT_BYTES, maxRolloutBytes));
-      if (state.session?.id !== identity.threadId) throw new Error("A rollout segment contradicts the calling task identity");
-      snapshots.push({ file, version: state.version });
-      if (state.context?.turn_id === identity.turnId || state.lifecycle?.turn_id === identity.turnId) matches.push({ file, ...state });
-      if (matches.length > 1) throw new Error("Multiple rollout segments match the calling turn");
-    }
-    assertRolloutSetStable(sessions, identity.threadId, snapshots);
+    const matches = retryRolloutRead(() => {
+      const found = [], snapshots = [];
+      for (const file of findRolloutSegments(sessions, identity.threadId)) {
+        const state = readStateOnce(file, Math.min(MAX_ROLLOUT_BYTES, maxRolloutBytes));
+        if (state.session?.id !== identity.threadId) throw new Error("A rollout segment contradicts the calling task identity");
+        snapshots.push({ file, version: state.version });
+        if (state.context?.turn_id === identity.turnId || state.lifecycle?.turn_id === identity.turnId) found.push({ file, ...state });
+        if (found.length > 1) throw new Error("Multiple rollout segments match the calling turn");
+      }
+      assertRolloutSetStable(sessions, identity.threadId, snapshots);
+      return found;
+    });
     if (matches.length !== 1) throw new Error(matches.length ? "Multiple rollout segments match the calling turn" : "The calling turn is no longer the latest active Codex turn");
     const { file, session, context, lifecycle } = matches[0];
     if (!["Codex Desktop", "codex_vscode"].includes(originator)) throw new Error("Unsupported calling host");

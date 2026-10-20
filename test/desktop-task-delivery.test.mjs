@@ -174,6 +174,128 @@ describe("Desktop creation receipts and deadlines", () => {
     });
   }
 
+  for (const variant of ["recovers", "deadline"]) it(`keeps observing a dispatch receipt through transient rollout writes: ${variant}`, async (t) => {
+    let time = 0;
+    let reads = 0;
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      resolveResponse: () => {
+        reads++;
+        if (variant === "deadline" || reads < 3) return { status: "unavailable", reason: "A rollout segment changed while reading", turnId: null };
+        return { status: "completed", text: "Final after write", turnId: "dispatch-turn", assistantItems: [{ id: "item", text: "Final after write" }], replySha256: "f".repeat(64) };
+      },
+      dispatch({ operation }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "active" }, latestTurn: { id: "dispatch-turn", status: "inProgress" } }] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 6000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+    } });
+    assert.equal(result.status, variant === "recovers" ? "completed" : "timeout");
+    assert.equal(result.text, variant === "recovers" ? "Final after write" : "");
+    assert.equal(result.responseStatus, variant === "recovers" ? "completed" : "unavailable");
+    assert.equal(result.observationReason, variant === "recovers" ? undefined : "A rollout segment changed while reading");
+    assert.equal(result.observationStatus, variant === "recovers" ? "completed" : "unavailable");
+    assert.ok(reads >= 3);
+    assert.equal(f.calls.some(({ operation }) => ["send_message_to_thread", "create_thread"].includes(operation)), false);
+  });
+
+  it("keeps observing a released turn through a transient rollout write", async (t) => {
+    let time = 0;
+    let reads = 0;
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      readResponse: () => (++reads === 1
+        ? { status: "unavailable", reason: "The Codex rollout changed while reading" }
+        : { status: "completed", text: "Released final", turnId: "turn", assistantItems: [{ id: "item", text: "Released final" }], replySha256: "d".repeat(64) }),
+      dispatch({ operation }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "idle" }, latestTurn: { id: "turn", status: "completed" } }] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 6000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "unavailable" },
+    } });
+    assert.equal(result.status, "completed");
+    assert.equal(result.text, "Released final");
+    assert.equal(reads, 2);
+  });
+
+  it("drops a deferral reason once a later read is clean", async (t) => {
+    let time = 0;
+    let reads = 0;
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      resolveResponse: () => (++reads === 1
+        ? { status: "unavailable", reason: "A rollout segment changed while reading", turnId: null }
+        : { status: "pending", turnId: null }),
+      dispatch({ operation }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "active" }, latestTurn: { id: "dispatch-turn", status: "inProgress" } }] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 6000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+    } });
+    assert.equal(result.status, "timeout");
+    assert.equal(result.observationReason, undefined);
+    assert.equal(result.observationStatus, undefined);
+    assert.ok(reads >= 3);
+  });
+
+  it("keeps a deferred released turn instead of switching to a newer turn", async (t) => {
+    let time = 0;
+    const observedTurns = [];
+    let polls = 0;
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      readResponse: ({ turnId }) => {
+        observedTurns.push(turnId);
+        return observedTurns.length === 1
+          ? { status: "unavailable", reason: "The Codex rollout changed while reading" }
+          : { status: "completed", text: `final of ${turnId}`, turnId, assistantItems: [{ id: "item", text: `final of ${turnId}` }], replySha256: "c".repeat(64) };
+      },
+      dispatch({ operation }) {
+        if (operation === "wait_threads") {
+          polls++;
+          const latestTurn = polls === 1 ? { id: "turn-1", status: "completed" } : { id: "turn-2", status: "completed" };
+          return { polls: [{ thread: { id: "task", hostId: "local", status: "idle" }, latestTurn }] };
+        }
+        if (operation === "read_thread") return { thread: { id: "task", hostId: "local", cwd: f.cwd }, turns: [{ id: observedTurns.length ? observedTurns.at(-1) : "turn-1" }] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 6000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "unavailable" },
+    } });
+    assert.deepEqual(observedTurns, ["turn-1", "turn-1"]);
+    assert.equal(result.turnId, "turn-1");
+    assert.equal(result.text, "final of turn-1");
+  });
+
+  for (const resolveDispatch of [true, false]) it(`reports a permanently incomplete rollout at once instead of waiting it out: resolver=${resolveDispatch}`, async (t) => {
+    let time = 0;
+    let reads = 0;
+    const torn = () => { reads++; return { status: "unavailable", reason: "The rollout has an incomplete final record", turnId: null }; };
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      readResponse: torn,
+      ...(resolveDispatch ? { resolveResponse: torn } : {}),
+      dispatch({ operation }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "idle" }, latestTurn: { id: "turn", status: "interrupted", error: { message: "stopped" } } }] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 6000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: resolveDispatch ? "available" : "unavailable" },
+    } });
+    assert.equal(result.status, resolveDispatch ? "failed" : "interrupted");
+    assert.equal(result.observationReason, "The rollout has an incomplete final record");
+    assert.equal(reads, 1);
+    assert.equal(time, 0);
+  });
+
   for (const status of ["inProgress", "interrupted"]) it(`keeps active-turn delivery and completion distinct: ${status}`, async (t) => {
     let time = 0;
     const f = fixture(t, {

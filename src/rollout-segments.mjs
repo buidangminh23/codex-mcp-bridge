@@ -55,6 +55,33 @@ export function isLegacyCliSession(session) {
   return session?.originator === "codex-tui" && session.source === "cli";
 }
 
+const TRANSIENT_ROLLOUT_READ = /changed while (reading|opening)|incomplete final record/;
+const ROLLOUT_CHANGED_DURING_READ = /changed while (reading|opening)/;
+const ROLLOUT_READ_ATTEMPTS = 3;
+
+function reasonText(reason) {
+  return typeof reason === "string" ? reason : reason?.message;
+}
+
+export function isTransientRolloutRead(reason) {
+  const message = reasonText(reason);
+  return typeof message === "string" && TRANSIENT_ROLLOUT_READ.test(message);
+}
+
+export function isRolloutChangedDuringRead(reason) {
+  const message = reasonText(reason);
+  return typeof message === "string" && ROLLOUT_CHANGED_DURING_READ.test(message);
+}
+
+export function retryRolloutRead(read, attempts = ROLLOUT_READ_ATTEMPTS) {
+  for (let attempt = 1; ; attempt++) {
+    try { return read(); }
+    catch (error) {
+      if (attempt >= attempts || !isTransientRolloutRead(error)) throw error;
+    }
+  }
+}
+
 export function assertRolloutSetStable(sessions, threadId, snapshots) {
   const files = findRolloutSegments(sessions, threadId);
   if (files.length !== snapshots.length || files.some((file, i) => file !== snapshots[i].file)) throw new Error("The rollout segment set changed while reading");

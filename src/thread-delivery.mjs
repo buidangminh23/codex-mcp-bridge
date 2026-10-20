@@ -7,6 +7,7 @@ import { creationRequestHash } from "./native-creation-receipts.mjs";
 import { DesktopTaskReceipts } from "./desktop-task-receipts.mjs";
 import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse, readCodexNativeCreationResponse, resolveCodexNativeDispatchResponse } from "./codex-native-response.mjs";
 import { captureProjectScope, recheckProjectScope } from "./project-scope.mjs";
+import { isRolloutChangedDuringRead } from "./rollout-segments.mjs";
 import { requireClaudeSenderContext } from "./claude-sender-context.mjs";
 
 /**
@@ -550,6 +551,8 @@ export class DesktopTaskDelivery {
     let cursor;
     let turnId = null;
     let readSnapshots = false;
+    let deferredReason = null;
+    let deferredTurn = null;
     const readSnapshot = async () => {
       const result = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1, ...METADATA_READ_OPTIONS }, { deadline: startedAt + timeoutMs });
       const thread = result?.thread;
@@ -560,19 +563,24 @@ export class DesktopTaskDelivery {
       if (responseObservation?.expectedCwd && realpathSync.native(thread.cwd) !== responseObservation.expectedCwd) throw new Error("The selected native task workspace changed during observation");
       return { polls: [{ thread, latestTurn: result.turns?.[0] ?? null }] };
     };
-    const expired = () => ({ threadId, turnId, status: "timeout", text: "", responseStatus: "unavailable", assistantItems: [], replySha256: null, activity: [], errors: [], durationMs: this.now() - startedAt });
+    const expired = () => ({ threadId, turnId, status: "timeout", text: "", responseStatus: "unavailable", ...(deferredReason ? { observationStatus: "unavailable", observationReason: deferredReason } : {}), assistantItems: [], replySha256: null, activity: [], errors: [], durationMs: this.now() - startedAt });
     const deadlineError = (error) => {
       const cause = error.cause ?? error;
       return this.now() - startedAt >= timeoutMs && (["DESKTOP_RESPONSE_DEADLINE", "RELAY_TIMEOUT"].includes(cause.code) ||
         cause.code === "RELAY_UNREACHABLE" && cause.message === "The Codex Desktop relay send deadline elapsed before dispatch");
     };
-    const unassigned = Symbol("workspace-unassigned");
+    const observeLater = Symbol("observe-later");
     const observe = async (selectedTurnId, resolveDispatch = false) => {
       try {
-        return await this.observeNativeResponse(threadId, selectedTurnId, responseObservation, { deadline: startedAt + timeoutMs, resolveDispatch });
+        const observed = await this.observeNativeResponse(threadId, selectedTurnId, responseObservation, { deadline: startedAt + timeoutMs, resolveDispatch });
+        deferredReason = observed?.status === "unavailable" && isRolloutChangedDuringRead(observed.reason) ? observed.reason : null;
+        return deferredReason ? observeLater : observed;
       } catch (error) {
         if (deadlineError(error)) return null;
-        if (error.code === WORKSPACE_UNASSIGNED) return unassigned;
+        if (error.code === WORKSPACE_UNASSIGNED) {
+          deferredReason = null;
+          return observeLater;
+        }
         throw error;
       }
     };
@@ -611,7 +619,7 @@ export class DesktopTaskDelivery {
       if (this.resolveResponse && responseObservation?.watermark?.status === "available" && responseObservation.operation !== "create_thread") {
         const observed = await observe(null, true);
         if (!observed) return expired();
-        if (observed === unassigned) {
+        if (observed === observeLater) {
           await pause();
           continue;
         }
@@ -634,17 +642,20 @@ export class DesktopTaskDelivery {
         continue;
       }
       if (needsAttention) return attention();
-      const existingTurn = turn?.id === previousTurnId;
-      if (turn?.id && (!existingTurn || responseObservation?.previousTurnId === previousTurnId)) {
-        if (!existingTurn) turnId = turn.id;
-        const status = turn.status;
+      const released = deferredTurn ?? turn;
+      const existingTurn = released?.id === previousTurnId;
+      if (released?.id && (!existingTurn || responseObservation?.previousTurnId === previousTurnId)) {
+        if (!existingTurn) turnId = released.id;
+        const status = released.status;
         if (RELEASE_STATUSES.has(status)) {
-          const observed = await observe(turn.id);
+          const observed = await observe(released.id);
           if (!observed) return expired();
-          if (observed === unassigned) {
+          if (observed === observeLater) {
+            deferredTurn = deferredReason ? released : null;
             await pause();
             continue;
           }
+          deferredTurn = null;
           const responseStatus = observed.status;
           if (existingTurn && !observed.dispatchObserved && !["completed", "completed_no_reply"].includes(responseStatus)) {
             turnId = null;
@@ -652,7 +663,7 @@ export class DesktopTaskDelivery {
             await this.sleep(Math.min(1500, timeoutMs - (this.now() - startedAt)));
             continue;
           }
-          turnId = turn.id;
+          turnId = released.id;
           return {
             threadId, turnId, status,
             text: responseStatus === "completed" ? observed.text : "",
@@ -663,7 +674,7 @@ export class DesktopTaskDelivery {
             replySha256: observed.replySha256 ?? null,
             responseSource: observed.source ?? null,
             ...(observed.responseScope ? { responseScope: observed.responseScope } : {}),
-            activity: [], errors: turn.error ? [turn.error] : [], durationMs: turn.durationMs ?? this.now() - startedAt,
+            activity: [], errors: released.error ? [released.error] : [], durationMs: released.durationMs ?? this.now() - startedAt,
           };
         }
       }

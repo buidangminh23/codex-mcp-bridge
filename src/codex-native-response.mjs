@@ -5,7 +5,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { scanRollout } from "./rollout-reader.mjs";
 import { fileIdentity, sameFileIdentity } from "./file-identity.mjs";
-import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable } from "./rollout-segments.mjs";
+import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable, retryRolloutRead } from "./rollout-segments.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
@@ -84,12 +84,15 @@ function samePathBoundary(expected, current) {
 }
 
 function readStable(found, maxBytes, { threadId, turnId, afterOffset = 0, prefixSize, dispatchOutputs, dispatchAfterOffset = afterOffset } = {}) {
-  for (let attempt = 0; ; attempt++) {
-    try { return readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize, dispatchOutputs, dispatchAfterOffset }); }
-    catch (error) {
-      if (attempt >= 2 || !/changed while (reading|opening)|incomplete final record/.test(error.message)) throw error;
-    }
-  }
+  return readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize, dispatchOutputs, dispatchAfterOffset });
+}
+
+function readStableRolloutSet(threadId, env, readSegments) {
+  return retryRolloutRead(() => {
+    const snapshots = readSegments(findRollouts(threadId, env));
+    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
+    return snapshots;
+  });
 }
 
 function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize, dispatchOutputs, dispatchAfterOffset }) {
@@ -346,8 +349,7 @@ function inspectTurnRecords(records, threadId, turnId, cwd, { requireDispatch, o
 export function captureCodexRolloutWatermark({ threadId, expectedCwd, desktopEvidence }, { env = process.env, maxRolloutBytes = MAX_ROLLOUT_BYTES } = {}) {
   try {
     const cwd = canonicalDirectory(expectedCwd, "The selected native task workspace");
-    const snapshots = findRollouts(threadId, env).map((found) => ({ ...found, ...readStable(found, maxRolloutBytes) }));
-    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
+    const snapshots = readStableRolloutSet(threadId, env, (found) => found.map((entry) => ({ ...entry, ...readStable(entry, maxRolloutBytes) })));
     for (const snapshot of snapshots) validateIdentity(snapshot, threadId, cwd, desktopEvidence);
     const matches = snapshots.length === 1 ? snapshots : snapshots.filter((snapshot) =>
       desktopEvidence?.latestTurnId && snapshot.latestContext?.turn_id === desktopEvidence.latestTurnId);
@@ -369,15 +371,16 @@ export function readCodexNativeCreationResponse({ threadId, turnId, expectedCwd,
     if (!UUID.test(threadId) || !UUID.test(turnId) || !UUID.test(executorThreadId)) throw new Error("The native creation response identity is invalid");
     if (typeof prompt !== "string" || !prompt.length) throw new Error("The exact creation prompt is unavailable");
     const cwd = canonicalDirectory(expectedCwd, "The created native task workspace");
-    let retainedBytes = 0;
-    const snapshots = findRollouts(threadId, env).map((found) => {
-      const snapshot = readStable(found, maxRolloutBytes, { threadId, turnId });
-      retainedBytes += snapshot.retainedBytes;
-      if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
-      validateIdentity(snapshot, threadId, cwd, desktopEvidence);
-      return snapshot;
+    const snapshots = readStableRolloutSet(threadId, env, (found) => {
+      let retainedBytes = 0;
+      return found.map((entry) => {
+        const snapshot = readStable(entry, maxRolloutBytes, { threadId, turnId });
+        retainedBytes += snapshot.retainedBytes;
+        if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
+        validateIdentity(snapshot, threadId, cwd, desktopEvidence);
+        return snapshot;
+      });
     });
-    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
     const selected = uniqueTurn(snapshots);
     validateSession(selected, threadId, cwd, desktopEvidence);
     return inspectTurnRecords(selected.records, threadId, turnId, cwd, {
@@ -392,14 +395,15 @@ export function inspectCodexNativeTurn({ threadId, turnId, expectedCwd, desktopE
   try {
     if (!UUID.test(threadId) || !UUID.test(turnId)) throw new Error("The native turn identity is invalid");
     const cwd = canonicalDirectory(expectedCwd, "The selected native task workspace");
-    let retainedBytes = 0;
-    const snapshots = findRollouts(threadId, env).map((found) => {
-      const snapshot = readStable(found, maxRolloutBytes, { threadId, turnId });
-      retainedBytes += snapshot.retainedBytes;
-      if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
-      return snapshot;
+    const snapshots = readStableRolloutSet(threadId, env, (found) => {
+      let retainedBytes = 0;
+      return found.map((entry) => {
+        const snapshot = readStable(entry, maxRolloutBytes, { threadId, turnId });
+        retainedBytes += snapshot.retainedBytes;
+        if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
+        return snapshot;
+      });
     });
-    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
     for (const snapshot of snapshots) validateIdentity(snapshot, threadId, cwd, desktopEvidence);
     const selected = uniqueTurn(snapshots);
     validateSession(selected, threadId, cwd, desktopEvidence);
@@ -421,20 +425,20 @@ export function resolveCodexNativeDispatchResponse(binding, { env = process.env,
     if (!Array.isArray(marks) || !marks.length || marks.length > 64 || new Set(marks.map((mark) => mark.file)).size !== marks.length ||
         !marks.some((mark) => mark.file === watermark.file && mark.size === watermark.size && mark.prefixSha256 === watermark.prefixSha256) ||
         marks.some((mark) => !Number.isSafeInteger(mark.size) || mark.size < 1)) throw new Error("The pre-send segment watermarks are invalid");
-    const found = findRollouts(threadId, env);
-    if (marks.some((mark) => !found.some(({ file }) => file === mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
     const outputs = delegationOutputs(executorThreadId, prompt);
-    const snapshots = found.map((entry) => {
-      const mark = marks.find(({ file }) => file === entry.file);
-      const snapshot = readStable(entry, maxRolloutBytes, { threadId, afterOffset: mark?.size ?? 0, prefixSize: mark?.size, dispatchOutputs: outputs });
-      if (mark) {
-        if (!sameFileIdentity(snapshot.identity, mark.identity) || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
-        if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
-      }
-      validateIdentity(snapshot, threadId, cwd, desktopEvidence);
-      return snapshot;
+    const snapshots = readStableRolloutSet(threadId, env, (found) => {
+      if (marks.some((mark) => !found.some(({ file }) => file === mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
+      return found.map((entry) => {
+        const mark = marks.find(({ file }) => file === entry.file);
+        const snapshot = readStable(entry, maxRolloutBytes, { threadId, afterOffset: mark?.size ?? 0, prefixSize: mark?.size, dispatchOutputs: outputs });
+        if (mark) {
+          if (!sameFileIdentity(snapshot.identity, mark.identity) || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
+          if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
+        }
+        validateIdentity(snapshot, threadId, cwd, desktopEvidence);
+        return snapshot;
+      });
     });
-    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
     const matches = snapshots.flatMap((snapshot) => snapshot.dispatches.map((dispatch) => ({ snapshot, dispatch })));
     if (!matches.length) return { status: "pending", threadId, turnId: null, text: "", assistantItems: [], replySha256: null };
     if (matches.length !== 1) throw new Error("Multiple post-send native dispatches match the reply receipt");
@@ -464,24 +468,24 @@ export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, 
         || new Set(marks.map((mark) => mark.file)).size !== marks.length
         || !marks.some((mark) => mark.file === watermark.file && mark.size === watermark.size && mark.prefixSha256 === watermark.prefixSha256)) throw new Error("The pre-send segment watermarks are invalid");
     for (const mark of marks) if (!Number.isSafeInteger(mark.size) || mark.size < 1) throw new Error("The pre-send rollout watermark size is invalid");
-    const found = findRollouts(threadId, env);
-    if (marks.some((mark) => !found.some(({ file }) => file === mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
     const outputs = delegationOutputs(executorThreadId, prompt);
-    let retainedBytes = 0;
-    const snapshots = found.map((entry) => {
-      const mark = marks.find(({ file }) => file === entry.file);
-      const snapshot = readStable(entry, maxRolloutBytes, { threadId, turnId, afterOffset: existingTurn ? 0 : mark?.size ?? 0, prefixSize: mark?.size, dispatchOutputs: outputs, dispatchAfterOffset: mark?.size ?? 0 });
-      retainedBytes += snapshot.retainedBytes;
-      if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
-      if (mark) {
-        if (!sameFileIdentity(snapshot.identity, mark.identity) || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
-        if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
-      }
-      if (snapshot.turnBeforeWatermark) throw new Error("The observed turn was already present before dispatch");
-      validateIdentity(snapshot, threadId, cwd, desktopEvidence);
-      return snapshot;
+    const snapshots = readStableRolloutSet(threadId, env, (found) => {
+      if (marks.some((mark) => !found.some(({ file }) => file === mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
+      let retainedBytes = 0;
+      return found.map((entry) => {
+        const mark = marks.find(({ file }) => file === entry.file);
+        const snapshot = readStable(entry, maxRolloutBytes, { threadId, turnId, afterOffset: existingTurn ? 0 : mark?.size ?? 0, prefixSize: mark?.size, dispatchOutputs: outputs, dispatchAfterOffset: mark?.size ?? 0 });
+        retainedBytes += snapshot.retainedBytes;
+        if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
+        if (mark) {
+          if (!sameFileIdentity(snapshot.identity, mark.identity) || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
+          if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
+        }
+        if (snapshot.turnBeforeWatermark) throw new Error("The observed turn was already present before dispatch");
+        validateIdentity(snapshot, threadId, cwd, desktopEvidence);
+        return snapshot;
+      });
     });
-    assertRolloutSetStable(snapshots[0].sessions, threadId, snapshots);
     const selected = uniqueTurn(snapshots);
     const matchedDispatches = snapshots.flatMap((snapshot) => snapshot.dispatches);
     if (matchedDispatches.length !== 1 || matchedDispatches[0].turnId !== turnId) throw new Error("The observed turn is not uniquely correlated to the exact native dispatch");

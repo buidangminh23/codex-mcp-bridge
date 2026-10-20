@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createReleaseSnapshot, sourceRevision } from "../src/release-snapshot.mjs";
+import { createProcessReaper, processAlive, waitForExit } from "./helpers/process-reaper.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workerSource = `
@@ -94,9 +95,21 @@ async function connect(t, fixture, extraEnv = {}) {
   const transport = new StdioClientTransport({ command: fixture.node ?? process.execPath, args: [fixture.launcher], env, stderr: "pipe" });
   let stderr = "";
   transport.stderr.on("data", data => { stderr += data; if(process.env.TEST_RELOAD_DEBUG) process.stderr.write(data); });
-  t.after(async () => { await client.close(); fixture.cleanup(); });
+  const reaper = createProcessReaper();
+  t.after(async () => {
+    await client.close();
+    const leaked = await reaper.reap();
+    fixture.cleanup();
+    assert.deepEqual(leaked, [], `Processes outlived their MCP client: ${leaked.join(", ")}\n${stderr}`);
+  });
   await client.connect(transport);
-  return { client, call: (name = "codex_bridge_status", args = {}, meta) => client.callTool({name, arguments: args, ...(meta ? {_meta:meta} : {})}), stderr: () => stderr };
+  reaper.track(transport.pid);
+  const call = async (name = "codex_bridge_status", args = {}, meta) => {
+    const result = await client.callTool({name, arguments: args, ...(meta ? {_meta:meta} : {})});
+    reaper.track(result.structuredContent?.autoReload?.supervisorPid, result.structuredContent?.autoReload?.workerPid);
+    return result;
+  };
+  return { client, call, reaper, stderr: () => stderr };
 }
 
 async function eventually(read, predicate, errorDetails = () => "") {
@@ -402,28 +415,34 @@ it("resolves cache parent aliases before launching an immutable worker", t => {
   assert.equal(snapshot.directory.startsWith(fs.realpathSync.native(parent) + path.sep), true);
 });
 
-for (const [entry, statusName] of [["index.mjs", "codex_bridge_status"], ["claude-bridge.mjs", "claude_bridge_status"], ["native-relay-companion.mjs", "native_relay_status"]]) {
+const REAL_ENTRIES = [["index.mjs", "codex_bridge_status"], ["claude-bridge.mjs", "claude_bridge_status"], ["native-relay-companion.mjs", "native_relay_status"]];
+
+async function realWorker(t, entry) {
+  const fixture = installation(t, entry);
+  // Node 24.13.0 on Windows can abort in cpSync with a Unicode checkout path.
+  // Await the async copy before preparing or starting the same real fixture.
+  await fs.promises.cp(path.join(repository, "src"), path.join(fixture.root, "src"), {recursive:true});
+  fs.copyFileSync(path.join(repository,"package.json"),path.join(fixture.root,"package.json"));
+  await fs.promises.cp(path.join(repository,"node_modules"),path.join(fixture.root,"node_modules"),{recursive:true});
+  const prefix = process.platform === "win32" ? `\\\\.\\pipe\\supervisor-${randomUUID()}` : path.join("/tmp",`supervisor-${randomUUID()}.sock`);
+  const sockets = new Set();
+  const native = net.createServer(socket => { sockets.add(socket); socket.on("close",()=>sockets.delete(socket)); });
+  await new Promise(resolve=>native.listen(prefix,resolve));
+  t.after(async()=>{for(const socket of sockets) socket.destroy(); await new Promise(resolve=>native.close(resolve));});
+  // The installer prepares the immutable release before registering a client.
+  // Prewarming keeps this real-worker fixture faithful to that lifecycle while
+  // retaining the unchanged MCP initialization and reload deadlines.
+  createReleaseSnapshot(fixture.root,{cache:path.join(fixture.root,"cache")});
+  return { fixture, prefix, api: await connect(t,fixture,{
+    HOME: fixture.root, USERPROFILE: fixture.root, CODEX_HOME: path.join(fixture.root,".codex"), APPDATA:path.join(fixture.root,"Roaming"),
+    LOCALAPPDATA:path.join(fixture.root,"Local"), CODEX_BRIDGE_AUTOSTART:"0", CODEX_BRIDGE_DESKTOP_TASKS:"0",
+    CODEX_APP_SERVER_URL:"ws://127.0.0.1:9", CODEX_NATIVE_RELAY_SOCKET:`${prefix}-relay`, CODEX_APP_TOOLS_PIPE_PATH:prefix,
+  }) };
+}
+
+for (const [entry, statusName] of REAL_ENTRIES) {
   it(`upgrades the real ${entry} without reconnecting its MCP client`, {timeout:180000}, async t => {
-    const fixture = installation(t, entry);
-    // Node 24.13.0 on Windows can abort in cpSync with a Unicode checkout path.
-    // Await the async copy before preparing or starting the same real fixture.
-    await fs.promises.cp(path.join(repository, "src"), path.join(fixture.root, "src"), {recursive:true});
-    fs.copyFileSync(path.join(repository,"package.json"),path.join(fixture.root,"package.json"));
-    await fs.promises.cp(path.join(repository,"node_modules"),path.join(fixture.root,"node_modules"),{recursive:true});
-    const prefix = process.platform === "win32" ? `\\\\.\\pipe\\supervisor-${randomUUID()}` : path.join("/tmp",`supervisor-${randomUUID()}.sock`);
-    const sockets = new Set();
-    const native = net.createServer(socket => { sockets.add(socket); socket.on("close",()=>sockets.delete(socket)); });
-    await new Promise(resolve=>native.listen(prefix,resolve));
-    t.after(async()=>{for(const socket of sockets) socket.destroy(); await new Promise(resolve=>native.close(resolve));});
-    // The installer prepares the immutable release before registering a client.
-    // Prewarming keeps this real-worker fixture faithful to that lifecycle while
-    // retaining the unchanged MCP initialization and reload deadlines.
-    createReleaseSnapshot(fixture.root,{cache:path.join(fixture.root,"cache")});
-    const api = await connect(t,fixture,{
-      HOME: fixture.root, USERPROFILE: fixture.root, CODEX_HOME: path.join(fixture.root,".codex"), APPDATA:path.join(fixture.root,"Roaming"),
-      LOCALAPPDATA:path.join(fixture.root,"Local"), CODEX_BRIDGE_AUTOSTART:"0", CODEX_BRIDGE_DESKTOP_TASKS:"0",
-      CODEX_APP_SERVER_URL:"ws://127.0.0.1:9", CODEX_NATIVE_RELAY_SOCKET:`${prefix}-relay`, CODEX_APP_TOOLS_PIPE_PATH:prefix,
-    });
+    const { fixture, api } = await realWorker(t, entry);
     const before=await api.call(statusName);
     assert.equal(before.structuredContent.autoReload.enabled,true);
     fs.appendFileSync(path.join(fixture.root,"src",entry),"\n");
@@ -432,6 +451,20 @@ for (const [entry, statusName] of [["index.mjs", "codex_bridge_status"], ["claud
     assert.notEqual(after.structuredContent.autoReload.workerPid,before.structuredContent.autoReload.workerPid);
     assert.equal(after.structuredContent.runtime.current,true);
     if (entry === "native-relay-companion.mjs") assert.match(after.content[0].text, /account relay:.*\(protocol 2, listening\)/);
+  });
+}
+
+for (const [entry, statusName] of REAL_ENTRIES) {
+  it(`exits the real ${entry} worker on its own when its supervisor is killed`, {timeout:180000}, async t => {
+    const { prefix, api } = await realWorker(t, entry);
+    const status = await api.call(statusName);
+    const { supervisorPid, workerPid } = status.structuredContent.autoReload;
+    assert.ok(processAlive(workerPid));
+    const relaySockets = entry === "native-relay-companion.mjs" && process.platform !== "win32" ? [`${prefix}-relay`, `${prefix}-relay-accounts-v2`] : [];
+    for (const socket of relaySockets) assert.equal(fs.existsSync(socket), true, socket);
+    process.kill(supervisorPid, "SIGKILL");
+    assert.deepEqual(await waitForExit([workerPid], 10000), [], `${entry} worker ${workerPid} outlived its killed supervisor\n${api.stderr()}`);
+    for (const socket of relaySockets) assert.equal(fs.existsSync(socket), false, socket);
   });
 }
 

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { assertRoutingReload, createReloadControl } from "../src/reload-control.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { createProcessReaper, waitForExit } from "./helpers/process-reaper.mjs";
+import { assertRoutingReload, createReloadControl, exitWhenClientCloses } from "../src/reload-control.mjs";
 import { PeerEndpoint } from "../src/peer-protocol.mjs";
 import { ReplyForwarder } from "../src/reply-forwarder.mjs";
 
@@ -82,4 +87,73 @@ it("preserves forwarding deduplication and the session limit across a reload",as
   assert.equal(second.status().attempts,1);
   assert.equal(deliverCount,1);
   first.close();second.close();
+});
+
+it("exits once after the MCP client closes, waiting for open work within its deadline", async () => {
+  const { EventEmitter } = await import("node:events");
+  const stdin = new EventEmitter();
+  const channel = new EventEmitter();
+  const events = [];
+  let open = "delivery";
+  const shutdown = exitWhenClientCloses({ stdin, channel, pollMs: 5, drainMs: 5000,
+    prepare: () => events.push("prepare"), busy: () => open, stop: async () => events.push("stop"), exit: (code) => events.push(`exit:${code}`) });
+  stdin.emit("end");
+  channel.emit("disconnect");
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.deepEqual(events, ["prepare"]);
+  open = null;
+  await shutdown.close();
+  assert.deepEqual(events, ["prepare", "stop", "exit:0"]);
+
+  const logs = [];
+  const bounded = [];
+  const stuck = exitWhenClientCloses({ stdin: new EventEmitter(), channel: new EventEmitter(), pollMs: 5, drainMs: 40, stopMs: 40,
+    busy: () => "never finishes", stop: () => new Promise(() => {}), log: message => logs.push(message), exit: code => bounded.push(code) });
+  await stuck.close("test");
+  assert.deepEqual(bounded, [0]);
+  assert.ok(logs.some(message => message.includes("never finishes")));
+  assert.ok(logs.some(message => message.includes("listener shutdown exceeded")));
+
+  const failed = [];
+  await exitWhenClientCloses({ stdin: null, channel: null, stop: () => { throw new Error("broken"); }, exit: code => failed.push(code) }).close("test");
+  assert.deepEqual(failed, [1]);
+});
+
+it("finishes draining after its supervisor is killed and its output pipes lose their reader", { timeout: 30000 }, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "client-close-drain-"));
+  const reaper = createProcessReaper();
+  t.after(async () => { await reaper.reap(); fs.rmSync(directory, { recursive: true, force: true }); });
+  const marker = path.join(directory, "exit.json");
+  const worker = path.join(directory, "worker.mjs");
+  const parent = path.join(directory, "parent.mjs");
+  fs.writeFileSync(worker, `import fs from "node:fs";
+import { exitWhenClientCloses } from ${JSON.stringify(new URL("../src/reload-control.mjs", import.meta.url).href)};
+let open = true;
+process.stdin.resume();
+exitWhenClientCloses({ busy: () => open ? "delivery" : null, pollMs: 20, log: message => process.stderr.write(message + "\\n"),
+  exit: code => { fs.writeFileSync(process.argv[2], JSON.stringify({ code, delivered: !open })); process.exit(code); } });
+process.once("disconnect", () => setTimeout(() => {
+  for (let index = 0; index < 32; index++) { process.stdout.write("o".repeat(65536)); process.stderr.write("e".repeat(65536)); }
+  setTimeout(() => { open = false; }, 300);
+}, 300));
+process.send({ ready: true });
+setInterval(() => {}, 1000);
+`);
+  fs.writeFileSync(parent, `import { fork } from "node:child_process";
+const child = fork(process.argv[2], [process.argv[3]], { stdio: ["pipe", "pipe", "pipe", "ipc"] });
+child.stdout.resume(); child.stderr.resume();
+child.once("message", () => process.stdout.write(child.pid + "\\n"));
+setInterval(() => {}, 1000);
+`);
+  const supervisor = spawn(process.execPath, [parent, worker, marker], { stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
+  reaper.track(supervisor.pid);
+  const workerPid = await new Promise((resolve, reject) => {
+    let output = "";
+    supervisor.stdout.on("data", data => { output += data; if (output.includes("\n")) resolve(Number(output.trim())); });
+    supervisor.once("exit", () => reject(new Error("Parent exited before its worker was ready")));
+  });
+  reaper.track(workerPid);
+  supervisor.kill("SIGKILL");
+  assert.deepEqual(await waitForExit([workerPid], 15000), []);
+  assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), { code: 0, delivered: true });
 });

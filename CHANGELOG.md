@@ -4,6 +4,23 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.11] - 2026-10-20
+
+### Fixed
+
+- Stop `claude-bridge` and native relay companion workers from outliving their MCP client. The supervisor ends a worker's stdin and IPC channel and waits before killing it, but MCP clients such as the SDK stdio transport kill the supervisor about 4 seconds after closing it. `index.mjs` already exited on stdin end; the other two workers did not, so they kept running with parent PID 1 and kept their relay and peer sockets. Each `npm test` run left two such processes, and the same could happen in Codex Desktop or Claude Desktop whenever an MCP client closed.
+- Both workers now exit on their own when stdin ends or the supervisor channel disconnects. They first stop taking new work and wait up to 35 seconds for work already accepted: the companion refuses new relay connections with `RELAY_STOPPING` (`sent: false`) and finishes accepted connections, active requests and pending Desktop dispatches; `claude-bridge` unregisters its peer endpoint and finishes open peer connections, in-flight sends and queued reply forwards. A late activation from the supervisor cannot reopen the relay during this drain, and losing the supervisor's output pipes no longer crashes the worker mid-drain. The supervisor waits for that drain before forcing a stop when its client closes; retiring a quiesced worker after a reload keeps its 6-second limit.
+
+### Verification
+
+- Every MCP supervisor test now records the supervisor and worker PIDs it sees and fails if any outlives its client, killing leftovers so a failure cannot accumulate processes. On v1.22.10, 4 tests fail: the real `claude-bridge` and companion upgrade tests leave their workers behind, and a new test that kills the supervisor finds both workers still running.
+- New tests cover the drain: an accepted relay delivery finishes before exit, a late connection is refused with `RELAY_STOPPING`, a late activation is rejected, a worker whose parent is killed during a drain still exits 0 after its work finishes (it crashes on v1.22.10's output handling), and the peer endpoint stops accepting while keeping open connections.
+- Two full `npm test` runs on macOS left no process from a `mcp-supervisor-test-` directory; the run on v1.22.10 left two.
+
+### Limitations
+
+- On Windows the supervisor's workers belong to its job object and end with it, so they never outlived their client there, and a drain cannot continue after the client kills the supervisor. The supervisor-kill test passes on Windows for that reason rather than through the drain.
+
 ## [1.22.10] - 2026-10-20
 
 ### Fixed

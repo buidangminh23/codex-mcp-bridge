@@ -106,8 +106,13 @@ export class ReplyForwarder {
     return { ...counts, attempts, maxPerSession: this.maxPerSession, closed: this.closed };
   }
 
+  forwardingReason() {
+    return this.active || this.queue.length || this.timer !== null ? "Reply forwarding is still active or queued" : null;
+  }
+
   reloadReason() {
-    if (this.active || this.queue.length || this.timer !== null) return "Reply forwarding is still active or queued";
+    const forwarding = this.forwardingReason();
+    if (forwarding) return forwarding;
     if ([...this.records.values()].some(({ receipt }) => ["queued", "sending", "unknown"].includes(receipt.status))) {
       return "A reply forwarding outcome remains unconfirmed";
     }

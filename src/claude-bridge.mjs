@@ -18,7 +18,7 @@ import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
 import { assertRecipientClass, preflightFailure } from "./recipient-preflight.mjs";
 import { resolveCodexSenderContext } from "./codex-sender-context.mjs";
 import { ReplyForwarder } from "./reply-forwarder.mjs";
-import { assertRoutingReload, clientReloadReason, createReloadControl } from "./reload-control.mjs";
+import { assertRoutingReload, clientReloadReason, createReloadControl, exitWhenClientCloses } from "./reload-control.mjs";
 import { readClaudeAccountContext } from "./desktop-account-context.mjs";
 import { assertAccountIdentity, bindUnsolicitedClaudeMessageAccount, publicAccountState, readBridgeAccounts, requireBridgeAccounts, sameAccountIdentity } from "./bridge-account-context.mjs";
 import { recoverClaudeDesktopSession, resolveClaudeDesktopSession, sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
@@ -30,7 +30,7 @@ import { discoverClaudeProject } from "./claude-project-discovery.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.10";
+const VERSION = "1.22.11";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
@@ -811,5 +811,13 @@ try {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+exitWhenClientCloses({
+  prepare: () => peer.closeIntake(),
+  busy: () => peer.connections.size ? "Peer socket connections are still open"
+    : peer.requestQueues.size ? "Claude messages are still being sent"
+      : replyForwarder.forwardingReason(),
+  stop: async () => { replyForwarder.close(); peer.stop(); codex.close(); await peer.closed; },
+  log,
+});
 reload.listen();
 log(`ready on ${PLATFORM_LABEL} as peer "${peer.name}" (${peer.started ? peer.socketPath : "peer endpoint down"})`);

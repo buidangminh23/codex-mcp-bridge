@@ -6,11 +6,14 @@ import { fileURLToPath } from "node:url";
 import { createReleaseSnapshot, sourceRevision } from "./release-snapshot.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { isMainModule, stableInstallPath } from "./install-paths.mjs";
+import { CLIENT_CLOSE_DRAIN_MS, CLIENT_CLOSE_STOP_MS } from "./reload-control.mjs";
 
 const WORKER_NODE = stableInstallPath(process.execPath);
 const ENTRIES = new Set(["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs"]);
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_QUEUE = 256;
+const RETIRE_GRACE_MS = 6000;
+const CLIENT_CLOSE_GRACE_MS = CLIENT_CLOSE_DRAIN_MS + CLIENT_CLOSE_STOP_MS + 1000;
 const hasId = (message) => Object.hasOwn(message, "id");
 const idKey = (id) => JSON.stringify(id);
 const errorMessage = (id, message) => ({ jsonrpc: "2.0", id, error: { code: -32603, message } });
@@ -111,7 +114,7 @@ class Worker {
     this.handlers.exit(this, error);
   }
 
-  async stop() {
+  async stop(graceMs = RETIRE_GRACE_MS) {
     this.retiring = true;
     if (this.stopping) return this.stopping;
     this.stopping = (async () => {
@@ -123,7 +126,7 @@ class Worker {
       };
       this.process.stdin.end();
       if (this.process.connected) this.process.disconnect();
-      if (await wait(6000)) return;
+      if (await wait(graceMs)) return;
       if (this.process.exitCode === null && this.process.signalCode === null) {
         this.process.kill("SIGKILL");
       }
@@ -324,7 +327,7 @@ export async function runSupervisor(entry, options = {}) {
     if (stopping) return;
     stopping = true;
     clearInterval(timer);
-    await Promise.allSettled([...workers].map((worker) => worker.stop()));
+    await Promise.allSettled([...workers].map((worker) => worker.stop(CLIENT_CLOSE_GRACE_MS)));
     process.stdin.pause();
   };
   const preparationStarted = performance.now();

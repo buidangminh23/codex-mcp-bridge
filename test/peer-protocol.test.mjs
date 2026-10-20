@@ -1277,3 +1277,25 @@ describe("peer endpoint", () => {
     assert.ok(!fs.existsSync(endpoint.socketPath));
   });
 });
+
+it("stops peer intake on client close while keeping accepted connections open", async () => {
+  const endpoint = new PeerEndpoint();
+  try {
+    await endpoint.start();
+    const accepted = net.connect(endpoint.socketPath);
+    accepted.on("error", () => {});
+    await new Promise((resolve) => accepted.once("connect", resolve));
+    while (!endpoint.connections.size) await yieldToEvents();
+    endpoint.closeIntake();
+    assert.equal(fs.existsSync(endpoint.registryPath), false);
+    assert.throws(() => endpoint.start(), /shutting down because its MCP client closed/);
+    const late = net.connect(endpoint.socketPath);
+    const lateResult = await new Promise((resolve) => { late.once("error", (error) => resolve(error.code)); late.once("connect", () => { late.destroy(); resolve("connected"); }); });
+    assert.notEqual(lateResult, "connected");
+    accepted.write("\n");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(accepted.destroyed, false);
+    assert.equal(endpoint.connections.size, 1);
+    accepted.destroy();
+  } finally { await endpoint.stop(); }
+});

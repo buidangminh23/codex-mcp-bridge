@@ -100,3 +100,38 @@ export function createReloadControl({ entry, inspect = () => null, quiesce = () 
     },
   };
 }
+
+export const CLIENT_CLOSE_DRAIN_MS = 35000;
+export const CLIENT_CLOSE_STOP_MS = 5000;
+
+export function exitWhenClientCloses({ prepare = () => {}, busy = () => null, stop = () => {}, log = () => {}, drainMs = CLIENT_CLOSE_DRAIN_MS, stopMs = CLIENT_CLOSE_STOP_MS, pollMs = 50, stdin = process.stdin, channel = process, outputs = [process.stdout, process.stderr], exit = (code) => process.exit(code) } = {}) {
+  let closing = null;
+  const bounded = (promise, ms) => {
+    let timer;
+    return Promise.race([Promise.resolve(promise).then(() => true), new Promise((resolve) => { timer = setTimeout(() => resolve(false), ms); })])
+      .finally(() => clearTimeout(timer));
+  };
+  const close = (why) => closing ??= (async () => {
+    log(`MCP client closed (${why}); draining before exit`);
+    let code = 0;
+    try {
+      await prepare();
+      const deadline = Date.now() + drainMs;
+      let reason = busy();
+      while (reason && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+        reason = busy();
+      }
+      if (reason) log(`exiting after ${drainMs} ms with work still open: ${reason}`);
+      if (!await bounded(stop(), stopMs)) log(`listener shutdown exceeded ${stopMs} ms`);
+    } catch (error) {
+      code = 1;
+      log(`shutdown failed: ${error?.message ?? String(error)}`);
+    }
+    exit(code);
+  })();
+  for (const output of outputs) output?.on("error", (error) => { void close(`output failed: ${error?.code ?? error?.message}`); });
+  stdin?.once("end", () => { void close("stdin ended"); });
+  channel?.once("disconnect", () => { void close("supervisor channel disconnected"); });
+  return { close, get closing() { return closing !== null; } };
+}

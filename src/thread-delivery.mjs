@@ -26,6 +26,8 @@ import { requireClaudeSenderContext } from "./claude-sender-context.mjs";
 export const NATIVE_BACKEND = "codex-desktop-native";
 export const APP_SERVER_BACKEND = "app-server";
 export const DESKTOP_TOOL_BUDGET_MS = 40000;
+export const WORKSPACE_UNASSIGNED = "DESKTOP_WORKSPACE_UNASSIGNED";
+export const UNASSIGNED_WORKSPACE_GRACE_MS = 120000;
 const RELEASE_STATUSES = new Set(["completed", "interrupted", "failed"]);
 const METADATA_READ_OPTIONS = { includeOutputs: false, maxOutputCharsPerItem: 1 };
 
@@ -33,6 +35,17 @@ function unavailableWaitRenderer(error) {
   const cause = error.cause ?? error;
   return cause.code === "NATIVE_DISPATCH_FAILED" &&
     /^(Codex app tool request failed\.?|The app tool call ended before producing a result\.?)$/.test(cause.message);
+}
+
+function isFilesystemRoot(value) {
+  if (typeof value !== "string" || !path.isAbsolute(value)) return false;
+  const resolved = path.resolve(value);
+  return path.parse(resolved).root === resolved;
+}
+
+function acceptedCreationError(threadId, error) {
+  if (error.acceptedCreation) return error;
+  return Object.assign(new Error(`Codex Desktop created task ${threadId}, but its post-creation verification failed: ${error.message}. threadId: ${threadId}. Task was accepted; do not resend. Its reply was withheld until the verification error is resolved.`, { cause: error }), { code: "DESKTOP_CREATION_VERIFICATION_FAILED", threadId, acceptedCreation: true });
 }
 
 function sameAccountContext(expected, current) {
@@ -74,6 +87,8 @@ export class DesktopTaskDelivery {
     this.resolveResponse = resolveResponse;
     this.threadOperations = new Map();
   }
+
+  #unassignedSince = new Map();
 
   senderProjectScope(cwd) {
     if (!this.senderContext) return null;
@@ -329,6 +344,15 @@ export class DesktopTaskDelivery {
   async resolveCreation(delivered, { deadline = this.now() + DESKTOP_TOOL_BUDGET_MS } = {}) {
     const binding = delivered.creationObservation;
     if (!binding) return delivered;
+    let confirmedThreadId = null;
+    try {
+      return await this.#resolveCreationLoop(delivered, binding, deadline, (threadId) => { confirmedThreadId = threadId; });
+    } catch (error) {
+      throw confirmedThreadId ? acceptedCreationError(confirmedThreadId, error) : error;
+    }
+  }
+
+  async #resolveCreationLoop(delivered, binding, deadline, onConfirmed) {
     for (;;) {
       if (this.now() >= deadline) return null;
       this.security.assertCwd(delivered.cwd);
@@ -345,17 +369,29 @@ export class DesktopTaskDelivery {
         const response = row.result, threadId = response?.threadId;
         if (typeof threadId !== "string" || !threadId.trim() || response.hostId !== "local" || response.status === "outcome-unknown" ||
             response.firstTurn && response.firstTurn.status !== "accepted" || receipt.threadId && receipt.threadId !== threadId) throw new Error("Native creation is not confirmed; do not resend");
+        onConfirmed(threadId);
         let inspected;
-        try { inspected = await this.#inspectMetadata(threadId, delivered.cwd, { deadline }); }
-        catch (error) { if (this.now() >= deadline && /deadline|within \d+ms/.test(error.message)) return null; throw error; }
-        if (inspected.executorThreadId !== envelope.executorThreadId) throw new Error("Native creation executor changed");
-        if (!sameAccountContext(binding.accountContext, this.accountContext?.())) throw new Error("Creation receipt account changed");
-        this.security.assertCwd(delivered.cwd);
-        this.senderProjectScope(delivered.cwd);
-        if (this.security.hardenedRoots?.mode === "project-policy") this.security.hardenedRoots.recheck(inspected.scopeBinding);
-        if (inspected.projectScope) recheckProjectScope(inspected.projectScope);
-        this.security.registerThread(threadId);
-        this.security.assertThread(threadId, inspected.thread.cwd);
+        try { inspected = await this.#inspectMetadata(threadId, delivered.cwd, { deadline, tolerance: { since: receipt.startedAt } }); }
+        catch (error) {
+          if (error.code === WORKSPACE_UNASSIGNED) {
+            await this.sleep(Math.min(1000, Math.max(0, deadline - this.now())));
+            continue;
+          }
+          if (this.now() >= deadline && /deadline|within \d+ms/.test(error.message)) return null;
+          throw acceptedCreationError(threadId, error);
+        }
+        try {
+          if (inspected.executorThreadId !== envelope.executorThreadId) throw new Error("Native creation executor changed");
+          if (!sameAccountContext(binding.accountContext, this.accountContext?.())) throw new Error("Creation receipt account changed");
+          this.security.assertCwd(delivered.cwd);
+          this.senderProjectScope(delivered.cwd);
+          if (this.security.hardenedRoots?.mode === "project-policy") this.security.hardenedRoots.recheck(inspected.scopeBinding);
+          if (inspected.projectScope) recheckProjectScope(inspected.projectScope);
+          this.security.registerThread(threadId);
+          this.security.assertThread(threadId, inspected.thread.cwd);
+        } catch (error) {
+          throw acceptedCreationError(threadId, error);
+        }
         return { threadId, cwd: delivered.cwd, previousTurnId: null, deliveryStatus: "accepted",
           responseObservation: { operation: "create_thread", threadId, previousTurnId: null, expectedCwd: delivered.cwd,
             executorThreadId: envelope.executorThreadId, prompt: binding.args.prompt, accountContext: binding.accountContext } };
@@ -366,24 +402,57 @@ export class DesktopTaskDelivery {
     }
   }
 
-  async inspect(threadId, cwd, { deadline } = {}) {
-    const inspected = await this.#inspectMetadata(threadId, cwd, { deadline });
+  async inspect(threadId, cwd, { deadline, tolerateUnassigned = false } = {}) {
+    const inspected = await this.#inspectMetadata(threadId, cwd, { deadline, ...(tolerateUnassigned ? { tolerance: {} } : {}) });
     this.security.assertThread(threadId, inspected.thread.cwd);
     return inspected;
   }
 
-  async #inspectMetadata(threadId, cwd, { deadline } = {}) {
+  async #inspectMetadata(threadId, cwd, { deadline, tolerance } = {}) {
     const envelope = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1, ...METADATA_READ_OPTIONS }, { deadline, includeRelayContext: true });
     const response = envelope.result;
     const thread = response?.thread;
     if (thread?.id !== threadId || thread.hostId !== "local" || !thread.cwd) throw new Error("Desktop did not confirm the task's local workspace.");
-    this.security.assertCwd(thread.cwd);
+    this.#assertReportedWorkspace(threadId, thread.cwd, cwd, tolerance);
     const projectScope = this.senderProjectScope(thread.cwd);
     if (cwd && path.relative(realpathSync.native(cwd), realpathSync.native(thread.cwd))) {
       throw new Error("Native Desktop delivery cannot change an existing task's workspace; create a new task at the requested cwd.");
     }
     const scopeBinding = this.security.hardenedRoots?.mode === "project-policy" ? this.security.hardenedRoots.capture(thread.cwd) : undefined;
     return { thread, latestTurnId: response.turns?.[0]?.id ?? null, projectScope, scopeBinding, executorThreadId: envelope.executorThreadId ?? null };
+  }
+
+  /**
+   * Codex Desktop can briefly report a filesystem root as a task's workspace
+   * before it finishes assigning the task's saved project (observed as "/"
+   * right after creation, following an account switch). Only observers that
+   * pass a tolerance - creation confirmation and reply observation, both of
+   * which already know the expected workspace - treat a root that differs from
+   * that workspace as "not yet assigned", and only for a bounded grace period
+   * measured from creation or from the first such report. During it the bridge
+   * acts on nothing at that path, grants no access and keeps observing. After
+   * it, and for every other caller or path, the normal fail-closed
+   * allowed-roots check applies.
+   */
+  #assertReportedWorkspace(threadId, reported, expected, tolerance) {
+    if (!isFilesystemRoot(reported)) this.#unassignedSince.delete(threadId);
+    else if (tolerance && expected && !this.#isExpectedWorkspace(reported, expected)) {
+      const now = this.now();
+      if (tolerance.since === undefined && !this.#unassignedSince.has(threadId)) this.#unassignedSince.set(threadId, now);
+      const since = tolerance.since ?? this.#unassignedSince.get(threadId);
+      if (now - since < UNASSIGNED_WORKSPACE_GRACE_MS) {
+        throw Object.assign(new Error(`Codex Desktop has not yet reported task ${threadId}'s project workspace (it currently reports ${reported}); the bridge did not act on that path.`), { code: WORKSPACE_UNASSIGNED, threadId });
+      }
+    }
+    this.security.assertCwd(reported);
+  }
+
+  #isExpectedWorkspace(reported, expected) {
+    try {
+      return path.relative(realpathSync.native(expected), realpathSync.native(reported)) === "";
+    } catch {
+      return false;
+    }
   }
 
   async send({ threadId, prompt, cwd, model, effort, name, deadline, onPrepared }) {
@@ -445,12 +514,12 @@ export class DesktopTaskDelivery {
       if (realpathSync.native(expectedCwd) !== expectedCwd) throw new Error("The selected native task workspace changed while its response was being observed");
     };
     await recheck();
-    const initial = await this.inspect(threadId, expectedCwd, { deadline });
+    const initial = await this.inspect(threadId, expectedCwd, { deadline, tolerateUnassigned: true });
     if (!resolveDispatch && initial.latestTurnId !== turnId) throw new Error("The selected native task changed before its response could be read; reply content was withheld");
     const read = resolveDispatch ? this.resolveResponse : responseObservation.operation === "create_thread" ? readCodexNativeCreationResponse : this.readResponse;
     const observed = read({ ...responseObservation, threadId, turnId, desktopEvidence: initial });
     await recheck();
-    const inspected = await this.inspect(threadId, expectedCwd, { deadline });
+    const inspected = await this.inspect(threadId, expectedCwd, { deadline, tolerateUnassigned: true });
     if (inspected.latestTurnId !== (resolveDispatch ? initial.latestTurnId : turnId)) throw new Error("The selected native task changed before its response could be confirmed; reply content was withheld");
     await recheck();
     return observed;
@@ -485,7 +554,7 @@ export class DesktopTaskDelivery {
       const result = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1, ...METADATA_READ_OPTIONS }, { deadline: startedAt + timeoutMs });
       const thread = result?.thread;
       if (thread?.id !== threadId || thread.hostId !== "local" || !thread.cwd) throw new Error("Desktop did not confirm the observed task's local workspace.");
-      this.security.assertCwd(thread.cwd);
+      this.#assertReportedWorkspace(threadId, thread.cwd, responseObservation?.expectedCwd, {});
       this.security.assertThread(threadId, thread.cwd);
       this.senderProjectScope(thread.cwd);
       if (responseObservation?.expectedCwd && realpathSync.native(thread.cwd) !== responseObservation.expectedCwd) throw new Error("The selected native task workspace changed during observation");
@@ -497,14 +566,17 @@ export class DesktopTaskDelivery {
       return this.now() - startedAt >= timeoutMs && (["DESKTOP_RESPONSE_DEADLINE", "RELAY_TIMEOUT"].includes(cause.code) ||
         cause.code === "RELAY_UNREACHABLE" && cause.message === "The Codex Desktop relay send deadline elapsed before dispatch");
     };
+    const unassigned = Symbol("workspace-unassigned");
     const observe = async (selectedTurnId, resolveDispatch = false) => {
       try {
         return await this.observeNativeResponse(threadId, selectedTurnId, responseObservation, { deadline: startedAt + timeoutMs, resolveDispatch });
       } catch (error) {
         if (deadlineError(error)) return null;
+        if (error.code === WORKSPACE_UNASSIGNED) return unassigned;
         throw error;
       }
     };
+    const pause = () => this.sleep(Math.min(1500, timeoutMs - (this.now() - startedAt)));
     for (;;) {
       if (this.now() - startedAt >= timeoutMs) return expired();
       let response;
@@ -514,13 +586,19 @@ export class DesktopTaskDelivery {
         }, { deadline: startedAt + timeoutMs });
       } catch (err) {
         if (deadlineError(err)) return expired();
+        if (err.code === WORKSPACE_UNASSIGNED) {
+          await pause();
+          continue;
+        }
         if (readSnapshots || !unavailableWaitRenderer(err)) throw err;
         readSnapshots = true;
         try {
           response = await readSnapshot();
         } catch (readError) {
           if (deadlineError(readError)) return expired();
-          throw readError;
+          if (readError.code !== WORKSPACE_UNASSIGNED) throw readError;
+          await pause();
+          continue;
         }
       }
       const poll = response?.polls?.find((item) => item.thread?.id === threadId && item.thread?.hostId === "local");
@@ -533,6 +611,10 @@ export class DesktopTaskDelivery {
       if (this.resolveResponse && responseObservation?.watermark?.status === "available" && responseObservation.operation !== "create_thread") {
         const observed = await observe(null, true);
         if (!observed) return expired();
+        if (observed === unassigned) {
+          await pause();
+          continue;
+        }
         turnId = observed.turnId ?? null;
         if (observed.status !== "pending") {
           return {
@@ -559,6 +641,10 @@ export class DesktopTaskDelivery {
         if (RELEASE_STATUSES.has(status)) {
           const observed = await observe(turn.id);
           if (!observed) return expired();
+          if (observed === unassigned) {
+            await pause();
+            continue;
+          }
           const responseStatus = observed.status;
           if (existingTurn && !observed.dispatchObserved && !["completed", "completed_no_reply"].includes(responseStatus)) {
             turnId = null;

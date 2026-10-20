@@ -4,6 +4,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep a confirmed Desktop creation identifiable when post-creation verification fails. `delegate_to_codex` and `start_codex_thread` now return the task's threadId, its deliveryId and "Task was accepted; do not resend" instead of a bare allowed-roots error that read as if nothing had been created. The confirmed threadId is kept even when a later account, receipt or scope check fails after the bridge waited for the task's workspace.
+- Treat a filesystem root that Codex Desktop briefly reports as a newly created task's workspace, observed as `/` right after creation following an account switch, as "workspace not yet assigned" when it is not the expected project. Creation keeps observing until its deadline and then returns a pending receipt that keeps the accepted threadId; reply observation keeps polling. The tolerance lasts at most 120 seconds from creation, or from the first such report during reply observation, and the bridge acts on nothing at that path and grants no task access from it during that time.
+- Report a pending creation whose task Desktop already confirmed as `deliveryStatus: accepted` instead of `unconfirmed`.
+
+### Security
+
+- A root report that outlasts the grace period, any other workspace outside the allowed roots, a different project, an account change or a sender mismatch still fails closed. Sends and plain thread inspection keep the normal allowed-roots refusal for a root workspace; nothing is sent.
+
 ## [1.22.5] - 2026-10-19
 
 ### Fixed

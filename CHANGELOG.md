@@ -4,10 +4,22 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.9] - 2026-10-20
+
 ### Fixed
 
 - Read the Claude Desktop configuration with exact bigint stats in `codex-mcp-bridge-install`, so a configuration file replaced during the installer's read is detected even when the two inodes differ only beyond Number precision. v1.22.8 converted the runtime stores but missed this installer.
 - Notice a new reply in a Claude Code transcript when the file changes within the same millisecond and keeps its size. The reply poll now compares the file's device, inode, nanosecond modification and change times, and size instead of only the millisecond modification time and size.
+
+### Verification
+
+- 2 new regression tests: a Desktop configuration whose inode changes only below Number precision (`2^60` and `2^60 + 1`) is rejected and left untouched, and a transcript reply is observed while its Number `mtimeMs` and size stay frozen. Both fail on v1.22.8.
+- Two independent sweeps of `src/`, `scripts/` and `bin/`, one by stat API and one by stored or compared stat data, found no other Number-based identity or change detection.
+- CI passed on macOS, Ubuntu and Windows with Node 22 and 24. CodeQL re-reported 3 `js/path-injection` flows on the edited stat lines; each source is operator environment configuration, matching earlier dismissals, and they were dismissed as false positives.
+
+### Limitations
+
+- The 64-bit NTFS case runs for real only on Windows CI; local tests simulate it with mocked stats.
 
 ## [1.22.8] - 2026-10-20
 

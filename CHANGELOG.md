@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.6] - 2026-10-20
+
 ### Fixed
 
 - Keep a confirmed Desktop creation identifiable when post-creation verification fails. `delegate_to_codex` and `start_codex_thread` now return the task's threadId, its deliveryId and "Task was accepted; do not resend" instead of a bare allowed-roots error that read as if nothing had been created. The confirmed threadId is kept even when a later account, receipt or scope check fails after the bridge waited for the task's workspace.
@@ -13,6 +15,18 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 ### Security
 
 - A root report that outlasts the grace period, any other workspace outside the allowed roots, a different project, an account change or a sender mismatch still fails closed. Sends and plain thread inspection keep the normal allowed-roots refusal for a root workspace; nothing is sent.
+
+### Verification
+
+- 10 regression tests reproduce the defect on v1.22.5 and pass with the fix: creation confirmation with a brief `/` report, a pending result at the deadline, grace expiry, an outside-root workspace, a later account change, reply observation in both the wait and snapshot paths, and two MCP-level `delegate_to_codex` tests through the relay companion.
+- The full CI matrix passed on Windows, macOS and Linux with Node 22 and 24. A local run outside the sandbox passed 1406 tests with 0 failures.
+- An independent adversarial review found no security regression; its four confirmed correctness findings were fixed before merge.
+
+### Upgrade notes
+
+- Reconnect the MCP server after updating and confirm the loaded version from the actual runtime before relying on the fix.
+- A creation that is pending because Desktop has not reported its workspace continues with `wait_codex_reply` and the returned deliveryId. Do not resend the prompt or create the task again.
+- Not yet exercised against a live Desktop account switch. A placeholder workspace other than a filesystem root still fails closed as before.
 
 ## [1.22.5] - 2026-10-19
 

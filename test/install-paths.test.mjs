@@ -74,3 +74,12 @@ it("recognises the main module through a symlinked directory", posixOnly, (t) =>
   assert.equal(isMainModule(path.join(brew.root, "other.mjs"), pathToFileURL(real).href), false);
   assert.equal(isMainModule(undefined, pathToFileURL(real).href), false);
 });
+
+it("recognises the main module when the path is spelled differently from disk", { skip: process.platform === "linux" && "Linux filesystems are case-sensitive" }, (t) => {
+  const brew = prefix(t);
+  const real = brew.keg("pkg", "1", "src/main.mjs");
+  const respelled = real.replace("/Cellar/", "/CELLAR/");
+  assert.equal(fs.existsSync(respelled), true);
+  assert.equal(isMainModule(respelled, pathToFileURL(fs.realpathSync(respelled)).href), true);
+  assert.equal(isMainModule(respelled, pathToFileURL(real).href), true);
+});

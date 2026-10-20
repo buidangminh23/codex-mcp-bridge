@@ -36,9 +36,19 @@ export function stableNodeBin(env = process.env) {
   return stableInstallPath(process.execPath, env);
 }
 
-/** True when `entry` names the running main module, however it was reached. */
+/**
+ * True when `entry` names the running main module, however it was reached.
+ * Node resolves the main module with the JavaScript realpath, which follows
+ * symlinks but keeps the spelling of the path as typed (case, 8.3 names,
+ * substituted drives), so that is the form compared first.
+ */
 export function isMainModule(entry, moduleUrl) {
   if (!entry) return false;
   const file = path.resolve(entry);
-  return (resolved(file) ?? file) === fileURLToPath(moduleUrl);
+  const module = fileURLToPath(moduleUrl);
+  let typed;
+  try { typed = fs.realpathSync(file); } catch { typed = file; }
+  if (typed === module) return true;
+  const canonical = resolved(file);
+  return canonical !== null && canonical === resolved(module);
 }

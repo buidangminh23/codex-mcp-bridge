@@ -91,7 +91,7 @@ async function connect(t, fixture, extraEnv = {}) {
   };
   delete env.CODEX_BRIDGE_DESKTOP_TASKS;
   Object.assign(env, extraEnv);
-  const transport = new StdioClientTransport({ command: process.execPath, args: [fixture.launcher], env, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: fixture.node ?? process.execPath, args: [fixture.launcher], env, stderr: "pipe" });
   let stderr = "";
   transport.stderr.on("data", data => { stderr += data; if(process.env.TEST_RELOAD_DEBUG) process.stderr.write(data); });
   t.after(async () => { await client.close(); fixture.cleanup(); });
@@ -478,6 +478,30 @@ it("follows a Homebrew keg switch and survives removal of the old keg", { skip: 
   fs.symlinkSync(path.join("..", "Cellar", "codex-mcp-bridge", "2"), `${link}.next`);
   fs.renameSync(`${link}.next`, link);
   fs.rmSync(keg("1"), { recursive: true, force: true });
+  const after = await eventually(api.call, value => value.structuredContent.version === "B", api.stderr);
+  assert.equal(after.structuredContent.autoReload.supervisorPid, before.structuredContent.autoReload.supervisorPid);
+  assert.equal(after.structuredContent.autoReload.reloads, 1);
+});
+
+it("keeps forking workers after Homebrew replaces its Node.js keg", { skip: process.platform === "win32" && "Homebrew kegs are POSIX-only", timeout: 60000 }, async t => {
+  const fixture = installation(t);
+  const brew = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-node-keg-")));
+  t.after(() => fs.rmSync(brew, { recursive: true, force: true }));
+  const nodeKeg = (version) => path.join(brew, "Cellar", "node", version);
+  for (const version of ["1", "2"]) {
+    fs.mkdirSync(path.join(nodeKeg(version), "bin"), { recursive: true });
+    fs.copyFileSync(fs.realpathSync.native(process.execPath), path.join(nodeKeg(version), "bin", "node"), fs.constants.COPYFILE_FICLONE);
+    fs.chmodSync(path.join(nodeKeg(version), "bin", "node"), 0o755);
+  }
+  fs.mkdirSync(path.join(brew, "opt"));
+  const alias = path.join(brew, "opt", "node");
+  fs.symlinkSync(path.join("..", "Cellar", "node", "1"), alias);
+  const api = await connect(t, { ...fixture, node: path.join(alias, "bin", "node") });
+  const before = await api.call();
+  fs.symlinkSync(path.join("..", "Cellar", "node", "2"), `${alias}.next`);
+  fs.renameSync(`${alias}.next`, alias);
+  fs.rmSync(nodeKeg("1"), { recursive: true, force: true });
+  fixture.update("B");
   const after = await eventually(api.call, value => value.structuredContent.version === "B", api.stderr);
   assert.equal(after.structuredContent.autoReload.supervisorPid, before.structuredContent.autoReload.supervisorPid);
   assert.equal(after.structuredContent.autoReload.reloads, 1);

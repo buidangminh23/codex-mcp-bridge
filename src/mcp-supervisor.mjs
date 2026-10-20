@@ -7,6 +7,7 @@ import { createReleaseSnapshot, sourceRevision } from "./release-snapshot.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { isMainModule, stableInstallPath } from "./install-paths.mjs";
 
+const WORKER_NODE = stableInstallPath(process.execPath);
 const ENTRIES = new Set(["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs"]);
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_QUEUE = 256;
@@ -41,7 +42,7 @@ class Worker {
     this.retiring = false;
     this.closed = false;
     this.process = fork(path.join(release.directory, "src", entry), [], {
-      execPath: stableInstallPath(process.execPath), execArgv: [], cwd: process.cwd(), windowsHide: true,
+      execPath: WORKER_NODE, execArgv: [], cwd: process.cwd(), windowsHide: true,
       env: { ...env, CODEX_BRIDGE_WORKER: "1", CODEX_BRIDGE_STAGED: "1" },
       stdio: ["pipe", "pipe", "pipe", "ipc"], serialization: "json",
     });

@@ -91,7 +91,7 @@ async function connect(t, fixture, extraEnv = {}) {
   };
   delete env.CODEX_BRIDGE_DESKTOP_TASKS;
   Object.assign(env, extraEnv);
-  const transport = new StdioClientTransport({ command: process.execPath, args: [fixture.launcher], env, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: fixture.node ?? process.execPath, args: [fixture.launcher], env, stderr: "pipe" });
   let stderr = "";
   transport.stderr.on("data", data => { stderr += data; if(process.env.TEST_RELOAD_DEBUG) process.stderr.write(data); });
   t.after(async () => { await client.close(); fixture.cleanup(); });
@@ -447,4 +447,62 @@ it("reload discards response snapshots without delaying for live cursors", async
   const expired = await api.call("page", { cursor });
   assert.equal(expired.isError, true);
   assert.equal(expired.structuredContent.code, "CURSOR_EXPIRED");
+});
+
+it("runs when started through a symlinked installation directory", { skip: process.platform === "win32" && "directory symlinks need privileges on Windows" }, async () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-alias-"));
+  try {
+    const alias = path.join(parent, "opt");
+    fs.symlinkSync(repository, alias);
+    const output = await new Promise((resolve, reject) => execFile(process.execPath, [path.join(alias, "src", "mcp-supervisor.mjs"), "index.mjs", "--version"], (error, stdout) => error ? reject(error) : resolve(stdout)));
+    assert.equal(output, `${JSON.parse(fs.readFileSync(path.join(repository, "package.json"), "utf8")).version}\n`);
+  } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+});
+
+it("follows a Homebrew keg switch and survives removal of the old keg", { skip: process.platform === "win32" && "Homebrew kegs are POSIX-only" }, async t => {
+  const fixture = installation(t);
+  const brew = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-brew-")));
+  const keg = (version) => path.join(brew, "Cellar", "codex-mcp-bridge", version);
+  fs.mkdirSync(path.dirname(keg("1")), { recursive: true });
+  fs.cpSync(fixture.root, keg("1"), { recursive: true });
+  fs.mkdirSync(path.join(brew, "opt"));
+  fs.symlinkSync(path.join("..", "Cellar", "codex-mcp-bridge", "1"), path.join(brew, "opt", "codex-mcp-bridge"));
+  fs.writeFileSync(fixture.launcher, `import {runSupervisor} from ${JSON.stringify(new URL("../src/mcp-supervisor.mjs", import.meta.url).href)}; await runSupervisor("index.mjs", {root:${JSON.stringify(keg("1"))}});`);
+  t.after(() => fs.rmSync(brew, { recursive: true, force: true }));
+  const api = await connect(t, fixture);
+  const before = await api.call();
+  assert.equal(before.structuredContent.version, "A");
+  fs.cpSync(keg("1"), keg("2"), { recursive: true });
+  fs.writeFileSync(path.join(keg("2"), "src", "index.mjs"), workerSource.replace("const VERSION = 'A'", "const VERSION = 'B'"));
+  const link = path.join(brew, "opt", "codex-mcp-bridge");
+  fs.symlinkSync(path.join("..", "Cellar", "codex-mcp-bridge", "2"), `${link}.next`);
+  fs.renameSync(`${link}.next`, link);
+  fs.rmSync(keg("1"), { recursive: true, force: true });
+  const after = await eventually(api.call, value => value.structuredContent.version === "B", api.stderr);
+  assert.equal(after.structuredContent.autoReload.supervisorPid, before.structuredContent.autoReload.supervisorPid);
+  assert.equal(after.structuredContent.autoReload.reloads, 1);
+});
+
+it("keeps forking workers after Homebrew replaces its Node.js keg", { skip: process.platform === "win32" && "Homebrew kegs are POSIX-only", timeout: 60000 }, async t => {
+  const fixture = installation(t);
+  const brew = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-node-keg-")));
+  t.after(() => fs.rmSync(brew, { recursive: true, force: true }));
+  const nodeKeg = (version) => path.join(brew, "Cellar", "node", version);
+  for (const version of ["1", "2"]) {
+    fs.mkdirSync(path.join(nodeKeg(version), "bin"), { recursive: true });
+    fs.copyFileSync(fs.realpathSync.native(process.execPath), path.join(nodeKeg(version), "bin", "node"), fs.constants.COPYFILE_FICLONE);
+    fs.chmodSync(path.join(nodeKeg(version), "bin", "node"), 0o755);
+  }
+  fs.mkdirSync(path.join(brew, "opt"));
+  const alias = path.join(brew, "opt", "node");
+  fs.symlinkSync(path.join("..", "Cellar", "node", "1"), alias);
+  const api = await connect(t, { ...fixture, node: path.join(alias, "bin", "node") });
+  const before = await api.call();
+  fs.symlinkSync(path.join("..", "Cellar", "node", "2"), `${alias}.next`);
+  fs.renameSync(`${alias}.next`, alias);
+  fs.rmSync(nodeKeg("1"), { recursive: true, force: true });
+  fixture.update("B");
+  const after = await eventually(api.call, value => value.structuredContent.version === "B", api.stderr);
+  assert.equal(after.structuredContent.autoReload.supervisorPid, before.structuredContent.autoReload.supervisorPid);
+  assert.equal(after.structuredContent.autoReload.reloads, 1);
 });

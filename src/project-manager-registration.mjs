@@ -4,15 +4,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { readRegularConfigFile, backupRegularConfigFile } from "./project-policy.mjs";
+import { stableInstallPath, stableNodeBin } from "./install-paths.mjs";
 
 // Optional UI adapter discovery. Neither bridge startup nor policy evaluation reads
 // this file. Removing the card extension or this descriptor cannot stop messaging.
-export function registerProjectManager({ policyFile, env = process.env, executable = process.execPath } = {}) {
+export function registerProjectManager({ policyFile, env = process.env, executable = stableNodeBin(env) } = {}) {
   if (!path.isAbsolute(policyFile ?? "")) throw new Error("Manager policy path must be absolute");
   const home = env.HOME ?? env.USERPROFILE ?? os.homedir();
   const file = path.join(home, ".config", "GptClaudeBridge", "management.json");
   const value = { version: 1, node: executable,
-    script: fileURLToPath(new URL("../scripts/bridge-projects.mjs", import.meta.url)),
+    script: stableInstallPath(fileURLToPath(new URL("../scripts/bridge-projects.mjs", import.meta.url)), env),
     policyFile, configFile: env.CLAUDE_CONFIG_DIR ? path.join(env.CLAUDE_CONFIG_DIR, ".claude.json") : path.join(home, ".claude.json") };
   if (!Object.values(value).filter(v => typeof v === "string").every(v => path.isAbsolute(v))) throw new Error("Manager paths must be absolute");
   fs.mkdirSync(path.dirname(file), { recursive: true });

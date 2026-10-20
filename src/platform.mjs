@@ -5,6 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { stableNodeBin } from "./install-paths.mjs";
+
 const execFileAsync = promisify(execFile);
 
 export const IS_MACOS = process.platform === "darwin";
@@ -230,7 +232,7 @@ export function resolveCodexDesktopNodeBin(
   ]) {
     if (candidate && isRunnable(candidate)) return { path: candidate, source };
   }
-  return { path: process.execPath, source: "process.execPath" };
+  return { path: stableNodeBin(env), source: "process.execPath" };
 }
 
 /**
@@ -393,7 +395,7 @@ export function spawnEnv(extra = {}) {
   const systemDirs = IS_WINDOWS
     ? []
     : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
-  const merged = [path.dirname(process.execPath), ...systemDirs, ...(process.env.PATH ?? "").split(separator)]
+  const merged = [path.dirname(stableNodeBin()), ...systemDirs, ...(process.env.PATH ?? "").split(separator)]
     .filter(Boolean)
     .filter((dir, index, all) => all.indexOf(dir) === index)
     .join(separator);

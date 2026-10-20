@@ -27,6 +27,14 @@ npm install -g @minhspark/codex-mcp-bridge@latest
 
 Requires **Node.js 22+**. In Windows PowerShell, use `npm.cmd` instead of `npm`. Run the same command to update; reconnect MCP servers if their settings or installation paths changed.
 
+On macOS or Linux you can install with [Homebrew](https://github.com/buidangminh23/homebrew-tap) instead, which brings its own Node.js:
+
+```bash
+brew install buidangminh23/tap/codex-mcp-bridge
+```
+
+Update with `brew upgrade codex-mcp-bridge`. The installers record Homebrew's stable `opt` paths, so registrations keep working after an upgrade and running bridges reload the new version. Keep one install channel: whichever of npm or Homebrew comes first on `PATH` provides the commands.
+
 [Windows](#windows-powershell) · [macOS](#macos-terminal) · [Linux / WSL](#linux--wsl-bash) · [ChatGPT plugin](#chatgpt-plugin)
 
 ### Windows (PowerShell)
@@ -92,6 +100,15 @@ claude mcp add --scope user codex-bridge \
   -e CODEX_BRIDGE_ALLOWED_ROOTS="$HOME/YourProject" \
   -- "$(command -v node)" "$bridge_root/src/mcp-supervisor.mjs" index.mjs
 ```
+
+For a Homebrew install, use the stable paths instead of `npm root -g` and `command -v node`:
+
+```bash
+bridge_root="$(brew --prefix)/opt/codex-mcp-bridge/libexec/lib/node_modules/@minhspark/codex-mcp-bridge"
+node_bin="$(brew --prefix)/opt/node/bin/node"
+```
+
+and end the command with `-- "$node_bin" "$bridge_root/src/mcp-supervisor.mjs" index.mjs`.
 
 </details>
 
@@ -178,7 +195,7 @@ Dispatch expires after two minutes; operation history remains stored. Disconnect
 
 ## Troubleshooting
 
-- **Command missing:** open a new terminal and check Node.js 22+ and the global npm directory on PATH.
+- **Command missing:** open a new terminal and check Node.js 22+ and the global npm directory (or Homebrew's `bin`) on PATH.
 - **PowerShell blocks scripts:** use `npm.cmd`, installer `.cmd` launchers, and `codex.exe`.
 - **No sessions or wrong project:** open the intended Claude **Code** session and use the exact project directory saved in Codex Desktop.
 - **Relay unavailable:** check [pipe forwarding](#native-relay-pipe-forwarding), reconnect, and run `native_relay_status` in the task.

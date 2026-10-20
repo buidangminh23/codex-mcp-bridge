@@ -1292,9 +1292,13 @@ it("stops peer intake on client close while keeping accepted connections open", 
     assert.equal(registered(), false);
     assert.throws(() => endpoint.start(), /shutting down because its MCP client closed/);
     const late = net.connect(endpoint.socketPath);
-    const lateResult = await new Promise((resolve) => { late.once("error", (error) => resolve(error.code)); late.once("connect", () => { late.destroy(); resolve("connected"); }); });
+    const lateResult = await new Promise((resolve) => {
+      const timer = setTimeout(() => { late.destroy(); resolve("no answer"); }, 3000);
+      late.once("error", (error) => { clearTimeout(timer); resolve(error.code); });
+      late.once("connect", () => { clearTimeout(timer); late.destroy(); resolve("connected"); });
+    });
     assert.notEqual(lateResult, "connected");
-    accepted.write("\n");
+    accepted.write("{");
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(accepted.destroyed, false);
     assert.equal(endpoint.connections.size, 1);

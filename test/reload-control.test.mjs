@@ -119,7 +119,7 @@ it("exits once after the MCP client closes, waiting for open work within its dea
   assert.deepEqual(failed, [1]);
 });
 
-it("finishes draining after its supervisor is killed and its output pipes lose their reader", { timeout: 30000 }, async t => {
+it("finishes draining after its supervisor is killed and its output pipes lose their reader", { timeout: 30000, skip: process.platform === "win32" && "Windows ends non-detached children with their parent's job object" }, async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "client-close-drain-"));
   const reaper = createProcessReaper();
   t.after(async () => { await reaper.reap(); fs.rmSync(directory, { recursive: true, force: true }); });

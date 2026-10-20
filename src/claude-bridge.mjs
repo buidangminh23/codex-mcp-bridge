@@ -30,7 +30,7 @@ import { discoverClaudeProject } from "./claude-project-discovery.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.6";
+const VERSION = "1.22.7";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;

@@ -91,6 +91,25 @@ it("rejects replacement of a pinned receipt directory", (t) => {
   assert.throws(() => store.read(id, f.context), /directory changed/);
 });
 
+it("rejects a receipt directory whose identity differs only below Number precision", (t) => {
+  const f = fixture(t);
+  const directory = path.join(f.directory, "store");
+  const store = new DesktopReplyReceipts({ directory });
+  const original = fs.lstatSync;
+  const base = 2n ** 60n;
+  let offset = 0n;
+  t.mock.method(fs, "lstatSync", (target, options) => {
+    const status = original(target, options);
+    if (path.resolve(target) !== directory || !options?.bigint) return status;
+    return new Proxy(status, { get: (value, key) => key === "ino" ? base + offset : Reflect.get(value, key) });
+  });
+  const id = store.create(f.delivered, f.context);
+  assert.deepEqual(store.read(id, f.context), f.delivered);
+  offset = 1n;
+  assert.equal(Number(base), Number(base + offset));
+  assert.throws(() => store.read(id, f.context), /directory changed/);
+});
+
 it("rejects same-inode receipt changes between inspection and opening", (t) => {
   const f = fixture(t);
   const id = f.store.create(f.delivered, f.context);

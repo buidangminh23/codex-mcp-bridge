@@ -8,7 +8,7 @@ const PACKAGE_NAME = /^Claude_[a-z0-9._-]+$/i;
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const MAX_PACKAGES = 512;
 const MAX_ROOTS = 16;
-const VERSION_FIELDS = ["size", "mtimeMs", "ctimeMs", "ino", "dev"];
+const VERSION_FIELDS = ["size", "mtimeNs", "ctimeNs", "ino", "dev"];
 const sameVersion = (left, right) => VERSION_FIELDS.every((field) => left[field] === right[field]);
 const isMissing = (error) => error.code === "ENOENT";
 
@@ -28,7 +28,7 @@ function absoluteDirectory(value) {
 }
 
 function directoryStat(directory) {
-  const stat = fs.lstatSync(directory);
+  const stat = fs.lstatSync(directory, { bigint: true });
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("invalid directory");
   return stat;
 }
@@ -73,22 +73,22 @@ function readConfig(root) {
   }
   const file = path.join(root, "config.json");
   let initial;
-  try { initial = fs.lstatSync(file); }
+  try { initial = fs.lstatSync(file, { bigint: true }); }
   catch (error) {
     if (isMissing(error)) return { kind: "missing-config", rootStat };
     throw error;
   }
-  if (!initial.isFile() || initial.isSymbolicLink() || initial.size > MAX_CONFIG_BYTES) throw new Error("invalid config");
+  if (!initial.isFile() || initial.isSymbolicLink() || initial.size > BigInt(MAX_CONFIG_BYTES)) throw new Error("invalid config");
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   let bytes;
   let current;
   try {
-    const before = fs.fstatSync(descriptor);
+    const before = fs.fstatSync(descriptor, { bigint: true });
     if (!before.isFile() || !sameVersion(initial, before)) throw new Error("config changed");
-    bytes = Buffer.alloc(before.size);
+    bytes = Buffer.alloc(Number(before.size));
     if (fs.readSync(descriptor, bytes, 0, bytes.length, 0) !== bytes.length) throw new Error("short read");
-    const after = fs.fstatSync(descriptor);
-    current = fs.lstatSync(file);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    current = fs.lstatSync(file, { bigint: true });
     if (!current.isFile() || current.isSymbolicLink() || !sameVersion(before, after) || !sameVersion(after, current)) throw new Error("config changed");
   } finally {
     fs.closeSync(descriptor);

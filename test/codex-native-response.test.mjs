@@ -692,6 +692,23 @@ describe("native Codex response observation", () => {
     assert.equal(f.read(watermark).status, "unavailable");
   });
 
+  it("persists exact rollout identities and honors only exactly representable legacy identities", (t) => {
+    const f = fixture(t);
+    const watermark = f.capture();
+    assert.equal(watermark.status, "available", watermark.reason);
+    const exact = fs.lstatSync(f.file, { bigint: true });
+    assert.deepEqual(watermark.identity, { dev: String(exact.dev), ino: String(exact.ino) });
+    const stored = JSON.parse(JSON.stringify(watermark));
+    f.append(f.turn());
+    assert.equal(f.read(stored).status, "completed");
+    const legacy = (identity) => ({ ...stored, identity, segments: stored.segments.map((mark) => ({ ...mark, identity })) });
+    const numeric = { dev: Number(exact.dev), ino: Number(exact.ino) };
+    const representable = Number.isSafeInteger(numeric.dev) && Number.isSafeInteger(numeric.ino);
+    assert.equal(f.read(legacy(numeric)).status, representable ? "completed" : "unavailable");
+    assert.match(f.read(legacy({ ...stored.identity, ino: String(exact.ino + 1n) })).reason, /identity changed/);
+    assert.match(f.read(legacy({ ...stored.identity, ino: undefined })).reason, /identity changed/);
+  });
+
   it("rejects multiple rollout files for one task", (t) => {
     const f = fixture(t);
     fs.writeFileSync(path.join(f.directory, `rollout-duplicate-${THREAD_ID}.jsonl`), line(f.session));

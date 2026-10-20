@@ -16,22 +16,22 @@ function identity(value) {
 }
 
 function readStable(file, limit) {
-  const entry = fs.lstatSync(file);
+  const entry = fs.lstatSync(file, { bigint: true });
   if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("Codex account evidence must be a regular file");
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
-    const before = fs.fstatSync(descriptor);
-    if (!before.isFile() || before.size > limit || entry.ino !== before.ino || entry.dev !== before.dev) throw new Error("Codex account evidence is invalid or exceeds its read limit");
-    const data = Buffer.alloc(before.size);
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || before.size > BigInt(limit) || entry.ino !== before.ino || entry.dev !== before.dev) throw new Error("Codex account evidence is invalid or exceeds its read limit");
+    const data = Buffer.alloc(Number(before.size));
     let offset = 0;
     while (offset < data.length) {
       const count = fs.readSync(descriptor, data, offset, data.length - offset, offset);
       if (!count) throw new Error("Codex account evidence changed while reading; retry on the next call");
       offset += count;
     }
-    const after = fs.fstatSync(descriptor);
-    const current = fs.lstatSync(file);
-    if (!current.isFile() || current.isSymbolicLink() || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || before.ino !== current.ino || before.dev !== current.dev || after.size !== current.size || after.mtimeMs !== current.mtimeMs || after.ctimeMs !== current.ctimeMs) throw new Error("Codex account evidence changed while reading; retry on the next call");
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    const current = fs.lstatSync(file, { bigint: true });
+    if (!current.isFile() || current.isSymbolicLink() || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || before.ino !== current.ino || before.dev !== current.dev || after.size !== current.size || after.mtimeNs !== current.mtimeNs || after.ctimeNs !== current.ctimeNs) throw new Error("Codex account evidence changed while reading; retry on the next call");
     return data.toString("utf8");
   } finally {
     fs.closeSync(descriptor);

@@ -262,3 +262,22 @@ it("treats Unicode quotation marks in Windows authority paths as literal data", 
   store.reserve(f.id, args, accounts, "executor");
   assert.equal(store.read(f.id, accounts, f.hash).state, "pending");
 });
+
+it("rejects a receipt directory whose identity differs only below Number precision", t => {
+  const f = fixture(t);
+  fs.mkdirSync(path.join(f.dir, "receipts"));
+  const directory = fs.realpathSync.native(path.join(f.dir, "receipts"));
+  const original = fs.lstatSync;
+  const base = 2n ** 60n;
+  let offset = 0n;
+  t.mock.method(fs, "lstatSync", (target, options) => {
+    const status = original(target, options);
+    if (fs.realpathSync.native(target) !== directory || !options?.bigint) return status;
+    return new Proxy(status, { get: (value, key) => key === "ino" ? base + offset : Reflect.get(value, key) });
+  });
+  const file = f.store.file(f.id);
+  assert.equal(f.store.file(f.id), file);
+  offset = 1n;
+  assert.equal(Number(base), Number(base + offset));
+  assert.throws(() => f.store.file(f.id), /directory changed/);
+});

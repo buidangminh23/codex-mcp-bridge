@@ -1,25 +1,28 @@
 import fs from "node:fs";
+import { fileIdentity } from "./file-identity.mjs";
 
 const CHUNK_BYTES = 256 * 1024;
-const VERSION_FIELDS = ["size", "mtimeMs", "ctimeMs", "ino", "dev"];
+const VERSION_FIELDS = ["size", "mtimeNs", "ctimeNs", "ino", "dev"];
 const sameVersion = (a, b) => VERSION_FIELDS.every((key) => a[key] === b[key]);
 
 // Scan the complete history, but retain at most one bounded JSONL record.
 // Skipping the middle of a rollout would miss duplicate identities or corruption.
 export function scanRollout(file, { maxRecordBytes, onRecord, onChunk = () => {} }) {
   if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes < 1) throw new Error("The rollout record read limit is invalid");
-  const named = fs.lstatSync(file);
+  const named = fs.lstatSync(file, { bigint: true });
   if (!named.isFile() || named.isSymbolicLink()) throw new Error("The rollout is not a regular file");
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
   try {
-    const before = fs.fstatSync(descriptor);
+    const before = fs.fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) throw new Error("The opened rollout is not a regular file");
     if (!sameVersion(named, before)) throw new Error("The rollout changed while opening");
-    if (before.size === 0) throw new Error("The rollout is empty (0 bytes)");
+    if (before.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("The rollout exceeds the safe size range");
+    const size = Number(before.size);
+    if (size === 0) throw new Error("The rollout is empty (0 bytes)");
     let parts = [], length = 0, start = 0, position = 0;
     const decoder = new TextDecoder("utf-8", { fatal: true });
-    while (position < before.size) {
-      const buffer = Buffer.allocUnsafe(Math.min(CHUNK_BYTES, before.size - position));
+    while (position < size) {
+      const buffer = Buffer.allocUnsafe(Math.min(CHUNK_BYTES, size - position));
       const count = fs.readSync(descriptor, buffer, 0, buffer.length, position);
       if (!count) throw new Error("The rollout changed while reading");
       const chunk = buffer.subarray(0, count);
@@ -29,7 +32,7 @@ export function scanRollout(file, { maxRecordBytes, onRecord, onChunk = () => {}
         const newline = chunk.indexOf(0x0a, offset);
         const end = newline < 0 ? count : newline;
         length += end - offset;
-        if (length > maxRecordBytes) throw new Error(`The rollout record at byte ${start} exceeds the ${maxRecordBytes}-byte per-record read limit (file: ${before.size} bytes)`);
+        if (length > maxRecordBytes) throw new Error(`The rollout record at byte ${start} exceeds the ${maxRecordBytes}-byte per-record read limit (file: ${size} bytes)`);
         parts.push(chunk.subarray(offset, end));
         if (newline < 0) break;
         if (length) {
@@ -45,14 +48,14 @@ export function scanRollout(file, { maxRecordBytes, onRecord, onChunk = () => {}
       }
       position += count;
     }
-    if (start !== before.size) throw new Error("The rollout has an incomplete final record");
-    const after = fs.fstatSync(descriptor);
-    const current = fs.lstatSync(file);
+    if (start !== size) throw new Error("The rollout has an incomplete final record");
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    const current = fs.lstatSync(file, { bigint: true });
     if (!current.isFile() || current.isSymbolicLink() || !sameVersion(before, after) || !sameVersion(after, current)) {
       throw new Error("The rollout changed while reading");
     }
-    return { size: before.size, identity: { dev: before.dev, ino: before.ino },
-      version: Object.fromEntries(VERSION_FIELDS.map((key) => [key, before[key]])) };
+    return { size, identity: fileIdentity(before),
+      version: Object.fromEntries(VERSION_FIELDS.map((key) => [key, String(before[key])])) };
   } finally {
     fs.closeSync(descriptor);
   }

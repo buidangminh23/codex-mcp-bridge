@@ -121,7 +121,7 @@ describe("Claude Desktop persisted account identity", () => {
     const originalLstat = fs.lstatSync;
     const originalFstat = fs.fstatSync;
     const frozen = new Map();
-    const initialFileStat = originalLstat(file);
+    const initialFileStat = originalLstat(file, { bigint: true });
     mock.method(fs, "lstatSync", (target, ...args) => {
       if (!frozen.has(target)) frozen.set(target, originalLstat(target, ...args));
       return frozen.get(target);
@@ -136,7 +136,10 @@ describe("Claude Desktop persisted account identity", () => {
       if (++reads === 1) writeConfig(ACCOUNT_B);
       return count;
     });
-    expectHiddenIdentity(resolve(), "unavailable");
+    const state = resolve();
+    expectHiddenIdentity(state, "unavailable");
+    assert.match(state.reason, /changed during inspection/);
+    assert.ok(reads >= 2);
   });
 
   it("rejects a regular config path replaced with a directory", () => {

@@ -15,23 +15,23 @@ function samePath(left, right) {
 }
 
 function metadata(file) {
-  const entry = fs.lstatSync(file);
-  if (!entry.isFile() || entry.isSymbolicLink() || entry.size > 4096) throw new Error("Invalid project repository metadata");
+  const entry = fs.lstatSync(file, { bigint: true });
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.size > 4096n) throw new Error("Invalid project repository metadata");
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
-    const before = fs.fstatSync(descriptor);
-    const fields = ["dev", "ino", "size", "mtimeMs", "ctimeMs"];
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    const fields = ["dev", "ino", "size", "mtimeNs", "ctimeNs"];
     const matches = (left, right) => fields.every((field) => left[field] === right[field]);
     if (!before.isFile() || !matches(entry, before)) throw new Error("Project repository metadata changed during access");
-    const data = Buffer.alloc(before.size);
+    const data = Buffer.alloc(Number(before.size));
     let offset = 0;
     while (offset < data.length) {
       const count = fs.readSync(descriptor, data, offset, data.length - offset, offset);
       if (!count) throw new Error("Project repository metadata changed during access");
       offset += count;
     }
-    const after = fs.fstatSync(descriptor);
-    const current = fs.lstatSync(file);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    const current = fs.lstatSync(file, { bigint: true });
     if (!current.isFile() || current.isSymbolicLink() || !matches(before, after) || !matches(after, current)) throw new Error("Project repository metadata changed during access");
     return data.toString("utf8").trim();
   } finally {

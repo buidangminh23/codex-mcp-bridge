@@ -59,7 +59,7 @@ export function assertRolloutSetStable(sessions, threadId, snapshots) {
   const files = findRolloutSegments(sessions, threadId);
   if (files.length !== snapshots.length || files.some((file, i) => file !== snapshots[i].file)) throw new Error("The rollout segment set changed while reading");
   for (const { file, version } of snapshots) {
-    const current = fs.lstatSync(file);
-    if (!current.isFile() || current.isSymbolicLink() || Object.entries(version).some(([key, value]) => current[key] !== value)) throw new Error("A rollout segment changed while reading");
+    const current = fs.lstatSync(file, { bigint: true });
+    if (!current.isFile() || current.isSymbolicLink() || Object.entries(version).some(([key, value]) => typeof value !== "string" || String(current[key]) !== value)) throw new Error("A rollout segment changed while reading");
   }
 }

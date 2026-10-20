@@ -4,6 +4,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Compare file identities with exact 64-bit values everywhere. Reply and native creation receipts, the creation signing key, Codex rollout watermarks and segment checks, Codex account evidence, Claude Desktop task metadata and account state, project repository metadata, and the Sites connector's private files read `dev`, `ino`, `size` and nanosecond `mtime`/`ctime` as bigint. Number stats round inodes above 2^53, which NTFS file IDs and some macOS volumes (such as `/tmp` on the sealed system volume) exceed, so a replaced file or directory could pass as unchanged; this made `rejects replacement of a pinned receipt directory` fail intermittently on Windows CI.
+
+### Security
+
+- A rollout watermark now stores its file identity as exact decimal strings. A reply receipt written by an earlier version still matches only when its numeric identity is an exactly representable integer equal to the current file; a rounded identity no longer matches, and the observation reports the rollout as changed instead.
+
 ## [1.22.7] - 2026-10-20
 
 ### Added

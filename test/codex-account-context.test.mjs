@@ -100,7 +100,7 @@ it("rejects an account file that changes during the bounded read", (context) => 
 
 it("rejects same-size account changes even when file metadata remains unchanged", (context) => {
   const f = fixture();
-  const metadata = fs.lstatSync(f.source);
+  const metadata = fs.lstatSync(f.source, { bigint: true });
   const originalRead = fs.readSync;
   const originalLstat = fs.lstatSync;
   let changed = false;
@@ -111,7 +111,7 @@ it("rejects same-size account changes even when file metadata remains unchanged"
     if (!changed) {
       changed = true;
       f.write("account-b", "user-b");
-      assert.equal(fs.statSync(f.source).size, metadata.size);
+      assert.equal(fs.statSync(f.source, { bigint: true }).size, metadata.size);
     }
     return count;
   });

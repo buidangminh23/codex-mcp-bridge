@@ -9,7 +9,7 @@ const TASK_FILE = new RegExp(`^(local_${UUID})\\.json$`, "i");
 const MAX_ENTRIES = 8192;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_IDENTITY_BYTES = 32 * 1024 * 1024;
-const VERSION_FIELDS = ["size", "mtimeMs", "ctimeMs", "ino", "dev"];
+const VERSION_FIELDS = ["size", "mtimeNs", "ctimeNs", "ino", "dev"];
 
 const sameVersion = (left, right) => VERSION_FIELDS.every((field) => left[field] === right[field]);
 
@@ -68,12 +68,12 @@ function metadataFiles(root, accountId) {
 function readMetadata(file, budget) {
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
-    const before = fs.fstatSync(descriptor);
-    if (!before.isFile() || before.size > MAX_FILE_BYTES) throw new Error("file limit");
-    const bytes = Buffer.alloc(before.size);
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || before.size > BigInt(MAX_FILE_BYTES)) throw new Error("file limit");
+    const bytes = Buffer.alloc(Number(before.size));
     if (fs.readSync(descriptor, bytes, 0, bytes.length, 0) !== bytes.length) throw new Error("short read");
-    const after = fs.fstatSync(descriptor);
-    const current = fs.lstatSync(file);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    const current = fs.lstatSync(file, { bigint: true });
     if (!sameVersion(before, after) || current.isSymbolicLink() || !sameVersion(current, after)) throw new Error("metadata changed");
     budget.versions.set(file, current);
     budget.digests.set(file, createHash("sha256").update(bytes).digest("hex"));
@@ -217,7 +217,7 @@ export function readClaudeDesktopTasks({ platform = process.platform, env = proc
   const currentFiles = metadataFiles(directory, account?.accountId);
   if (files.length !== currentFiles.length || files.some((file, index) => file !== currentFiles[index])) throw new Error("metadata changed");
   for (const file of files) {
-    const current = fs.lstatSync(file);
+    const current = fs.lstatSync(file, { bigint: true });
     if (!current.isFile() || !sameVersion(current, budget.versions.get(file)) || rereadMetadata(file) !== budget.digests.get(file)) throw new Error("metadata changed");
   }
   return records;

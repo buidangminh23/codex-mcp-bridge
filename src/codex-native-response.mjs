@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { scanRollout } from "./rollout-reader.mjs";
+import { fileIdentity, sameFileIdentity } from "./file-identity.mjs";
 import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable } from "./rollout-segments.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -52,9 +53,9 @@ function findRollouts(threadId, env) {
 }
 
 function pathIdentity(candidate, kind) {
-  const status = fs.lstatSync(candidate);
+  const status = fs.lstatSync(candidate, { bigint: true });
   if ((kind === "file" ? !status.isFile() : !status.isDirectory()) || status.isSymbolicLink()) throw new Error(`The Codex rollout ${kind === "file" ? "file" : "ancestor"} is not regular`);
-  return { path: candidate, dev: status.dev, ino: status.ino };
+  return { path: candidate, ...fileIdentity(status) };
 }
 
 function capturePathBoundary(file, sessions) {
@@ -77,9 +78,9 @@ function capturePathBoundary(file, sessions) {
 }
 
 function samePathBoundary(expected, current) {
-  return expected.file.dev === current.file.dev && expected.file.ino === current.file.ino &&
+  return sameFileIdentity(expected.file, current.file) &&
     expected.ancestors.length === current.ancestors.length && expected.ancestors.every((entry, index) =>
-      entry.path === current.ancestors[index].path && entry.dev === current.ancestors[index].dev && entry.ino === current.ancestors[index].ino);
+      entry.path === current.ancestors[index].path && sameFileIdentity(entry, current.ancestors[index]));
 }
 
 function readStable(found, maxBytes, { threadId, turnId, afterOffset = 0, prefixSize, dispatchOutputs, dispatchAfterOffset = afterOffset } = {}) {
@@ -136,7 +137,7 @@ function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefix
     },
   });
   const afterBoundary = capturePathBoundary(file, sessions);
-  if (!samePathBoundary(beforeBoundary, afterBoundary) || snapshot.identity.dev !== beforeBoundary.file.dev || snapshot.identity.ino !== beforeBoundary.file.ino) {
+  if (!samePathBoundary(beforeBoundary, afterBoundary) || !sameFileIdentity(snapshot.identity, beforeBoundary.file)) {
     throw new Error("The Codex rollout changed while reading");
   }
   return { ...snapshot, file, sessions, records, dispatches, otherTurnStarts, retainedBytes, session, latestContext, turnBeforeWatermark, prefixSha256: digest.digest("hex") };
@@ -427,7 +428,7 @@ export function resolveCodexNativeDispatchResponse(binding, { env = process.env,
       const mark = marks.find(({ file }) => file === entry.file);
       const snapshot = readStable(entry, maxRolloutBytes, { threadId, afterOffset: mark?.size ?? 0, prefixSize: mark?.size, dispatchOutputs: outputs });
       if (mark) {
-        if (snapshot.identity.dev !== mark.identity?.dev || snapshot.identity.ino !== mark.identity?.ino || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
+        if (!sameFileIdentity(snapshot.identity, mark.identity) || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
         if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
       }
       validateIdentity(snapshot, threadId, cwd, desktopEvidence);
@@ -473,7 +474,7 @@ export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, 
       retainedBytes += snapshot.retainedBytes;
       if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
       if (mark) {
-        if (snapshot.identity.dev !== mark.identity?.dev || snapshot.identity.ino !== mark.identity?.ino || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
+        if (!sameFileIdentity(snapshot.identity, mark.identity) || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
         if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
       }
       if (snapshot.turnBeforeWatermark) throw new Error("The observed turn was already present before dispatch");

@@ -4,10 +4,11 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { creationRequestHash, creationIdValid } from "./native-creation-receipts.mjs";
 import { homeDir } from "./platform.mjs";
+import { fileIdentity, sameFileIdentity } from "./file-identity.mjs";
 
 const ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const LIMIT = 256 * 1024;
-const sameFile = (left, right) => ["dev", "ino", "size", "mode", "uid", "nlink", "mtimeMs", "ctimeMs"].every(field => left[field] === right[field]);
+const sameFile = (left, right) => ["dev", "ino", "size", "mode", "uid", "nlink", "mtimeNs", "ctimeNs"].every(field => left[field] === right[field]);
 
 function owner(context) {
   const { sessionId, taskId } = context?.caller ?? {};
@@ -29,11 +30,11 @@ export class DesktopReplyReceipts {
   file(id, create = false) {
     if (typeof id !== "string" || !ID.test(id)) throw new Error("Invalid reply deliveryId");
     if (create) fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    const info = fs.lstatSync(this.directory);
+    const info = fs.lstatSync(this.directory, { bigint: true });
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Unsafe reply receipt directory");
     const canonical = fs.realpathSync.native(this.directory);
-    if (this.#boundary && (this.#boundary.path !== canonical || this.#boundary.dev !== info.dev || this.#boundary.ino !== info.ino)) throw new Error("Reply receipt directory changed");
-    this.#boundary ??= { path: canonical, dev: info.dev, ino: info.ino };
+    if (this.#boundary && (this.#boundary.path !== canonical || !sameFileIdentity(this.#boundary, fileIdentity(info)))) throw new Error("Reply receipt directory changed");
+    this.#boundary ??= { path: canonical, ...fileIdentity(info) };
     return path.join(canonical, `${id}.json`);
   }
 
@@ -82,11 +83,11 @@ export class DesktopReplyReceipts {
 
   read(id, context) {
     const file = this.file(id);
-    const before = fs.lstatSync(file);
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > LIMIT) throw new Error("Unsafe reply receipt");
+    const before = fs.lstatSync(file, { bigint: true });
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size > BigInt(LIMIT)) throw new Error("Unsafe reply receipt");
     const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     try {
-      const opened = fs.fstatSync(fd);
+      const opened = fs.fstatSync(fd, { bigint: true });
       if (!opened.isFile() || !sameFile(before, opened)) throw new Error("Reply receipt changed while opening");
       const buffer = Buffer.alloc(LIMIT + 1);
       let length = 0;
@@ -96,9 +97,9 @@ export class DesktopReplyReceipts {
         length += count;
         if (length > LIMIT) throw new Error("Reply receipt exceeds its read limit");
       }
-      const after = fs.fstatSync(fd);
-      const current = fs.lstatSync(this.file(id));
-      if (current.isSymbolicLink() || !sameFile(opened, after) || !sameFile(after, current) || length !== opened.size) throw new Error("Reply receipt changed while reading");
+      const after = fs.fstatSync(fd, { bigint: true });
+      const current = fs.lstatSync(this.file(id), { bigint: true });
+      if (current.isSymbolicLink() || !sameFile(opened, after) || !sameFile(after, current) || BigInt(length) !== opened.size) throw new Error("Reply receipt changed while reading");
       const receipt = JSON.parse(buffer.subarray(0, length).toString("utf8"));
       const expected = owner(context);
       if (receipt.version !== 1 || receipt.deliveryId !== id || !receipt.owner ||

@@ -49,24 +49,24 @@ export function validateSitesConfig(value, { allowLoopback = false } = {}) {
 }
 
 async function readPrivateJson(file, maxBytes = 2 * 1024 * 1024) {
-  const info = await fs.lstat(file);
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > maxBytes) throw new Error("Private connector file is unsafe or oversized");
+  const info = await fs.lstat(file, { bigint: true });
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n || info.size > BigInt(maxBytes)) throw new Error("Private connector file is unsafe or oversized");
   const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
-    const current = await handle.stat();
-    const fields = ["dev", "ino", "size", "mtimeMs", "ctimeMs"];
+    const current = await handle.stat({ bigint: true });
+    const fields = ["dev", "ino", "size", "mtimeNs", "ctimeNs"];
     const matches = (left, right) => fields.every((field) => left[field] === right[field]);
-    if (!current.isFile() || current.nlink !== 1 || current.size > maxBytes || !matches(info, current)) throw new Error("Private connector file changed during access");
-    const data = Buffer.alloc(current.size);
+    if (!current.isFile() || current.nlink !== 1n || current.size > BigInt(maxBytes) || !matches(info, current)) throw new Error("Private connector file changed during access");
+    const data = Buffer.alloc(Number(current.size));
     let offset = 0;
     while (offset < data.length) {
       const { bytesRead } = await handle.read(data, offset, data.length - offset, offset);
       if (!bytesRead) throw new Error("Private connector file changed during access");
       offset += bytesRead;
     }
-    const after = await handle.stat();
-    const entry = await fs.lstat(file);
-    if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1 || !matches(current, after) || !matches(after, entry)) throw new Error("Private connector file changed during access");
+    const after = await handle.stat({ bigint: true });
+    const entry = await fs.lstat(file, { bigint: true });
+    if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1n || !matches(current, after) || !matches(after, entry)) throw new Error("Private connector file changed during access");
     return JSON.parse(data.toString("utf8"));
   } catch (error) {
     if (error.code === "ENOENT") throw new Error("Private connector file changed during access", { cause: error });

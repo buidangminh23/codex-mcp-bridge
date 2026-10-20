@@ -46,13 +46,30 @@ export function codexMcpRegistration({ name, existing, node, entry, entryArgs = 
   return stdioMcpRegistration({ name, existing, node, entry, entryArgs, envOverrides: values });
 }
 
-function writeConfigAtomically(configPath, expected, next) {
-  const target = fs.realpathSync.native(configPath);
-  const temporary = path.join(path.dirname(target), `.${path.basename(target)}.bridge-${process.pid}.tmp`);
-  fs.writeFileSync(temporary, next, { encoding: "utf8", mode: fs.statSync(target).mode & 0o777, flag: "wx" });
+function readConfigSnapshot(configPath) {
+  let descriptor;
+  try { descriptor = fs.openSync(configPath, "r"); }
+  catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
   try {
-    if (fs.readFileSync(target, "utf8") !== expected) throw new Error("The Codex configuration changed while the installer was updating it; nothing was changed. Run the installer again.");
-    fs.renameSync(temporary, target);
+    const stats = fs.fstatSync(descriptor, { bigint: true });
+    return { path: fs.realpathSync.native(configPath), contents: fs.readFileSync(descriptor, "utf8"), dev: stats.dev, ino: stats.ino, mode: Number(stats.mode & 0o777n) };
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function writeConfigAtomically(snapshot, next) {
+  const temporary = path.join(path.dirname(snapshot.path), `.${path.basename(snapshot.path)}.bridge-${process.pid}.tmp`);
+  fs.writeFileSync(temporary, next, { encoding: "utf8", mode: snapshot.mode, flag: "wx" });
+  try {
+    const current = readConfigSnapshot(snapshot.path);
+    if (!current || current.dev !== snapshot.dev || current.ino !== snapshot.ino || current.contents !== snapshot.contents) {
+      throw new Error("The Codex configuration changed while the installer was updating it; nothing was changed. Run the installer again.");
+    }
+    fs.renameSync(temporary, snapshot.path);
   } catch (error) {
     fs.rmSync(temporary, { force: true });
     throw error;
@@ -80,13 +97,14 @@ function verificationErrors(before, after, registration, ensureEnvVars) {
 }
 
 export function applyStdioMcpRegistration({ name, registration, existing, run, configPath, ensureEnvVars = [] }) {
-  const original = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : null;
+  const original = readConfigSnapshot(configPath);
   const target = { command: registration.command, args: registration.commandArgs, ensureEnvVars };
   const editInPlace = () => {
-    const current = fs.readFileSync(configPath, "utf8");
-    const next = retargetMcpServerToml(current, name, target);
-    if (next === current) return false;
-    writeConfigAtomically(configPath, current, next);
+    const current = readConfigSnapshot(configPath);
+    if (!current) throw new Error("The Codex configuration file does not exist");
+    const next = retargetMcpServerToml(current.contents, name, target);
+    if (next === current.contents) return false;
+    writeConfigAtomically(current, next);
     return true;
   };
   let mode = registration.mode;
@@ -121,8 +139,10 @@ export function applyStdioMcpRegistration({ name, registration, existing, run, c
     if (errors.length) throw new Error(`Codex did not read back the expected ${name} entry (${errors.join("; ")})`);
   } catch (error) {
     if (!mutated) throw error;
+    const current = readConfigSnapshot(configPath);
     if (original === null) fs.rmSync(configPath, { force: true });
-    else writeConfigAtomically(configPath, fs.readFileSync(configPath, "utf8"), original);
+    else if (current) writeConfigAtomically(current, original.contents);
+    else fs.writeFileSync(original.path, original.contents, { encoding: "utf8", mode: original.mode, flag: "wx" });
     throw new Error(`${error.message}; the previous Codex configuration was restored`);
   }
   return { mode, edited, envVarsAdded, notice };

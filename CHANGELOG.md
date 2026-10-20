@@ -19,6 +19,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Both installers were also run against the real Codex CLI 0.163.0 with a temporary `CODEX_HOME`, covering a CRLF file, a multi-line `args` array with comments, a rerun and a fresh install. Only `command`, `args` and the added `env_vars` changed.
 - An independent review of reload safety covered the relay, the peer endpoint and the supervisor. Two of five claims survived two refutation attempts each; both are fixed above. A second review of this change found three more defects that survived refutation: inline-table entries refused, space-separated datetimes refused, and the close-time unlink of a successor's socket. All three are fixed, each with a test.
 
+- CodeQL reported a file-system race in the first version of the config write: it checked the file, then wrote it by path. The installer now reads `config.toml` through one file descriptor, keeps its device, inode, mode and contents, and checks all four again through a new descriptor just before the atomic rename. The remaining `js/path-injection` reports on the config and relay socket paths come from operator configuration (`CODEX_HOME`, `CODEX_NATIVE_RELAY_SOCKET` or the home directory) and were dismissed as false positives, as in earlier releases.
+
 ### Limitations
 
 - Windows named pipes cannot be removed from the namespace before the listener closes, so a client that connects in the last moment before close can still be reset there. It is reported as unconfirmed, never as delivered.

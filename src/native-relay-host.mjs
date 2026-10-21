@@ -11,6 +11,7 @@ import { CLIENT_CLOSE_DRAIN_MS, CLIENT_CLOSE_STOP_MS } from "./reload-control.mj
 
 export const RELAY_HOST_WATCH_MS = 5000;
 export const RELAY_HOST_PIPE_STRIKES = 2;
+export const RELAY_HOST_BIND_WAIT_MS = 10000;
 const MAX_LOG_BYTES = 512 * 1024;
 
 export function relayHostLogPath(env = process.env) {
@@ -44,6 +45,7 @@ export async function runRelayHost({
   drainMs = CLIENT_CLOSE_DRAIN_MS,
   stopMs = CLIENT_CLOSE_STOP_MS,
   pollMs = 50,
+  bindWaitMs = RELAY_HOST_BIND_WAIT_MS,
   nativeTools = new NativeToolsClient({ env, socketPath: pipePath }),
   servers = null,
 } = {}) {
@@ -51,16 +53,14 @@ export async function runRelayHost({
     log(`Codex Desktop pipe ${pipePath ?? "(none)"} is not reachable; nothing to host`);
     return { started: false, done: Promise.resolve(0), shutdown: async () => 0 };
   }
-  const { relays } = servers ?? createRelayServers({ nativeTools, env, role: "host", signalExit: false, log });
+  const { relays } = servers ?? createRelayServers({ nativeTools, env, role: "host", signalExit: false, bindWaitMs, log });
   const unique = [...new Set(relays)];
   const lifecycle = createNativeRelayLifecycle({ nativeTools, relays: unique, log });
-  for (const relay of unique) {
-    try { await relay.start(); }
-    catch (error) {
-      log(`${error.message}; leaving the relay to its current owner`);
-      await lifecycle.stop();
-      return { started: false, done: Promise.resolve(0), shutdown: async () => 0 };
-    }
+  const failures = (await Promise.allSettled(unique.map((relay) => relay.start()))).filter((result) => result.status === "rejected");
+  if (failures.length) {
+    log(`${failures.map((failure) => failure.reason?.message ?? String(failure.reason)).join("; ")}; leaving the relay to its current owner`);
+    await lifecycle.stop();
+    return { started: false, done: Promise.resolve(0), shutdown: async () => 0 };
   }
   log(`serving ${unique.map((relay) => relay.socketPath).join(", ")} for Codex Desktop pipe ${pipePath}`);
   let resolveDone;
@@ -73,6 +73,7 @@ export async function runRelayHost({
     log(`stopping: ${why}`);
     let code = 0;
     try {
+      for (const relay of unique) relay.withdraw();
       lifecycle.refuseNewDeliveries();
       const deadline = Date.now() + drainMs;
       let reason = lifecycle.deliveryReason();
@@ -93,7 +94,7 @@ export async function runRelayHost({
     if (watching || closing) return;
     watching = true;
     try {
-      if (!unique.some((relay) => relay.ownsPublicPath())) return void shutdown("another native relay owner replaced the sockets");
+      if (!unique.every((relay) => relay.ownsPublicPath())) return void shutdown("another native relay owner replaced a socket");
       misses = await reachable(pipePath) ? 0 : misses + 1;
       if (misses >= strikes) void shutdown("Codex Desktop pipe is gone");
     } finally {
@@ -123,7 +124,8 @@ if (invokedDirectly) {
     fail(error);
   }
   if (host) {
-    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { void host.shutdown(signal); });
+    let signals = 0;
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { if (++signals > 1) process.exit(1); void host.shutdown(signal); });
     process.exit(await host.done);
   }
 }

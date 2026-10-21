@@ -9,37 +9,77 @@ const execFileAsync = promisify(execFile);
 
 export const RELAY_HOST_ENTRY = "native-relay-host.mjs";
 export const RELAY_OWNER_ROLES = Object.freeze(["companion", "host"]);
-const MAX_OWNER_BYTES = 4096;
+const MAX_RECORD_BYTES = 4096;
+const START_TIME_TOLERANCE_MS = 3000;
+const PROCESS_STARTED_AT = Math.round(Date.now() - process.uptime() * 1000);
 
 export function relayOwnerPath(socketPath) {
   return `${socketPath}.owner`;
 }
 
-export function writeRelayOwner(socketPath, role, { pid = process.pid } = {}) {
-  if (!RELAY_OWNER_ROLES.includes(role)) throw new Error("Invalid native relay owner role");
-  const file = relayOwnerPath(socketPath);
+export function relayHandoffPath(socketPath) {
+  return `${socketPath}.handoff`;
+}
+
+function writePrivateRecord(file, record, pid) {
   const temporary = `${file}.${pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify({ pid, role, socketPath })}\n`, { mode: 0o600, flag: "w" });
+  fs.rmSync(temporary, { force: true });
+  fs.writeFileSync(temporary, `${JSON.stringify(record)}\n`, { mode: 0o600, flag: "wx" });
   fs.renameSync(temporary, file);
   return file;
 }
 
-export function readRelayOwner(socketPath) {
-  const file = relayOwnerPath(socketPath);
+function readPrivateRecord(file) {
   let stat;
   try { stat = fs.lstatSync(file); } catch { return null; }
-  if (!stat.isFile() || stat.size > MAX_OWNER_BYTES) return null;
+  if (!stat.isFile() || stat.size > MAX_RECORD_BYTES) return null;
   if (typeof process.getuid === "function" && stat.uid !== process.getuid()) return null;
-  try {
-    const owner = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0 || !RELAY_OWNER_ROLES.includes(owner.role) || owner.socketPath !== socketPath) return null;
-    return { pid: owner.pid, role: owner.role };
-  } catch { return null; }
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+}
+
+export function writeRelayOwner(socketPath, role, { pid = process.pid, entry = process.argv[1], startedAt = PROCESS_STARTED_AT } = {}) {
+  if (!RELAY_OWNER_ROLES.includes(role)) throw new Error("Invalid native relay owner role");
+  return writePrivateRecord(relayOwnerPath(socketPath), { pid, role, socketPath, entry: entry ? path.resolve(entry) : null, startedAt }, pid);
+}
+
+export function readRelayOwner(socketPath) {
+  const owner = readPrivateRecord(relayOwnerPath(socketPath));
+  if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0 || !RELAY_OWNER_ROLES.includes(owner.role) || owner.socketPath !== socketPath) return null;
+  return {
+    pid: owner.pid,
+    role: owner.role,
+    entry: typeof owner.entry === "string" ? owner.entry : null,
+    startedAt: Number.isSafeInteger(owner.startedAt) ? owner.startedAt : null,
+  };
 }
 
 export function removeRelayOwner(socketPath, { pid = process.pid } = {}) {
   if (readRelayOwner(socketPath)?.pid !== pid) return false;
   try { fs.rmSync(relayOwnerPath(socketPath), { force: true }); return true; } catch { return false; }
+}
+
+export function markHandoffReady(socketPath, { pid = process.pid } = {}) {
+  try { writePrivateRecord(relayHandoffPath(socketPath), { pid, socketPath }, pid); return true; } catch { return false; }
+}
+
+export function handoffReady(socketPath, pid) {
+  const record = readPrivateRecord(relayHandoffPath(socketPath));
+  return record?.pid === pid && record.socketPath === socketPath;
+}
+
+export function clearHandoffReady(socketPath, { pid = process.pid } = {}) {
+  if (!handoffReady(socketPath, pid)) return false;
+  try { fs.rmSync(relayHandoffPath(socketPath), { force: true }); return true; } catch { return false; }
+}
+
+export async function waitForHandoffReady(socketPaths, pid, { timeoutMs = 5000, pollMs = 20 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processAlive(pid)) return false;
+    if (socketPaths.every((socketPath) => handoffReady(socketPath, pid))) return true;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, pollMs));
+  }
+  return false;
 }
 
 export function processAlive(pid) {
@@ -51,32 +91,39 @@ export function processAlive(pid) {
   }
 }
 
-export async function readProcessArguments(pid) {
-  const { stdout } = await execFileAsync("/bin/ps", ["-ww", "-p", String(pid), "-o", "args="], { timeout: 5000, maxBuffer: 64 * 1024 });
-  return stdout.trim();
+export async function readProcessIdentity(pid) {
+  const { stdout } = await execFileAsync("/bin/ps", ["-ww", "-p", String(pid), "-o", "lstart=", "-o", "args="], {
+    timeout: 5000, maxBuffer: 64 * 1024, env: { ...process.env, LC_ALL: "C", LANG: "C" },
+  });
+  const line = stdout.replace(/\n+$/, "");
+  const startedAt = Date.parse(line.slice(0, 24));
+  return { startedAt: Number.isFinite(startedAt) ? startedAt : null, args: line.slice(24).trim() };
 }
 
-export async function isRelayHostProcess(pid, { readArguments = readProcessArguments } = {}) {
+export async function isRelayHostProcess(owner, { readIdentity = readProcessIdentity } = {}) {
+  const pid = owner?.pid;
   if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid || !processAlive(pid)) return false;
+  if (typeof owner.entry !== "string" || path.basename(owner.entry) !== RELAY_HOST_ENTRY || !Number.isSafeInteger(owner.startedAt)) return false;
   try {
-    const args = await readArguments(pid);
-    return args.split(/\s+/).some((part) => path.basename(part) === RELAY_HOST_ENTRY);
+    const identity = await readIdentity(pid);
+    return identity.args.includes(owner.entry) && identity.startedAt !== null
+      && Math.abs(identity.startedAt - owner.startedAt) <= START_TIME_TOLERANCE_MS;
   } catch { return false; }
 }
 
 export async function evictRelayHost(socketPath, {
   isLive,
-  readArguments,
+  readIdentity,
   signal = (pid) => process.kill(pid, "SIGTERM"),
   waitMs = 8000,
-  pollMs = 100,
+  pollMs = 50,
 } = {}) {
   const owner = readRelayOwner(socketPath);
-  if (owner?.role !== "host" || !await isRelayHostProcess(owner.pid, { readArguments })) return false;
+  if (owner?.role !== "host" || !await isRelayHostProcess(owner, { readIdentity })) return false;
   try { signal(owner.pid); } catch { return false; }
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
-    if (!processAlive(owner.pid) || !await isLive()) return true;
+    if (!await isLive()) return true;
     await new Promise((resolve) => globalThis.setTimeout(resolve, pollMs));
   }
   return !await isLive();

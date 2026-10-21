@@ -17,7 +17,13 @@ const posix = process.platform !== "win32";
 
 function shortDirectory(t) {
   const directory = fs.mkdtempSync(path.join(posix ? "/tmp" : os.tmpdir(), "nrh-"));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => {
+    for (const file of fs.readdirSync(directory).filter((name) => name.endsWith(".owner"))) {
+      const owner = readRelayOwner(path.join(directory, file.slice(0, -".owner".length)));
+      if (owner?.role === "host" && owner.pid !== process.pid && alive(owner.pid)) { try { process.kill(owner.pid, "SIGKILL"); } catch {} }
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
   return directory;
 }
 
@@ -88,14 +94,7 @@ function startCompanion(t, env) {
   return { child, stderr: () => stderr };
 }
 
-function killHosts(t, env) {
-  t.after(() => {
-    for (const socket of socketsFor(env)) {
-      const owner = readRelayOwner(socket);
-      if (owner?.role === "host" && alive(owner.pid)) { try { process.kill(owner.pid, "SIGKILL"); } catch {} }
-    }
-  });
-}
+function killHosts() {}
 
 describe("detached native relay host", { skip: !posix && "POSIX sockets only" }, () => {
   it("keeps the relay listening after the companion's MCP client closes while Codex Desktop is running", { timeout: 60000 }, async (t) => {
@@ -105,7 +104,18 @@ describe("detached native relay host", { skip: !posix && "POSIX sockets only" },
     killHosts(t, env);
     const companion = startCompanion(t, env);
     await eventually(async () => (await Promise.all(socketsFor(env).map(socketLive))).every(Boolean), 15000, "companion sockets");
-    for (const socket of socketsFor(env)) assert.deepEqual(readRelayOwner(socket), { pid: companion.child.pid, role: "companion" });
+    for (const socket of socketsFor(env)) assert.deepEqual([readRelayOwner(socket)?.pid, readRelayOwner(socket)?.role], [companion.child.pid, "companion"]);
+    let absentSince = null;
+    let longestGap = 0;
+    let sampling = true;
+    const sampler = (async () => {
+      while (sampling) {
+        const present = socketsFor(env).every((socket) => fs.existsSync(socket));
+        if (!present && absentSince === null) absentSince = Date.now();
+        if (present && absentSince !== null) { longestGap = Math.max(longestGap, Date.now() - absentSince); absentSince = null; }
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 2));
+      }
+    })();
     companion.child.stdin.end();
     await eventually(() => companion.child.exitCode !== null, 45000, "companion exit");
     assert.match(companion.stderr(), /handed the relay sockets to the detached native relay host/);
@@ -114,6 +124,10 @@ describe("detached native relay host", { skip: !posix && "POSIX sockets only" },
       return owners.every((owner) => owner?.role === "host" && owner.pid === owners[0].pid) ? owners[0].pid : null;
     }, 15000, "host ownership");
     assert.notEqual(hostPid, companion.child.pid);
+    sampling = false;
+    await sampler;
+    assert.equal(absentSince, null);
+    assert.ok(longestGap < 250, `the relay sockets were missing for ${longestGap} ms during the handoff`);
     for (const socket of socketsFor(env)) assert.equal(await socketLive(socket), true, socket);
     await desktop.close();
     await eventually(() => !alive(hostPid), 30000, "host exit after Desktop quit");
@@ -172,7 +186,7 @@ describe("detached native relay host", { skip: !posix && "POSIX sockets only" },
     const nativeTools = { pending: new Map(), connecting: null, close() {} };
     const refused = await runRelayHost({ pipePath: socketPath, nativeTools, servers: { relays: [contender] }, reachable: async () => true });
     assert.equal(refused.started, false);
-    assert.deepEqual(readRelayOwner(socketPath), { pid: process.pid, role: "companion" });
+    assert.deepEqual([readRelayOwner(socketPath)?.pid, readRelayOwner(socketPath)?.role], [process.pid, "companion"]);
     assert.equal(await socketLive(socketPath), true);
   });
 
@@ -195,15 +209,17 @@ describe("detached native relay host", { skip: !posix && "POSIX sockets only" },
     client.write(`${JSON.stringify({ targetThreadId: "destination", message: "once" })}\n`);
     await dispatched;
     const stopping = host.shutdown("SIGTERM");
-    const late = net.connect(socketPath);
-    late.on("error", () => {});
-    const [refusal] = await new Promise((resolve) => late.once("data", (...args) => resolve(args)));
-    assert.equal(JSON.parse(refusal).error.code, "RELAY_STOPPING");
-    late.destroy();
+    assert.equal(fs.existsSync(socketPath), false);
+    assert.equal(await socketLive(socketPath), false);
+    const successor = new RelaySocketServer({ socketPath, signalExit: false, resolveExecutor: () => ({ threadId: "e" }), dispatch: async () => ({ success: true }) });
+    await successor.start();
+    t.after(() => successor.stop());
+    assert.equal(await socketLive(socketPath), true);
     release();
     assert.equal(JSON.parse(await reply).ok, true);
     assert.equal(await stopping, 0);
-    assert.equal(fs.existsSync(socketPath), false);
+    assert.equal(await socketLive(socketPath), true);
+    successor.stop();
 
     const replacedPath = path.join(directory, "replaced.sock");
     const replaced = new RelaySocketServer({ socketPath: replacedPath, role: "host", signalExit: false, resolveExecutor: () => ({ threadId: "e" }), dispatch: async () => ({ success: true }) });
@@ -214,48 +230,93 @@ describe("detached native relay host", { skip: !posix && "POSIX sockets only" },
     fs.rmSync(replacedPath, { force: true });
   });
 
-  it("evicts only a verified detached host and never a companion or an unrelated process", async (t) => {
+  it("evicts only a verified detached host and never a companion, a reused PID or an unrelated process", async (t) => {
     const directory = shortDirectory(t);
     const socketPath = path.join(directory, "evict.sock");
     const signals = [];
-    writeRelayOwner(socketPath, "companion", { pid: process.pid });
-    assert.equal(await evictRelayHost(socketPath, { isLive: async () => true, signal: (pid) => signals.push(pid) }), false);
-    writeRelayOwner(socketPath, "host", { pid: process.pid });
-    assert.equal(await evictRelayHost(socketPath, { isLive: async () => true, signal: (pid) => signals.push(pid) }), false);
+    const signal = (pid) => signals.push(pid);
     const sleeper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
     t.after(() => sleeper.kill("SIGKILL"));
-    writeRelayOwner(socketPath, "host", { pid: sleeper.pid });
-    assert.equal(await evictRelayHost(socketPath, { isLive: async () => true, signal: (pid) => signals.push(pid) }), false);
+    const entry = "/opt/bridge/src/native-relay-host.mjs";
+    const startedAt = Date.now();
+    const identity = (overrides = {}) => async () => ({ startedAt, args: `${process.execPath} ${entry}`, ...overrides });
+    writeRelayOwner(socketPath, "companion", { pid: sleeper.pid, entry, startedAt });
+    assert.equal(await evictRelayHost(socketPath, { isLive: async () => false, readIdentity: identity(), signal }), false);
+    writeRelayOwner(socketPath, "host", { pid: process.pid, entry, startedAt });
+    assert.equal(await evictRelayHost(socketPath, { isLive: async () => false, readIdentity: identity(), signal }), false);
+    writeRelayOwner(socketPath, "host", { pid: sleeper.pid, entry, startedAt });
+    assert.equal(await evictRelayHost(socketPath, { isLive: async () => false, signal }), false);
+    assert.equal(await evictRelayHost(socketPath, { isLive: async () => false, readIdentity: identity({ startedAt: startedAt + 60000 }), signal }), false);
+    assert.equal(await evictRelayHost(socketPath, { isLive: async () => false, readIdentity: identity({ args: `vim ${entry.replace("/opt", "/home")}` }), signal }), false);
+    writeRelayOwner(socketPath, "host", { pid: sleeper.pid, entry: "/opt/bridge/src/editor.mjs", startedAt });
+    assert.equal(await evictRelayHost(socketPath, { isLive: async () => false, readIdentity: identity(), signal }), false);
     assert.deepEqual(signals, []);
-    assert.equal(await evictRelayHost(socketPath, {
-      isLive: async () => false, readArguments: async () => `${process.execPath} /x/native-relay-host.mjs`, signal: (pid) => signals.push(pid), waitMs: 200,
-    }), true);
-    assert.deepEqual(signals, [sleeper.pid]);
+    writeRelayOwner(socketPath, "host", { pid: sleeper.pid, entry, startedAt });
+    assert.equal(await evictRelayHost(socketPath, { isLive: async () => true, readIdentity: identity(), signal, waitMs: 100 }), false);
+    assert.equal(await evictRelayHost(socketPath, { isLive: async () => false, readIdentity: identity(), signal }), true);
+    assert.deepEqual(signals, [sleeper.pid, sleeper.pid]);
     fs.writeFileSync(relayOwnerPath(socketPath), "not json");
     assert.equal(readRelayOwner(socketPath), null);
+    const target = path.join(directory, "target");
+    fs.writeFileSync(target, "keep");
+    fs.symlinkSync(target, `${relayOwnerPath(socketPath)}.${process.pid}.tmp`);
+    writeRelayOwner(socketPath, "companion");
+    assert.equal(fs.readFileSync(target, "utf8"), "keep");
+    assert.equal(fs.statSync(relayOwnerPath(socketPath)).mode & 0o777, 0o600);
   });
 
-  it("hands off only when it owned the sockets and the Desktop pipe answers", async () => {
-    const stopped = [];
-    const spawned = [];
-    const lifecycle = { stop: async () => { stopped.push(true); } };
-    const owning = [{ ownsPublicPath: () => true }];
+  it("hands off when it owned the sockets or nobody listens, and only while the Desktop pipe answers", async () => {
+    const order = [];
+    const lifecycle = { haltStartups: async () => { order.push("halt"); }, stop: async () => { order.push("stop"); } };
+    const relay = (owns, listening) => ({ socketPath: `/tmp/r-${owns}-${listening}`, ownsPublicPath: () => owns, isListening: async () => listening });
     const cases = [
-      [{ relays: owning, reachable: async () => true, enabled: true }, 1],
-      [{ relays: [{ ownsPublicPath: () => false }], reachable: async () => true, enabled: true }, 0],
-      [{ relays: owning, reachable: async () => false, enabled: true }, 0],
-      [{ relays: owning, reachable: async () => true, enabled: false }, 0],
+      ["owner", { relays: [relay(true, true)] }, true],
+      ["nobody listening yet", { relays: [relay(false, false)] }, true],
+      ["another owner", { relays: [relay(false, true)] }, false],
+      ["Desktop gone", { relays: [relay(true, true)], reachable: async () => false }, false],
+      ["disabled", { relays: [relay(true, true)], enabled: false }, false],
     ];
-    for (const [options, expected] of cases) {
-      spawned.length = 0;
-      const handOff = createRelayHandoff({ lifecycle, pipePath: "/tmp/desktop.sock", spawnHost: ({ pipePath }) => { spawned.push(pipePath); return 42; }, ...options });
-      await handOff();
-      assert.equal(spawned.length, expected);
+    for (const [name, options, expected] of cases) {
+      order.length = 0;
+      const spawned = [];
+      const handOff = createRelayHandoff({
+        lifecycle, pipePath: "/tmp/desktop.sock", enabled: true, reachable: async () => true,
+        spawnHost: ({ pipePath }) => { spawned.push(pipePath); order.push("spawn"); return 42; },
+        waitForHost: async (paths, pid) => { order.push(`wait:${pid}:${paths.length}`); return true; },
+        ...options,
+      });
+      assert.equal(await handOff(), expected ? 42 : null, name);
+      assert.equal(spawned.length, expected ? 1 : 0, name);
+      assert.equal(order[0], "halt", name);
+      assert.equal(order.at(-1), "stop", name);
+      if (expected && options.relays[0].ownsPublicPath()) assert.deepEqual(order, ["halt", "spawn", "wait:42:1", "stop"], name);
     }
-    assert.equal(stopped.length, cases.length);
-    const failing = createRelayHandoff({ lifecycle, relays: owning, pipePath: "/tmp/desktop.sock", enabled: true, reachable: async () => true, spawnHost: () => { throw new Error("spawn failed"); } });
+    const resolved = [];
+    const discovering = createRelayHandoff({
+      lifecycle, relays: [relay(false, false)], pipePath: () => null, resolvePipePath: async () => "/tmp/found.sock", enabled: true,
+      reachable: async (pipe) => pipe === "/tmp/found.sock", spawnHost: ({ pipePath }) => { resolved.push(pipePath); return 7; },
+    });
+    assert.equal(await discovering(), 7);
+    assert.deepEqual(resolved, ["/tmp/found.sock"]);
+    const failing = createRelayHandoff({ lifecycle, relays: [relay(true, true)], pipePath: "/tmp/desktop.sock", enabled: true, reachable: async () => true, spawnHost: () => { throw new Error("spawn failed"); } });
     assert.equal(await failing(), null);
     assert.throws(() => spawnRelayHost({ pipePath: "relative.sock" }), /absolute/);
+  });
+
+  it("starts a host when the MCP session closes before the companion bound its sockets", { timeout: 60000 }, async (t) => {
+    const directory = shortDirectory(t);
+    const desktop = await fakeDesktopPipe(t, directory);
+    const env = relayEnvironment(directory, desktop.pipePath);
+    const companion = startCompanion(t, env);
+    companion.child.stdin.end();
+    await eventually(() => companion.child.exitCode !== null, 45000, "early companion exit");
+    const hostPid = await eventually(() => {
+      const owners = socketsFor(env).map(readRelayOwner);
+      return owners.every((owner) => owner?.role === "host" && owner.pid === owners[0].pid) ? owners[0].pid : null;
+    }, 20000, "host ownership after an early close");
+    for (const socket of socketsFor(env)) assert.equal(await socketLive(socket), true, socket);
+    await desktop.close();
+    await eventually(() => !alive(hostPid), 30000, "host exit");
   });
 
   it("keeps the lifecycle refusal generic for a shutting-down host", async (t) => {

@@ -36,7 +36,18 @@ import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 
 import { NativeCreationReceipts, creationIdValid } from "./native-creation-receipts.mjs";
-import { evictRelayHost, nativePipeReachable, removeRelayOwner, spawnRelayHost, writeRelayOwner } from "./native-relay-owner.mjs";
+import {
+  clearHandoffReady,
+  evictRelayHost,
+  markHandoffReady,
+  nativePipeReachable,
+  processAlive,
+  readRelayOwner,
+  removeRelayOwner,
+  spawnRelayHost,
+  waitForHandoffReady,
+  writeRelayOwner,
+} from "./native-relay-owner.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -48,6 +59,8 @@ function errorResponse(code, message, sent, details) {
   return { ok: false, v: RELAY_PROTOCOL_VERSION, error: { code, message, ...size, ...(sent === false ? { sent: false } : {}) } };
 }
 
+const HOST_BIND_POLL_MS = 20;
+const HANDOFF_READY_MS = 3000;
 const RELAY_RELOADING_REFUSAL = Object.freeze({ code: "RELAY_RELOADING", message: "The native relay is reloading; no message was sent" });
 const RELAY_STOPPING_REFUSAL = Object.freeze({ code: "RELAY_STOPPING", message: "The native relay is shutting down; no message was sent" });
 
@@ -400,6 +413,7 @@ export class RelaySocketServer {
     role = "companion",
     evictHost = evictRelayHost,
     signalExit = true,
+    bindWaitMs = 0,
     log: logFn = () => {},
   } = {}) {
     this.socketPath = socketPath;
@@ -417,6 +431,7 @@ export class RelaySocketServer {
     this.role = role;
     this.evictHost = evictHost;
     this.signalExit = signalExit;
+    this.bindWaitMs = bindWaitMs;
     this.server = null;
     this.started = false;
     this.connections = new Set();
@@ -562,23 +577,33 @@ export class RelaySocketServer {
     }
     try {
       let evicted = false;
-      for (let attempt = 0; ; attempt++) {
+      let swept = false;
+      let announced = false;
+      const waitUntil = this.role === "host" ? Date.now() + this.bindWaitMs : 0;
+      for (;;) {
         try { fs.linkSync(privatePath, this.socketPath); break; }
         catch (error) {
           if (error.code !== "EEXIST") throw error;
-          if (replaceStale && !attempt && !await this.#socketIsLive()) {
+          if (Date.now() < waitUntil && this.#companionHandingOff()) {
+            if (!announced) announced = markHandoffReady(this.socketPath);
+            await new Promise((resolve) => globalThis.setTimeout(resolve, HOST_BIND_POLL_MS));
+            continue;
+          }
+          const live = await this.#socketIsLive();
+          if (replaceStale && !swept && !live) {
+            swept = true;
             this.log(`removing the stale relay socket left at ${this.socketPath}`);
             fs.rmSync(this.socketPath, { force: true });
             continue;
           }
-          if (!evicted && await this.#evictHost()) {
+          if (live && !evicted && await this.#evictHost()) {
             evicted = true;
-            attempt = -1;
             continue;
           }
           throw new Error(`another native relay companion already owns ${this.socketPath}`);
         }
       }
+      if (announced) clearHandoffReady(this.socketPath);
       const identity = fs.lstatSync(this.socketPath, { bigint: true });
       this.boundIdentity = { dev: identity.dev, ino: identity.ino };
     } catch (error) {
@@ -609,13 +634,18 @@ export class RelaySocketServer {
         await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
         return this.#listen({ replaceStale: false });
       }
-      if (await this.#socketIsLive() && !await this.#evictHost()) {
+      if (await this.#socketIsLive() && (!await this.#evictHost() || await this.#socketIsLive())) {
         throw new Error(`another native relay companion already owns ${this.socketPath}`);
       }
       this.log(`removing the stale relay socket left at ${this.socketPath}`);
       fs.rmSync(this.socketPath, { force: true });
       await this.#listen({ replaceStale: false });
     }
+  }
+
+  #companionHandingOff() {
+    const owner = readRelayOwner(this.socketPath);
+    return owner?.role === "companion" && owner.pid !== process.pid && processAlive(owner.pid);
   }
 
   async #evictHost() {
@@ -744,6 +774,7 @@ export class RelaySocketServer {
       if (this.started && !IS_WINDOWS && !this.withdrawn && (!this.boundIdentity || this.#ownsPublicPath())) fs.rmSync(this.socketPath, { force: true });
     } catch {}
     if (this.started && !IS_WINDOWS) removeRelayOwner(this.socketPath);
+    if (!IS_WINDOWS) clearHandoffReady(this.socketPath);
     this.started = false;
   }
 }
@@ -797,6 +828,12 @@ export function startRelayWhenAvailable({ nativeTools, relay, log: logFn = () =>
     firstAttempt,
     get connected() { return nativeConnected; },
     get busy() { return pendingAttempt !== null; },
+    halt() {
+      stopped = true;
+      globalThis.clearTimeout(timer);
+      resolveReady(false);
+      return pendingAttempt ?? Promise.resolve();
+    },
     stop() {
       if (stopped) return pendingAttempt ?? Promise.resolve();
       stopped = true;
@@ -864,6 +901,9 @@ export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = (
         relay.accepting = false;
       }
     },
+    async haltStartups() {
+      await Promise.all(startups.map((startup) => startup.halt()));
+    },
     async quiesce() {
       for (const relay of servers) relay.accepting = false;
       const reason = inspect();
@@ -887,12 +927,12 @@ export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = (
   };
 }
 
-export function createRelayServers({ nativeTools, env = process.env, role = "companion", signalExit = true, log: logFn = () => {} }) {
+export function createRelayServers({ nativeTools, env = process.env, role = "companion", signalExit = true, bindWaitMs = 0, log: logFn = () => {} }) {
   const hardened = hardenedBridgeEnabled(env);
   if (hardened && !desktopTasksConfigured(env)) throw new Error("CODEX_BRIDGE_HARDENED=1 requires CODEX_BRIDGE_DESKTOP_TASKS=1; legacy relay listeners are disabled");
   const dispatch = (args, options) => nativeTools.dispatch(args, options);
   const dispatchDesktop = (args, options) => nativeTools.dispatchDesktop(args, options);
-  const shared = { role, signalExit, log: logFn };
+  const shared = { role, signalExit, bindWaitMs, log: logFn };
   const relay = new RelaySocketServer({ socketPath: relaySocketPath(env), dispatch, dispatchDesktop, ...shared });
   const desktopRelay = desktopTaskSocketPath(env) === relay.socketPath ? relay : new RelaySocketServer({ socketPath: desktopTaskSocketPath(env), dispatchDesktop, ...shared });
   const accountRelay = new RelaySocketServer({
@@ -912,25 +952,38 @@ export function createRelayHandoff({
   lifecycle,
   relays,
   pipePath,
+  resolvePipePath = async () => null,
   enabled = !IS_WINDOWS && process.env.CODEX_NATIVE_RELAY_DETACH !== "0",
   reachable = nativePipeReachable,
   spawnHost = spawnRelayHost,
+  waitForHost = (socketPaths, pid) => waitForHandoffReady(socketPaths, pid, { timeoutMs: HANDOFF_READY_MS }),
   log: logFn = () => {},
 }) {
   return async () => {
-    const owned = relays.some((relay) => relay.ownsPublicPath());
-    const pipe = typeof pipePath === "function" ? pipePath() : pipePath;
-    const handOff = enabled && owned && await reachable(pipe);
-    await lifecycle.stop();
-    if (!handOff) return null;
-    try {
-      const pid = spawnHost({ pipePath: pipe });
-      logFn(`handed the relay sockets to the detached native relay host (PID ${pid}) because Codex Desktop is still running`);
-      return pid;
-    } catch (error) {
-      logFn(`could not start the detached native relay host: ${error.message}`);
+    await lifecycle.haltStartups?.();
+    const unique = [...new Set(relays)];
+    const owned = unique.filter((relay) => relay.ownsPublicPath());
+    const otherOwner = !owned.length && (await Promise.all(unique.map((relay) => relay.isListening()))).some(Boolean);
+    let pipe = typeof pipePath === "function" ? pipePath() : pipePath;
+    if (enabled && !pipe && !otherOwner) pipe = await resolvePipePath().catch(() => null);
+    if (!enabled || otherOwner || !await reachable(pipe)) {
+      await lifecycle.stop();
       return null;
     }
+    let pid = null;
+    try {
+      pid = spawnHost({ pipePath: pipe });
+    } catch (error) {
+      logFn(`could not start the detached native relay host: ${error.message}`);
+      await lifecycle.stop();
+      return null;
+    }
+    if (owned.length && !await waitForHost(owned.map((relay) => relay.socketPath), pid)) {
+      logFn(`the detached native relay host (PID ${pid}) did not confirm readiness; releasing the sockets anyway`);
+    }
+    await lifecycle.stop();
+    logFn(`handed the relay sockets to the detached native relay host (PID ${pid}) because Codex Desktop is still running`);
+    return pid;
   };
 }
 
@@ -1007,12 +1060,14 @@ if (invokedDirectly) {
     lifecycle,
     relays,
     pipePath: () => nativeTools.explicitSocketPath ?? nativeTools.socketPath ?? process.env.CODEX_APP_TOOLS_PIPE_PATH,
+    resolvePipePath: () => nativeTools.resolveSocketPath(),
     log,
   });
   await mcp.connect(new StdioServerTransport());
   const shutdown = exitWhenClientCloses({ prepare: () => lifecycle.refuseNewDeliveries(), busy: lifecycle.deliveryReason, stop: handOff, log });
   mcp.server.onclose = () => { void shutdown.close("MCP transport closed"); };
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { void shutdown.close(signal); });
+  let signals = 0;
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { if (++signals > 1) process.exit(1); void shutdown.close(signal); });
   reload.listen();
   log(`ready on ${PLATFORM_LABEL} (${reload.staged ? "relay listeners staged for reload" : `relay listeners starting on ${(strictDesktop ? accountRelay : relay).socketPath}`})`);
 }

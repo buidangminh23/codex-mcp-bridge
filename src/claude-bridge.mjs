@@ -820,6 +820,7 @@ const shutdown = exitWhenClientCloses({
   stop: async () => { replyForwarder.close(); peer.stop(); codex.close(); await peer.closed; },
   log,
 });
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { void shutdown.close(signal); });
+let signals = 0;
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { if (++signals > 1) process.exit(1); void shutdown.close(signal); });
 reload.listen();
 log(`ready on ${PLATFORM_LABEL} as peer "${peer.name}" (${peer.started ? peer.socketPath : "peer endpoint down"})`);

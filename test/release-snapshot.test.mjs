@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { spawn, spawnSync, execFileSync } from "node:child_process";
+import childProcess, { spawn, spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 import { it } from "node:test";
 import { createReleaseSnapshot, pruneReleaseSnapshots, runningCommandLines, sourceRevision } from "../src/release-snapshot.mjs";
@@ -238,6 +239,62 @@ it("restores a runtime that is leased between the liveness check and its removal
   assert.equal(fs.readdirSync(cache).some((name) => name.startsWith(".retired-")), false);
 });
 
+it("restores a runtime that is leased while it is being renamed away", async t => {
+  const { snapshot, cache } = realCache(t);
+  age(snapshot.directory, 2 * DAY);
+  const rename = fs.renameSync;
+  let lease;
+  t.mock.method(fs, "renameSync", (from, to) => {
+    if (from === snapshot.directory && !lease) lease = fakeLease(cache, snapshot.key, process.pid, 0);
+    return rename(from, to);
+  });
+  const report = await prune(cache);
+  assert.deepEqual(report.removed, []);
+  assert.ok(lease);
+  assert.equal(sourceRevision(snapshot.directory), snapshot.revision);
+  assert.equal(fs.readdirSync(cache).some((name) => name.startsWith(".retired-")), false);
+});
+
+it("never renames a runtime that is reused or leased while an earlier candidate is being retired", async t => {
+  const { cache } = realCache(t);
+  const oldest = fakeSnapshot(cache, keyOf("oldest"), 4 * DAY);
+  const leased = fakeSnapshot(cache, keyOf("leased"), 3 * DAY);
+  const reused = fakeSnapshot(cache, keyOf("reused"), 2 * DAY);
+  const rename = fs.renameSync;
+  const renamed = [];
+  t.mock.method(fs, "renameSync", (from, to) => {
+    renamed.push(from);
+    if (from === oldest) {
+      fakeLease(cache, keyOf("leased"), process.pid, 0);
+      const now = new Date();
+      fs.utimesSync(leased, now, now);
+      fs.utimesSync(reused, now, now);
+    }
+    return rename(from, to);
+  });
+  const report = await prune(cache, { retain: 1 });
+  assert.deepEqual(report.removed, [keyOf("oldest")]);
+  assert.deepEqual(renamed.filter((from) => from === leased || from === reused), []);
+  assert.equal(fs.readFileSync(path.join(leased, "src", "index.mjs"), "utf8"), "export const value = 1;");
+  assert.equal(fs.readFileSync(path.join(reused, "src", "index.mjs"), "utf8"), "export const value = 1;");
+  assert.equal(fs.existsSync(oldest), false);
+  assert.equal(fs.readdirSync(cache).some((name) => name.startsWith(".retired-")), false);
+});
+
+it("reports a runtime whose retired copy could not be deleted as incomplete", async t => {
+  const { snapshot, cache } = realCache(t);
+  age(snapshot.directory, 2 * DAY);
+  const rm = fs.promises.rm;
+  t.mock.method(fs.promises, "rm", (target, options) => path.basename(target).startsWith(".retired-")
+    ? Promise.reject(Object.assign(new Error("busy"), { code: "EBUSY" })) : rm(target, options));
+  const report = await prune(cache);
+  assert.deepEqual(report.removed, []);
+  assert.deepEqual(report.incomplete, [snapshot.key]);
+  assert.equal(report.kept.includes(snapshot.key), false);
+  assert.equal(fs.existsSync(snapshot.directory), false);
+  assert.equal(fs.readdirSync(cache).some((name) => name.startsWith(".retired-")), true);
+});
+
 it("keeps every runtime when running processes cannot be listed", async t => {
   const { snapshot, cache } = realCache(t);
   age(snapshot.directory, 2 * DAY);
@@ -314,23 +371,141 @@ it("rate limits pruning and yields to a live concurrent pruner", async t => {
   assert.equal(fs.existsSync(lock), false);
 });
 
-it("clones runtime files on macOS instead of copying their data", { skip: process.platform !== "darwin" && "clonefile is macOS-only", timeout: 60000 }, async t => {
+it("never writes through a linked prune stamp", async t => {
+  const { fixture, snapshot, cache } = realCache(t);
+  age(snapshot.directory, 2 * DAY);
+  const outside = path.join(fixture.directory, "outside-stamp");
+  fs.writeFileSync(outside, "precious");
+  try { fs.symlinkSync(outside, path.join(cache, ".prune-stamp"), "file"); }
+  catch (error) { if (["EPERM", "EACCES"].includes(error.code)) return t.skip("Links are unavailable"); throw error; }
+  const report = await prune(cache);
+  assert.match(report.skipped, /not a regular file/);
+  assert.deepEqual(report.removed, []);
+  assert.equal(fs.readFileSync(outside, "utf8"), "precious");
+  assert.equal(fs.existsSync(snapshot.directory), true);
+});
+
+it("treats an empty prune lock as held until it is stale", async t => {
+  const { snapshot, cache } = realCache(t);
+  age(snapshot.directory, 2 * DAY);
+  const lock = path.join(cache, ".prune.lock");
+  fs.writeFileSync(lock, "");
+  assert.match((await prune(cache)).skipped, /Another prune is running/);
+  assert.equal(fs.existsSync(lock), true);
+  age(lock, HOUR);
+  assert.deepEqual((await prune(cache)).removed, [snapshot.key]);
+  assert.equal(fs.existsSync(lock), false);
+});
+
+it("does not take over a prune lock that was replaced after it was judged stale", async t => {
+  const { snapshot, cache } = realCache(t);
+  age(snapshot.directory, 2 * DAY);
+  const lock = path.join(cache, ".prune.lock");
+  fs.writeFileSync(lock, `${deadPid()}\n`);
+  const read = fs.readFileSync;
+  t.mock.method(fs, "readFileSync", (file, ...rest) => {
+    const content = read(file, ...rest);
+    if (file === lock && content.trim() !== String(process.ppid)) {
+      fs.rmSync(lock);
+      fs.writeFileSync(lock, `${process.ppid}\n`);
+    }
+    return content;
+  });
+  const report = await prune(cache);
+  t.mock.restoreAll();
+  assert.match(report.skipped, /Another prune is running/);
+  assert.equal(fs.readFileSync(lock, "utf8").trim(), String(process.ppid));
+  assert.equal(fs.existsSync(snapshot.directory), true);
+  assert.equal(fs.readdirSync(cache).some((name) => name.startsWith(".prune-lock-")), false);
+});
+
+it("recreates a runtime that is retired while it is being validated for reuse", t => {
+  const fixture = installation(t, { dependencies: { leaf: "*" } });
+  dependency(fixture.modules, "leaf", "original");
+  const first = createReleaseSnapshot(fixture.root, { cache: fixture.cache });
+  const moved = path.join(fixture.directory, "retired-runtime");
+  const readdir = fs.readdirSync;
+  t.mock.method(fs, "readdirSync", (directory, ...rest) => {
+    if (!fs.existsSync(moved) && String(directory).startsWith(first.directory)) fs.renameSync(first.directory, moved);
+    return readdir(directory, ...rest);
+  });
+  const second = createReleaseSnapshot(fixture.root, { cache: fixture.cache });
+  t.mock.restoreAll();
+  assert.equal(fs.existsSync(moved), true);
+  assert.equal(second.directory, first.directory);
+  assert.notEqual(second.copy, "reused");
+  assert.equal(sourceRevision(second.directory), first.revision);
+  assert.equal(runtimeRequire(second)("leaf"), "original");
+});
+
+it("falls back to copying from a clean layout when cloning fails on macOS", { skip: process.platform !== "darwin" && "clonefile is macOS-only" }, t => {
+  const fixture = installation(t, { dependencies: { leaf: "*" } });
+  dependency(fixture.modules, "leaf", "original");
+  const execFile = childProcess.execFileSync;
+  let cloned = 0;
+  childProcess.execFileSync = (file, args, options) => {
+    if (file !== "/bin/cp") return execFile(file, args, options);
+    cloned++;
+    fs.writeFileSync(path.join(args.at(-1), "src", "stray.mjs"), "export const stray = true;");
+    throw new Error("clone failed");
+  };
+  syncBuiltinESMExports();
+  let snapshot;
+  try { snapshot = createReleaseSnapshot(fixture.root, { cache: fixture.cache }); }
+  finally { childProcess.execFileSync = execFile; syncBuiltinESMExports(); }
+  assert.equal(cloned, 1);
+  assert.equal(snapshot.copy, "copyfile");
+  assert.equal(fs.existsSync(path.join(snapshot.directory, "src", "stray.mjs")), false);
+  assert.equal(sourceRevision(snapshot.directory), sourceRevision(fixture.root));
+  assert.equal(runtimeRequire(snapshot)("leaf"), "original");
+  assert.equal(fs.readdirSync(path.dirname(snapshot.directory)).some((name) => /^\.(?:linking|preparing)-/.test(name)), false);
+});
+
+const PRIVATE_SIZE_SOURCE = `#include <sys/attr.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  struct attrlist request = { .bitmapcount = ATTR_BIT_MAP_COUNT, .forkattr = ATTR_CMNEXT_PRIVATESIZE };
+  struct { uint32_t length; off_t size; } __attribute__((packed)) reply;
+  if (argc != 2 || getattrlist(argv[1], &request, &reply, sizeof reply, FSOPT_ATTR_CMN_EXTENDED | FSOPT_NOFOLLOW)) return 1;
+  printf("%lld\\n", (long long)reply.size);
+  return 0;
+}
+`;
+
+function privateSizeTool(t) {
+  if (spawnSync("/usr/bin/xcode-select", ["-p"], { stdio: "ignore" }).status !== 0) return null;
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-private-size-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const source = path.join(directory, "private-size.c");
+  const binary = path.join(directory, "private-size");
+  fs.writeFileSync(source, PRIVATE_SIZE_SOURCE);
+  if (spawnSync("/usr/bin/clang", ["-O2", "-o", binary, source], { stdio: "ignore", timeout: 60000 }).status !== 0) return null;
+  return (file) => {
+    const result = spawnSync(binary, [file], { encoding: "utf8" });
+    assert.equal(result.status, 0, `getattrlist failed for ${file}`);
+    return Number(result.stdout.trim());
+  };
+}
+
+it("clones runtime files on macOS instead of copying their data", { skip: process.platform !== "darwin" && "clonefile is macOS-only", timeout: 60000 }, t => {
+  const privateSize = privateSizeTool(t);
+  if (!privateSize) return t.skip("A C compiler is unavailable to read APFS private sizes");
   const fixture = installation(t, { dependencies: { large: "*" } });
   const large = dependency(fixture.modules, "large", "large");
-  const payload = Buffer.alloc(96 * 1024 * 1024);
+  const payload = Buffer.alloc(4 * 1024 * 1024);
   for (let offset = 0; offset < payload.length; offset += 4096) payload.writeUInt32LE(offset, offset);
   fs.writeFileSync(path.join(large, "payload.bin"), payload);
-  const free = () => { execFileSync("/bin/sync"); const stats = fs.statfsSync(fixture.directory); return stats.bavail * stats.bsize; };
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 1500));
-  await settle();
-  const before = free();
+  const control = path.join(fixture.directory, "control.bin");
+  fs.writeFileSync(control, payload);
+  assert.ok(privateSize(control) >= payload.length, "a plain copy must own its data");
   const snapshot = createReleaseSnapshot(fixture.root, { cache: fixture.cache });
-  await settle();
-  const consumed = before - free();
+  const clone = path.join(snapshot.directory, "node_modules", "large", "payload.bin");
   assert.equal(snapshot.copy, "clonefile");
-  assert.ok(consumed < 32 * 1024 * 1024, `the snapshot consumed ${Math.round(consumed / 1048576)} MB`);
+  assert.ok(privateSize(clone) < payload.length / 4, `the snapshot owns ${privateSize(clone)} bytes of a ${payload.length}-byte file`);
   fs.writeFileSync(path.join(large, "payload.bin"), "changed");
-  assert.equal(fs.statSync(path.join(snapshot.directory, "node_modules", "large", "payload.bin")).size, payload.length);
+  assert.equal(fs.statSync(clone).size, payload.length);
   assert.equal(createReleaseSnapshot(fixture.root, { cache: fixture.cache }).copy, "clonefile");
   assert.equal(fs.readdirSync(fixture.cache).some((name) => name.startsWith(".linking-")), false);
 });

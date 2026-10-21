@@ -244,7 +244,7 @@ function removeOwned(directory, cache) {
 const LEASES = ".leases";
 const LEASE_PATTERN = /^([a-f0-9]{64})\.(\d+)\.[0-9a-f-]{36}\.lease$/;
 const OWNED_TEMPORARY_PATTERN = /^\.(?:preparing|retired|linking)-(\d+)-[0-9a-f-]{36}$/;
-const DIGEST_TEMPORARY_PATTERN = /^\.digests-(\d+)-[0-9a-f-]{36}\.tmp$/;
+const DIGEST_TEMPORARY_PATTERN = /^\.(?:digests|prune-lock)-(\d+)-[0-9a-f-]{36}\.tmp$/;
 const DIGEST_FILE_PATTERN = /^\.digests-[a-f0-9]{64}\.json$/;
 const DIGEST_HEADER = /^\{"schema":1,"directory":("(?:[^"\\]|\\.)*")/;
 const PRUNE_LOCK = ".prune.lock";
@@ -257,7 +257,7 @@ const TEMPORARY_GRACE_MS = 60 * 60 * 1000;
 const CLONE_TIMEOUT_MS = 120000;
 const PROCESS_LIST_TIMEOUT_MS = 60000;
 const MAX_DIGEST_HEADERS = 256;
-const RUNTIME_RETENTION =Object.freeze({ retain: 3, graceMs: 24 * 60 * 60 * 1000, minIntervalMs: 60 * 60 * 1000, maxRemovals: 8 });
+const RUNTIME_RETENTION = Object.freeze({ retain: 3, graceMs: 24 * 60 * 60 * 1000, minIntervalMs: 60 * 60 * 1000, maxRemovals: 8 });
 
 const execFileAsync = promisify(execFile);
 const activeLeases = new Set();
@@ -353,25 +353,61 @@ export async function runningCommandLines() {
   return lines;
 }
 
+function createPruneLock(cache, lock) {
+  const staged = path.join(cache, `.prune-lock-${process.pid}-${randomUUID()}.tmp`);
+  fs.writeFileSync(staged, `${process.pid}\n`, { flag: "wx", mode: 0o600 });
+  try { fs.linkSync(staged, lock); }
+  catch (error) {
+    if (error.code === "EEXIST") throw error;
+    fs.writeFileSync(lock, `${process.pid}\n`, { flag: "wx", mode: 0o600 });
+  } finally { fs.rmSync(staged, { force: true }); }
+}
+
+function takeOverStalePruneLock(cache, lock, now) {
+  const info = fs.lstatSync(lock, { bigint: true });
+  if (!info.isFile() || info.isSymbolicLink()) return false;
+  const text = fs.readFileSync(lock, "utf8").trim();
+  const owner = /^\d+$/.test(text) ? Number(text) : null;
+  if (now - Number(info.mtimeMs) < PRUNE_LOCK_STALE_MS && (owner === null || processAlive(owner))) return false;
+  const moved = path.join(cache, `.prune-lock-${process.pid}-${randomUUID()}.tmp`);
+  fs.renameSync(lock, moved);
+  const examined = fs.lstatSync(moved, { bigint: true });
+  const reclaimed = examined.dev === info.dev && examined.ino === info.ino;
+  if (!reclaimed) { try { fs.linkSync(moved, lock); } catch {} }
+  fs.rmSync(moved, { force: true });
+  return reclaimed;
+}
+
 function acquirePruneLock(cache, now) {
   const lock = path.join(cache, PRUNE_LOCK);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      fs.writeFileSync(lock, `${process.pid}\n`, { flag: "wx", mode: 0o600 });
+      createPruneLock(cache, lock);
       return () => {
         try { if (fs.readFileSync(lock, "utf8").trim() === String(process.pid)) fs.rmSync(lock, { force: true }); } catch {}
       };
     } catch (error) {
       if (error.code !== "EEXIST" || attempt) return null;
-      try {
-        const info = fs.lstatSync(lock);
-        const owner = Number(fs.readFileSync(lock, "utf8").trim());
-        if (!info.isFile() || info.isSymbolicLink() || (processAlive(owner) && now - info.mtimeMs < PRUNE_LOCK_STALE_MS)) return null;
-        fs.rmSync(lock, { force: true });
-      } catch { return null; }
+      try { if (!takeOverStalePruneLock(cache, lock, now)) return null; } catch { return null; }
     }
   }
   return null;
+}
+
+function claimPruneInterval(stamp, now, minIntervalMs) {
+  let info = null;
+  try { info = fs.lstatSync(stamp); } catch (error) { if (error.code !== "ENOENT") return "The prune stamp could not be read"; }
+  if (info && (!info.isFile() || info.isSymbolicLink())) return "The prune stamp is not a regular file";
+  if (info && now - info.mtimeMs < minIntervalMs) return "The runtime cache was pruned recently";
+  let descriptor;
+  try {
+    descriptor = fs.openSync(stamp, fs.constants.O_WRONLY | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+    if (!fs.fstatSync(descriptor).isFile()) return "The prune stamp is not a regular file";
+    const time = new Date(now);
+    fs.futimesSync(descriptor, time, time);
+    return null;
+  } catch { return "The prune stamp could not be updated"; }
+  finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
 }
 
 function digestDirectory(file) {
@@ -406,20 +442,23 @@ function sweepCacheFiles(cache, entries, now, report) {
   }
 }
 
-async function retireSnapshot(cache, key) {
+async function retireSnapshot(cache, key, usedAt) {
   const target = path.join(cache, key);
-  if (!isDirectory(target)) return false;
+  const leased = () => readLeases(cache, Date.now()).some((lease) => lease.key === key && lease.live);
+  let info;
+  try { info = fs.lstatSync(target); } catch { return "kept"; }
+  if (!info.isDirectory() || info.isSymbolicLink() || info.mtimeMs > usedAt || leased()) return "kept";
   const retired = path.join(cache, `.retired-${process.pid}-${randomUUID()}`);
-  try { fs.renameSync(target, retired); } catch { return false; }
-  if (readLeases(cache, Date.now()).some((lease) => lease.key === key && lease.live)) {
+  try { fs.renameSync(target, retired); } catch { return "kept"; }
+  if (leased()) {
     try { fs.renameSync(retired, target); }
     catch { if (isDirectory(target) && isDirectory(retired)) removeOwned(retired, cache); }
-    return false;
+    return "kept";
   }
-  if (!isDirectory(retired)) return false;
-  try { await fs.promises.rm(retired, { recursive: true, force: true }); } catch {}
+  if (!isDirectory(retired)) return "kept";
   removeIfFile(path.join(cache, `.digests-${createHash("sha256").update(target).digest("hex")}.json`));
-  return true;
+  try { await fs.promises.rm(retired, { recursive: true, force: true }); } catch { return "incomplete"; }
+  return isDirectory(retired) ? "incomplete" : "removed";
 }
 
 function pruneCandidates(cache, entries, leases, { keep, retain, graceMs }, now) {
@@ -442,7 +481,7 @@ function pruneCandidates(cache, entries, leases, { keep, retain, graceMs }, now)
 
 export async function pruneReleaseSnapshots({ cache = snapshotRoot(), keep = [], retain = RUNTIME_RETENTION.retain, graceMs = RUNTIME_RETENTION.graceMs,
   minIntervalMs = RUNTIME_RETENTION.minIntervalMs, maxRemovals = RUNTIME_RETENTION.maxRemovals, listProcesses = runningCommandLines } = {}) {
-  const report = { removed: [], kept: [], leases: 0, temporaries: 0, digests: 0, skipped: null };
+  const report = { removed: [], kept: [], incomplete: [], leases: 0, temporaries: 0, digests: 0, skipped: null };
   if (!isDirectory(cache)) { report.skipped = "The runtime cache is not a directory"; return report; }
   cache = fs.realpathSync.native(cache);
   const now = Date.now();
@@ -450,9 +489,8 @@ export async function pruneReleaseSnapshots({ cache = snapshotRoot(), keep = [],
   if (!unlock) { report.skipped = "Another prune is running"; return report; }
   try {
     const stamp = path.join(cache, PRUNE_STAMP);
-    try { if (now - fs.lstatSync(stamp).mtimeMs < minIntervalMs) { report.skipped = "The runtime cache was pruned recently"; return report; } } catch {}
-    fs.writeFileSync(stamp, "", { mode: 0o600 });
-    touch(stamp);
+    report.skipped = claimPruneInterval(stamp, now, minIntervalMs);
+    if (report.skipped) return report;
     const leases = readLeases(cache, now);
     for (const lease of leases) if (!lease.live && removeIfFile(lease.file)) report.leases++;
     const entries = fs.readdirSync(cache, { withFileTypes: true });
@@ -468,9 +506,9 @@ export async function pruneReleaseSnapshots({ cache = snapshotRoot(), keep = [],
       report.skipped = `Running processes could not be listed: ${error.message}`;
       return report;
     }
-    for (const { key } of bounded) {
-      if (!commandLines.some((line) => line.includes(key)) && await retireSnapshot(cache, key)) report.removed.push(key);
-      else report.kept.push(key);
+    for (const { key, usedAt } of bounded) {
+      const outcome = commandLines.some((line) => line.includes(key)) ? "kept" : await retireSnapshot(cache, key, usedAt);
+      report[outcome].push(key);
     }
     return report;
   } finally { unlock(); }

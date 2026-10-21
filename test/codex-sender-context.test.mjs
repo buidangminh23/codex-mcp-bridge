@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, it } from "node:test";
-import { readCodexSenderContext, resolveCodexSenderContext } from "../src/codex-sender-context.mjs";
+import zlib from "node:zlib";
+import { readCodexSenderContext, resolveCodexSenderContext, findRollout, readState } from "../src/codex-sender-context.mjs";
 import { assertRecipientClass } from "../src/recipient-preflight.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-sender-"));
@@ -698,4 +699,24 @@ it("re-reads every segment when the caller's rollout grows during the set check"
       assert.equal(directoryReads, 4);
     }
   }
+});
+
+it("reads a compressed target task rollout and names the target, not the caller, when it is ambiguous", () => {
+  const home = fs.mkdtempSync(path.join(root, "target-"));
+  const directory = path.join(home, "sessions", "2026", "09", "06");
+  fs.mkdirSync(directory, { recursive: true });
+  const base = path.join(directory, `rollout-2026-09-06T19-17-57-${threadId}`);
+  const records = [
+    { type: "session_meta", payload: { id: threadId, originator: "codex_vscode", source: "vscode", cwd: home } },
+    { type: "turn_context", payload: { turn_id: turnId, cwd: home } },
+    { type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+  ];
+  fs.writeFileSync(`${base}.jsonl.zst`, zlib.zstdCompressSync(Buffer.from(records.map((record) => `${JSON.stringify(record)}\n`).join(""))));
+  const file = findRollout(path.join(home, "sessions"), threadId);
+  assert.equal(file, fs.realpathSync.native(`${base}.jsonl.zst`));
+  const state = readState(file, 1024 * 1024);
+  assert.equal(state.session.originator, "codex_vscode");
+  assert.equal(state.lifecycle.type, "task_complete");
+  fs.writeFileSync(path.join(directory, `rollout-2026-09-06T19-17-57-${threadId}_${otherId}.jsonl`), `${JSON.stringify(records[0])}\n`);
+  assert.throws(() => findRollout(path.join(home, "sessions"), threadId), (error) => error.message === "Multiple rollouts match the Codex task");
 });

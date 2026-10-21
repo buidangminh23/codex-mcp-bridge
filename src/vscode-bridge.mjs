@@ -7,6 +7,7 @@ import { z } from "zod";
 import { VSCodeIpc } from "./vscode-ipc.mjs";
 import { classifyClaudeDelivery, classifyCodexCompletion } from "./vscode-delivery.mjs";
 import { findRollout, readState, readCodexSenderContext } from "./codex-sender-context.mjs";
+import { isCompressedRollout, readRolloutFirstRecord, rolloutBasePath } from "./rollout-reader.mjs";
 import { readProcessAncestry } from "./claude-sender-context.mjs";
 import { listClaudeSessions, assertClaudeSessionCwd, assertClaudeSessionProcess, PeerEndpoint } from "./peer-protocol.mjs";
 import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
@@ -58,25 +59,26 @@ function codexTask(threadId, cwd) {
   return { ...state, file };
 }
 
-function taskCandidates(cwd) {
+async function taskCandidates(cwd) {
   const queue = [{ directory: sessions, depth: 0 }];
   const rows = [];
   let count = 0;
   while (queue.length) {
     const { directory, depth } = queue.pop();
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const entries = fs.readdirSync(directory, { withFileTypes: true });
+    const plain = new Set(entries.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl")).map((entry) => entry.name));
+    for (const entry of entries) {
       if (++count > 100000) throw new Error("Session scan limit exceeded");
       if (entry.isSymbolicLink()) continue;
       const file = path.join(directory, entry.name);
       if (depth < 3 && entry.isDirectory() && /^\d{2,4}$/.test(entry.name)) queue.push({ directory: file, depth: depth + 1 });
-      if (depth !== 3 || !entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-      const fd = fs.openSync(file, "r");
+      if (depth !== 3 || !entry.isFile() || !(entry.name.endsWith(".jsonl") || isCompressedRollout(entry.name))) continue;
+      if (isCompressedRollout(entry.name) && plain.has(rolloutBasePath(entry.name))) continue;
       let first;
-      try { const data = Buffer.alloc(65536); const size = fs.readSync(fd, data); first = JSON.parse(data.subarray(0, size).toString("utf8").split("\n")[0]); }
+      try { first = await readRolloutFirstRecord(file); }
       catch { continue; }
-      finally { fs.closeSync(fd); }
-      const session = first.payload;
-      if (first.type === "session_meta" && session?.originator === "codex_vscode" && session.source === "vscode" && samePath(session.cwd, cwd)) rows.push({ threadId: session.id, cwd: session.cwd });
+      const session = first?.payload;
+      if (first?.type === "session_meta" && session?.originator === "codex_vscode" && session.source === "vscode" && samePath(session.cwd, cwd)) rows.push({ threadId: session.id, cwd: session.cwd });
     }
   }
   return rows.slice(-50);
@@ -95,7 +97,7 @@ tool("vscode_bridge_status", "Verify this extension caller and list same-project
   const ipc = await new VSCodeIpc().connect();
   try {
     const tasks = [];
-    for (const candidate of taskCandidates(sender.cwd)) {
+    for (const candidate of await taskCandidates(sender.cwd)) {
       try { await ipc.owner(candidate.threadId); tasks.push(candidate); } catch {}
     }
     return { host, cwd: sender.cwd, tasks };

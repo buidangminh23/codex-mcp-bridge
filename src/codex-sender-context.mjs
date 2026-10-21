@@ -38,7 +38,7 @@ function reviewFlag(metadata, field) {
 
 export function findRollout(sessions, threadId) {
   const files = findRolloutSegments(sessions, threadId);
-  if (files.length !== 1) throw new Error("Multiple rollouts match the calling Codex task");
+  if (files.length !== 1) throw new Error("Multiple rollouts match the Codex task");
   return files[0];
 }
 

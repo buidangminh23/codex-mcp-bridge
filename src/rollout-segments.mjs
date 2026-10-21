@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { isCompressedRollout, rolloutBasePath, asRolloutChange, readRolloutFirstRecord } from "./rollout-reader.mjs";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
@@ -10,8 +11,8 @@ export function findRolloutSegments(sessions, threadId) {
   const root = fs.lstatSync(sessions);
   if (!root.isDirectory() || root.isSymbolicLink()) throw new Error("The Codex sessions path is not a regular directory");
   const canonical = fs.realpathSync.native(sessions);
-  const pattern = new RegExp(`^rollout-.+-${threadId}(?:_${UUID})?\\.jsonl$`);
-  const queue = [{ directory: canonical, depth: 0 }], matches = [];
+  const pattern = new RegExp(`^rollout-.+-${threadId}(?:_${UUID})?\\.jsonl(?:\\.zst)?$`);
+  const queue = [{ directory: canonical, depth: 0 }], matches = new Map();
   let entries = 0, directories = 0;
   while (queue.length) {
     const { directory, depth } = queue.pop();
@@ -32,13 +33,14 @@ export function findRolloutSegments(sessions, threadId) {
       }
       if (depth === 3 && pattern.test(child.name)) {
         if (!child.isFile() || child.isSymbolicLink()) throw new Error("The Codex rollout is not a regular file");
-        matches.push(candidate);
-        if (matches.length > 64) throw new Error("The Codex task exceeds the 64-segment discovery limit");
+        const base = rolloutBasePath(candidate);
+        if (!matches.has(base) || isCompressedRollout(matches.get(base))) matches.set(base, candidate);
+        if (matches.size > 64) throw new Error("The Codex task exceeds the 64-segment discovery limit");
       }
     }
   }
-  if (!matches.length) throw new Error(`No rollout matches the calling Codex task [check=rollout_discovery; directoriesScanned=${directories}; entriesScanned=${entries}; layout=sessions/YYYY/MM/DD/rollout-*-taskId[_continuationId].jsonl]`);
-  return matches.sort();
+  if (!matches.size) throw new Error(`No rollout file (plain .jsonl or compressed .jsonl.zst) matches the Codex task [check=rollout_discovery; directoriesScanned=${directories}; entriesScanned=${entries}; layout=sessions/YYYY/MM/DD/rollout-*-taskId[_continuationId].jsonl[.zst]]`);
+  return [...matches].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([, file]) => file);
 }
 
 // Only independently retrieved native metadata may be supplied here. Tool
@@ -86,7 +88,33 @@ export function assertRolloutSetStable(sessions, threadId, snapshots) {
   const files = findRolloutSegments(sessions, threadId);
   if (files.length !== snapshots.length || files.some((file, i) => file !== snapshots[i].file)) throw new Error("The rollout segment set changed while reading");
   for (const { file, version } of snapshots) {
-    const current = fs.lstatSync(file, { bigint: true });
+    let current;
+    try { current = fs.lstatSync(file, { bigint: true }); }
+    catch (error) { throw asRolloutChange(error, "A rollout segment changed while reading"); }
     if (!current.isFile() || current.isSymbolicLink() || Object.entries(version).some(([key, value]) => typeof value !== "string" || String(current[key]) !== value)) throw new Error("A rollout segment changed while reading");
   }
+}
+
+export async function readRolloutHeads(sessions) {
+  const queue = [{ directory: sessions, depth: 0 }];
+  const heads = [];
+  let count = 0;
+  while (queue.length) {
+    const { directory, depth } = queue.pop();
+    const entries = fs.readdirSync(directory, { withFileTypes: true });
+    const plain = new Set(entries.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl")).map((entry) => entry.name));
+    for (const entry of entries) {
+      if (++count > 100000) throw new Error("Session scan limit exceeded");
+      if (entry.isSymbolicLink()) continue;
+      const file = path.join(directory, entry.name);
+      if (depth < 3 && entry.isDirectory() && /^\d{2,4}$/.test(entry.name)) queue.push({ directory: file, depth: depth + 1 });
+      if (depth !== 3 || !entry.isFile() || !(entry.name.endsWith(".jsonl") || isCompressedRollout(entry.name))) continue;
+      if (isCompressedRollout(entry.name) && plain.has(rolloutBasePath(entry.name))) continue;
+      let first;
+      try { first = await readRolloutFirstRecord(file); }
+      catch { continue; }
+      heads.push(first);
+    }
+  }
+  return heads;
 }

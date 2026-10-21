@@ -751,6 +751,7 @@ The bridge reads these from the environment its MCP client hands it — there is
 | `CODEX_RELAY_ID` | from `~/.codex/native-relay.json` | Executor thread for `codex_app.send_message_to_thread`. Not the destination — see [Codex Desktop native relay](#codex-desktop-native-relay). |
 | `CODEX_HOME` | `~/.codex` | Where `native-relay.json` lives; POSIX relay sockets also live here, while Windows uses a named pipe. |
 | `CODEX_NATIVE_RELAY_SOCKET` | Windows named pipe or `$CODEX_HOME/native-relay.sock` on macOS | Override the companion endpoint on both halves of the relay. |
+| `CODEX_BRIDGE_RELAY_WAKE` | on (macOS) | Set to `0` to stop the bridge from opening a Codex Desktop task in the background when the native relay is missing. |
 | `CODEX_NATIVE_RELAY_METHOD` | `tools/call` | The undocumented Codex Desktop JSON-RPC method the companion dispatches through; override only for a verified protocol change. |
 | `CODEX_NATIVE_RELAY_NAME` | `codex-native-relay` | The MCP server name `scripts/install-native-relay.mjs` registers with Codex. |
 | `CODEX_NATIVE_RELAY_NODE` | the runtime Codex Desktop ships on macOS, otherwise `process.execPath` | Node runtime `scripts/install-native-relay.mjs` registers the companion under. Codex Desktop rejects a peer whose code-signing identity is not its own, so the companion has to run under a runtime the app trusts. |

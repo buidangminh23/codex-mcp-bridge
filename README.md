@@ -198,7 +198,7 @@ Dispatch expires after two minutes; operation history remains stored. Disconnect
 - **Command missing:** open a new terminal and check Node.js 22+ and the global npm directory (or Homebrew's `bin`) on PATH.
 - **PowerShell blocks scripts:** use `npm.cmd`, installer `.cmd` launchers, and `codex.exe`.
 - **No sessions or wrong project:** open the intended Claude **Code** session and use the exact project directory saved in Codex Desktop.
-- **Relay unavailable:** check [pipe forwarding](#native-relay-pipe-forwarding), reconnect, and run `native_relay_status` in the task.
+- **Relay unavailable:** Codex Desktop runs the relay only while a task has its MCP servers loaded. On macOS the bridge opens the destination task (or your project's latest Codex task) in the background to start it; otherwise open a regular project task and send it a turn. If it still fails, check [pipe forwarding](#native-relay-pipe-forwarding) and run `native_relay_status` in that task.
 - **Timeout or unconfirmed send:** inspect the original task or receipt before sending again.
 
 [More fixes](https://github.com/buidangminh23/codex-mcp-bridge/blob/main/REFERENCE.md#troubleshooting) · [Report an issue](https://github.com/buidangminh23/codex-mcp-bridge/issues)

@@ -177,16 +177,31 @@ function creationReceipts(home) {
 }
 
 describe("Desktop task MCP integration", () => {
-  it("reports read-only failures and missing setup without dispatch or resend guidance", async () => {
+  it("reports read-only failures without dispatch guidance and keeps delivery reads from resending", async () => {
     await withDesktopReceiptBridge(async ({ operation }) => {
       throw new Error(`A read-only failure reached Desktop: ${operation}`);
     }, async ({ client, home, server }) => {
+      const noResend = /do not resend the original message\.$/;
       const waited = await client.callTool({ name: "wait_codex_reply", arguments: { deliveryId: randomUUID(), timeoutSec: 1 } });
       assert.equal(waited.isError, true);
-      assert.match(waited.content[0].text, /^Codex bridge error: .*[.!?]$/s);
-      assert.doesNotMatch(waited.content[0].text, /Reply content was withheld|No Desktop mutation was dispatched|do not resend/);
+      assert.match(waited.content[0].text, /^Codex bridge error: .*[.!?] Keep the deliveryId and retry wait_codex_reply; do not resend the original message\.$/s);
+      assert.doesNotMatch(waited.content[0].text, /Reply content was withheld|No Desktop mutation was dispatched/);
       assert.equal(waited.structuredContent.operation, undefined);
       assert.ok(waited.structuredContent.accountContext);
+      const turnRead = await client.callTool({ name: "read_codex_thread", arguments: { threadId: "task", turnId: "turn" } });
+      assert.equal(turnRead.isError, true);
+      assert.equal(turnRead.structuredContent.operation, undefined);
+      assert.match(turnRead.content.at(-1).text, /^Retry read_codex_thread with the same turnId; do not resend the original message\.$/);
+      const recentRead = await client.callTool({ name: "read_codex_thread", arguments: { threadId: "task" } });
+      assert.equal(recentRead.isError, true);
+      assert.equal(recentRead.structuredContent.operation, undefined);
+      assert.doesNotMatch(recentRead.content.map(({ text }) => text).join("\n"), /do not resend|No Desktop mutation was dispatched/);
+      const absent = await client.callTool({ name: "inspect_bridge_project", arguments: { cwd: path.join(home, "absent") } });
+      assert.equal(absent.isError, true);
+      assert.equal(absent.structuredContent.operation, undefined);
+      assert.equal(absent.structuredContent.onboarding.status, "failed");
+      assert.ok(absent.structuredContent.accountContext);
+      assert.doesNotMatch(absent.content.map(({ text }) => text).join("\n"), noResend);
       const project = path.join(home, "project");
       fs.mkdirSync(project);
       const inspected = await client.callTool({ name: "inspect_bridge_project", arguments: { cwd: project } });
@@ -194,6 +209,35 @@ describe("Desktop task MCP integration", () => {
       assert.equal(inspected.structuredContent.onboarding.status, "needs_setup");
       assert.equal(inspected.structuredContent.onboarding.communicationAuthorization.status, "policy_not_configured");
       assert.equal(server.connections, 0);
+    });
+  });
+
+  it("withholds a completed wait result after an account change and keeps the no-resend guidance", { timeout: 30000 }, async () => {
+    const calls = [];
+    let changeAccount = null;
+    await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {
+      calls.push(operation);
+      if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [{ id: "previous-turn", status: "completed" }] };
+      if (operation === "send_message_to_thread") return { threadId: args.threadId, status: "accepted" };
+      if (operation === "wait_threads") {
+        if (!changeAccount) return { polls: [{ thread: { id: "original-task", hostId: "local", status: { type: "active" } }, latestTurn: { id: "original-turn", status: "inProgress" } }] };
+        changeAccount();
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        return { polls: [{ thread: { id: "original-task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "original-turn", status: "completed" }, latestAssistantMessage: { turnId: "original-turn", phase: "final_answer", text: "PRIVATE_WAITED_REPLY" } }] };
+      }
+      throw new Error(`Unexpected operation ${operation}`);
+    }, async ({ client, desktopFixture }) => {
+      const sent = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "original-task", prompt: "Original work", openInApp: false, timeoutSec: 10 } });
+      assert.equal(sent.isError, undefined, JSON.stringify(sent));
+      assert.equal(sent.structuredContent.nextAction, "wait_codex_reply");
+      const sends = calls.filter((operation) => operation === "send_message_to_thread").length;
+      changeAccount = () => desktopFixture.setAccount(CLAUDE_ACCOUNT_B);
+      const waited = await client.callTool({ name: "wait_codex_reply", arguments: { deliveryId: sent.structuredContent.deliveryId, timeoutSec: 1 } });
+      assert.equal(waited.isError, true);
+      assert.doesNotMatch(JSON.stringify(waited), /PRIVATE_WAITED_REPLY/);
+      assert.match(waited.content[0].text, /The read result was withheld\. Keep the deliveryId and retry wait_codex_reply; do not resend the original message\.$/);
+      assert.equal(waited.structuredContent.operation, undefined);
+      assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, sends);
     });
   });
 

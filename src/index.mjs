@@ -107,13 +107,19 @@ async function beforeDesktopRequest({ operation, args, phase }) {
 
 const asSentence = (text) => /[.!?]$/.test(text) ? text : `${text}.`;
 
-function withheldDesktopResult(error, context, { readOnly = false, completed = false } = {}) {
+function deliveryReadGuidance(name, args) {
+  if (name === "wait_codex_reply") return "Keep the deliveryId and retry wait_codex_reply; do not resend the original message.";
+  if (name === "read_codex_thread" && args?.turnId) return "Retry read_codex_thread with the same turnId; do not resend the original message.";
+  return null;
+}
+
+function withheldDesktopResult(error, context, { readOnly = false, completed = false, guidance = null } = {}) {
   if (context.dispatched) reload.defer("A Desktop operation was dispatched without a fully verified outcome");
   const reason = asSentence((error?.message ?? "").replace(/\s*No message was sent\./g, "").trim() || "The calling session or accounts could not be reverified.");
   if (readOnly && !context.dispatched) {
     const failed = failure(error);
     return {
-      ...textResult(`Codex bridge error: ${reason}${completed ? " The read result was withheld." : ""}`, true),
+      ...textResult(`Codex bridge error: ${reason}${completed ? " The read result was withheld." : ""}${guidance ? ` ${guidance}` : ""}`, true),
       structuredContent: { ...failed.structuredContent, accountContext: context.accounts },
     };
   }
@@ -473,6 +479,8 @@ function registerTool(name, definition, handler) {
         const identity = requireBridgeAccounts(accounts);
         const caller = requireClaudeSenderContext(await readClaudeSenderContext({ account: accounts.claude }));
         const context = { accounts: identity, caller, dispatched: false, deadline, projectSetup: PROJECT_SETUP_TOOLS.has(name) };
+        const readOnly = definition.annotations?.readOnlyHint === true;
+        const guidance = deliveryReadGuidance(name, args[0]);
         return await desktopOperation.run(context, async () => {
           let completed = false;
           try {
@@ -481,11 +489,12 @@ function registerTool(name, definition, handler) {
             completed = true;
             await assertDesktopOperation(context);
             if (result.isError && !context.dispatched && result.structuredContent?.responseVersion !== 1) {
-              result.structuredContent = { ...result.structuredContent, accountContext: context.accounts, operation: { state: "blocked", threadId: context.threadId ?? null } };
+              result.structuredContent = { ...result.structuredContent, accountContext: context.accounts, ...(readOnly ? {} : { operation: { state: "blocked", threadId: context.threadId ?? null } }) };
+              if (guidance) result.content.push({ type: "text", text: guidance });
             }
             return result;
           } catch (error) {
-            return withheldDesktopResult(error, context, { readOnly: definition.annotations?.readOnlyHint === true, completed });
+            return withheldDesktopResult(error, context, { readOnly, completed, guidance });
           }
         });
       }
@@ -503,7 +512,7 @@ registerDesktopReadTools(registerTool, {
   assertThreadAccess, normalizeThreadCwd, textResult, replyResult, failure,
 });
 
-registerProjectOnboardingTools(registerTool, { beforePrepare: async () => {
+registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "claude-code" }, beforePrepare: async () => {
   if (!desktopTasksEnabled || !desktopOperation.getStore()?.caller) throw new Error("Project onboarding requires a verified Desktop caller.");
   await assertDesktopOperation(desktopOperation.getStore(), { verifyProcess: true });
 } });

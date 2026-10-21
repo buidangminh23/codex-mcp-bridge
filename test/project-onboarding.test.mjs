@@ -185,6 +185,10 @@ test("inspection reports a missing or unreadable project policy instead of faili
   const setup = missing.nextActions.find(action => action.setting === "CODEX_BRIDGE_PROJECT_POLICY");
   assert.equal(setup.suggestedFile, path.join(f.home, ".config", "GptClaudeBridge", "projects.json"));
   assert.match(setup.then, /bridge-projects prepare/);
+  assert.match(setup.then, /codex-bridge-code-install --policy/);
+  const codexSetup = inspectBridgeProject({ cwd: f.cwd }, { env, policyRegistration: "codex" }).nextActions.find(action => action.setting === "CODEX_BRIDGE_PROJECT_POLICY");
+  assert.match(codexSetup.then, /claude-mcp-bridge-install with CODEX_BRIDGE_PROJECT_POLICY=/);
+  assert.throws(() => inspectBridgeProject({ cwd: f.cwd }, { env, policyRegistration: "other" }), /Unknown project policy registration/);
   assert.throws(() => prepareBridgeProject({ cwd: f.cwd }, { env }), /^Error: Configure the shared CODEX_BRIDGE_PROJECT_POLICY before onboarding projects\.$/);
   fs.writeFileSync(f.file, "not json");
   const invalid = inspectBridgeProject({ cwd: f.cwd }, f.options);
@@ -246,5 +250,13 @@ for (const entry of ['index.mjs', 'claude-bridge.mjs']) test(`${entry} reports a
     assert.equal(inspected.isError, undefined);
     assert.equal(inspected.structuredContent.onboarding.status, 'needs_setup');
     assert.equal(inspected.structuredContent.onboarding.communicationAuthorization.status, 'policy_not_configured');
+    const setup = inspected.structuredContent.onboarding.nextActions.find(action => action.setting === 'CODEX_BRIDGE_PROJECT_POLICY');
+    if (entry === 'index.mjs') {
+      assert.match(setup.then, /codex-bridge-code-install --policy "/);
+      assert.doesNotMatch(setup.then, /claude-mcp-bridge-install/);
+    } else {
+      assert.match(setup.then, /claude-mcp-bridge-install with CODEX_BRIDGE_PROJECT_POLICY="[^"]+" set, then restart Codex Desktop/);
+      assert.doesNotMatch(setup.then, /codex-bridge-code-install/);
+    }
   } finally { await client.close(); }
 });

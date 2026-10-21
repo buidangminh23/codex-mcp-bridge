@@ -79,14 +79,21 @@ function load(cwd, options, { inspect = false } = {}) {
   const configRaw = read(files.configFile);
   const config = parse(configRaw);
   const trust = trustEntry(config, project);
-  return { files, project, configRaw, config, trust, ...loadPolicy(files.policyFile, project, options, inspect) };
+  return { files, project, configRaw, config, trust, policyRegistration: options.policyRegistration, ...loadPolicy(files.policyFile, project, options, inspect) };
 }
+
+const POLICY_REGISTRATION = {
+  "claude-code": file => `register that file with codex-bridge-code-install --policy "${file}" (review the plan, then add --apply --clients-stopped), and reconnect this MCP server`,
+  codex: file => `register that file by running claude-mcp-bridge-install with CODEX_BRIDGE_PROJECT_POLICY="${file}" set, then restart Codex Desktop once so this MCP server loads it`,
+};
 
 function policyActions(state) {
   if (!state.policyProblem) return [{ tool: "prepare_bridge_project", cwd: state.project.directory.path }];
   const suggestedFile = path.join(state.files.home, ".config", "GptClaudeBridge", "projects.json");
   if (state.policyProblem.status === "policy_invalid") return [{ setting: "CODEX_BRIDGE_PROJECT_POLICY", file: state.files.policyFile, then: "Repair or restore this policy file from a backup; prepare_bridge_project does not overwrite an unreadable policy. Run inspect_bridge_project again afterwards." }];
-  return [{ setting: "CODEX_BRIDGE_PROJECT_POLICY", suggestedFile, then: `Run bridge-projects prepare "${state.project.directory.path}" --file "${suggestedFile}", register that file with codex-bridge-code-install --policy "${suggestedFile}" (review the plan, then add --apply --clients-stopped), and reconnect this MCP server. prepare_bridge_project is available once the setting is loaded.` }];
+  const registration = POLICY_REGISTRATION[state.policyRegistration ?? "claude-code"];
+  if (!registration) throw new Error(`Unknown project policy registration: ${state.policyRegistration}`);
+  return [{ setting: "CODEX_BRIDGE_PROJECT_POLICY", suggestedFile, then: `Run bridge-projects prepare "${state.project.directory.path}" --file "${suggestedFile}", ${registration(suggestedFile)}. prepare_bridge_project is available once the setting is loaded.` }];
 }
 
 function report(state, taskCards, extra = {}) {

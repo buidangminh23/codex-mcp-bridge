@@ -3,7 +3,7 @@ import { fork } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createReleaseSnapshot, sourceRevision } from "./release-snapshot.mjs";
+import { createReleaseSnapshot, pruneReleaseSnapshots, snapshotRoot, sourceRevision } from "./release-snapshot.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { isMainModule, stableInstallPath } from "./install-paths.mjs";
 import { CLIENT_CLOSE_DRAIN_MS, CLIENT_CLOSE_STOP_MS } from "./reload-control.mjs";
@@ -50,6 +50,8 @@ class Worker {
       stdio: ["pipe", "pipe", "pipe", "ipc"], serialization: "json",
     });
     this.exited = new Promise((resolve) => this.process.once("exit", resolve));
+    this.exited.then(() => release.lease?.release());
+    this.process.once("error", () => { if (this.process.pid === undefined) release.lease?.release(); });
     this.process.stderr.on("data", (data) => process.stderr.write(data));
     this.process.stdin.on("error", (error) => this.fail(error));
     this.process.on("error", (error) => this.fail(error));
@@ -160,6 +162,7 @@ export async function runSupervisor(entry, options = {}) {
   };
   const pollMs = interval(env.CODEX_BRIDGE_RELOAD_POLL_MS, 1000);
   const settleMs = interval(env.CODEX_BRIDGE_RELOAD_SETTLE_MS, 1500);
+  const pruneDelayMs = interval(env.CODEX_BRIDGE_RUNTIME_PRUNE_DELAY_MS, 60000);
   let active;
   let initializeParams;
   let initializeResult;
@@ -225,8 +228,14 @@ export async function runSupervisor(entry, options = {}) {
     },
   };
   const spawn = (release, routing) => {
-    if (stopping) throw new Error("The MCP client disconnected before activation");
-    const worker = new Worker(release, entry, env, handlers);
+    let worker;
+    try {
+      if (stopping) throw new Error("The MCP client disconnected before activation");
+      worker = new Worker(release, entry, env, handlers);
+    } catch (error) {
+      release.lease?.release();
+      throw error;
+    }
     worker.routingConfiguration = routing;
     workers.add(worker);
     return worker;
@@ -249,7 +258,7 @@ export async function runSupervisor(entry, options = {}) {
     try {
       const state = await previous.control("inspect");
       if (!state.reloadable) { reason = state.reason ?? "Pending deliveries prevent a safe reload"; return; }
-      const release = createReleaseSnapshot(source, { expectedRevision: revision });
+      const release = createReleaseSnapshot(source, { expectedRevision: revision, lease: true });
       candidate = spawn(release, routing);
       const initialized = await candidate.rpc("initialize", initializeParams);
       if (initialized.protocolVersion !== initializeResult.protocolVersion || JSON.stringify(initialized.capabilities) !== JSON.stringify(initializeResult.capabilities)) {
@@ -274,6 +283,7 @@ export async function runSupervisor(entry, options = {}) {
       await previous.stop().catch((error) => log(`retired ${entry} worker: ${error.message}`));
       workers.delete(previous);
       log(`activated ${entry} revision ${revision.slice(0, 12)}; client connection retained`);
+      schedulePrune();
     } catch (error) {
       reason = `Update deferred: ${error.message}`;
       retryAt = Date.now() + Math.max(pollMs, 5000);
@@ -323,21 +333,35 @@ export async function runSupervisor(entry, options = {}) {
       active.write({ ...message, id });
     } else active.write(message);
   };
+  let pruneTimer = null;
+  const schedulePrune = () => {
+    if (stopping || pruneTimer) return;
+    pruneTimer = setTimeout(() => {
+      if (stopping) return;
+      void pruneReleaseSnapshots({ cache: snapshotRoot(env), keep: [...workers].map((worker) => worker.release.key) })
+        .then((report) => { if (report.removed.length) log(`removed ${report.removed.length} unused runtime snapshot(s)`); })
+        .catch((error) => log(`runtime snapshot cleanup failed: ${error.message}`))
+        .finally(() => { pruneTimer = null; });
+    }, pruneDelayMs);
+    pruneTimer.unref();
+  };
   const shutdown = async () => {
     if (stopping) return;
     stopping = true;
     clearInterval(timer);
+    clearTimeout(pruneTimer);
     await Promise.allSettled([...workers].map((worker) => worker.stop(CLIENT_CLOSE_GRACE_MS)));
     process.stdin.pause();
   };
   const preparationStarted = performance.now();
   log(`preparing ${entry} runtime`);
-  const initial = createReleaseSnapshot(root);
-  log(`prepared ${entry} runtime in ${Math.round(performance.now() - preparationStarted)} ms`);
+  const initial = createReleaseSnapshot(root, { lease: true });
+  log(`prepared ${entry} runtime in ${Math.round(performance.now() - preparationStarted)} ms (${initial.copy})`);
   observed = initial.revision;
   observedRouting = routingConfiguration();
   active = spawn(initial, observedRouting);
   const timer = setInterval(() => { void check(); }, pollMs);
+  schedulePrune();
   lines(process.stdin, (message) => {
     if (!message || message.jsonrpc !== "2.0" || (!message.method && !hasId(message))) throw new Error("Invalid client JSON-RPC message");
     dispatch(message);

@@ -30,6 +30,25 @@ test("registration check identifies shared entries, duplicates and missing live 
   assert.equal(result.issues.length, 3);
 });
 
+const direct = () => ({ ...entry(), args: [path.resolve("src/index.mjs")] });
+test("registration check finds an unsupervised shared Desktop bridge under any name", () => {
+  const code = { mcpServers: { "codex-bridge": { ...entry(), env: { ...entry().env, CODEX_BRIDGE_PROJECT_POLICY: path.resolve("policy.json") } } } };
+  const desktop = { mcpServers: { "codex-bridge-desktop": direct(), other: { command: process.execPath, args: [path.resolve("elsewhere/index.mjs")] } } };
+  const result = checkCodeRegistration({ code, desktop });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.shared, ["codex-bridge-desktop"]);
+  assert.ok(result.issues.some((issue) => /without the supervisor.*codex-bridge-desktop/.test(issue)));
+  assert.deepEqual(checkCodeRegistration({ code: {}, desktop }).shared, ["codex-bridge-desktop"]);
+});
+test("migration removes an identical unsupervised shared entry and refuses a customized one", () => {
+  const code = { mcpServers: { "codex-bridge": entry() } };
+  const plan = planCodeRegistration({ code, desktop: { mcpServers: { "codex-bridge-desktop": direct() } }, policyFile: path.resolve("policy.json") });
+  assert.deepEqual(plan.desktop.mcpServers, {});
+  assert.deepEqual(plan.changes.at(-1), { kind: "remove-shared-desktop-entry", name: "codex-bridge-desktop" });
+  const customized = direct(); customized.env.CODEX_BRIDGE_APPROVAL = "deny";
+  assert.throws(() => planCodeRegistration({ code, desktop: { mcpServers: { "codex-bridge-desktop": customized } }, policyFile: path.resolve("policy.json") }), /codex-bridge-desktop has customized settings/);
+});
+
 test("installer previews without writes, requires stopped clients, backs up exact input and verifies applied registration", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-code-install-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

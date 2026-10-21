@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { it } from "node:test";
 import { findRolloutSegments, assertRolloutSetStable, retryRolloutRead, isTransientRolloutRead } from "../src/rollout-segments.mjs";
 import { scanRollout } from "../src/rollout-reader.mjs";
@@ -47,8 +48,9 @@ it("describes a missing rollout discovery without disclosing paths or unrelated 
   const f = fixture(t);
   f.write(`rollout-private-unrelated-${SEGMENT}.jsonl`);
   assert.throws(() => findRolloutSegments(f.root, ID), (error) => {
-    assert.match(error.message, /No rollout matches.*check=rollout_discovery; directoriesScanned=4; entriesScanned=4/);
-    assert.match(error.message, /layout=sessions\/YYYY\/MM\/DD/);
+    assert.match(error.message, /No rollout file \(plain \.jsonl or compressed \.jsonl\.zst\) matches the Codex task \[check=rollout_discovery; directoriesScanned=4; entriesScanned=4/);
+    assert.match(error.message, /layout=sessions\/YYYY\/MM\/DD\/rollout-\*-taskId\[_continuationId\]\.jsonl\[\.zst\]/);
+    assert.doesNotMatch(error.message, /calling/);
     for (const secret of [f.root, ID, SEGMENT, "private-unrelated"]) assert.ok(!error.message.includes(secret));
     return true;
   });
@@ -80,4 +82,30 @@ it("retries only transient rollout reads, within a fixed bound", () => {
     assert.equal(isTransientRolloutRead(new Error(message)), true, message);
   }
   assert.equal(isTransientRolloutRead(undefined), false);
+});
+
+it("discovers compressed segments and prefers the plain file of a segment that exists in both forms", (t) => {
+  const f = fixture(t);
+  const compressed = f.write(`${f.base}.jsonl.zst`);
+  const continued = f.write(`${f.base}_${SEGMENT}.jsonl`);
+  f.write(`${f.base}.jsonl.zst.tmp`);
+  assert.deepEqual(findRolloutSegments(f.root, ID), [compressed, continued]);
+  const plain = f.write(`${f.base}.jsonl`);
+  assert.deepEqual(findRolloutSegments(f.root, ID), [plain, continued]);
+  const continuedCompressed = f.write(`${f.base}_${SEGMENT}.jsonl.zst`);
+  fs.unlinkSync(continued);
+  assert.deepEqual(findRolloutSegments(f.root, ID), [plain, continuedCompressed]);
+});
+
+it("treats a compressed segment rematerialized as plain JSONL as a transient set change", (t) => {
+  const f = fixture(t);
+  const bytes = Buffer.from(JSON.stringify({ type: "session_meta", payload: { id: ID } }) + "\n");
+  const compressed = path.join(f.date, `${f.base}.jsonl.zst`);
+  fs.writeFileSync(compressed, zlib.zstdCompressSync(bytes));
+  const file = fs.realpathSync.native(compressed);
+  const snapshots = [{ file, ...scanRollout(file, { maxRecordBytes: 1024, onRecord() {} }) }];
+  assertRolloutSetStable(f.root, ID, snapshots);
+  fs.writeFileSync(path.join(f.date, `${f.base}.jsonl`), bytes);
+  fs.unlinkSync(file);
+  assert.throws(() => assertRolloutSetStable(f.root, ID, snapshots), (error) => isTransientRolloutRead(error) && /set changed/.test(error.message));
 });

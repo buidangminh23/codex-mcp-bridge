@@ -3,8 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
+import zlib from "node:zlib";
 import { it } from "node:test";
-import { scanRollout } from "../src/rollout-reader.mjs";
+import { scanRollout, readRolloutFirstRecord, MAX_DECOMPRESSED_ROLLOUT_BYTES } from "../src/rollout-reader.mjs";
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "rollout-reader-"));
@@ -97,4 +99,58 @@ it("rejects a nonregular opened descriptor before reading any records", (t) => {
     assert.throws(() => f.scan({ onRecord: () => records++ }), /regular file/);
     assert.equal(records, 0);
   } finally { fs.fstatSync = original; }
+});
+
+function compressedFixture(t, text) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rollout-reader-zst-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const plain = path.join(root, "rollout.jsonl");
+  const file = `${plain}.zst`;
+  fs.writeFileSync(plain, text);
+  fs.writeFileSync(file, zlib.zstdCompressSync(Buffer.from(text)));
+  return { plain, file };
+}
+
+function collect(file, options = {}) {
+  const records = [], digest = crypto.createHash("sha256");
+  const result = scanRollout(file, { maxRecordBytes: 1024 * 1024, onRecord: (record, start, bytes) => records.push({ record, start, bytes }),
+    onChunk: (chunk) => digest.update(chunk), ...options });
+  return { result, records, sha256: digest.digest("hex") };
+}
+
+it("scans a .jsonl.zst rollout with the offsets, size and bytes of its decompressed JSONL", (t) => {
+  const row = (index) => JSON.stringify({ type: "response_item", payload: { index, text: "\u6d4b".repeat(50000) } }) + "\n";
+  const text = Array.from({ length: 12 }, (_, index) => row(index)).join("");
+  const f = compressedFixture(t, text);
+  const plain = collect(f.plain);
+  const compressed = collect(f.file, { maxRecordBytes: 200000 });
+  assert.deepEqual(compressed.records, plain.records);
+  assert.equal(compressed.sha256, plain.sha256);
+  assert.equal(compressed.result.size, Buffer.byteLength(text));
+  assert.ok(compressed.result.size > 200000 * 8);
+  assert.equal(compressed.result.compressed, true);
+  assert.equal(compressed.result.storedSize, fs.statSync(f.file).size);
+  assert.equal(plain.result.compressed, false);
+});
+
+it("explains compressed rollout failures with distinct check codes", (t) => {
+  const f = compressedFixture(t, JSON.stringify({ type: "session_meta", payload: { id: "test", text: "x".repeat(4000) } }) + "\n");
+  assert.throws(() => collect(f.file, { zstdDecompress: null }), /requires Node\.js with zstd support.*check=rollout_zstd_unsupported/);
+  assert.throws(() => collect(f.file, { maxDecompressedBytes: 1000 }), /expands beyond the 1000-byte decompression limit \[check=rollout_zstd_limit\]/);
+  assert.throws(() => collect(f.file, { maxDecompressedBytes: 4 }), /exceeds the 4-byte decompression limit \[check=rollout_zstd_limit\]/);
+  fs.writeFileSync(f.file, "not a zstd frame");
+  assert.throws(() => collect(f.file), /could not be decompressed.*check=rollout_zstd_invalid/);
+  fs.writeFileSync(f.file, zlib.zstdCompressSync(Buffer.from('{"type":"event_msg","payload":{}}')));
+  assert.throws(() => collect(f.file), /incomplete final record/);
+  assert.equal(MAX_DECOMPRESSED_ROLLOUT_BYTES, 256 * 1024 * 1024);
+});
+
+it("reads only the first record of plain and compressed rollouts", async (t) => {
+  const first = { type: "session_meta", payload: { id: "test", originator: "codex_vscode" } };
+  const text = JSON.stringify(first) + "\n" + (JSON.stringify({ type: "response_item", payload: { text: "x".repeat(4096) } }) + "\n").repeat(512);
+  const f = compressedFixture(t, text);
+  assert.deepEqual(await readRolloutFirstRecord(f.plain), first);
+  assert.deepEqual(await readRolloutFirstRecord(f.file), first);
+  await assert.rejects(readRolloutFirstRecord(f.file, { createZstdDecompress: null }), /check=rollout_zstd_unsupported/);
+  await assert.rejects(readRolloutFirstRecord(f.file, { maxBytes: 16 }), /first record is incomplete/);
 });

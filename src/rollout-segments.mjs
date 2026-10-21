@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { isCompressedRollout, rolloutBasePath } from "./rollout-reader.mjs";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
@@ -10,8 +11,8 @@ export function findRolloutSegments(sessions, threadId) {
   const root = fs.lstatSync(sessions);
   if (!root.isDirectory() || root.isSymbolicLink()) throw new Error("The Codex sessions path is not a regular directory");
   const canonical = fs.realpathSync.native(sessions);
-  const pattern = new RegExp(`^rollout-.+-${threadId}(?:_${UUID})?\\.jsonl$`);
-  const queue = [{ directory: canonical, depth: 0 }], matches = [];
+  const pattern = new RegExp(`^rollout-.+-${threadId}(?:_${UUID})?\\.jsonl(?:\\.zst)?$`);
+  const queue = [{ directory: canonical, depth: 0 }], matches = new Map();
   let entries = 0, directories = 0;
   while (queue.length) {
     const { directory, depth } = queue.pop();
@@ -32,13 +33,14 @@ export function findRolloutSegments(sessions, threadId) {
       }
       if (depth === 3 && pattern.test(child.name)) {
         if (!child.isFile() || child.isSymbolicLink()) throw new Error("The Codex rollout is not a regular file");
-        matches.push(candidate);
-        if (matches.length > 64) throw new Error("The Codex task exceeds the 64-segment discovery limit");
+        const base = rolloutBasePath(candidate);
+        if (!matches.has(base) || isCompressedRollout(matches.get(base))) matches.set(base, candidate);
+        if (matches.size > 64) throw new Error("The Codex task exceeds the 64-segment discovery limit");
       }
     }
   }
-  if (!matches.length) throw new Error(`No rollout matches the calling Codex task [check=rollout_discovery; directoriesScanned=${directories}; entriesScanned=${entries}; layout=sessions/YYYY/MM/DD/rollout-*-taskId[_continuationId].jsonl]`);
-  return matches.sort();
+  if (!matches.size) throw new Error(`No rollout file (plain .jsonl or compressed .jsonl.zst) matches the Codex task [check=rollout_discovery; directoriesScanned=${directories}; entriesScanned=${entries}; layout=sessions/YYYY/MM/DD/rollout-*-taskId[_continuationId].jsonl[.zst]]`);
+  return [...matches].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([, file]) => file);
 }
 
 // Only independently retrieved native metadata may be supplied here. Tool

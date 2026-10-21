@@ -371,9 +371,15 @@ function takeOverStalePruneLock(cache, lock, now) {
   if (now - Number(info.mtimeMs) < PRUNE_LOCK_STALE_MS && (owner === null || processAlive(owner))) return false;
   const moved = path.join(cache, `.prune-lock-${process.pid}-${randomUUID()}.tmp`);
   fs.renameSync(lock, moved);
-  const examined = fs.lstatSync(moved, { bigint: true });
-  let reclaimed = examined.dev === info.dev && examined.ino === info.ino && examined.mtimeNs === info.mtimeNs && examined.size === info.size;
-  if (reclaimed) { try { reclaimed = fs.readFileSync(moved, "utf8").trim() === text; } catch { reclaimed = false; } }
+  let reclaimed = false;
+  try {
+    const descriptor = fs.openSync(moved, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    try {
+      const examined = fs.fstatSync(descriptor, { bigint: true });
+      reclaimed = examined.isFile() && examined.dev === info.dev && examined.ino === info.ino && examined.mtimeNs === info.mtimeNs && examined.size === info.size
+        && fs.readFileSync(descriptor, "utf8").trim() === text;
+    } finally { fs.closeSync(descriptor); }
+  } catch { reclaimed = false; }
   if (!reclaimed) { try { fs.linkSync(moved, lock); } catch {} }
   fs.rmSync(moved, { force: true });
   return reclaimed;

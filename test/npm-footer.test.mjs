@@ -30,7 +30,7 @@ if (!dry && process.env.BRIDGE_AFTER) {
 console.log(process.env.BRIDGE_NATIVE_STDOUT || "npm finished");
 `;
 
-function run(shell, { before, beforeMetadata, after = "1.2.3", args = ["install", "-g", `${packageName}@latest`], env = {}, strict = false } = {}) {
+function run(shell, { before, beforeMetadata, after = "1.2.3", args = ["install", "-g", `${packageName}@latest`], env = {}, strict = false, snapshot = false } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge footer "));
   try {
     const bin = path.join(directory, "bin");
@@ -44,7 +44,8 @@ function run(shell, { before, beforeMetadata, after = "1.2.3", args = ["install"
     if (beforeMetadata !== undefined) fs.writeFileSync(manifest, beforeMetadata);
     else if (before) fs.writeFileSync(manifest, JSON.stringify({ name: packageName, version: before }));
     const options = shell === "bash" ? ["--noprofile", "--norc"] : ["-f"];
-    const command = `${strict ? "set -eu; set -o pipefail; " : ""}source "$1"; shift; npm "$@"`;
+    const load = snapshot ? 'eval "$(source "$1"; typeset -f npm)"' : 'source "$1"';
+    const command = `${strict ? "set -eu; set -o pipefail; " : ""}${load}; shift; npm "$@"`;
     const result = spawnSync(shell, [...options, "-c", command, "footer-test", wrapper, ...args], {
       encoding: "utf8", timeout: 10000,
       env: { PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH}`, BRIDGE_ROOT: root, BRIDGE_MANIFEST: manifest, BRIDGE_CALLS: callsFile, BRIDGE_AFTER: after, ...env },
@@ -73,6 +74,11 @@ for (const shell of ["bash", "zsh"]) {
     it("reports an upgrade using measured before and after versions", () => {
       const result = run(shell, { before: "1.2.2" });
       assert.match(result.stdout, /Successfully updated: .* v1\.2\.2 -> v1\.2\.3\n$/);
+    });
+    it("reports an upgrade when only the npm function survives a shell snapshot", () => {
+      const result = run(shell, { before: "1.2.2", snapshot: true });
+      assert.match(result.stdout, /Successfully updated: .* v1\.2\.2 -> v1\.2\.3\n$/);
+      assert.equal(result.stderr, "");
     });
     it("reports an unchanged version on repeated installation", () => {
       const result = run(shell, { before: "1.2.3" });

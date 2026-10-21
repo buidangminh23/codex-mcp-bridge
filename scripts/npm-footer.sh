@@ -1,12 +1,9 @@
-_codex_bridge_installed_version() {
-  command node --input-type=module -e 'import fs from "node:fs"; const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (value.name !== "@minhspark/codex-mcp-bridge" || typeof value.version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value.version)) process.exit(1); process.stdout.write(value.version);' "$1/@minhspark/codex-mcp-bridge/package.json" 2>/dev/null
-}
-
 npm() {
   if [ "$#" -eq 0 ]; then command npm; return $?; fi
   local bridge_command="${1-}" bridge_global=0 bridge_packages=0 bridge_supported=1
   local bridge_dry_run=auto bridge_root= bridge_before= bridge_after= bridge_install_status=0
   local bridge_after_root= bridge_mode=unknown bridge_before_verified=1
+  local bridge_version_script='import fs from "node:fs"; const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (value.name !== "@minhspark/codex-mcp-bridge" || typeof value.version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value.version)) process.exit(1); process.stdout.write(value.version);'
   local -a bridge_arguments bridge_context
   bridge_arguments=("$@")
   bridge_context=(--global)
@@ -49,7 +46,7 @@ npm() {
     case "$bridge_root" in
       /*)
         if [ -e "$bridge_root/@minhspark/codex-mcp-bridge/package.json" ]; then
-          bridge_before="$(_codex_bridge_installed_version "$bridge_root")" || bridge_before_verified=0
+          bridge_before="$(command node --input-type=module -e "$bridge_version_script" "$bridge_root/@minhspark/codex-mcp-bridge/package.json" 2>/dev/null)" || bridge_before_verified=0
         fi
         ;;
       *) bridge_before_verified=0 ;;
@@ -65,7 +62,7 @@ npm() {
   else
     bridge_after_root="$(command npm root "${bridge_context[@]}" 2>/dev/null)" || bridge_after_root=
     case "$bridge_after_root" in
-      /*) bridge_after="$(_codex_bridge_installed_version "$bridge_after_root")" || bridge_after= ;;
+      /*) bridge_after="$(command node --input-type=module -e "$bridge_version_script" "$bridge_after_root/@minhspark/codex-mcp-bridge/package.json" 2>/dev/null)" || bridge_after= ;;
     esac
     if [ -z "$bridge_after" ] || [ "$bridge_before_verified" -ne 1 ] || [ "$bridge_after_root" != "$bridge_root" ]; then
       printf 'Warning: npm completed, but the installed @minhspark/codex-mcp-bridge version could not be verified.\n' >&2

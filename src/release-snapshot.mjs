@@ -372,7 +372,8 @@ function takeOverStalePruneLock(cache, lock, now) {
   const moved = path.join(cache, `.prune-lock-${process.pid}-${randomUUID()}.tmp`);
   fs.renameSync(lock, moved);
   const examined = fs.lstatSync(moved, { bigint: true });
-  const reclaimed = examined.dev === info.dev && examined.ino === info.ino;
+  let reclaimed = examined.dev === info.dev && examined.ino === info.ino && examined.mtimeNs === info.mtimeNs && examined.size === info.size;
+  if (reclaimed) { try { reclaimed = fs.readFileSync(moved, "utf8").trim() === text; } catch { reclaimed = false; } }
   if (!reclaimed) { try { fs.linkSync(moved, lock); } catch {} }
   fs.rmSync(moved, { force: true });
   return reclaimed;

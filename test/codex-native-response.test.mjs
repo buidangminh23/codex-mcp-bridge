@@ -844,7 +844,7 @@ describe("compressed cold Codex rollouts", () => {
     f.append(f.turn({ turnId: PREVIOUS_TURN_ID }));
     const mark = f.capture();
     const bytes = fs.readFileSync(f.file);
-    fs.unlinkSync(f.file);
+    fs.renameSync(f.file, `${f.file}.replaced`);
     fs.writeFileSync(f.file, Buffer.concat([bytes, Buffer.from(f.turn().map(line).join(""))]));
     const result = f.read(mark);
     assert.equal(result.status, "unavailable");

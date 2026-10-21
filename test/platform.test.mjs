@@ -565,3 +565,11 @@ describe("resolveCodexDesktopNodeBin", () => {
     assert.equal(runtime.source, "process.execPath");
   });
 });
+
+it("percent-encodes the thread id before opening a codex:// link", async () => {
+  const calls = [];
+  const url = await openThreadInCodexApp("a b&c\"d", { platform: "win32", env: { SystemRoot: "C:\\Windows" }, run: async (...args) => { calls.push(args); } });
+  assert.equal(url, "codex://threads/a%20b%26c%22d");
+  assert.equal(calls.length, 1);
+  await assert.rejects(openThreadInCodexApp("", { platform: "win32", run: async () => {} }), /thread id is required/);
+});

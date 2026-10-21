@@ -490,7 +490,8 @@ function windowsOpenUrlCommand(url, env) {
 }
 
 export async function openThreadInCodexApp(threadId, { activate = true, platform = process.platform, env = process.env, run = execFileAsync } = {}) {
-  const url = codexThreadUrl(threadId);
+  if (typeof threadId !== "string" || !threadId) throw new Error("A Codex thread id is required");
+  const url = codexThreadUrl(encodeURIComponent(threadId));
   if (platform === "win32") {
     const [shell, args] = windowsOpenUrlCommand(url, env);
     await run(shell, args, { windowsHide: true, timeout: 10000 });

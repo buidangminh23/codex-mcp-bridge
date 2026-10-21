@@ -46,6 +46,7 @@ const peer = new PeerEndpoint({
   name: defaultPeerName,
   cwd: process.env.CLAUDE_BRIDGE_CWD ?? process.cwd(),
   log,
+  signalExit: false,
 });
 
 const codex = new CodexAppServerClient({
@@ -811,7 +812,7 @@ try {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-exitWhenClientCloses({
+const shutdown = exitWhenClientCloses({
   prepare: () => peer.closeIntake(),
   busy: () => peer.connections.size ? "Peer socket connections are still open"
     : peer.requestQueues.size ? "Claude messages are still being sent"
@@ -819,5 +820,6 @@ exitWhenClientCloses({
   stop: async () => { replyForwarder.close(); peer.stop(); codex.close(); await peer.closed; },
   log,
 });
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { void shutdown.close(signal); });
 reload.listen();
 log(`ready on ${PLATFORM_LABEL} as peer "${peer.name}" (${peer.started ? peer.socketPath : "peer endpoint down"})`);

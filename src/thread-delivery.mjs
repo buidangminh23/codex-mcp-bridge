@@ -138,7 +138,7 @@ export class DesktopTaskDelivery {
     } catch (err) {
       if (err.code === "RESPONSE_TOO_LARGE") throw err;
       if (err.code?.startsWith("PROJECT_SCOPE_") || err.code === "CLAUDE_SENDER_CONTEXT_UNVERIFIED") throw err;
-      throw new Error(`Codex Desktop operation ${operation} failed: ${err.message}. Desktop-only mode will not start or use an external app-server. Open Codex Desktop and reconnect its native relay, then inspect the existing task before retrying a send.`, { cause: err });
+      throw new Error(`Codex Desktop operation ${operation} failed: ${String(err.message).replace(/[.\s]+$/, "")}. Desktop-only mode will not start or use an external app-server. The Codex Desktop native relay is not listening. If Codex Desktop is running, open any regular project task (not the internal Native Relay executor task) and send it a turn or reconnect its MCP servers so Codex starts codex-native-relay; the relay then keeps running until Codex Desktop quits. Inspect the existing task before retrying a send.`, { cause: err });
     }
   }
 

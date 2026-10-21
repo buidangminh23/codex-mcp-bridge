@@ -774,7 +774,7 @@ export function nativeRelayStatus(env = process.env) {
       enabled: false,
       mode,
       socketPath,
-      reason: `no companion socket at ${socketPath} - is the native relay installed and Codex Desktop running?`,
+      reason: `no companion socket at ${socketPath}. Install the native relay if it is missing. If Codex Desktop is running, open any regular project task (not the internal Native Relay executor task) and send it a turn or reconnect its MCP servers so Codex starts codex-native-relay; the relay then keeps running until Codex Desktop quits. Inspect the existing task before retrying a send.`,
     };
   }
   return { enabled: true, mode, socketPath, reason: null };
@@ -938,7 +938,7 @@ export class NativeDesktopRelay {
   }
 }
 
-export async function bootstrapRelayThread(client, { cwd = homeDir(), env = process.env, name = "Native Relay" } = {}) {
+export async function bootstrapRelayThread(client, { cwd = homeDir(), env = process.env, name = "Native Relay (internal executor, do not open)" } = {}) {
   const res = await client.call("thread/start", {
     cwd,
     approvalPolicy: "never",

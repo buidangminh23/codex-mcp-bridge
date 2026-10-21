@@ -3,7 +3,8 @@ import net from "node:net";
 import path from "node:path";
 
 import { codexHome, resolveRelayThreadId } from "./native-relay.mjs";
-import { IS_MACOS, isDesktopAppServerRunning, openThreadInCodexApp } from "./platform.mjs";
+import { isCodexDesktopRunning, openThreadInCodexApp } from "./platform.mjs";
+import { captureProjectScope } from "./project-scope.mjs";
 import { readRolloutFirstRecord } from "./rollout-reader.mjs";
 
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -16,7 +17,7 @@ const MAX_CANDIDATES = 40;
 export function relayWakeEnabled(env = process.env, platform = process.platform) {
   const value = (env.CODEX_BRIDGE_RELAY_WAKE ?? "").toLowerCase();
   if (["0", "off", "false"].includes(value)) return false;
-  return platform === "darwin";
+  return platform === "darwin" || platform === "win32";
 }
 
 function dayDirectories(sessions) {
@@ -36,8 +37,8 @@ function dayDirectories(sessions) {
   return directories;
 }
 
-function samePath(left, right) {
-  try { return fs.realpathSync.native(left) === fs.realpathSync.native(right); }
+function sameProject(senderCwd, taskCwd) {
+  try { captureProjectScope(senderCwd, taskCwd); return true; }
   catch { return false; }
 }
 
@@ -62,7 +63,7 @@ export async function recentDesktopTaskFor(cwd, { env = process.env, sessions = 
     try { record = await readRolloutFirstRecord(candidate.file, { maxBytes: 256 * 1024 }); } catch { continue; }
     const meta = record?.type === "session_meta" ? record.payload : null;
     if (meta?.id !== candidate.threadId || meta.originator !== "Codex Desktop" || typeof meta.cwd !== "string") continue;
-    if (samePath(meta.cwd, cwd)) return candidate.threadId;
+    if (sameProject(cwd, meta.cwd)) return candidate.threadId;
   }
   return null;
 }
@@ -85,7 +86,7 @@ export function endpointAnswers(socketPath, { timeoutMs = 1000 } = {}) {
 export function createRelayWake({
   env = process.env,
   enabled = relayWakeEnabled(env),
-  desktopRunning = () => IS_MACOS && isDesktopAppServerRunning(),
+  desktopRunning = () => isCodexDesktopRunning(),
   senderCwd = () => null,
   findTask = (cwd, exclude) => recentDesktopTaskFor(cwd, { env, exclude }),
   executorThreadId = () => { try { return resolveRelayThreadId(env).threadId; } catch { return null; } },
@@ -101,7 +102,7 @@ export function createRelayWake({
   let inFlight = null;
   let failedAt = -Infinity;
   const attempt = async ({ socketPath, threadId, deadline }) => {
-    if (!enabled || now() - failedAt < cooldownMs || !desktopRunning()) return null;
+    if (!enabled || now() - failedAt < cooldownMs || !await desktopRunning()) return null;
     const executor = executorThreadId();
     const target = typeof threadId === "string" && THREAD_ID.test(threadId) && threadId !== executor
       ? threadId : await findTask(senderCwd(), [executor]);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -99,7 +100,32 @@ describe("relay wake", () => {
     assert.deepEqual(opened, []);
     assert.equal(relayWakeEnabled({}, "darwin"), true);
     assert.equal(relayWakeEnabled({ CODEX_BRIDGE_RELAY_WAKE: "0" }, "darwin"), false);
-    assert.equal(relayWakeEnabled({}, "win32"), false);
+    assert.equal(relayWakeEnabled({}, "win32"), true);
+    assert.equal(relayWakeEnabled({ CODEX_BRIDGE_RELAY_WAKE: "off" }, "win32"), false);
+    assert.equal(relayWakeEnabled({}, "linux"), false);
+  });
+
+  it("waits for an asynchronous Codex Desktop check before opening anything", async () => {
+    const opened = [];
+    const wake = createRelayWake({
+      enabled: true, desktopRunning: async () => false, executorThreadId: () => null,
+      open: async (threadId) => { opened.push(threadId); }, answers: async () => true, findTask: async () => null,
+    });
+    assert.equal(await wake({ socketPath: "/s", threadId: ids.target }), null);
+    assert.deepEqual(opened, []);
+  });
+
+  it("finds a Desktop task of the same repository when the sender works in a linked worktree", async (t) => {
+    const { root, sessions, write } = sessionsFixture(t);
+    const repo = path.join(root, "repo");
+    const git = (...args) => execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+    fs.mkdirSync(repo);
+    git("init", "-q");
+    git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+    const worktree = path.join(root, "worktree");
+    git("worktree", "add", "-q", worktree);
+    write("20", ids.latest, repo);
+    assert.equal(await recentDesktopTaskFor(worktree, { sessions }), ids.latest);
   });
 
   it("coalesces concurrent wakes into one open", async () => {
@@ -118,10 +144,13 @@ describe("relay wake", () => {
   });
 
   it("checks an endpoint by connecting to it", async (t) => {
-    if (process.platform === "win32") return t.skip("POSIX sockets only");
-    const directory = fs.mkdtempSync(path.join("/tmp", "rw-"));
-    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-    const socketPath = path.join(directory, "s.sock");
+    let socketPath;
+    if (process.platform === "win32") socketPath = String.raw`\\.\pipe\LOCAL\relay-wake-test-${process.pid}-${Date.now()}`;
+    else {
+      const directory = fs.mkdtempSync(path.join("/tmp", "rw-"));
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+      socketPath = path.join(directory, "s.sock");
+    }
     assert.equal(await endpointAnswers(socketPath), false);
     const server = net.createServer((socket) => socket.destroy());
     await new Promise((resolve) => server.listen(socketPath, resolve));

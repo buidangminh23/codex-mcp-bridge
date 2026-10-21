@@ -9,7 +9,10 @@ import {
   IS_WINDOWS,
   PLATFORM_LABEL,
   claudeDesktopConfigPath,
+  codexDesktopListed,
   codexThreadUrl,
+  isCodexDesktopRunning,
+  openThreadInCodexApp,
   isWritableDir,
   launchAgentPath,
   resolveCodexBin,
@@ -95,6 +98,36 @@ after(() => {
     else process.env[key] = value;
   }
   fs.rmSync(sandbox, { recursive: true, force: true });
+});
+
+describe("Codex Desktop links on Windows", () => {
+  const desktop = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`;
+
+  it("opens a task through Start-Process so a successful launch is not reported as a failure", async () => {
+    const threadId = "01a15bb7-0f83-7e60-9e06-08b4be53c66a";
+    let call;
+    const url = await openThreadInCodexApp(threadId, { activate: false, platform: "win32", env: { SystemRoot: String.raw`C:\Windows` }, run: async (...args) => { call = args; } });
+    assert.equal(url, codexThreadUrl(threadId));
+    assert.equal(call[0], String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
+    assert.equal(call[1].at(-2), "-EncodedCommand");
+    const script = Buffer.from(call[1].at(-1), "base64").toString("utf16le");
+    assert.match(script, /\$ErrorActionPreference='Stop'; Start-Process -FilePath/);
+    assert.ok(script.includes(Buffer.from(url, "utf8").toString("base64")));
+    assert.ok(!script.includes(url));
+    assert.equal(call[2].windowsHide, true);
+  });
+
+  it("recognises only the packaged Codex Desktop executable", async () => {
+    const chatgpt = String.raw`C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.0.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`;
+    assert.equal(codexDesktopListed(`${chatgpt}\r\n${desktop}\r\n`), true);
+    assert.equal(codexDesktopListed(chatgpt), false);
+    assert.equal(codexDesktopListed(String.raw`C:\Users\me\Downloads\ChatGPT.exe`), false);
+    assert.equal(codexDesktopListed(""), false);
+    assert.equal(await isCodexDesktopRunning({ platform: "win32", env: {}, run: async () => ({ stdout: `${desktop}\n` }) }), true);
+    assert.equal(await isCodexDesktopRunning({ platform: "win32", env: {}, run: async () => { throw new Error("powershell missing"); } }), false);
+    assert.equal(await isCodexDesktopRunning({ platform: "linux", run: async () => assert.fail("must not probe") }), false);
+    assert.equal(await isCodexDesktopRunning({ platform: "darwin", macos: () => true }), true);
+  });
 });
 
 describe("platform facts", () => {

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { VSCodeIpc } from "./vscode-ipc.mjs";
 import { classifyClaudeDelivery, classifyCodexCompletion } from "./vscode-delivery.mjs";
 import { findRollout, readState, readCodexSenderContext } from "./codex-sender-context.mjs";
-import { isCompressedRollout, readRolloutFirstRecord, rolloutBasePath } from "./rollout-reader.mjs";
+import { readRolloutHeads } from "./rollout-segments.mjs";
 import { readProcessAncestry } from "./claude-sender-context.mjs";
 import { listClaudeSessions, assertClaudeSessionCwd, assertClaudeSessionProcess, PeerEndpoint } from "./peer-protocol.mjs";
 import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
@@ -60,26 +60,10 @@ function codexTask(threadId, cwd) {
 }
 
 async function taskCandidates(cwd) {
-  const queue = [{ directory: sessions, depth: 0 }];
   const rows = [];
-  let count = 0;
-  while (queue.length) {
-    const { directory, depth } = queue.pop();
-    const entries = fs.readdirSync(directory, { withFileTypes: true });
-    const plain = new Set(entries.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl")).map((entry) => entry.name));
-    for (const entry of entries) {
-      if (++count > 100000) throw new Error("Session scan limit exceeded");
-      if (entry.isSymbolicLink()) continue;
-      const file = path.join(directory, entry.name);
-      if (depth < 3 && entry.isDirectory() && /^\d{2,4}$/.test(entry.name)) queue.push({ directory: file, depth: depth + 1 });
-      if (depth !== 3 || !entry.isFile() || !(entry.name.endsWith(".jsonl") || isCompressedRollout(entry.name))) continue;
-      if (isCompressedRollout(entry.name) && plain.has(rolloutBasePath(entry.name))) continue;
-      let first;
-      try { first = await readRolloutFirstRecord(file); }
-      catch { continue; }
-      const session = first?.payload;
-      if (first?.type === "session_meta" && session?.originator === "codex_vscode" && session.source === "vscode" && samePath(session.cwd, cwd)) rows.push({ threadId: session.id, cwd: session.cwd });
-    }
+  for (const first of await readRolloutHeads(sessions)) {
+    const session = first?.payload;
+    if (first?.type === "session_meta" && session?.originator === "codex_vscode" && session.source === "vscode" && samePath(session.cwd, cwd)) rows.push({ threadId: session.id, cwd: session.cwd });
   }
   return rows.slice(-50);
 }

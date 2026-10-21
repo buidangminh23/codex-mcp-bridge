@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { it } from "node:test";
-import { findRolloutSegments, assertRolloutSetStable, retryRolloutRead, isTransientRolloutRead } from "../src/rollout-segments.mjs";
+import { findRolloutSegments, assertRolloutSetStable, retryRolloutRead, isTransientRolloutRead, readRolloutHeads } from "../src/rollout-segments.mjs";
 import { scanRollout } from "../src/rollout-reader.mjs";
 
 const ID = "01a079a8-eba3-7480-b626-32cae9ec26a9";
@@ -108,4 +108,30 @@ it("treats a compressed segment rematerialized as plain JSONL as a transient set
   fs.writeFileSync(path.join(f.date, `${f.base}.jsonl`), bytes);
   fs.unlinkSync(file);
   assert.throws(() => assertRolloutSetStable(f.root, ID, snapshots), (error) => isTransientRolloutRead(error) && /set changed/.test(error.message));
+});
+
+it("reports a segment removed during the stability check as a pathless transient change", (t) => {
+  const f = fixture(t);
+  const file = f.write(`${f.base}.jsonl`);
+  const snapshots = [{ file, ...scanRollout(file, { maxRecordBytes: 1024, onRecord() {} }) }];
+  const lstat = fs.lstatSync;
+  t.mock.method(fs, "lstatSync", (candidate, ...rest) => {
+    if (candidate === file) throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${file}'`), { code: "ENOENT" });
+    return lstat.call(fs, candidate, ...rest);
+  });
+  assert.throws(() => assertRolloutSetStable(f.root, ID, snapshots), (error) =>
+    isTransientRolloutRead(error) && error.message === "A rollout segment changed while reading");
+});
+
+it("lists each rollout head once, including compressed-only tasks", async (t) => {
+  const f = fixture(t);
+  const head = (id) => JSON.stringify({ type: "session_meta", payload: { id } }) + "\n";
+  const plainId = "01a0b001-0000-7000-8000-000000000001", compressedId = "01a0b001-0000-7000-8000-000000000002", bothId = "01a0b001-0000-7000-8000-000000000003";
+  fs.writeFileSync(path.join(f.date, `rollout-a-${plainId}.jsonl`), head(plainId));
+  fs.writeFileSync(path.join(f.date, `rollout-b-${compressedId}.jsonl.zst`), zlib.zstdCompressSync(Buffer.from(head(compressedId))));
+  fs.writeFileSync(path.join(f.date, `rollout-c-${bothId}.jsonl`), head(bothId));
+  fs.writeFileSync(path.join(f.date, `rollout-c-${bothId}.jsonl.zst`), zlib.zstdCompressSync(Buffer.from(head(bothId))));
+  fs.writeFileSync(path.join(f.date, `rollout-d-broken.jsonl.zst`), "not zstd");
+  const ids = (await readRolloutHeads(f.root)).map((record) => record.payload.id);
+  assert.deepEqual([...ids].sort(), [plainId, compressedId, bothId].sort());
 });

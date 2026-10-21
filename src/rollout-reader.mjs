@@ -6,6 +6,10 @@ const CHUNK_BYTES = 256 * 1024;
 const COMPRESSED_SUFFIX = ".zst";
 const VERSION_FIELDS = ["size", "mtimeNs", "ctimeNs", "ino", "dev"];
 const sameVersion = (a, b) => VERSION_FIELDS.every((key) => a[key] === b[key]);
+const versionKey = (version) => VERSION_FIELDS.map((key) => String(version[key])).join(":");
+const VANISHED_CODES = new Set(["ENOENT", "ENOTDIR"]);
+const COMPRESSED_SCAN_CACHE_ENTRIES = 16;
+const compressedScans = new Map();
 
 export const MAX_DECOMPRESSED_ROLLOUT_BYTES = 256 * 1024 * 1024;
 
@@ -15,6 +19,10 @@ export function isCompressedRollout(file) {
 
 export function rolloutBasePath(file) {
   return isCompressedRollout(file) ? file.slice(0, -COMPRESSED_SUFFIX.length) : file;
+}
+
+export function asRolloutChange(error, message = "The rollout changed while reading") {
+  return VANISHED_CODES.has(error?.code) ? new Error(message) : error;
 }
 
 function zstdUnsupported() {
@@ -96,6 +104,7 @@ async function readHead(file, maxBytes, createZstdDecompress) {
   if (typeof createZstdDecompress !== "function") throw zstdUnsupported();
   const source = fs.createReadStream(file, { flags: fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0) });
   const stream = source.pipe(createZstdDecompress());
+  source.on("error", (error) => stream.destroy(error));
   const parts = [];
   let length = 0;
   try {
@@ -122,7 +131,35 @@ export async function readRolloutFirstRecord(file, { maxBytes = 64 * 1024, creat
 
 // Scan the complete history, but retain at most one bounded JSONL record.
 // Skipping the middle of a rollout would miss duplicate identities or corruption.
-export function scanRollout(file, { maxRecordBytes, onRecord, onChunk = () => {}, zstdDecompress = zlib.zstdDecompressSync, maxDecompressedBytes = MAX_DECOMPRESSED_ROLLOUT_BYTES }) {
+export function scanRollout(file, options) {
+  try {
+    return scanRolloutOnce(file, options);
+  } catch (error) {
+    throw asRolloutChange(error);
+  }
+}
+
+export function memoizeCompressedScan(file, key, scan, { keep = () => true } = {}) {
+  if (!isCompressedRollout(file)) return scan();
+  let named;
+  try { named = fs.lstatSync(file, { bigint: true }); }
+  catch (error) { throw asRolloutChange(error); }
+  const entry = `${file}\0${key}`;
+  const cached = compressedScans.get(entry);
+  compressedScans.delete(entry);
+  if (cached?.version === versionKey(named)) {
+    compressedScans.set(entry, cached);
+    return cached.value;
+  }
+  const value = scan();
+  if (versionKey(value.version) === versionKey(named) && keep(value)) {
+    compressedScans.set(entry, { version: versionKey(named), value });
+    if (compressedScans.size > COMPRESSED_SCAN_CACHE_ENTRIES) compressedScans.delete(compressedScans.keys().next().value);
+  }
+  return value;
+}
+
+function scanRolloutOnce(file, { maxRecordBytes, onRecord, onChunk = () => {}, zstdDecompress = zlib.zstdDecompressSync, maxDecompressedBytes = MAX_DECOMPRESSED_ROLLOUT_BYTES }) {
   if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes < 1) throw new Error("The rollout record read limit is invalid");
   if (!Number.isSafeInteger(maxDecompressedBytes) || maxDecompressedBytes < 1) throw new Error("The rollout decompression limit is invalid");
   const compressed = isCompressedRollout(file);

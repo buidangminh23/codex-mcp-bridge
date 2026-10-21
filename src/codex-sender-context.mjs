@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { scanRollout } from "./rollout-reader.mjs";
+import { scanRollout, memoizeCompressedScan } from "./rollout-reader.mjs";
 import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable, retryRolloutRead } from "./rollout-segments.mjs";
 
 const METADATA_KEY = "x-codex-turn-metadata";
@@ -49,6 +49,10 @@ export function readState(file, maxBytes) {
 }
 
 function readStateOnce(file, maxBytes) {
+  return memoizeCompressedScan(file, `state:${maxBytes}`, () => scanState(file, maxBytes));
+}
+
+function scanState(file, maxBytes) {
   let session, context, lifecycle;
   const snapshot = scanRollout(file, {
     maxRecordBytes: maxBytes,

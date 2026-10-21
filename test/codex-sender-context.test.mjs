@@ -720,3 +720,16 @@ it("reads a compressed target task rollout and names the target, not the caller,
   fs.writeFileSync(path.join(directory, `rollout-2026-09-06T19-17-57-${threadId}_${otherId}.jsonl`), `${JSON.stringify(records[0])}\n`);
   assert.throws(() => findRollout(path.join(home, "sessions"), threadId), (error) => error.message === "Multiple rollouts match the Codex task");
 });
+
+it("decompresses an unchanged compressed segment once across repeated state reads", (t) => {
+  const home = fs.mkdtempSync(path.join(root, "cached-"));
+  const directory = path.join(home, "sessions", "2026", "09", "06");
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `rollout-2026-09-06T19-17-57-${threadId}.jsonl.zst`);
+  fs.writeFileSync(file, zlib.zstdCompressSync(Buffer.from(`${JSON.stringify({ type: "session_meta", payload: { id: threadId, originator: "codex_vscode", source: "vscode", cwd: home } })}\n`)));
+  const decompress = zlib.zstdDecompressSync;
+  let decompressions = 0;
+  t.mock.method(zlib, "zstdDecompressSync", (...args) => { decompressions++; return decompress.apply(zlib, args); });
+  for (let attempt = 0; attempt < 3; attempt++) assert.equal(readState(file, 1024 * 1024).session.id, threadId);
+  assert.equal(decompressions, 1);
+});

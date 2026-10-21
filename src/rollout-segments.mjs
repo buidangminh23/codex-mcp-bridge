@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { isCompressedRollout, rolloutBasePath } from "./rollout-reader.mjs";
+import { isCompressedRollout, rolloutBasePath, asRolloutChange, readRolloutFirstRecord } from "./rollout-reader.mjs";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
@@ -88,7 +88,33 @@ export function assertRolloutSetStable(sessions, threadId, snapshots) {
   const files = findRolloutSegments(sessions, threadId);
   if (files.length !== snapshots.length || files.some((file, i) => file !== snapshots[i].file)) throw new Error("The rollout segment set changed while reading");
   for (const { file, version } of snapshots) {
-    const current = fs.lstatSync(file, { bigint: true });
+    let current;
+    try { current = fs.lstatSync(file, { bigint: true }); }
+    catch (error) { throw asRolloutChange(error, "A rollout segment changed while reading"); }
     if (!current.isFile() || current.isSymbolicLink() || Object.entries(version).some(([key, value]) => typeof value !== "string" || String(current[key]) !== value)) throw new Error("A rollout segment changed while reading");
   }
+}
+
+export async function readRolloutHeads(sessions) {
+  const queue = [{ directory: sessions, depth: 0 }];
+  const heads = [];
+  let count = 0;
+  while (queue.length) {
+    const { directory, depth } = queue.pop();
+    const entries = fs.readdirSync(directory, { withFileTypes: true });
+    const plain = new Set(entries.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl")).map((entry) => entry.name));
+    for (const entry of entries) {
+      if (++count > 100000) throw new Error("Session scan limit exceeded");
+      if (entry.isSymbolicLink()) continue;
+      const file = path.join(directory, entry.name);
+      if (depth < 3 && entry.isDirectory() && /^\d{2,4}$/.test(entry.name)) queue.push({ directory: file, depth: depth + 1 });
+      if (depth !== 3 || !entry.isFile() || !(entry.name.endsWith(".jsonl") || isCompressedRollout(entry.name))) continue;
+      if (isCompressedRollout(entry.name) && plain.has(rolloutBasePath(entry.name))) continue;
+      let first;
+      try { first = await readRolloutFirstRecord(file); }
+      catch { continue; }
+      heads.push(first);
+    }
+  }
+  return heads;
 }

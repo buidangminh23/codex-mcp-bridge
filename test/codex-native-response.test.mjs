@@ -860,6 +860,58 @@ describe("compressed cold Codex rollouts", () => {
     assert.equal(inspected.text, "Received safely");
   });
 
+  for (const reader of ["inspect", "turn", "dispatch"]) for (const stage of ["listing", "decompress"]) it(`retries when Codex removes the .zst mid-read: ${reader}, ${stage}`, (t) => {
+    const f = fixture(t);
+    f.append(f.turn({ turnId: reader === "inspect" ? TURN_ID : PREVIOUS_TURN_ID }));
+    const { zst } = compress(f);
+    const mark = reader === "inspect" ? null : f.capture();
+    if (mark) assert.equal(mark.status, "available", mark.reason);
+    let swapped = false;
+    const swap = () => {
+      if (swapped) return;
+      swapped = true;
+      materialize(f, zst, reader === "inspect" ? [] : f.turn());
+    };
+    if (stage === "listing") {
+      const readdir = fs.readdirSync;
+      t.mock.method(fs, "readdirSync", (directory, ...rest) => {
+        const entries = readdir.call(fs, directory, ...rest);
+        if (fs.realpathSync.native(String(directory)) === fs.realpathSync.native(f.directory)) swap();
+        return entries;
+      });
+    } else {
+      const decompress = zlib.zstdDecompressSync;
+      t.mock.method(zlib, "zstdDecompressSync", (...args) => {
+        const content = decompress.apply(zlib, args);
+        swap();
+        return content;
+      });
+    }
+    const result = reader === "inspect"
+      ? inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env })
+      : reader === "turn" ? f.read(mark) : f.resolve(mark);
+    assert.ok(swapped);
+    assert.equal(result.status, "completed", result.reason);
+    assert.equal(result.turnId, TURN_ID);
+    assert.equal(result.text, "Received safely");
+  });
+
+  it("serves an unchanged compressed segment from the scan cache and rescans a new version", (t) => {
+    const f = fixture(t);
+    f.append(f.turn());
+    const { zst } = compress(f);
+    const decompress = zlib.zstdDecompressSync;
+    let decompressions = 0;
+    t.mock.method(zlib, "zstdDecompressSync", (...args) => { decompressions++; return decompress.apply(zlib, args); });
+    const inspect = () => inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env });
+    for (let attempt = 0; attempt < 3; attempt++) assert.equal(inspect().status, "completed");
+    assert.equal(decompressions, 1);
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(zst, later, later);
+    assert.equal(inspect().status, "completed");
+    assert.equal(decompressions, 2);
+  });
+
   it("retries a read that races the zst-to-plain rematerialization", (t) => {
     const f = fixture(t);
     f.append(f.turn());

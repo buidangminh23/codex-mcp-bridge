@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import zlib from "node:zlib";
 import { it } from "node:test";
-import { scanRollout, readRolloutFirstRecord, MAX_DECOMPRESSED_ROLLOUT_BYTES } from "../src/rollout-reader.mjs";
+import { scanRollout, readRolloutFirstRecord, memoizeCompressedScan, MAX_DECOMPRESSED_ROLLOUT_BYTES } from "../src/rollout-reader.mjs";
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "rollout-reader-"));
@@ -153,4 +153,57 @@ it("reads only the first record of plain and compressed rollouts", async (t) => 
   assert.deepEqual(await readRolloutFirstRecord(f.file), first);
   await assert.rejects(readRolloutFirstRecord(f.file, { createZstdDecompress: null }), /check=rollout_zstd_unsupported/);
   await assert.rejects(readRolloutFirstRecord(f.file, { maxBytes: 16 }), /first record is incomplete/);
+});
+
+it("reports a compressed rollout removed during the scan as a pathless transient change", (t) => {
+  const f = compressedFixture(t, JSON.stringify({ type: "session_meta", payload: { id: "test" } }) + "\n");
+  assert.throws(() => collect(f.file, { zstdDecompress: (stored, options) => {
+    fs.unlinkSync(f.file);
+    return zlib.zstdDecompressSync(stored, options);
+  } }), (error) => {
+    assert.equal(error.message, "The rollout changed while reading");
+    assert.ok(!error.message.includes(f.file));
+    return true;
+  });
+  assert.throws(() => collect(f.file), /^Error: The rollout changed while reading$/);
+});
+
+it("rejects without an uncaught exception when the compressed rollout disappears before it is opened", { timeout: 5000 }, async (t) => {
+  const f = compressedFixture(t, JSON.stringify({ type: "session_meta", payload: { id: "test" } }) + "\n");
+  const lstat = fs.lstatSync;
+  t.mock.method(fs, "lstatSync", (file, ...rest) => {
+    const status = lstat.call(fs, file, ...rest);
+    if (file === f.file) fs.unlinkSync(f.file);
+    return status;
+  });
+  const uncaught = [];
+  const record = (error) => uncaught.push(error);
+  process.on("uncaughtException", record);
+  t.after(() => process.off("uncaughtException", record));
+  await assert.rejects(readRolloutFirstRecord(f.file), { code: "ENOENT" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(uncaught, []);
+});
+
+it("reuses the scan of an unchanged compressed rollout and rescans after it changes", (t) => {
+  const f = compressedFixture(t, JSON.stringify({ type: "session_meta", payload: { id: "test" } }) + "\n");
+  let scans = 0;
+  const scan = () => { scans++; return collect(f.file).result; };
+  const first = memoizeCompressedScan(f.file, "test", scan);
+  assert.equal(memoizeCompressedScan(f.file, "test", scan), first);
+  assert.equal(scans, 1);
+  memoizeCompressedScan(f.file, "other", scan);
+  assert.equal(scans, 2);
+  const later = new Date(Date.now() + 5000);
+  fs.utimesSync(f.file, later, later);
+  assert.notEqual(memoizeCompressedScan(f.file, "test", scan), first);
+  assert.equal(scans, 3);
+  memoizeCompressedScan(f.file, "skip", scan, { keep: () => false });
+  memoizeCompressedScan(f.file, "skip", scan, { keep: () => false });
+  assert.equal(scans, 5);
+  memoizeCompressedScan(f.plain, "plain", () => { scans++; return collect(f.plain).result; });
+  memoizeCompressedScan(f.plain, "plain", () => { scans++; return collect(f.plain).result; });
+  assert.equal(scans, 7);
+  fs.unlinkSync(f.file);
+  assert.throws(() => memoizeCompressedScan(f.file, "test", scan), /^Error: The rollout changed while reading$/);
 });

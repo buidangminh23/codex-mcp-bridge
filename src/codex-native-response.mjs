@@ -3,13 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { scanRollout, isCompressedRollout, rolloutBasePath } from "./rollout-reader.mjs";
+import { scanRollout, isCompressedRollout, rolloutBasePath, asRolloutChange, memoizeCompressedScan } from "./rollout-reader.mjs";
 import { fileIdentity, sameFileIdentity } from "./file-identity.mjs";
 import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable, retryRolloutRead } from "./rollout-segments.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
 const MAX_REPLY_BYTES = 1024 * 1024;
+const MAX_CACHED_RECORD_BYTES = 1024 * 1024;
 const DESKTOP_ORIGINATORS = new Set(["Codex Desktop", "codex_work_desktop"]);
 const COMPLETED = new Set(["task_complete", "task_completed", "turn_complete", "turn_completed"]);
 const STARTED = new Set(["task_started", "turn_started"]);
@@ -59,6 +60,14 @@ function pathIdentity(candidate, kind) {
 }
 
 function capturePathBoundary(file, sessions) {
+  try {
+    return readPathBoundary(file, sessions);
+  } catch (error) {
+    throw asRolloutChange(error, "The Codex rollout changed while reading");
+  }
+}
+
+function readPathBoundary(file, sessions) {
   const resolvedFile = fs.realpathSync.native(file);
   const relative = path.relative(sessions, resolvedFile);
   if (relative.startsWith("..") || path.isAbsolute(relative) || path.relative(file, resolvedFile)) throw new Error("The Codex rollout path escapes its sessions directory");
@@ -95,10 +104,20 @@ function readStableRolloutSet(threadId, env, readSegments) {
   });
 }
 
-function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize, dispatchOutputs, dispatchAfterOffset }) {
+function readStableOnce(found, maxBytes, options) {
   const { file, sessions } = found;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ROLLOUT_BYTES) throw new Error("The Codex rollout read limit is invalid");
   const beforeBoundary = capturePathBoundary(file, sessions);
+  const key = crypto.createHash("sha256").update(JSON.stringify({ maxBytes, ...options })).digest("hex");
+  const scanned = memoizeCompressedScan(file, `native:${key}`, () => scanSegment(file, maxBytes, options), { keep: (value) => value.retainedBytes <= MAX_CACHED_RECORD_BYTES });
+  const afterBoundary = capturePathBoundary(file, sessions);
+  if (!samePathBoundary(beforeBoundary, afterBoundary) || !sameFileIdentity(scanned.identity, beforeBoundary.file)) {
+    throw new Error("The Codex rollout changed while reading");
+  }
+  return { ...scanned, file, sessions };
+}
+
+function scanSegment(file, maxBytes, { threadId, turnId, afterOffset, prefixSize, dispatchOutputs, dispatchAfterOffset }) {
   const records = [];
   const dispatches = [];
   const otherTurnStarts = [];
@@ -139,11 +158,7 @@ function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefix
       }
     },
   });
-  const afterBoundary = capturePathBoundary(file, sessions);
-  if (!samePathBoundary(beforeBoundary, afterBoundary) || !sameFileIdentity(snapshot.identity, beforeBoundary.file)) {
-    throw new Error("The Codex rollout changed while reading");
-  }
-  return { ...snapshot, file, sessions, records, dispatches, otherTurnStarts, retainedBytes, session, latestContext, turnBeforeWatermark, prefixSha256: digest.digest("hex") };
+  return { ...snapshot, records, dispatches, otherTurnStarts, retainedBytes, session, latestContext, turnBeforeWatermark, prefixSha256: digest.digest("hex") };
 }
 
 function canonicalDirectory(value, label) {

@@ -9,14 +9,15 @@ const object = value => value && typeof value === "object" && !Array.isArray(val
 const samePath = (a, b) => path.relative(a, b) === "";
 const inside = (a, b) => { const r = path.relative(a, b); return r === "" || (!path.isAbsolute(r) && r !== ".." && !r.startsWith(`..${path.sep}`)); };
 
-export function onboardingPaths(env = process.env) {
-  if (env.CODEX_BRIDGE_HARDENED === "1") throw new Error("Project onboarding cannot change a hardened deployment's pinned roots");
-  if (!env.CODEX_BRIDGE_PROJECT_POLICY || !path.isAbsolute(env.CODEX_BRIDGE_PROJECT_POLICY)) throw new Error("Configure the shared CODEX_BRIDGE_PROJECT_POLICY before onboarding projects");
+export function onboardingPaths(env = process.env, { requirePolicy = true } = {}) {
+  if (env.CODEX_BRIDGE_HARDENED === "1") throw new Error("Project onboarding cannot change a hardened deployment's pinned roots.");
+  const policyFile = env.CODEX_BRIDGE_PROJECT_POLICY && path.isAbsolute(env.CODEX_BRIDGE_PROJECT_POLICY) ? env.CODEX_BRIDGE_PROJECT_POLICY : null;
+  if (!policyFile && requirePolicy) throw new Error("Configure the shared CODEX_BRIDGE_PROJECT_POLICY before onboarding projects.");
   const home = env.HOME ?? env.USERPROFILE ?? os.homedir();
   const configFile = env.CLAUDE_CONFIG_DIR ? path.join(env.CLAUDE_CONFIG_DIR, ".claude.json") : path.join(home, ".claude.json");
-  if (!path.isAbsolute(configFile)) throw new Error("Claude configuration directory must be absolute");
-  if (samePath(configFile, env.CODEX_BRIDGE_PROJECT_POLICY)) throw new Error("Trust configuration and project policy must be separate files");
-  return { configFile, policyFile: env.CODEX_BRIDGE_PROJECT_POLICY, home };
+  if (!path.isAbsolute(configFile)) throw new Error("Claude configuration directory must be absolute.");
+  if (policyFile && samePath(configFile, policyFile)) throw new Error("Trust configuration and project policy must be separate files.");
+  return { configFile, policyFile, home };
 }
 
 function read(file, maxBytes = MAX_CONFIG_BYTES) {
@@ -58,17 +59,34 @@ function denied(policy, project) {
     || (d.repository && project.repo && samePath(d.repository.path, project.repo.common.path)));
 }
 
-function load(cwd, options) {
-  const files = onboardingPaths(options.env);
+function loadPolicy(file, project, options, tolerant) {
+  const unavailable = problem => ({ policyRaw: null, policy: { version: 1, grants: [], denies: [] }, denials: [], authorized: false, policyProblem: problem });
+  if (!file) return unavailable({ status: "policy_not_configured", detail: "CODEX_BRIDGE_PROJECT_POLICY is not set to an absolute file in this bridge process." });
+  try {
+    const policyRaw = read(file, 256 * 1024);
+    const policy = policyRaw === null ? { version: 1, grants: [], denies: [] } : parseProjectPolicy(policyRaw).policy;
+    const authorized = policyRaw !== null && createProjectScope(file, options).allows(project.directory.path);
+    return { policyRaw, policy, denials: denied(policy, project), authorized, policyProblem: null };
+  } catch (error) {
+    if (!tolerant) throw error;
+    return unavailable({ status: "policy_invalid", detail: error.message });
+  }
+}
+
+function load(cwd, options, { inspect = false } = {}) {
+  const files = onboardingPaths(options.env, { requirePolicy: !inspect });
   const project = target(cwd, { ...options, home: files.home });
   const configRaw = read(files.configFile);
   const config = parse(configRaw);
   const trust = trustEntry(config, project);
-  const policyRaw = read(files.policyFile, 256 * 1024);
-  const policy = policyRaw === null ? { version: 1, grants: [], denies: [] } : parseProjectPolicy(policyRaw).policy;
-  const denials = denied(policy, project);
-  const authorized = policyRaw !== null && createProjectScope(files.policyFile, options).allows(project.directory.path);
-  return { files, project, configRaw, config, trust, policyRaw, policy, denials, authorized };
+  return { files, project, configRaw, config, trust, ...loadPolicy(files.policyFile, project, options, inspect) };
+}
+
+function policyActions(state) {
+  if (!state.policyProblem) return [{ tool: "prepare_bridge_project", cwd: state.project.directory.path }];
+  const suggestedFile = path.join(state.files.home, ".config", "GptClaudeBridge", "projects.json");
+  if (state.policyProblem.status === "policy_invalid") return [{ setting: "CODEX_BRIDGE_PROJECT_POLICY", file: state.files.policyFile, then: "Repair or restore this policy file from a backup; prepare_bridge_project does not overwrite an unreadable policy. Run inspect_bridge_project again afterwards." }];
+  return [{ setting: "CODEX_BRIDGE_PROJECT_POLICY", suggestedFile, then: `Run bridge-projects prepare "${state.project.directory.path}" --file "${suggestedFile}", register that file with codex-bridge-code-install --policy "${suggestedFile}" (review the plan, then add --apply --clients-stopped), and reconnect this MCP server. prepare_bridge_project is available once the setting is loaded.` }];
 }
 
 function report(state, taskCards, extra = {}) {
@@ -77,11 +95,13 @@ function report(state, taskCards, extra = {}) {
     status: configured ? "configured" : "needs_setup",
     project: { cwd: state.project.directory.path, root: state.project.root.path, kind: state.project.repo ? "git" : "directory", repository: state.project.repo?.common.path ?? null },
     workspaceTrust: { status: state.trust.trusted ? "configured" : "missing", file: state.files.configFile, key: state.trust.key },
-    communicationAuthorization: { status: state.authorized ? "authorized" : state.denials.length ? "revoked" : "missing", file: state.files.policyFile },
+    communicationAuthorization: state.policyProblem
+      ? { ...state.policyProblem, file: state.files.policyFile }
+      : { status: state.authorized ? "authorized" : state.denials.length ? "revoked" : "missing", file: state.files.policyFile },
     connection: { status: "not_tested", ready: null, detail: "Saved configuration does not prove a live sender, target, tool permission or successful round trip." },
     taskCards: { status: taskCards ? "requires_extension_check" : "not_requested", detail: "The card extension owns its authorization and connection; this tool does not edit its settings or restart it." },
     nextActions: [
-      ...(!configured ? [{ tool: "prepare_bridge_project", cwd: state.project.directory.path }] : []),
+      ...(!configured ? policyActions(state) : []),
       ...(taskCards ? [{ component: "Local Card Bridge Desktop", tool: "list_projects", cwd: state.project.root.path, then: "If absent, use authorize_project for this exact project under the user's onboarding request; verify desktop_bridge_info after saving. Stop on any denial or disconnected extension." }] : []),
       { tools: ["claude_bridge_status", "codex_bridge_status"], then: "Check in the actual calling sessions, then perform one authorized round trip in each direction. Do not create a new conversation without user authorization." },
     ],
@@ -90,7 +110,7 @@ function report(state, taskCards, extra = {}) {
 }
 
 export function inspectBridgeProject({ cwd, taskCards = false }, options = {}) {
-  return report(load(cwd, options), taskCards);
+  return report(load(cwd, options, { inspect: true }), taskCards);
 }
 
 // Two small configuration files, not a fake 'connected' flag. Preserve full backups,

@@ -177,6 +177,26 @@ function creationReceipts(home) {
 }
 
 describe("Desktop task MCP integration", () => {
+  it("reports read-only failures and missing setup without dispatch or resend guidance", async () => {
+    await withDesktopReceiptBridge(async ({ operation }) => {
+      throw new Error(`A read-only failure reached Desktop: ${operation}`);
+    }, async ({ client, home, server }) => {
+      const waited = await client.callTool({ name: "wait_codex_reply", arguments: { deliveryId: randomUUID(), timeoutSec: 1 } });
+      assert.equal(waited.isError, true);
+      assert.match(waited.content[0].text, /^Codex bridge error: .*[.!?]$/s);
+      assert.doesNotMatch(waited.content[0].text, /Reply content was withheld|No Desktop mutation was dispatched|do not resend/);
+      assert.equal(waited.structuredContent.operation, undefined);
+      assert.ok(waited.structuredContent.accountContext);
+      const project = path.join(home, "project");
+      fs.mkdirSync(project);
+      const inspected = await client.callTool({ name: "inspect_bridge_project", arguments: { cwd: project } });
+      assert.equal(inspected.isError, undefined, inspected.content[0].text);
+      assert.equal(inspected.structuredContent.onboarding.status, "needs_setup");
+      assert.equal(inspected.structuredContent.onboarding.communicationAuthorization.status, "policy_not_configured");
+      assert.equal(server.connections, 0);
+    });
+  });
+
   it("blocks omitted and spoofed cwd from an independently verified caller before send, rename, or navigation", async () => {
     const calls = [];
     await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {

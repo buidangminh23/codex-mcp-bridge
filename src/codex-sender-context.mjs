@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { scanRollout } from "./rollout-reader.mjs";
+import { scanRollout, memoizeCompressedScan } from "./rollout-reader.mjs";
 import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable, retryRolloutRead } from "./rollout-segments.mjs";
 
 const METADATA_KEY = "x-codex-turn-metadata";
@@ -38,7 +38,7 @@ function reviewFlag(metadata, field) {
 
 export function findRollout(sessions, threadId) {
   const files = findRolloutSegments(sessions, threadId);
-  if (files.length !== 1) throw new Error("Multiple rollouts match the calling Codex task");
+  if (files.length !== 1) throw new Error("Multiple rollouts match the Codex task");
   return files[0];
 }
 
@@ -48,7 +48,18 @@ export function readState(file, maxBytes) {
   return retryRolloutRead(() => readStateOnce(file, maxBytes));
 }
 
+export function readTaskState(sessions, threadId, maxBytes) {
+  return retryRolloutRead(() => {
+    const file = findRollout(sessions, threadId);
+    return { ...readStateOnce(file, maxBytes), file };
+  });
+}
+
 function readStateOnce(file, maxBytes) {
+  return memoizeCompressedScan(file, `state:${maxBytes}`, () => scanState(file, maxBytes));
+}
+
+function scanState(file, maxBytes) {
   let session, context, lifecycle;
   const snapshot = scanRollout(file, {
     maxRecordBytes: maxBytes,

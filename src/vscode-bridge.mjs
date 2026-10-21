@@ -6,7 +6,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { VSCodeIpc } from "./vscode-ipc.mjs";
 import { classifyClaudeDelivery, classifyCodexCompletion } from "./vscode-delivery.mjs";
-import { findRollout, readState, readCodexSenderContext } from "./codex-sender-context.mjs";
+import { readCodexSenderContext, readTaskState } from "./codex-sender-context.mjs";
+import { readRolloutHeads } from "./rollout-segments.mjs";
 import { readProcessAncestry } from "./claude-sender-context.mjs";
 import { listClaudeSessions, assertClaudeSessionCwd, assertClaudeSessionProcess, PeerEndpoint } from "./peer-protocol.mjs";
 import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
@@ -50,34 +51,19 @@ async function caller(meta) {
 
 function codexTask(threadId, cwd) {
   if (!/^[0-9a-f-]{36}$/.test(threadId)) throw new Error("Invalid task ID");
-  const file = findRollout(sessions, threadId);
-  const state = readState(file, 64 * 1024 * 1024);
+  const state = readTaskState(sessions, threadId, 64 * 1024 * 1024);
+  const { file } = state;
   if (state.session?.id !== threadId || state.session.originator !== "codex_vscode" || state.session.source !== "vscode") throw new Error("The target is not a Codex VS Code task");
   assertRoot(state.session.cwd);
   if (!samePath(state.session.cwd, cwd) || !samePath(state.context.cwd, cwd)) throw new Error("Target and caller must use the same project directory");
   return { ...state, file };
 }
 
-function taskCandidates(cwd) {
-  const queue = [{ directory: sessions, depth: 0 }];
+async function taskCandidates(cwd) {
   const rows = [];
-  let count = 0;
-  while (queue.length) {
-    const { directory, depth } = queue.pop();
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (++count > 100000) throw new Error("Session scan limit exceeded");
-      if (entry.isSymbolicLink()) continue;
-      const file = path.join(directory, entry.name);
-      if (depth < 3 && entry.isDirectory() && /^\d{2,4}$/.test(entry.name)) queue.push({ directory: file, depth: depth + 1 });
-      if (depth !== 3 || !entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-      const fd = fs.openSync(file, "r");
-      let first;
-      try { const data = Buffer.alloc(65536); const size = fs.readSync(fd, data); first = JSON.parse(data.subarray(0, size).toString("utf8").split("\n")[0]); }
-      catch { continue; }
-      finally { fs.closeSync(fd); }
-      const session = first.payload;
-      if (first.type === "session_meta" && session?.originator === "codex_vscode" && session.source === "vscode" && samePath(session.cwd, cwd)) rows.push({ threadId: session.id, cwd: session.cwd });
-    }
+  for (const first of await readRolloutHeads(sessions)) {
+    const session = first?.payload;
+    if (first?.type === "session_meta" && session?.originator === "codex_vscode" && session.source === "vscode" && samePath(session.cwd, cwd)) rows.push({ threadId: session.id, cwd: session.cwd });
   }
   return rows.slice(-50);
 }
@@ -95,7 +81,7 @@ tool("vscode_bridge_status", "Verify this extension caller and list same-project
   const ipc = await new VSCodeIpc().connect();
   try {
     const tasks = [];
-    for (const candidate of taskCandidates(sender.cwd)) {
+    for (const candidate of await taskCandidates(sender.cwd)) {
       try { await ipc.owner(candidate.threadId); tasks.push(candidate); } catch {}
     }
     return { host, cwd: sender.cwd, tasks };

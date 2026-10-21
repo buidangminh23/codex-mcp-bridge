@@ -20,6 +20,8 @@ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-installer-"));
 const codexStub = path.join(sandbox, process.platform === "win32" ? "codex.exe" : "codex");
 fs.writeFileSync(codexStub, "#!/bin/sh\nexit 0\n");
 fs.chmodSync(codexStub, 0o755);
+const isolatedHome = path.join(sandbox, "home");
+fs.mkdirSync(isolatedHome);
 
 after(() => {
   fs.rmSync(sandbox, { recursive: true, force: true });
@@ -41,11 +43,13 @@ const INSTALL_TIMEOUT_MS = 60000;
  * installer writes, and the test would pass or fail according to whose
  * machine it ran on.
  */
-function install({ config, env = {}, args = [] }) {
-  execFileSync(process.execPath, [installer, ...args], {
+function installOutput({ config, env = {}, args = [] }) {
+  return execFileSync(process.execPath, [installer, ...args], {
     env: {
       PATH: process.env.PATH ?? "",
       SystemRoot: process.env.SystemRoot ?? "",
+      HOME: isolatedHome,
+      USERPROFILE: isolatedHome,
       CLAUDE_DESKTOP_CONFIG: config,
       CODEX_HOME: sandbox,
       CODEX_EXE: codexStub,
@@ -55,7 +59,11 @@ function install({ config, env = {}, args = [] }) {
     stdio: "pipe",
     timeout: INSTALL_TIMEOUT_MS,
   });
-  return JSON.parse(fs.readFileSync(config, "utf8"));
+}
+
+function install(options) {
+  installOutput(options);
+  return JSON.parse(fs.readFileSync(options.config, "utf8"));
 }
 
 function configWith(entry) {
@@ -348,11 +356,85 @@ describe("claude desktop installer", () => {
     });
   });
 
+  it("upgrades a renamed Desktop bridge entry in place instead of adding a second one", () => {
+    const config = configWith({
+      mcpServers: {
+        "codex-bridge-desktop": {
+          command: "stale-node",
+          args: [path.join(root, "src", "index.mjs")],
+          env: { CODEX_BRIDGE_ALLOWED_ROOTS: "/work/a", CODEX_BRIDGE_THREAD_POLICY: "roots", CUSTOM: "keep" },
+        },
+        "other-server": { command: "echo", args: ["untouched"] },
+      },
+    });
+
+    const cfg = install({ config });
+
+    assert.deepEqual(Object.keys(cfg.mcpServers).sort(), ["codex-bridge-desktop", "other-server"]);
+    const entry = cfg.mcpServers["codex-bridge-desktop"];
+    assert.deepEqual(entry.args, [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"]);
+    assert.equal(entry.env.CODEX_BRIDGE_ALLOWED_ROOTS, "/work/a");
+    assert.equal(entry.env.CUSTOM, "keep");
+    assert.deepEqual(cfg.mcpServers["other-server"], { command: "echo", args: ["untouched"] });
+  });
+
+  it("recognises a bridge entry by its script under any name", () => {
+    const config = configWith({
+      mcpServers: { "my-bridge": { command: "stale-node", args: [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"], env: { CUSTOM: "keep" } } },
+    });
+
+    const cfg = install({ config });
+
+    assert.deepEqual(Object.keys(cfg.mcpServers), ["my-bridge"]);
+    assert.equal(cfg.mcpServers["my-bridge"].env.CUSTOM, "keep");
+  });
+
+  it("refuses to choose between several bridge entries and leaves the file unchanged", () => {
+    const original = { mcpServers: { "codex-bridge": { env: {} }, "codex-bridge-desktop": { args: [path.join(root, "src", "index.mjs")] } } };
+    const config = configWith(original);
+
+    assert.throws(() => install({ config }), /several bridge entries \(codex-bridge, codex-bridge-desktop\)/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), original);
+  });
+
+  it("refuses several bridge entries before repairing Full access", () => {
+    const home = fs.mkdtempSync(path.join(sandbox, "refusal-home-"));
+    fs.mkdirSync(path.join(home, "config.toml"));
+    const original = { mcpServers: { "codex-bridge": { env: {} }, "codex-bridge-desktop": { args: [path.join(root, "src", "index.mjs")] } } };
+    const config = configWith(original);
+
+    assert.throws(() => install({ config, args: ["--full-access"], env: { CODEX_HOME: home } }), /several bridge entries/);
+    assert.deepEqual(fs.readdirSync(home), ["config.toml"]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), original);
+  });
+
+  it("leaves a supervised entry for another worker of this package untouched", () => {
+    const relay = { command: "node", args: [path.join(root, "src", "mcp-supervisor.mjs"), "claude-bridge.mjs"], env: { KEEP: "1" } };
+    const config = configWith({ mcpServers: { "claude-bridge": relay } });
+
+    const cfg = install({ config });
+
+    assert.deepEqual(cfg.mcpServers["claude-bridge"], relay);
+    assert.deepEqual(cfg.mcpServers["codex-bridge"].args, [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"]);
+  });
+
+  it("warns when the Desktop entry name shadows the Claude Code registration", () => {
+    const codeDirectory = fs.mkdtempSync(path.join(sandbox, "code-config-"));
+    fs.writeFileSync(path.join(codeDirectory, ".claude.json"), JSON.stringify({ mcpServers: { "codex-bridge": { command: "node" } } }));
+
+    const shadowed = installOutput({ config: configWith(null), env: { CLAUDE_CONFIG_DIR: codeDirectory } });
+    assert.match(shadowed, /WARNING: .*also registers codex-bridge for Claude Code/);
+    const renamed = installOutput({ config: configWith({ mcpServers: { "codex-bridge-desktop": {} } }), env: { CLAUDE_CONFIG_DIR: codeDirectory } });
+    assert.doesNotMatch(renamed, /also registers codex-bridge/);
+  });
+
   it("uses cross-machine defaults instead of a machine-specific install root", () => {
     const output = execFileSync(process.execPath, [installer], {
       env: {
         PATH: process.env.PATH ?? "",
         SystemRoot: process.env.SystemRoot ?? "",
+        HOME: isolatedHome,
+        USERPROFILE: isolatedHome,
         CLAUDE_DESKTOP_CONFIG: configWith(null),
         // Default project scope must not make this test use the operator's
         // runtime cache or persisted Full access opt-in. Like install(), keep

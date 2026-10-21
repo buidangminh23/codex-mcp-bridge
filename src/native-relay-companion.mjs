@@ -39,7 +39,7 @@ import { NativeCreationReceipts, creationIdValid } from "./native-creation-recei
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.13";
+const VERSION = "1.22.14";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent, details) {
@@ -48,7 +48,7 @@ function errorResponse(code, message, sent, details) {
 }
 
 const RELAY_RELOADING_REFUSAL = Object.freeze({ code: "RELAY_RELOADING", message: "The native relay is reloading; no message was sent" });
-const RELAY_STOPPING_REFUSAL = Object.freeze({ code: "RELAY_STOPPING", message: "The native relay is shutting down because its MCP client closed; no message was sent" });
+const RELAY_STOPPING_REFUSAL = Object.freeze({ code: "RELAY_STOPPING", message: "The native relay is shutting down; no message was sent" });
 
 function boundRequest(payload) {
   return payload?.v === ACCOUNT_RELAY_PROTOCOL_VERSION;
@@ -396,6 +396,7 @@ export class RelaySocketServer {
     restrictSocket = (target) => {
       if (!IS_WINDOWS) fs.chmodSync(target, 0o600);
     },
+    signalExit = true,
     log: logFn = () => {},
   } = {}) {
     this.socketPath = socketPath;
@@ -410,6 +411,7 @@ export class RelaySocketServer {
     this.protectSocket = protectSocket;
     this.restrictSocket = restrictSocket;
     this.log = logFn;
+    this.signalExit = signalExit;
     this.server = null;
     this.started = false;
     this.connections = new Set();
@@ -472,12 +474,16 @@ export class RelaySocketServer {
       this.aclReady = !IS_WINDOWS || !this.strict;
       for (const socket of this.provisionalSockets) socket.destroy();
       this.provisionalSockets.clear();
+      if (!IS_WINDOWS && this.boundIdentity && this.#ownsPublicPath()) {
+        try { fs.rmSync(this.socketPath, { force: true }); } catch {}
+      }
+      this.boundIdentity = null;
       await this.#closeServer();
       throw new Error(`refusing to serve on ${this.socketPath}: its mode could not be restricted (${err.message})`);
     }
     this.started = true;
 
-    for (const signal of ["SIGINT", "SIGTERM"]) {
+    for (const signal of this.signalExit ? ["SIGINT", "SIGTERM"] : []) {
       const handler = () => {
         this.stop();
         process.exit(0);
@@ -799,7 +805,7 @@ export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = (
     nativeTools.close();
   };
   const activate = async () => {
-    if (stopping) throw new Error("The native relay is shutting down because its MCP client closed");
+    if (stopping) throw new Error("The native relay is shutting down");
     for (const relay of servers) relay.refusal = RELAY_RELOADING_REFUSAL;
     if (startups.length) {
       for (const relay of servers) relay.accepting = true;
@@ -850,6 +856,27 @@ export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = (
   };
 }
 
+export function createRelayServers({ nativeTools, env = process.env, signalExit = true, log: logFn = () => {} }) {
+  const hardened = hardenedBridgeEnabled(env);
+  if (hardened && !desktopTasksConfigured(env)) throw new Error("CODEX_BRIDGE_HARDENED=1 requires CODEX_BRIDGE_DESKTOP_TASKS=1; legacy relay listeners are disabled");
+  const dispatch = (args, options) => nativeTools.dispatch(args, options);
+  const dispatchDesktop = (args, options) => nativeTools.dispatchDesktop(args, options);
+  const shared = { signalExit, log: logFn };
+  const relay = new RelaySocketServer({ socketPath: relaySocketPath(env), dispatch, dispatchDesktop, ...shared });
+  const desktopRelay = desktopTaskSocketPath(env) === relay.socketPath ? relay : new RelaySocketServer({ socketPath: desktopTaskSocketPath(env), dispatchDesktop, ...shared });
+  const accountRelay = new RelaySocketServer({
+    socketPath: accountRelaySocketPath(env),
+    requireAccountContext: true,
+    strict: hardened,
+    dispatch,
+    dispatchDesktop,
+    authorize: hardened ? createNativeScopeAuthorizer({ dispatchDesktop, env }) : undefined,
+    ...shared,
+  });
+  const strictDesktop = hardened && desktopTasksConfigured(env);
+  return { relay, desktopRelay, accountRelay, strictDesktop, relays: strictDesktop ? [accountRelay] : [relay, desktopRelay, accountRelay] };
+}
+
 /**
  * `import.meta.main` is Node 24 and up, and this project supports Node 22, so
  * the entry point is detected by comparing the resolved argv path instead.
@@ -869,33 +896,9 @@ if (invokedDirectly) {
   );
 
   const nativeTools = new NativeToolsClient();
-  const dispatch = (args, options) => nativeTools.dispatch(args, options);
-
-  const hardened = hardenedBridgeEnabled();
-  if (hardened && !desktopTasksConfigured()) throw new Error("CODEX_BRIDGE_HARDENED=1 requires CODEX_BRIDGE_DESKTOP_TASKS=1; legacy relay listeners are disabled");
-  const relay = new RelaySocketServer({
-    socketPath: relaySocketPath(),
-    dispatch,
-    dispatchDesktop: (args, options) => nativeTools.dispatchDesktop(args, options),
-    log,
-  });
-  const desktopRelay = desktopTaskSocketPath() === relay.socketPath ? relay : new RelaySocketServer({
-    socketPath: desktopTaskSocketPath(),
-    dispatchDesktop: (args, options) => nativeTools.dispatchDesktop(args, options),
-    log,
-  });
-  const accountRelay = new RelaySocketServer({
-    socketPath: accountRelaySocketPath(),
-    requireAccountContext: true,
-    strict: hardened,
-    dispatch,
-    dispatchDesktop: (args, options) => nativeTools.dispatchDesktop(args, options),
-    authorize: hardened ? createNativeScopeAuthorizer({ dispatchDesktop: (args, options) => nativeTools.dispatchDesktop(args, options) }) : undefined,
-    log,
-  });
+  const { relay, desktopRelay, accountRelay, strictDesktop, relays } = createRelayServers({ nativeTools, signalExit: false, log });
   const runtime = createRuntimeState();
-  const strictDesktop = hardened && desktopTasksConfigured();
-  const lifecycle = createNativeRelayLifecycle({ nativeTools, relays: strictDesktop ? [accountRelay] : [relay, desktopRelay, accountRelay], log });
+  const lifecycle = createNativeRelayLifecycle({ nativeTools, relays, log });
   const reload = createReloadControl({ entry: "native-relay-companion.mjs", ...lifecycle });
 
   mcp.registerTool(
@@ -916,7 +919,7 @@ if (invokedDirectly) {
       let executor = "(unconfigured)";
       try {
         const resolved = resolveRelayThreadId();
-        executor = `${resolved.threadId}  (from ${resolved.source})`;
+        executor = `${resolved.threadId}  (from ${resolved.source}; internal executor task, opening it in Codex Desktop reports a missing rollout by design)`;
       } catch (err) {
         executor = err.message;
       }
@@ -943,9 +946,11 @@ if (invokedDirectly) {
   );
 
   if (!reload.staged) void lifecycle.activate().catch((error) => log(`native relay startup failed: ${error.message}`));
-  mcp.server.onclose = () => { void lifecycle.stop(); };
   await mcp.connect(new StdioServerTransport());
-  exitWhenClientCloses({ prepare: () => lifecycle.refuseNewDeliveries(), busy: lifecycle.deliveryReason, stop: lifecycle.stop, log });
+  const shutdown = exitWhenClientCloses({ prepare: () => lifecycle.refuseNewDeliveries(), busy: lifecycle.deliveryReason, stop: lifecycle.stop, log });
+  mcp.server.onclose = () => { void shutdown.close("MCP transport closed"); };
+  let signals = 0;
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { if (++signals > 1) process.exit(1); void shutdown.close(signal); });
   reload.listen();
-  log(`ready on ${PLATFORM_LABEL} (${strictDesktop ? accountRelay.socketPath : relay.started ? relay.socketPath : "socket down"})`);
+  log(`ready on ${PLATFORM_LABEL} (${reload.staged ? "relay listeners staged for reload" : `relay listeners starting on ${(strictDesktop ? accountRelay : relay).socketPath}`})`);
 }

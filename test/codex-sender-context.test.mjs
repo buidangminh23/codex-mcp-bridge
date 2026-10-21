@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, it } from "node:test";
-import { readCodexSenderContext, resolveCodexSenderContext } from "../src/codex-sender-context.mjs";
+import zlib from "node:zlib";
+import { readCodexSenderContext, resolveCodexSenderContext, findRollout, readState, readTaskState } from "../src/codex-sender-context.mjs";
 import { assertRecipientClass } from "../src/recipient-preflight.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-sender-"));
@@ -698,4 +699,66 @@ it("re-reads every segment when the caller's rollout grows during the set check"
       assert.equal(directoryReads, 4);
     }
   }
+});
+
+it("reads a compressed target task rollout and names the target, not the caller, when it is ambiguous", () => {
+  const home = fs.mkdtempSync(path.join(root, "target-"));
+  const directory = path.join(home, "sessions", "2026", "09", "06");
+  fs.mkdirSync(directory, { recursive: true });
+  const base = path.join(directory, `rollout-2026-09-06T19-17-57-${threadId}`);
+  const records = [
+    { type: "session_meta", payload: { id: threadId, originator: "codex_vscode", source: "vscode", cwd: home } },
+    { type: "turn_context", payload: { turn_id: turnId, cwd: home } },
+    { type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+  ];
+  fs.writeFileSync(`${base}.jsonl.zst`, zlib.zstdCompressSync(Buffer.from(records.map((record) => `${JSON.stringify(record)}\n`).join(""))));
+  const file = findRollout(path.join(home, "sessions"), threadId);
+  assert.equal(file, fs.realpathSync.native(`${base}.jsonl.zst`));
+  const state = readState(file, 1024 * 1024);
+  assert.equal(state.session.originator, "codex_vscode");
+  assert.equal(state.lifecycle.type, "task_complete");
+  fs.writeFileSync(path.join(directory, `rollout-2026-09-06T19-17-57-${threadId}_${otherId}.jsonl`), `${JSON.stringify(records[0])}\n`);
+  assert.throws(() => findRollout(path.join(home, "sessions"), threadId), (error) => error.message === "Multiple rollouts match the Codex task");
+});
+
+it("decompresses an unchanged compressed segment once across repeated state reads", (t) => {
+  const home = fs.mkdtempSync(path.join(root, "cached-"));
+  const directory = path.join(home, "sessions", "2026", "09", "06");
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `rollout-2026-09-06T19-17-57-${threadId}.jsonl.zst`);
+  fs.writeFileSync(file, zlib.zstdCompressSync(Buffer.from(`${JSON.stringify({ type: "session_meta", payload: { id: threadId, originator: "codex_vscode", source: "vscode", cwd: home } })}\n`)));
+  const decompress = zlib.zstdDecompressSync;
+  let decompressions = 0;
+  t.mock.method(zlib, "zstdDecompressSync", (...args) => { decompressions++; return decompress.apply(zlib, args); });
+  for (let attempt = 0; attempt < 3; attempt++) assert.equal(readState(file, 1024 * 1024).session.id, threadId);
+  assert.equal(decompressions, 1);
+});
+
+it("rediscovers a task rollout that Codex rematerializes from .jsonl.zst to .jsonl during a read", (t) => {
+  const home = fs.mkdtempSync(path.join(root, "rematerialized-"));
+  const directory = path.join(home, "sessions", "2026", "09", "06");
+  fs.mkdirSync(directory, { recursive: true });
+  const base = path.join(directory, `rollout-2026-09-06T19-17-57-${threadId}`);
+  const body = Buffer.from(`${JSON.stringify({ type: "session_meta", payload: { id: threadId, originator: "codex_vscode", source: "vscode", cwd: home } })}\n`);
+  fs.writeFileSync(`${base}.jsonl.zst`, zlib.zstdCompressSync(body));
+  const readdir = fs.readdirSync;
+  let swapped = false;
+  t.mock.method(fs, "readdirSync", (target, ...rest) => {
+    const listed = readdir.call(fs, target, ...rest);
+    if (!swapped && path.resolve(String(target)) === fs.realpathSync.native(directory)) {
+      swapped = true;
+      fs.writeFileSync(`${base}.jsonl`, body);
+      fs.rmSync(`${base}.jsonl.zst`);
+      return listed.filter((entry) => !String(entry.name ?? entry).endsWith(".jsonl"));
+    }
+    return listed;
+  });
+  const state = readTaskState(path.join(home, "sessions"), threadId, 1024 * 1024);
+  assert.equal(state.session.id, threadId);
+  assert.equal(state.file, fs.realpathSync.native(`${base}.jsonl`));
+  swapped = false;
+  fs.rmSync(`${base}.jsonl`);
+  fs.writeFileSync(`${base}.jsonl.zst`, zlib.zstdCompressSync(body));
+  const fixed = findRollout(path.join(home, "sessions"), threadId);
+  assert.throws(() => readState(fixed, 1024 * 1024), /changed while reading/);
 });

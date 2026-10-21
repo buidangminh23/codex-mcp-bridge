@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -150,6 +150,39 @@ for (const entry of ["index.mjs", "claude-bridge.mjs", "native-relay-companion.m
     assert.equal(reverse.structuredContent.meta["test/caller"], "preserved");
   });
 }
+
+it("prunes unused runtimes while it runs and releases a retired worker's lease", { timeout: 60000 }, async t => {
+  const fixture = installation(t);
+  const cache = path.join(fixture.root, "cache");
+  const stale = Array.from({ length: 5 }, (_, index) => {
+    const directory = path.join(cache, createHash("sha256").update(`stale-${index}`).digest("hex"));
+    fs.mkdirSync(path.join(directory, "src"), { recursive: true });
+    const time = new Date(Date.now() - (index + 2) * 24 * 60 * 60 * 1000);
+    fs.utimesSync(directory, time, time);
+    return directory;
+  });
+  const until = async (predicate, details) => {
+    const deadline = Date.now() + 20000;
+    while (!predicate()) {
+      if (Date.now() > deadline) assert.fail(`Runtime cache did not settle: ${details()}`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  };
+  const leases = () => fs.existsSync(path.join(cache, ".leases")) ? fs.readdirSync(path.join(cache, ".leases")) : [];
+  const runtimes = () => fs.readdirSync(cache).filter(name => /^[a-f0-9]{64}$/.test(name));
+  const api = await connect(t, fixture, { CODEX_BRIDGE_RUNTIME_PRUNE_DELAY_MS: "100" });
+  assert.equal((await api.call()).structuredContent.version, "A");
+  const [initial] = runtimes().filter(name => !stale.includes(path.join(cache, name)));
+  await until(() => stale.filter(directory => fs.existsSync(directory)).length === 2, () => `${runtimes()} ${api.stderr()}`);
+  assert.deepEqual(stale.filter(directory => fs.existsSync(directory)), stale.slice(0, 2));
+  assert.deepEqual(leases().map(name => name.slice(0, 64)), [initial]);
+  fixture.update("B");
+  await eventually(api.call, value => value.structuredContent.version === "B", api.stderr);
+  const [updated] = runtimes().filter(name => name !== initial && !stale.includes(path.join(cache, name)));
+  await until(() => leases().length === 1 && leases()[0].startsWith(updated), () => `${leases()} ${api.stderr()}`);
+  assert.equal(fs.existsSync(path.join(cache, initial)), true);
+  assert.equal((await api.call()).structuredContent.version, "B");
+});
 
 it("retains pending deliveries and waits until their original result is confirmed", async t => {
   const fixture = installation(t);

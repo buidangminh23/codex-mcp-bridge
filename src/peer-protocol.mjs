@@ -594,7 +594,7 @@ const RELOAD_DRAIN_MS = 1000;
  * answer on and the conversation stays one-way.
  */
 export class PeerEndpoint {
-  constructor({ name = `codex-${process.pid}`, cwd = process.cwd(), log = () => {}, env = process.env, protectSocket } = {}) {
+  constructor({ name = `codex-${process.pid}`, cwd = process.cwd(), log = () => {}, env = process.env, protectSocket, signalExit = true } = {}) {
     this.name = name;
     this.cwd = cwd;
     this.log = log;
@@ -620,6 +620,7 @@ export class PeerEndpoint {
     this.reloadPaused = false;
     this.intakeClosed = false;
     this.processHandlersRegistered = false;
+    this.signalExit = signalExit;
     this.strict = hardenedBridgeEnabled(env);
     this.protectSocket = protectSocket ?? (hardenedBridgeEnabled(env) ? protectCurrentUserPipe : null);
     this.aclReady = !IS_WINDOWS || !this.protectSocket;
@@ -728,7 +729,7 @@ export class PeerEndpoint {
     fs.writeFileSync(this.keyPath, JSON.stringify({ peerToken, ...processIdentity }), { mode: 0o600 });
 
     if (!this.processHandlersRegistered) {
-      for (const signal of ["SIGINT", "SIGTERM"]) {
+      for (const signal of this.signalExit ? ["SIGINT", "SIGTERM"] : []) {
         process.on(signal, () => {
           this.stop();
           process.exit(0);

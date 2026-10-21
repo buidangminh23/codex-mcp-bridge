@@ -3,13 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { scanRollout } from "./rollout-reader.mjs";
+import { scanRollout, isCompressedRollout, rolloutBasePath, asRolloutChange, memoizeCompressedScan } from "./rollout-reader.mjs";
 import { fileIdentity, sameFileIdentity } from "./file-identity.mjs";
 import { findRolloutSegments, confirmsDesktopTask, isLegacyCliSession, assertRolloutSetStable, retryRolloutRead } from "./rollout-segments.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
 const MAX_REPLY_BYTES = 1024 * 1024;
+const MAX_CACHED_RECORD_BYTES = 1024 * 1024;
 const DESKTOP_ORIGINATORS = new Set(["Codex Desktop", "codex_work_desktop"]);
 const COMPLETED = new Set(["task_complete", "task_completed", "turn_complete", "turn_completed"]);
 const STARTED = new Set(["task_started", "turn_started"]);
@@ -59,6 +60,14 @@ function pathIdentity(candidate, kind) {
 }
 
 function capturePathBoundary(file, sessions) {
+  try {
+    return readPathBoundary(file, sessions);
+  } catch (error) {
+    throw asRolloutChange(error, "The Codex rollout changed while reading");
+  }
+}
+
+function readPathBoundary(file, sessions) {
   const resolvedFile = fs.realpathSync.native(file);
   const relative = path.relative(sessions, resolvedFile);
   if (relative.startsWith("..") || path.isAbsolute(relative) || path.relative(file, resolvedFile)) throw new Error("The Codex rollout path escapes its sessions directory");
@@ -95,10 +104,20 @@ function readStableRolloutSet(threadId, env, readSegments) {
   });
 }
 
-function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefixSize, dispatchOutputs, dispatchAfterOffset }) {
+function readStableOnce(found, maxBytes, options) {
   const { file, sessions } = found;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ROLLOUT_BYTES) throw new Error("The Codex rollout read limit is invalid");
   const beforeBoundary = capturePathBoundary(file, sessions);
+  const key = crypto.createHash("sha256").update(JSON.stringify({ maxBytes, ...options })).digest("hex");
+  const scanned = memoizeCompressedScan(file, `native:${key}`, () => scanSegment(file, maxBytes, options), { keep: (value) => value.retainedBytes <= MAX_CACHED_RECORD_BYTES });
+  const afterBoundary = capturePathBoundary(file, sessions);
+  if (!samePathBoundary(beforeBoundary, afterBoundary) || !sameFileIdentity(scanned.identity, beforeBoundary.file)) {
+    throw new Error("The Codex rollout changed while reading");
+  }
+  return { ...scanned, file, sessions };
+}
+
+function scanSegment(file, maxBytes, { threadId, turnId, afterOffset, prefixSize, dispatchOutputs, dispatchAfterOffset }) {
   const records = [];
   const dispatches = [];
   const otherTurnStarts = [];
@@ -139,11 +158,7 @@ function readStableOnce(found, maxBytes, { threadId, turnId, afterOffset, prefix
       }
     },
   });
-  const afterBoundary = capturePathBoundary(file, sessions);
-  if (!samePathBoundary(beforeBoundary, afterBoundary) || !sameFileIdentity(snapshot.identity, beforeBoundary.file)) {
-    throw new Error("The Codex rollout changed while reading");
-  }
-  return { ...snapshot, file, sessions, records, dispatches, otherTurnStarts, retainedBytes, session, latestContext, turnBeforeWatermark, prefixSha256: digest.digest("hex") };
+  return { ...snapshot, records, dispatches, otherTurnStarts, retainedBytes, session, latestContext, turnBeforeWatermark, prefixSha256: digest.digest("hex") };
 }
 
 function canonicalDirectory(value, label) {
@@ -173,6 +188,22 @@ function uniqueTurn(snapshots) {
     ? "The native turn spans multiple rollout segments or has ambiguous copies; response withheld"
     : "No rollout segment contains the selected native turn");
   return selected[0];
+}
+
+function segmentMark(marks, file) {
+  return marks.find((mark) => rolloutBasePath(mark.file) === rolloutBasePath(file));
+}
+
+function validSegmentMarks(marks, watermark) {
+  return Array.isArray(marks) && marks.length && marks.length <= 64 && marks.every((mark) => object(mark) && typeof mark.file === "string") &&
+    new Set(marks.map((mark) => rolloutBasePath(mark.file))).size === marks.length &&
+    marks.some((mark) => mark.file === watermark.file && mark.size === watermark.size && mark.prefixSha256 === watermark.prefixSha256);
+}
+
+function assertMarkedPrefix(snapshot, mark) {
+  const sameStorage = isCompressedRollout(snapshot.file) === isCompressedRollout(mark.file);
+  if ((sameStorage && !sameFileIdentity(snapshot.identity, mark.identity)) || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
+  if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
 }
 
 function delegationOutputs(executorThreadId, prompt) {
@@ -422,19 +453,14 @@ export function resolveCodexNativeDispatchResponse(binding, { env = process.env,
     const cwd = canonicalDirectory(expectedCwd, "The selected native task workspace");
     if (watermark.cwd !== cwd) throw new Error("The selected native task workspace changed after dispatch");
     const marks = watermark.segments ?? [watermark];
-    if (!Array.isArray(marks) || !marks.length || marks.length > 64 || new Set(marks.map((mark) => mark.file)).size !== marks.length ||
-        !marks.some((mark) => mark.file === watermark.file && mark.size === watermark.size && mark.prefixSha256 === watermark.prefixSha256) ||
-        marks.some((mark) => !Number.isSafeInteger(mark.size) || mark.size < 1)) throw new Error("The pre-send segment watermarks are invalid");
+    if (!validSegmentMarks(marks, watermark) || marks.some((mark) => !Number.isSafeInteger(mark.size) || mark.size < 1)) throw new Error("The pre-send segment watermarks are invalid");
     const outputs = delegationOutputs(executorThreadId, prompt);
     const snapshots = readStableRolloutSet(threadId, env, (found) => {
-      if (marks.some((mark) => !found.some(({ file }) => file === mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
+      if (marks.some((mark) => !segmentMark(found, mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
       return found.map((entry) => {
-        const mark = marks.find(({ file }) => file === entry.file);
+        const mark = segmentMark(marks, entry.file);
         const snapshot = readStable(entry, maxRolloutBytes, { threadId, afterOffset: mark?.size ?? 0, prefixSize: mark?.size, dispatchOutputs: outputs });
-        if (mark) {
-          if (!sameFileIdentity(snapshot.identity, mark.identity) || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
-          if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
-        }
+        if (mark) assertMarkedPrefix(snapshot, mark);
         validateIdentity(snapshot, threadId, cwd, desktopEvidence);
         return snapshot;
       });
@@ -464,23 +490,18 @@ export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, 
     const cwd = canonicalDirectory(expectedCwd, "The selected native task workspace");
     if (watermark.cwd !== cwd) throw new Error("The selected native task workspace changed after dispatch");
     const marks = watermark.segments ?? [watermark];
-    if (!Array.isArray(marks) || !marks.length || marks.length > 64
-        || new Set(marks.map((mark) => mark.file)).size !== marks.length
-        || !marks.some((mark) => mark.file === watermark.file && mark.size === watermark.size && mark.prefixSha256 === watermark.prefixSha256)) throw new Error("The pre-send segment watermarks are invalid");
+    if (!validSegmentMarks(marks, watermark)) throw new Error("The pre-send segment watermarks are invalid");
     for (const mark of marks) if (!Number.isSafeInteger(mark.size) || mark.size < 1) throw new Error("The pre-send rollout watermark size is invalid");
     const outputs = delegationOutputs(executorThreadId, prompt);
     const snapshots = readStableRolloutSet(threadId, env, (found) => {
-      if (marks.some((mark) => !found.some(({ file }) => file === mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
+      if (marks.some((mark) => !segmentMark(found, mark.file))) throw new Error("A pre-send rollout segment disappeared after dispatch");
       let retainedBytes = 0;
       return found.map((entry) => {
-        const mark = marks.find(({ file }) => file === entry.file);
+        const mark = segmentMark(marks, entry.file);
         const snapshot = readStable(entry, maxRolloutBytes, { threadId, turnId, afterOffset: existingTurn ? 0 : mark?.size ?? 0, prefixSize: mark?.size, dispatchOutputs: outputs, dispatchAfterOffset: mark?.size ?? 0 });
         retainedBytes += snapshot.retainedBytes;
         if (retainedBytes > maxRolloutBytes) throw new Error("The native turn exceeds the retained-record limit across segments");
-        if (mark) {
-          if (!sameFileIdentity(snapshot.identity, mark.identity) || snapshot.size < mark.size) throw new Error("The selected native task rollout identity changed after dispatch");
-          if (snapshot.prefixSha256 !== mark.prefixSha256) throw new Error("The pre-send Codex rollout history changed after dispatch");
-        }
+        if (mark) assertMarkedPrefix(snapshot, mark);
         if (snapshot.turnBeforeWatermark) throw new Error("The observed turn was already present before dispatch");
         validateIdentity(snapshot, threadId, cwd, desktopEvidence);
         return snapshot;
@@ -490,7 +511,7 @@ export function readCodexNativeTurnResponse({ threadId, turnId, previousTurnId, 
     const matchedDispatches = snapshots.flatMap((snapshot) => snapshot.dispatches);
     if (matchedDispatches.length !== 1 || matchedDispatches[0].turnId !== turnId) throw new Error("The observed turn is not uniquely correlated to the exact native dispatch");
     validateSession(selected, threadId, cwd, desktopEvidence);
-    const selectedMark = marks.find(({ file }) => file === selected.file);
+    const selectedMark = segmentMark(marks, selected.file);
     if (existingTurn && !selectedMark) throw new Error("The active native turn has no pre-send rollout watermark");
     dispatchObserved = selected.records.some(({ record, start }) => start >= (selectedMark?.size ?? 0) &&
       record.type === "response_item" && record.payload.type === "function_call_output" &&

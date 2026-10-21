@@ -452,26 +452,59 @@ export function isDesktopAppServerRunning() {
   }
 }
 
+const CODEX_DESKTOP_EXE_WINDOWS = /^[a-z]:\\Program Files\\WindowsApps\\OpenAI\.Codex_[0-9.]+_(?:x64|arm64)__2p2nqsd0c76g0\\app\\ChatGPT\.exe$/i;
+
+export function codexDesktopListed(executablePaths) {
+  return String(executablePaths ?? "").split(/\r?\n/)
+    .some((line) => line.trim() && CODEX_DESKTOP_EXE_WINDOWS.test(path.win32.normalize(line.trim())));
+}
+
+export async function isCodexDesktopRunning({ platform = process.platform, env = process.env, run = execFileAsync, macos = isDesktopAppServerRunning } = {}) {
+  if (platform === "darwin") return macos();
+  if (platform !== "win32") return false;
+  const shell = windowsPowerShell(env);
+  try {
+    const { stdout } = await run(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+      "Get-Process -Name ChatGPT -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }"], { windowsHide: true, timeout: 5000 });
+    return codexDesktopListed(stdout);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Bring a thread to the foreground in the Codex desktop app so a human can
  * watch the turn run instead of only reading the transcript afterwards.
  * Windows registers the `codex://` scheme through the packaged Codex app, and
  * macOS registers it through /Applications/ChatGPT.app.
  */
-export async function openThreadInCodexApp(threadId, { activate = true } = {}) {
-  const url = codexThreadUrl(threadId);
-  if (IS_WINDOWS) {
-    await execFileAsync("explorer.exe", [url], { windowsHide: true, timeout: 10000 });
+function windowsPowerShell(env) {
+  return path.win32.join(env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+function windowsOpenUrlCommand(url, env) {
+  const shell = windowsPowerShell(env);
+  const encodedUrl = Buffer.from(url, "utf8").toString("base64");
+  const script = `$ErrorActionPreference='Stop'; Start-Process -FilePath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedUrl}')))`;
+  return [shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]];
+}
+
+export async function openThreadInCodexApp(threadId, { activate = true, platform = process.platform, env = process.env, run = execFileAsync } = {}) {
+  if (typeof threadId !== "string" || !threadId) throw new Error("A Codex thread id is required");
+  const url = codexThreadUrl(encodeURIComponent(threadId));
+  if (platform === "win32") {
+    const [shell, args] = windowsOpenUrlCommand(url, env);
+    await run(shell, args, { windowsHide: true, timeout: 10000 });
     return url;
   }
-  if (!IS_MACOS) {
+  if (platform !== "darwin") {
     throw new Error(`Opening a Codex thread in the desktop app is supported on Windows and macOS. Open ${url} manually.`);
   }
   if (!hasCodexDesktopApp()) {
     throw new Error(`Codex desktop app not found at ${CODEX_DESKTOP_APP_MACOS}. Install it to use ${url}.`);
   }
   const args = activate ? [url] : ["-g", url];
-  await execFileAsync("open", args, { timeout: 10000 });
+  await run("open", args, { timeout: 10000 });
   return url;
 }
 
@@ -484,7 +517,7 @@ export async function openClaudeCodeComposer(url, { platform = process.platform,
     throw new Error("Invalid Claude Desktop Code creation link");
   }
   if (platform === "win32") {
-    const shell = path.win32.join(env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const shell = windowsPowerShell(env);
     const encodedUrl = Buffer.from(url, "utf8").toString("base64");
     const script = String.raw`$ErrorActionPreference='Stop'; $creationUrl=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedUrl}')); try { Start-Process -FilePath $creationUrl -ErrorAction Stop } catch { $desktopPaths=@(Get-Process claude -ErrorAction SilentlyContinue | ForEach-Object { $_.Path } | Where-Object { $_ -match '\\(?:AnthropicClaude\\app-[^\\]+|WindowsApps\\Claude_[^\\]+\\app)\\claude\.exe$' -and (Test-Path -LiteralPath $_) } | Select-Object -Unique); if ($desktopPaths.Count -eq 0 -and $env:LOCALAPPDATA) { $desktopPaths=@(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'AnthropicClaude') -Directory -Filter 'app-*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { Join-Path $_.FullName 'claude.exe' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1) }; if ($desktopPaths.Count -ne 1) { throw }; Start-Process -FilePath $desktopPaths[0] -ArgumentList ('"'+$creationUrl+'"') -WindowStyle Hidden -ErrorAction Stop }`;
     await run(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 10000 });

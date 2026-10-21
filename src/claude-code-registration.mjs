@@ -1,7 +1,21 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const PACKAGE_SOURCE = path.dirname(fileURLToPath(import.meta.url));
 
 function worker(entry) {
   return entry?.args?.length === 2 && path.basename(entry.args[0]) === "mcp-supervisor.mjs" && entry.args[1] === "index.mjs";
+}
+function bridgeSource(entry) {
+  const script = entry?.args?.[0];
+  if (typeof script !== "string" || !(worker(entry) || path.basename(script) === "index.mjs")) return null;
+  return path.dirname(path.resolve(script));
+}
+function bridgeSources(source) {
+  return new Set([PACKAGE_SOURCE, ...(worker(source) ? [bridgeSource(source)] : [])]);
+}
+function bridgeEntry(entry, sources) {
+  return worker(entry) || sources.has(bridgeSource(entry));
 }
 const stable = (value) => JSON.stringify(value, Object.keys(value ?? {}).sort());
 
@@ -19,20 +33,27 @@ export function planCodeRegistration({ code, desktop, policyFile, name = "codex-
   const changes = [{ kind: "user-code-entry", name }];
   const comparable = (entry) => {
     const normalized = structuredClone(entry);
+    if (worker(entry) || entry.args.length === 1) normalized.args = [path.join(bridgeSource(entry), "mcp-supervisor.mjs"), "index.mjs"];
     delete normalized.env?.CODEX_BRIDGE_ALLOWED_ROOTS;
     delete normalized.env?.CODEX_BRIDGE_PROJECT_POLICY;
     return JSON.stringify({ ...normalized, env: stable(normalized.env) });
   };
+  const sources = bridgeSources(source);
+  const sameBridge = (entry, location) => {
+    if (bridgeSource(entry) === bridgeSource(source)) return true;
+    if (bridgeEntry(entry, sources)) throw new Error(`${location} runs another bridge installation from ${bridgeSource(entry)}; update or remove it before migration`);
+    return false;
+  };
   for (const [project, config] of Object.entries(updated.projects ?? {})) {
     for (const [alias, entry] of Object.entries(config.mcpServers ?? {})) {
-      if (!worker(entry) || path.resolve(entry.args[0]) !== path.resolve(source.args[0])) continue;
+      if (!sameBridge(entry, `Project ${project} entry ${alias}`)) continue;
       if (comparable(entry) !== comparable(source)) throw new Error(`Project ${project} has a customized ${alias} entry; review its settings instead of replacing it`);
       delete config.mcpServers[alias];
       changes.push({ kind: "remove-duplicate-project-entry", project, name: alias });
     }
   }
   for (const [alias, entry] of Object.entries(updatedDesktop.mcpServers ?? {})) {
-    if (!worker(entry) || path.resolve(entry.args[0]) !== path.resolve(source.args[0])) continue;
+    if (!sameBridge(entry, `Shared Desktop entry ${alias}`)) continue;
     if (comparable(entry) !== comparable(source)) throw new Error(`Shared Desktop entry ${alias} has customized settings; review it before migration`);
     delete updatedDesktop.mcpServers[alias];
     changes.push({ kind: "remove-shared-desktop-entry", name: alias });
@@ -44,10 +65,13 @@ export function checkCodeRegistration({ code, desktop, name = "codex-bridge" }) 
   const entry = code.mcpServers?.[name];
   const issues = [];
   if (!worker(entry)) issues.push("User-level Claude Code bridge is missing or does not use the supervisor");
-  const shared = Object.keys(desktop.mcpServers ?? {}).filter((key) => worker(desktop.mcpServers[key]));
+  const sources = bridgeSources(entry);
+  const shared = Object.keys(desktop.mcpServers ?? {}).filter((key) => bridgeEntry(desktop.mcpServers[key], sources));
   if (shared.length) issues.push(`Shared Desktop bridge entries can hide the Code caller identity: ${shared.join(", ")}`);
+  const unsupervised = shared.filter((key) => !worker(desktop.mcpServers[key]));
+  if (unsupervised.length) issues.push(`Shared Desktop bridge entries run without the supervisor and keep stale code loaded: ${unsupervised.join(", ")}`);
   const overrides = Object.entries(code.projects ?? {}).flatMap(([project, config]) => Object.entries(config.mcpServers ?? {})
-    .filter(([, item]) => worker(item)).map(([alias]) => ({ project, alias })));
+    .filter(([, item]) => bridgeEntry(item, sources)).map(([alias]) => ({ project, alias })));
   if (overrides.length) issues.push("Project-specific bridge entries override or duplicate the user-level registration");
   if (!entry?.env?.CODEX_BRIDGE_PROJECT_POLICY) issues.push("No shared live project policy configured");
   return { ready: issues.length === 0, issues, shared, overrides, policyFile: entry?.env?.CODEX_BRIDGE_PROJECT_POLICY ?? null };

@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { describe, it } from "node:test";
 
 import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTurnResponse, readCodexNativeCreationResponse, resolveCodexNativeDispatchResponse } from "../src/codex-native-response.mjs";
@@ -784,5 +785,145 @@ describe("native Codex response observation", () => {
     fs.symlinkSync(redirected, day, "junction");
     assert.equal(fs.lstatSync(day).isSymbolicLink(), true);
     assert.equal(f.read(watermark).status, "unavailable");
+  });
+});
+
+describe("compressed cold Codex rollouts", () => {
+  function compress(f) {
+    const zst = `${f.file}.zst`;
+    const bytes = fs.readFileSync(f.file);
+    fs.writeFileSync(zst, zlib.zstdCompressSync(bytes));
+    fs.unlinkSync(f.file);
+    return { zst, bytes };
+  }
+
+  function materialize(f, zst, records = []) {
+    fs.writeFileSync(f.file, Buffer.concat([zlib.zstdDecompressSync(fs.readFileSync(zst)), Buffer.from(records.map(line).join(""))]));
+    fs.unlinkSync(zst);
+  }
+
+  it("captures a watermark over the decompressed history of a .jsonl.zst rollout", (t) => {
+    const f = fixture(t);
+    f.append(f.turn({ turnId: PREVIOUS_TURN_ID }));
+    const { zst, bytes } = compress(f);
+    const mark = f.capture();
+    assert.equal(mark.status, "available", mark.reason);
+    assert.equal(mark.file, fs.realpathSync.native(zst));
+    assert.equal(mark.size, bytes.length);
+    assert.equal(mark.prefixSha256, crypto.createHash("sha256").update(bytes).digest("hex"));
+  });
+
+  for (const reader of ["turn", "dispatch"]) it(`observes the reply after Codex rematerializes the cold rollout on resume: ${reader}`, (t) => {
+    const f = fixture(t);
+    f.append(f.turn({ turnId: PREVIOUS_TURN_ID }));
+    const { zst } = compress(f);
+    const mark = f.capture();
+    assert.equal(mark.status, "available", mark.reason);
+    materialize(f, zst, f.turn());
+    const result = reader === "turn" ? f.read(mark) : f.resolve(mark);
+    assert.equal(result.status, "completed", result.reason);
+    assert.equal(result.turnId, TURN_ID);
+    assert.equal(result.text, "Received safely");
+  });
+
+  it("rejects a rematerialized rollout whose pre-send history differs", (t) => {
+    const f = fixture(t);
+    f.append(f.turn({ turnId: PREVIOUS_TURN_ID }));
+    const { zst } = compress(f);
+    const mark = f.capture();
+    const original = zlib.zstdDecompressSync(fs.readFileSync(zst));
+    fs.writeFileSync(zst, zlib.zstdCompressSync(Buffer.from(original.toString("utf8").replace("Received safely", "Received wrongly"))));
+    materialize(f, zst, f.turn());
+    const result = f.read(mark);
+    assert.equal(result.status, "unavailable");
+    assert.match(result.reason, /pre-send Codex rollout history changed/);
+  });
+
+  it("still requires the same file identity while the rollout stays plain", (t) => {
+    const f = fixture(t);
+    f.append(f.turn({ turnId: PREVIOUS_TURN_ID }));
+    const mark = f.capture();
+    const bytes = fs.readFileSync(f.file);
+    fs.renameSync(f.file, `${f.file}.replaced`);
+    fs.writeFileSync(f.file, Buffer.concat([bytes, Buffer.from(f.turn().map(line).join(""))]));
+    const result = f.read(mark);
+    assert.equal(result.status, "unavailable");
+    assert.match(result.reason, /rollout identity changed after dispatch/);
+  });
+
+  it("reads an exact turn from a compressed rollout", (t) => {
+    const f = fixture(t);
+    f.append(f.turn());
+    compress(f);
+    const inspected = inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env });
+    assert.equal(inspected.status, "completed", inspected.reason);
+    assert.equal(inspected.text, "Received safely");
+  });
+
+  for (const reader of ["inspect", "turn", "dispatch"]) for (const stage of ["listing", "decompress"]) it(`retries when Codex removes the .zst mid-read: ${reader}, ${stage}`, (t) => {
+    const f = fixture(t);
+    f.append(f.turn({ turnId: reader === "inspect" ? TURN_ID : PREVIOUS_TURN_ID }));
+    const { zst } = compress(f);
+    const mark = reader === "inspect" ? null : f.capture();
+    if (mark) assert.equal(mark.status, "available", mark.reason);
+    let swapped = false;
+    const swap = () => {
+      if (swapped) return;
+      swapped = true;
+      materialize(f, zst, reader === "inspect" ? [] : f.turn());
+    };
+    if (stage === "listing") {
+      const readdir = fs.readdirSync;
+      t.mock.method(fs, "readdirSync", (directory, ...rest) => {
+        const entries = readdir.call(fs, directory, ...rest);
+        if (fs.realpathSync.native(String(directory)) === fs.realpathSync.native(f.directory)) swap();
+        return entries;
+      });
+    } else {
+      const decompress = zlib.zstdDecompressSync;
+      t.mock.method(zlib, "zstdDecompressSync", (...args) => {
+        const content = decompress.apply(zlib, args);
+        swap();
+        return content;
+      });
+    }
+    const result = reader === "inspect"
+      ? inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env })
+      : reader === "turn" ? f.read(mark) : f.resolve(mark);
+    assert.ok(swapped);
+    assert.equal(result.status, "completed", result.reason);
+    assert.equal(result.turnId, TURN_ID);
+    assert.equal(result.text, "Received safely");
+  });
+
+  it("serves an unchanged compressed segment from the scan cache and rescans a new version", (t) => {
+    const f = fixture(t);
+    f.append(f.turn());
+    const { zst } = compress(f);
+    const decompress = zlib.zstdDecompressSync;
+    let decompressions = 0;
+    t.mock.method(zlib, "zstdDecompressSync", (...args) => { decompressions++; return decompress.apply(zlib, args); });
+    const inspect = () => inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env });
+    for (let attempt = 0; attempt < 3; attempt++) assert.equal(inspect().status, "completed");
+    assert.equal(decompressions, 1);
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(zst, later, later);
+    assert.equal(inspect().status, "completed");
+    assert.equal(decompressions, 2);
+  });
+
+  it("retries a read that races the zst-to-plain rematerialization", (t) => {
+    const f = fixture(t);
+    f.append(f.turn());
+    const { zst } = compress(f);
+    const readdir = fs.readdirSync;
+    let directoryReads = 0;
+    t.mock.method(fs, "readdirSync", (directory, ...rest) => {
+      if (fs.realpathSync.native(String(directory)) === fs.realpathSync.native(f.directory) && ++directoryReads === 2) materialize(f, zst);
+      return readdir.call(fs, directory, ...rest);
+    });
+    const inspected = inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env });
+    assert.equal(inspected.status, "completed", inspected.reason);
+    assert.equal(directoryReads, 4);
   });
 });

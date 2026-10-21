@@ -8,7 +8,6 @@ import { promisify } from "node:util";
 import { IS_MACOS, IS_WINDOWS, PLATFORM_LABEL, homeDir } from "./platform.mjs";
 import { assertAccountIdentity } from "./bridge-account-context.mjs";
 import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
-import { readRelayOwner } from "./native-relay-owner.mjs";
 
 /**
  * The Codex Desktop app owns the per-thread writer lock of every thread it has
@@ -775,10 +774,10 @@ export function nativeRelayStatus(env = process.env) {
       enabled: false,
       mode,
       socketPath,
-      reason: `no companion socket at ${socketPath}. Install the native relay if it is missing. If Codex Desktop is running, open any regular project task (not the internal Native Relay executor task) and send it a turn or reconnect its MCP servers so Codex starts codex-native-relay; the relay then keeps running until Codex Desktop quits. Inspect the existing task before retrying a send.`,
+      reason: `no companion socket at ${socketPath}. Install the native relay if it is missing. Codex Desktop runs codex-native-relay only while a task has its MCP servers loaded: open any regular project task (not the internal Native Relay executor task) and send it a turn or reconnect its MCP servers, then retry.`,
     };
   }
-  return { enabled: true, mode, socketPath, reason: null, owner: IS_WINDOWS ? null : readRelayOwner(socketPath) };
+  return { enabled: true, mode, socketPath, reason: null };
 }
 
 /**

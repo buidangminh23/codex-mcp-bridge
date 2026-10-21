@@ -241,6 +241,26 @@ describe("Desktop task MCP integration", () => {
     });
   });
 
+  it("does not tell the agent to keep waiting for a turn that already ended", { timeout: 30000 }, async () => {
+    let ended = false;
+    await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {
+      if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [{ id: "previous-turn", status: "completed" }] };
+      if (operation === "send_message_to_thread") return { threadId: args.threadId, status: "accepted" };
+      if (operation === "wait_threads") return ended
+        ? { polls: [{ thread: { id: "ended-task", hostId: "local", status: { type: "systemError" } }, latestTurn: { id: "ended-turn", status: "failed" } }] }
+        : { polls: [{ thread: { id: "ended-task", hostId: "local", status: { type: "active" } }, latestTurn: { id: "ended-turn", status: "inProgress" } }] };
+      throw new Error(`Unexpected operation ${operation}`);
+    }, async ({ client }) => {
+      const sent = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "ended-task", prompt: "Ended work", openInApp: false, timeoutSec: 10 } });
+      assert.equal(sent.structuredContent.nextAction, "wait_codex_reply", JSON.stringify(sent));
+      ended = true;
+      const waited = await client.callTool({ name: "wait_codex_reply", arguments: { deliveryId: sent.structuredContent.deliveryId, timeoutSec: 2 } });
+      assert.equal(waited.isError, true, JSON.stringify(waited));
+      assert.equal(waited.structuredContent.nextAction, "none");
+      assert.doesNotMatch(waited.content.map(({ text }) => text).join("\n"), /retry wait_codex_reply/);
+    });
+  });
+
   it("blocks omitted and spoofed cwd from an independently verified caller before send, rename, or navigation", async () => {
     const calls = [];
     await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {

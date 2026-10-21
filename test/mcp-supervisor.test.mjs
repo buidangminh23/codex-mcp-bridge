@@ -469,7 +469,7 @@ async function realWorker(t, entry) {
   return { fixture, prefix, api: await connect(t,fixture,{
     HOME: fixture.root, USERPROFILE: fixture.root, CODEX_HOME: path.join(fixture.root,".codex"), APPDATA:path.join(fixture.root,"Roaming"),
     LOCALAPPDATA:path.join(fixture.root,"Local"), CODEX_BRIDGE_AUTOSTART:"0", CODEX_BRIDGE_DESKTOP_TASKS:"0",
-    CODEX_APP_SERVER_URL:"ws://127.0.0.1:9", CODEX_NATIVE_RELAY_SOCKET:`${prefix}-relay`, CODEX_APP_TOOLS_PIPE_PATH:prefix, CODEX_NATIVE_RELAY_DETACH:"0",
+    CODEX_APP_SERVER_URL:"ws://127.0.0.1:9", CODEX_NATIVE_RELAY_SOCKET:`${prefix}-relay`, CODEX_APP_TOOLS_PIPE_PATH:prefix,
   }) };
 }
 

@@ -1,3 +1,5 @@
+import { RELAY_DOWN_GUIDANCE } from "./thread-delivery.mjs";
+
 export function bridgeReadiness({ sender, scope, targetCwd, nativeAvailable = true, verifyTargetProject }) {
   const issues = [];
   if (sender?.status !== "verified") issues.push({ code: "SENDER_UNVERIFIED", detail: sender?.reason ?? "No current Code session identity", action: "Load the user-level Claude Code bridge entry in this existing task; a shared Desktop entry cannot identify the caller. Run the Code registration check, then reload the affected client." });
@@ -18,6 +20,6 @@ export function bridgeReadiness({ sender, scope, targetCwd, nativeAvailable = tr
       issues.push({ code: error.code ?? "PROJECT_SCOPE_UNVERIFIED", detail: error.message, action: "Select a destination in the verified sender's project. A project grant does not authorize cross-project delivery." });
     }
   }
-  if (!nativeAvailable) issues.push({ code: "RELAY_UNAVAILABLE", action: "The Codex Desktop native relay is not listening. If Codex Desktop is running, open any regular project task (not the internal Native Relay executor task) and send it a turn or reconnect its MCP servers so Codex starts codex-native-relay; the relay then keeps running until Codex Desktop quits. Inspect the existing task before retrying a send." });
+  if (!nativeAvailable) issues.push({ code: "RELAY_UNAVAILABLE", action: RELAY_DOWN_GUIDANCE });
   return { ready: issues.length === 0, readyScope: "transport-identity-and-project", hostToolPermission: "evaluated-by-client-at-call-time", sender, projectPolicy, target, issues };
 }

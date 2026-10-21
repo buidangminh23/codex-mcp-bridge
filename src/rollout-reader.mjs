@@ -102,9 +102,10 @@ async function readHead(file, maxBytes, createZstdDecompress) {
     } finally { fs.closeSync(descriptor); }
   }
   if (typeof createZstdDecompress !== "function") throw zstdUnsupported();
+  const decompressor = createZstdDecompress();
   const source = fs.createReadStream(file, { flags: fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0) });
-  const stream = source.pipe(createZstdDecompress());
-  source.on("error", (error) => stream.destroy(error));
+  source.on("error", (error) => decompressor.destroy(error));
+  const stream = source.pipe(decompressor);
   const parts = [];
   let length = 0;
   try {

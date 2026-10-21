@@ -6,7 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { VSCodeIpc } from "./vscode-ipc.mjs";
 import { classifyClaudeDelivery, classifyCodexCompletion } from "./vscode-delivery.mjs";
-import { findRollout, readState, readCodexSenderContext } from "./codex-sender-context.mjs";
+import { readCodexSenderContext, readTaskState } from "./codex-sender-context.mjs";
 import { readRolloutHeads } from "./rollout-segments.mjs";
 import { readProcessAncestry } from "./claude-sender-context.mjs";
 import { listClaudeSessions, assertClaudeSessionCwd, assertClaudeSessionProcess, PeerEndpoint } from "./peer-protocol.mjs";
@@ -51,8 +51,8 @@ async function caller(meta) {
 
 function codexTask(threadId, cwd) {
   if (!/^[0-9a-f-]{36}$/.test(threadId)) throw new Error("Invalid task ID");
-  const file = findRollout(sessions, threadId);
-  const state = readState(file, 64 * 1024 * 1024);
+  const state = readTaskState(sessions, threadId, 64 * 1024 * 1024);
+  const { file } = state;
   if (state.session?.id !== threadId || state.session.originator !== "codex_vscode" || state.session.source !== "vscode") throw new Error("The target is not a Codex VS Code task");
   assertRoot(state.session.cwd);
   if (!samePath(state.session.cwd, cwd) || !samePath(state.context.cwd, cwd)) throw new Error("Target and caller must use the same project directory");

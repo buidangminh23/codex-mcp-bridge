@@ -207,3 +207,18 @@ it("reuses the scan of an unchanged compressed rollout and rescans after it chan
   fs.unlinkSync(f.file);
   assert.throws(() => memoizeCompressedScan(f.file, "test", scan), /^Error: The rollout changed while reading$/);
 });
+
+it("does not leak a descriptor or crash when the zstd decompressor cannot be created", async (t) => {
+  if (process.platform === "win32" || !fs.existsSync("/dev/fd")) return t.skip("needs /dev/fd");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rollout-head-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, "rollout-2026-09-06T19-17-57-00000000-0000-0000-0000-000000000000.jsonl.zst");
+  fs.writeFileSync(file, zlib.zstdCompressSync(Buffer.from(`${JSON.stringify({ type: "session_meta" })}\n`)));
+  const before = fs.readdirSync("/dev/fd").length;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await assert.rejects(readRolloutFirstRecord(file, { createZstdDecompress: () => { fs.rmSync(file, { force: true }); throw new Error("init failed"); } }), /init failed/);
+    fs.writeFileSync(file, zlib.zstdCompressSync(Buffer.from(`${JSON.stringify({ type: "session_meta" })}\n`)));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(fs.readdirSync("/dev/fd").length <= before + 1);
+});

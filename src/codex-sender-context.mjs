@@ -48,6 +48,13 @@ export function readState(file, maxBytes) {
   return retryRolloutRead(() => readStateOnce(file, maxBytes));
 }
 
+export function readTaskState(sessions, threadId, maxBytes) {
+  return retryRolloutRead(() => {
+    const file = findRollout(sessions, threadId);
+    return { ...readStateOnce(file, maxBytes), file };
+  });
+}
+
 function readStateOnce(file, maxBytes) {
   return memoizeCompressedScan(file, `state:${maxBytes}`, () => scanState(file, maxBytes));
 }

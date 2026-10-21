@@ -72,8 +72,14 @@ export function matchDesktopProject(projects, cwd, { canonicalize = realpathSync
   return matches[0];
 }
 
+export const RELAY_DOWN_GUIDANCE = "The Codex Desktop native relay is not listening: Codex Desktop runs codex-native-relay only while a task has its MCP servers loaded. Open any regular project task (not the internal Native Relay executor task) and send it a turn or reconnect its MCP servers, then retry.";
+
+function relayUnreachable(error) {
+  return error?.code === "RELAY_UNREACHABLE" && error.sent === false;
+}
+
 export class DesktopTaskDelivery {
-  constructor({ relay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath(), accountSocketPath: accountRelaySocketPath() }), security, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, receipts = new DesktopTaskReceipts(), beforeRequest, accountContext, senderContext, captureResponse = captureCodexRolloutWatermark, readResponse = readCodexNativeTurnResponse, inspectResponse = inspectCodexNativeTurn, resolveResponse = readResponse === readCodexNativeTurnResponse ? resolveCodexNativeDispatchResponse : null } = {}) {
+  constructor({ relay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath(), accountSocketPath: accountRelaySocketPath() }), security, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, receipts = new DesktopTaskReceipts(), beforeRequest, accountContext, senderContext, captureResponse = captureCodexRolloutWatermark, readResponse = readCodexNativeTurnResponse, inspectResponse = inspectCodexNativeTurn, resolveResponse = readResponse === readCodexNativeTurnResponse ? resolveCodexNativeDispatchResponse : null, wakeRelay = null } = {}) {
     this.relay = relay;
     this.security = security;
     this.sleep = sleep;
@@ -86,6 +92,7 @@ export class DesktopTaskDelivery {
     this.readResponse = readResponse;
     this.inspectResponse = inspectResponse;
     this.resolveResponse = resolveResponse;
+    this.wakeRelay = wakeRelay;
     this.threadOperations = new Map();
   }
 
@@ -120,7 +127,7 @@ export class DesktopTaskDelivery {
       const remaining = deadline === undefined ? undefined : deadline - this.now();
       if (remaining !== undefined && remaining <= 0) throw Object.assign(new Error("The bridge's response deadline has elapsed; this operation was not sent"), { code: "DESKTOP_RESPONSE_DEADLINE" });
       const accountContext = this.accountContext?.();
-      const response = await this.relay.requestDesktop(operation, args, {
+      const send = () => this.relay.requestDesktop(operation, args, {
         ...(remaining === undefined ? {} : { timeoutMs: remaining }),
         ...(this.beforeRequest || projectScope || scopeBinding ? { beforeSend: async () => {
           await this.beforeRequest?.({ operation, args, phase: "write" });
@@ -134,11 +141,21 @@ export class DesktopTaskDelivery {
         ...(accountContext ? { accountContext } : {}),
         ...(creationReceiptId ? { creationReceiptId } : {}),
       });
+      let response;
+      try {
+        response = await send();
+      } catch (error) {
+        if (!relayUnreachable(error) || typeof this.wakeRelay !== "function") throw error;
+        const socketPath = accountContext ? this.relay.accountSocketPath : this.relay.socketPath;
+        if (!await this.wakeRelay({ operation, socketPath, threadId: args?.threadId, deadline })) throw error;
+        response = await send();
+      }
       return includeRelayContext ? { result: response.result, executorThreadId: response.executorThreadId } : response.result;
     } catch (err) {
       if (err.code === "RESPONSE_TOO_LARGE") throw err;
       if (err.code?.startsWith("PROJECT_SCOPE_") || err.code === "CLAUDE_SENDER_CONTEXT_UNVERIFIED") throw err;
-      throw new Error(`Codex Desktop operation ${operation} failed: ${String(err.message).replace(/[.\s]+$/, "")}. Desktop-only mode will not start or use an external app-server. The Codex Desktop native relay is not listening. If Codex Desktop is running, open any regular project task (not the internal Native Relay executor task) and send it a turn or reconnect its MCP servers so Codex starts codex-native-relay; the relay then keeps running until Codex Desktop quits. Inspect the existing task before retrying a send.`, { cause: err });
+      const guidance = relayUnreachable(err) ? `${RELAY_DOWN_GUIDANCE} ` : "";
+      throw new Error(`Codex Desktop operation ${operation} failed: ${String(err.message).replace(/[.\s]+$/, "")}. Desktop-only mode will not start or use an external app-server. ${guidance}Inspect the existing task before retrying a send.`, { cause: err });
     }
   }
 

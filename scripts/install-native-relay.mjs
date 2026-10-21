@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 
 import { CodexAppServerClient } from "../src/app-server-client.mjs";
 import { accountRelaySocketPath, bootstrapRelayThread, desktopTaskSocketPath, readRelayConfig, relayConfigPath, relaySocketPath, writeRelayConfig } from "../src/native-relay.mjs";
-import { evictRelayHost, relayOwnerPath } from "../src/native-relay-owner.mjs";
 import {
   IS_MACOS,
   IS_WINDOWS,
@@ -50,10 +49,7 @@ if (remove) {
   }
   const retiredExecutor = readRelayConfig()?.relayThreadId;
   const sockets = IS_WINDOWS ? [] : [...new Set([relaySocketPath(), desktopTaskSocketPath(), accountRelaySocketPath()])];
-  for (const socket of sockets) {
-    if (await evictRelayHost(socket, { isLive: async () => fs.existsSync(socket) })) console.log(`stopped the detached native relay host serving ${socket}`);
-  }
-  for (const leftover of [relayConfigPath(), ...sockets.flatMap((socket) => [socket, relayOwnerPath(socket)])]) {
+  for (const leftover of [relayConfigPath(), ...sockets]) {
     if (fs.existsSync(leftover)) {
       fs.rmSync(leftover, { force: true });
       console.log(`removed ${leftover}`);

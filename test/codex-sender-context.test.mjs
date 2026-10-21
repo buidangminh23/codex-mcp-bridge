@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, it } from "node:test";
 import zlib from "node:zlib";
-import { readCodexSenderContext, resolveCodexSenderContext, findRollout, readState } from "../src/codex-sender-context.mjs";
+import { readCodexSenderContext, resolveCodexSenderContext, findRollout, readState, readTaskState } from "../src/codex-sender-context.mjs";
 import { assertRecipientClass } from "../src/recipient-preflight.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-sender-"));
@@ -732,4 +732,33 @@ it("decompresses an unchanged compressed segment once across repeated state read
   t.mock.method(zlib, "zstdDecompressSync", (...args) => { decompressions++; return decompress.apply(zlib, args); });
   for (let attempt = 0; attempt < 3; attempt++) assert.equal(readState(file, 1024 * 1024).session.id, threadId);
   assert.equal(decompressions, 1);
+});
+
+it("rediscovers a task rollout that Codex rematerializes from .jsonl.zst to .jsonl during a read", (t) => {
+  const home = fs.mkdtempSync(path.join(root, "rematerialized-"));
+  const directory = path.join(home, "sessions", "2026", "09", "06");
+  fs.mkdirSync(directory, { recursive: true });
+  const base = path.join(directory, `rollout-2026-09-06T19-17-57-${threadId}`);
+  const body = Buffer.from(`${JSON.stringify({ type: "session_meta", payload: { id: threadId, originator: "codex_vscode", source: "vscode", cwd: home } })}\n`);
+  fs.writeFileSync(`${base}.jsonl.zst`, zlib.zstdCompressSync(body));
+  const readdir = fs.readdirSync;
+  let swapped = false;
+  t.mock.method(fs, "readdirSync", (target, ...rest) => {
+    const listed = readdir.call(fs, target, ...rest);
+    if (!swapped && path.resolve(String(target)) === fs.realpathSync.native(directory)) {
+      swapped = true;
+      fs.writeFileSync(`${base}.jsonl`, body);
+      fs.rmSync(`${base}.jsonl.zst`);
+      return listed.filter((entry) => !String(entry.name ?? entry).endsWith(".jsonl"));
+    }
+    return listed;
+  });
+  const state = readTaskState(path.join(home, "sessions"), threadId, 1024 * 1024);
+  assert.equal(state.session.id, threadId);
+  assert.equal(state.file, fs.realpathSync.native(`${base}.jsonl`));
+  swapped = false;
+  fs.rmSync(`${base}.jsonl`);
+  fs.writeFileSync(`${base}.jsonl.zst`, zlib.zstdCompressSync(body));
+  const fixed = findRollout(path.join(home, "sessions"), threadId);
+  assert.throws(() => readState(fixed, 1024 * 1024), /changed while reading/);
 });

@@ -37,7 +37,7 @@ import { captureProjectScope } from "./project-scope.mjs";
 import { DesktopReplyReceipts } from "./desktop-reply-receipts.mjs";
 import { registerDesktopReadTools } from "./desktop-read-tools.mjs";
 import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
-import { readRelayOwner } from "./native-relay-owner.mjs";
+import { createRelayWake } from "./relay-wake.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -76,7 +76,7 @@ const desktopTasksEnabled = desktopTasksConfigured();
 const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
 const desktopOperation = new AsyncLocalStorage();
 const replyReceipts = new DesktopReplyReceipts();
-const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts, senderContext: () => desktopOperation.getStore()?.caller });
+const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts, senderContext: () => desktopOperation.getStore()?.caller, wakeRelay: createRelayWake({ senderCwd: () => desktopOperation.getStore()?.caller?.cwd ?? null, log }) });
 
 async function assertDesktopOperation(context, { verifyProcess = false } = {}) {
   if (!context || context.diagnostic) return;
@@ -104,13 +104,6 @@ async function beforeDesktopRequest({ operation, args, phase }) {
     context.dispatched = true;
     if (args.threadId) context.threadId = args.threadId;
   }
-}
-
-function relayOwnerLines(socketPath) {
-  if (IS_WINDOWS || !socketPath) return [];
-  const owner = readRelayOwner(socketPath);
-  if (!owner) return [];
-  return [`native owner:   ${owner.role === "host" ? `detached relay host PID ${owner.pid}; it keeps serving until Codex Desktop quits or a task's companion takes over` : `companion PID ${owner.pid}`}`];
 }
 
 const asSentence = (text) => /[.!?]$/.test(text) ? text : `${text}.`;
@@ -498,7 +491,7 @@ function registerTool(name, definition, handler) {
             await assertDesktopOperation(context);
             if (result.isError && !context.dispatched && result.structuredContent?.responseVersion !== 1) {
               result.structuredContent = { ...result.structuredContent, accountContext: context.accounts, ...(readOnly ? {} : { operation: { state: "blocked", threadId: context.threadId ?? null } }) };
-              if (guidance) result.content.push({ type: "text", text: guidance });
+              if (guidance && result.structuredContent?.nextAction !== "none") result.content.push({ type: "text", text: guidance });
             }
             return result;
           } catch (error) {
@@ -1038,7 +1031,6 @@ registerTool(
         "project scope:  verified Claude sender; same directory or Git repository, checked before each mutation",
         `native relay:   ${native.available ? "available; verified through Codex Desktop" : "unavailable"}`,
         `native endpoint: ${native.socketPath}`,
-        ...relayOwnerLines(native.socketPath),
         ...(native.available ? [`local projects: ${native.localProjects}`] : [`reason: ${native.reason}`]),
         "app-server:     disabled in Desktop-only mode; no external endpoint is contacted",
         "autostart:      off; external app-server fallback is disabled",

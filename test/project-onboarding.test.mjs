@@ -173,6 +173,42 @@ test("custom Claude config directory is supported without touching default confi
   assert.equal(fs.existsSync(f.config), false);
 });
 
+test("inspection reports a missing or unreadable project policy instead of failing", t => {
+  const f = fixture(t);
+  const env = { ...f.env }; delete env.CODEX_BRIDGE_PROJECT_POLICY;
+  const missing = inspectBridgeProject({ cwd: f.cwd }, { env });
+  assert.equal(missing.status, "needs_setup");
+  assert.equal(missing.communicationAuthorization.status, "policy_not_configured");
+  assert.equal(missing.communicationAuthorization.file, null);
+  assert.equal(missing.workspaceTrust.file, f.config);
+  assert.equal(missing.nextActions.some(action => action.tool === "prepare_bridge_project"), false);
+  const setup = missing.nextActions.find(action => action.setting === "CODEX_BRIDGE_PROJECT_POLICY");
+  assert.equal(setup.suggestedFile, path.join(f.home, ".config", "GptClaudeBridge", "projects.json"));
+  assert.match(setup.then, /bridge-projects prepare/);
+  assert.match(setup.then, /codex-bridge-code-install --policy/);
+  const codexSetup = inspectBridgeProject({ cwd: f.cwd }, { env, policyRegistration: "codex" }).nextActions.find(action => action.setting === "CODEX_BRIDGE_PROJECT_POLICY");
+  assert.match(codexSetup.then, /claude-mcp-bridge-install with CODEX_BRIDGE_PROJECT_POLICY=/);
+  assert.throws(() => inspectBridgeProject({ cwd: f.cwd }, { env, policyRegistration: "other" }), /Unknown project policy registration/);
+  assert.throws(() => prepareBridgeProject({ cwd: f.cwd }, { env }), /^Error: Configure the shared CODEX_BRIDGE_PROJECT_POLICY before onboarding projects\.$/);
+  fs.writeFileSync(f.file, "not json");
+  const invalid = inspectBridgeProject({ cwd: f.cwd }, f.options);
+  assert.equal(invalid.status, "needs_setup");
+  assert.equal(invalid.communicationAuthorization.status, "policy_invalid");
+  assert.equal(invalid.communicationAuthorization.file, f.file);
+  assert.equal(invalid.nextActions.some(action => action.tool === "prepare_bridge_project"), false);
+  assert.throws(() => prepareBridgeProject({ cwd: f.cwd }, f.options));
+  assert.equal(fs.readFileSync(f.file, "utf8"), "not json");
+  assert.equal(fs.existsSync(f.config), false);
+});
+
+test("MCP inspection returns an error result instead of throwing on invalid input", async t => {
+  const f = fixture(t), handlers = new Map();
+  registerProjectOnboardingTools((name, definition, handler) => handlers.set(name, handler), { options: f.options, beforePrepare() {} });
+  const result = await handlers.get('inspect_bridge_project')({ cwd: path.join(f.home, 'absent') });
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.onboarding.status, 'failed');
+});
+
 test("MCP setup requires caller verification before writes", async t => {
   const f = fixture(t), handlers = new Map();
   registerProjectOnboardingTools((name, definition, handler) => handlers.set(name, { definition, handler }), { options: f.options, beforePrepare() { throw Error('sender unverified'); } });
@@ -198,5 +234,29 @@ for (const entry of ['index.mjs', 'claude-bridge.mjs']) test(`${entry} exposes r
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /verified Desktop caller/);
     assert.equal(fs.existsSync(f.config), false);
+  } finally { await client.close(); }
+});
+
+for (const entry of ['index.mjs', 'claude-bridge.mjs']) test(`${entry} reports a missing project policy through MCP inspection`, async t => {
+  const f = fixture(t);
+  const client = new Client({ name: 'onboarding-transport-test', version: '1' });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'src', entry)], env: {
+    PATH: process.env.PATH ?? '', HOME: f.home, USERPROFILE: f.home, CLAUDE_CONFIG_DIR: '', CODEX_HOME: path.join(f.home, '.codex'),
+    CODEX_BRIDGE_DESKTOP_TASKS: '0', CODEX_BRIDGE_AUTOSTART: '0', CODEX_APP_SERVER_URL: 'ws://127.0.0.1:9',
+  }, stderr: 'ignore' });
+  try {
+    await client.connect(transport);
+    const inspected = await client.callTool({ name: 'inspect_bridge_project', arguments: { cwd: f.cwd } });
+    assert.equal(inspected.isError, undefined);
+    assert.equal(inspected.structuredContent.onboarding.status, 'needs_setup');
+    assert.equal(inspected.structuredContent.onboarding.communicationAuthorization.status, 'policy_not_configured');
+    const setup = inspected.structuredContent.onboarding.nextActions.find(action => action.setting === 'CODEX_BRIDGE_PROJECT_POLICY');
+    if (entry === 'index.mjs') {
+      assert.match(setup.then, /codex-bridge-code-install --policy "/);
+      assert.doesNotMatch(setup.then, /claude-mcp-bridge-install/);
+    } else {
+      assert.match(setup.then, /claude-mcp-bridge-install with CODEX_BRIDGE_PROJECT_POLICY="[^"]+" set, then restart Codex Desktop/);
+      assert.doesNotMatch(setup.then, /codex-bridge-code-install/);
+    }
   } finally { await client.close(); }
 });

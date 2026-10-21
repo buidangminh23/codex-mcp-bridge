@@ -30,6 +30,43 @@ test("registration check identifies shared entries, duplicates and missing live 
   assert.equal(result.issues.length, 3);
 });
 
+const direct = () => ({ ...entry(), args: [path.resolve("src/index.mjs")] });
+test("registration check finds an unsupervised shared Desktop bridge under any name", () => {
+  const code = { mcpServers: { "codex-bridge": { ...entry(), env: { ...entry().env, CODEX_BRIDGE_PROJECT_POLICY: path.resolve("policy.json") } } } };
+  const desktop = { mcpServers: { "codex-bridge-desktop": direct(), other: { command: process.execPath, args: [path.resolve("elsewhere/index.mjs")] } } };
+  const result = checkCodeRegistration({ code, desktop });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.shared, ["codex-bridge-desktop"]);
+  assert.ok(result.issues.some((issue) => /without the supervisor.*codex-bridge-desktop/.test(issue)));
+  assert.deepEqual(checkCodeRegistration({ code: {}, desktop }).shared, ["codex-bridge-desktop"]);
+});
+test("migration removes an identical unsupervised shared entry and refuses a customized one", () => {
+  const code = { mcpServers: { "codex-bridge": entry() } };
+  const plan = planCodeRegistration({ code, desktop: { mcpServers: { "codex-bridge-desktop": direct() } }, policyFile: path.resolve("policy.json") });
+  assert.deepEqual(plan.desktop.mcpServers, {});
+  assert.deepEqual(plan.changes.at(-1), { kind: "remove-shared-desktop-entry", name: "codex-bridge-desktop" });
+  const customized = direct(); customized.env.CODEX_BRIDGE_APPROVAL = "deny";
+  assert.throws(() => planCodeRegistration({ code, desktop: { mcpServers: { "codex-bridge-desktop": customized } }, policyFile: path.resolve("policy.json") }), /codex-bridge-desktop has customized settings/);
+});
+
+test("migration refuses a shared entry whose direct arguments are customized", () => {
+  const code = { mcpServers: { "codex-bridge": entry() } };
+  const flagged = { ...direct(), args: [path.resolve("src/index.mjs"), "--some-flag"] };
+  assert.throws(() => planCodeRegistration({ code, desktop: { mcpServers: { "codex-bridge-desktop": flagged } }, policyFile: path.resolve("policy.json") }), /codex-bridge-desktop has customized settings/);
+  const project = { mcpServers: { "codex-bridge": entry() }, projects: { p: { mcpServers: { alias: { ...entry(), args: [path.resolve("src/index.mjs"), "--extra"] } } } } };
+  assert.throws(() => planCodeRegistration({ code: project, desktop: {}, policyFile: path.resolve("policy.json") }), /Project p has a customized alias entry/);
+});
+test("migration refuses a bridge entry from another installation that the check would flag", () => {
+  const other = path.join(path.resolve("."), "opt-other", "src");
+  const code = { mcpServers: { "codex-bridge": { ...entry(), args: [path.join(other, "mcp-supervisor.mjs"), "index.mjs"] } } };
+  const desktop = { mcpServers: { x: direct() } };
+  assert.deepEqual(checkCodeRegistration({ code, desktop }).shared, ["x"]);
+  assert.throws(() => planCodeRegistration({ code, desktop, policyFile: path.resolve("policy.json") }), /Shared Desktop entry x runs another bridge installation from .*src; update or remove it before migration/);
+  const projects = { ...code, projects: { p: { mcpServers: { alias: entry() } } } };
+  assert.deepEqual(checkCodeRegistration({ code: projects, desktop: {} }).overrides, [{ project: "p", alias: "alias" }]);
+  assert.throws(() => planCodeRegistration({ code: projects, desktop: {}, policyFile: path.resolve("policy.json") }), /Project p entry alias runs another bridge installation/);
+});
+
 test("installer previews without writes, requires stopped clients, backs up exact input and verifies applied registration", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-code-install-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

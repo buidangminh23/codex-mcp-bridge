@@ -338,7 +338,7 @@ function registerTool(name, definition, handler) {
   });
 }
 
-registerProjectOnboardingTools(registerTool, { beforePrepare: async (extra) => {
+registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "codex" }, beforePrepare: async (extra) => {
   runtime.assertCurrent();
   if (!desktopOnly) throw new Error("Project onboarding requires a verified Desktop caller");
   await assertSender(extra?._meta);

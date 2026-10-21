@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
-import { IS_WINDOWS, PLATFORM_LABEL, claudeDesktopConfigPath, resolveCodexBin } from "../src/platform.mjs";
+import { IS_WINDOWS, PLATFORM_LABEL, claudeDesktopConfigPath, homeDir, resolveCodexBin } from "../src/platform.mjs";
+import { readRegularConfigFile } from "../src/project-policy.mjs";
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
@@ -18,7 +19,6 @@ const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();
 const reset = process.argv.includes("--reset");
 const forceDesktopTasks = process.argv.includes("--desktop-tasks");
 const fullAccess = process.argv.includes("--full-access") || fullAccessEnabled();
-if (fullAccess) enableCodexFullAccess();
 
 /**
  * This bridge is intentionally the local hand-off point between Claude and
@@ -88,7 +88,22 @@ cfg.mcpServers = cfg.mcpServers ?? {};
  * already says, then the default. `--reset` drops the middle one for the rare
  * case of wanting the defaults back.
  */
-const previousEntry = (reset ? {} : cfg.mcpServers["codex-bridge"]) ?? {};
+const KNOWN_ENTRY_NAMES = new Set(["codex-bridge", "codex-bridge-desktop"]);
+const sourceDirectories = new Set([path.join(root, "src"), path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "src")]);
+const runsThisBridge = (entry) => {
+  const script = entry?.args?.[0];
+  if (typeof script !== "string" || !sourceDirectories.has(path.dirname(path.resolve(script)))) return false;
+  const name = path.basename(script);
+  return name === "index.mjs" || name === "mcp-supervisor.mjs" && entry.args[1] === "index.mjs";
+};
+const bridgeEntries = Object.keys(cfg.mcpServers).filter((name) => KNOWN_ENTRY_NAMES.has(name) || runsThisBridge(cfg.mcpServers[name]));
+if (bridgeEntries.length > 1) {
+  throw new Error(`Claude Desktop already has several bridge entries (${bridgeEntries.join(", ")}); remove all but one and re-run. No configuration was changed.`);
+}
+const entryName = bridgeEntries[0] ?? "codex-bridge";
+if (fullAccess) enableCodexFullAccess();
+
+const previousEntry = (reset ? {} : cfg.mcpServers[entryName]) ?? {};
 const previousEnv = previousEntry.env ?? {};
 const settled = (name, fallback) => process.env[name] ?? previousEnv[name] ?? fallback;
 const desktopMode = forceDesktopTasks ? "1" : settled("CODEX_BRIDGE_DESKTOP_TASKS");
@@ -100,7 +115,7 @@ const kept = Object.keys(previousEnv).filter(
     !(desktopEnabled && name === "CODEX_BRIDGE_AUTOSTART"),
 );
 
-cfg.mcpServers["codex-bridge"] = {
+cfg.mcpServers[entryName] = {
   ...previousEntry,
   command: nodeBin,
   args: [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"],
@@ -149,7 +164,7 @@ cfg.mcpServers["codex-bridge"] = {
   },
 };
 
-createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...cfg.mcpServers["codex-bridge"].env }) });
+createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...cfg.mcpServers[entryName].env }) });
 
 const backup = `${cfgPath}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge`;
 if (original) {
@@ -170,8 +185,8 @@ try {
 }
 
 console.log(`platform: ${PLATFORM_LABEL}`);
-console.log(`updated ${cfgPath}`);
-console.log(JSON.stringify(cfg.mcpServers["codex-bridge"], null, 2));
+console.log(`updated ${cfgPath} (entry ${entryName})`);
+console.log(JSON.stringify(cfg.mcpServers[entryName], null, 2));
 console.log(`Desktop tasks: ${desktopEnabled ? "enabled" : "disabled"} (${desktopMode === undefined ? "automatic relay configuration" : forceDesktopTasks ? "--desktop-tasks" : "explicit environment setting"}).`);
 
 if (reset) {
@@ -181,7 +196,7 @@ if (reset) {
   console.log("Pass the variable to override one, or --reset to drop them all.");
 }
 
-const writtenRoots = cfg.mcpServers["codex-bridge"].env.CODEX_BRIDGE_ALLOWED_ROOTS;
+const writtenRoots = cfg.mcpServers[entryName].env.CODEX_BRIDGE_ALLOWED_ROOTS;
 if (writtenRoots.split(path.delimiter).some((entry) => entry.split(path.sep).includes("node_modules"))) {
   console.log(
     "\nWARNING: CODEX_BRIDGE_ALLOWED_ROOTS points inside an install directory, which is not a workspace.\n" +
@@ -190,7 +205,7 @@ if (writtenRoots.split(path.delimiter).some((entry) => entry.split(path.sep).inc
   );
 }
 
-if (cfg.mcpServers["codex-bridge"].env.CODEX_BRIDGE_THREAD_POLICY === "owned") {
+if (cfg.mcpServers[entryName].env.CODEX_BRIDGE_THREAD_POLICY === "owned") {
   console.log(
     "\nNOTE: thread policy is `owned` - this bridge may only act on threads it created itself.\n" +
       "A thread you open in the Codex app or the VS Code extension will answer NOT AUTHORIZED,\n" +
@@ -198,6 +213,19 @@ if (cfg.mcpServers["codex-bridge"].env.CODEX_BRIDGE_THREAD_POLICY === "owned") {
       "bridge reach any thread working inside CODEX_BRIDGE_ALLOWED_ROOTS, re-run with:\n" +
       "  CODEX_BRIDGE_THREAD_POLICY=roots codex-mcp-bridge-install",
   );
+}
+
+if (entryName === "codex-bridge") {
+  const codeConfig = path.join(process.env.CLAUDE_CONFIG_DIR || homeDir(), ".claude.json");
+  let codeEntry;
+  try { codeEntry = JSON.parse(readRegularConfigFile(codeConfig, { missing: true, maxBytes: 8 * 1024 * 1024 }) ?? "{}").mcpServers?.["codex-bridge"]; } catch {}
+  if (codeEntry) {
+    console.log(
+      `\nWARNING: ${codeConfig} also registers codex-bridge for Claude Code. A Desktop entry with the same name can\n` +
+        "shadow it inside Code sessions and hide the calling task. Rename this Desktop entry, for example to\n" +
+        "codex-bridge-desktop; later installer runs update the renamed entry in place.",
+    );
+  }
 }
 
 console.log("\nReconnect codex-bridge once in the existing Claude task to load the supervisor. Subsequent compatible installed-source updates reload automatically when the worker is safely idle.");

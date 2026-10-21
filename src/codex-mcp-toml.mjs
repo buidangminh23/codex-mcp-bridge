@@ -175,15 +175,37 @@ function parseStringArray(text, statement) {
   const raw = text.slice(statement.valueStart, statement.valueEnd);
   if (!raw.startsWith("[")) fail("env_vars is not an array");
   const values = [];
+  let lastEnd = null;
+  let trailingComma = false;
   let cursor = skipTrivia(raw, 1);
   while (raw[cursor] !== "]") {
     if (raw[cursor] !== '"' && raw[cursor] !== "'") fail("env_vars must contain only strings");
     const string = readString(raw, cursor);
     values.push(string.value);
+    lastEnd = statement.valueStart + string.end;
     cursor = skipTrivia(raw, string.end);
-    if (raw[cursor] === ",") cursor = skipTrivia(raw, cursor + 1);
+    trailingComma = raw[cursor] === ",";
+    if (trailingComma) cursor = skipTrivia(raw, cursor + 1);
   }
-  return values;
+  return { values, lastEnd, trailingComma, close: statement.valueStart + cursor };
+}
+
+function appendToStringArray(contents, statement, array, missing, newline) {
+  const lineStart = contents.lastIndexOf("\n", array.close - 1) + 1;
+  const closeOwnsLine = lineStart > statement.valueStart && !contents.slice(lineStart, array.close).trim();
+  if (!closeOwnsLine) {
+    if (array.lastEnd === null) return [{ start: statement.valueStart, end: statement.valueEnd, text: tomlArray(missing) }];
+    return [{ start: array.lastEnd, end: array.lastEnd, text: `, ${missing.map(tomlString).join(", ")}` }];
+  }
+  const leading = (index) => contents.slice(index).match(/^[ \t]*/)[0];
+  const elementLine = array.lastEnd === null ? null : contents.lastIndexOf("\n", array.lastEnd - 1) + 1;
+  const indent = elementLine !== null && elementLine > statement.valueStart ? leading(elementLine)
+    : `${leading(contents.lastIndexOf("\n", statement.valueStart - 1) + 1)}  `;
+  const trailing = array.lastEnd === null || array.trailingComma;
+  const lines = missing.map((variable, index) => `${indent}${tomlString(variable)}${index < missing.length - 1 || trailing ? "," : ""}${newline}`).join("");
+  const edits = [{ start: lineStart, end: lineStart, text: lines }];
+  if (array.lastEnd !== null && !array.trailingComma) edits.push({ start: array.lastEnd, end: array.lastEnd, text: "," });
+  return edits;
 }
 
 export function retargetMcpServerToml(contents, name, { command, args, ensureEnvVars = [] }) {
@@ -224,8 +246,8 @@ export function retargetMcpServerToml(contents, name, { command, args, ensureEnv
         if (error instanceof TomlScanError) throw new Error(`The ${name} MCP entry has env_vars that are not a string list; it was not changed`);
         throw error;
       }
-      const missing = ensureEnvVars.filter((variable) => !existing.includes(variable));
-      if (missing.length) edits.push({ start: envVarsStatement.valueStart, end: envVarsStatement.valueEnd, text: tomlArray([...existing, ...missing]) });
+      const missing = [...new Set(ensureEnvVars.filter((variable) => !existing.values.includes(variable)))];
+      if (missing.length) edits.push(...appendToStringArray(contents, envVarsStatement, existing, missing, newline));
     } else {
       const anchor = argsStatement ?? commandStatement;
       const lineBreak = contents.slice(anchor.end - 1, anchor.end) === "\n" ? "" : newline;

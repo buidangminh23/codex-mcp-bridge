@@ -36,7 +36,24 @@ it("adds a missing env_vars list after args and appends to an existing one witho
     'x = 1\n\n[mcp_servers.r]\ncommand = "/n"\nargs = ["/s", "c"]\nenv_vars = ["PIPE"]\n\n[t]\ny = 2\n');
   const listed = '[mcp_servers.r]\ncommand = "/n"\nargs = []\nenv_vars = [\'KEEP\']\n';
   assert.equal(retargetMcpServerToml(listed, "r", { command: "/n", args: ["/s"], ensureEnvVars: ["PIPE", "KEEP"] }),
-    '[mcp_servers.r]\ncommand = "/n"\nargs = ["/s"]\nenv_vars = ["KEEP", "PIPE"]\n');
+    '[mcp_servers.r]\ncommand = "/n"\nargs = ["/s"]\nenv_vars = [\'KEEP\', "PIPE"]\n');
+});
+
+it("appends to a multi-line env_vars array in place and keeps its comments, quoting and line endings", () => {
+  const options = { command: "/n", args: [], ensureEnvVars: ["PIPE", "KEEP", "PIPE", "NEXT"] };
+  const annotated = '[mcp_servers.r]\ncommand = "/n"\nargs = []\nenv_vars = [\n  \'KEEP\', # kept for the relay\n]\n';
+  assert.equal(retargetMcpServerToml(annotated, "r", options),
+    '[mcp_servers.r]\ncommand = "/n"\nargs = []\nenv_vars = [\n  \'KEEP\', # kept for the relay\n  "PIPE",\n  "NEXT",\n]\n');
+  const bare = '[mcp_servers.r]\r\ncommand = "/n"\r\nargs = []\r\nenv_vars = [\r\n    "KEEP" # no trailing comma\r\n]\r\n';
+  assert.equal(retargetMcpServerToml(bare, "r", options),
+    '[mcp_servers.r]\r\ncommand = "/n"\r\nargs = []\r\nenv_vars = [\r\n    "KEEP", # no trailing comma\r\n    "PIPE",\r\n    "NEXT"\r\n]\r\n');
+  const empty = '[mcp_servers.r]\ncommand = "/n"\nargs = []\nenv_vars = [\n  # none yet\n]\n';
+  assert.equal(retargetMcpServerToml(empty, "r", options),
+    '[mcp_servers.r]\ncommand = "/n"\nargs = []\nenv_vars = [\n  # none yet\n  "PIPE",\n  "KEEP",\n  "NEXT",\n]\n');
+  const inline = '[mcp_servers.r]\ncommand = "/n"\nargs = []\nenv_vars = ["KEEP", # first\n  "OTHER"]\n';
+  assert.equal(retargetMcpServerToml(inline, "r", options),
+    '[mcp_servers.r]\ncommand = "/n"\nargs = []\nenv_vars = ["KEEP", # first\n  "OTHER", "PIPE", "NEXT"]\n');
+  for (const source of [annotated, bare, empty, inline]) scanTomlStatements(retargetMcpServerToml(source, "r", options));
 });
 
 it("replaces a multi-line args array with comments and keeps CRLF line endings", () => {

@@ -397,6 +397,27 @@ describe("claude desktop installer", () => {
     assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), original);
   });
 
+  it("refuses several bridge entries before repairing Full access", () => {
+    const home = fs.mkdtempSync(path.join(sandbox, "refusal-home-"));
+    fs.mkdirSync(path.join(home, "config.toml"));
+    const original = { mcpServers: { "codex-bridge": { env: {} }, "codex-bridge-desktop": { args: [path.join(root, "src", "index.mjs")] } } };
+    const config = configWith(original);
+
+    assert.throws(() => install({ config, args: ["--full-access"], env: { CODEX_HOME: home } }), /several bridge entries/);
+    assert.deepEqual(fs.readdirSync(home), ["config.toml"]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), original);
+  });
+
+  it("leaves a supervised entry for another worker of this package untouched", () => {
+    const relay = { command: "node", args: [path.join(root, "src", "mcp-supervisor.mjs"), "claude-bridge.mjs"], env: { KEEP: "1" } };
+    const config = configWith({ mcpServers: { "claude-bridge": relay } });
+
+    const cfg = install({ config });
+
+    assert.deepEqual(cfg.mcpServers["claude-bridge"], relay);
+    assert.deepEqual(cfg.mcpServers["codex-bridge"].args, [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"]);
+  });
+
   it("warns when the Desktop entry name shadows the Claude Code registration", () => {
     const codeDirectory = fs.mkdtempSync(path.join(sandbox, "code-config-"));
     fs.writeFileSync(path.join(codeDirectory, ".claude.json"), JSON.stringify({ mcpServers: { "codex-bridge": { command: "node" } } }));

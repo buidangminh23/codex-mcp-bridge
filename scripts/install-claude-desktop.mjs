@@ -19,7 +19,6 @@ const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();
 const reset = process.argv.includes("--reset");
 const forceDesktopTasks = process.argv.includes("--desktop-tasks");
 const fullAccess = process.argv.includes("--full-access") || fullAccessEnabled();
-if (fullAccess) enableCodexFullAccess();
 
 /**
  * This bridge is intentionally the local hand-off point between Claude and
@@ -93,13 +92,16 @@ const KNOWN_ENTRY_NAMES = new Set(["codex-bridge", "codex-bridge-desktop"]);
 const sourceDirectories = new Set([path.join(root, "src"), path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "src")]);
 const runsThisBridge = (entry) => {
   const script = entry?.args?.[0];
-  return typeof script === "string" && ["index.mjs", "mcp-supervisor.mjs"].includes(path.basename(script)) && sourceDirectories.has(path.dirname(path.resolve(script)));
+  if (typeof script !== "string" || !sourceDirectories.has(path.dirname(path.resolve(script)))) return false;
+  const name = path.basename(script);
+  return name === "index.mjs" || name === "mcp-supervisor.mjs" && entry.args[1] === "index.mjs";
 };
 const bridgeEntries = Object.keys(cfg.mcpServers).filter((name) => KNOWN_ENTRY_NAMES.has(name) || runsThisBridge(cfg.mcpServers[name]));
 if (bridgeEntries.length > 1) {
   throw new Error(`Claude Desktop already has several bridge entries (${bridgeEntries.join(", ")}); remove all but one and re-run. No configuration was changed.`);
 }
 const entryName = bridgeEntries[0] ?? "codex-bridge";
+if (fullAccess) enableCodexFullAccess();
 
 const previousEntry = (reset ? {} : cfg.mcpServers[entryName]) ?? {};
 const previousEnv = previousEntry.env ?? {};

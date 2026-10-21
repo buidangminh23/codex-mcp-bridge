@@ -32,22 +32,28 @@ export function planCodeRegistration({ code, desktop, policyFile, name = "codex-
   updated.mcpServers[name] = replacement;
   const changes = [{ kind: "user-code-entry", name }];
   const comparable = (entry) => {
-    const normalized = { ...structuredClone(entry), args: [path.join(bridgeSource(entry), "mcp-supervisor.mjs"), "index.mjs"] };
+    const normalized = structuredClone(entry);
+    if (worker(entry) || entry.args.length === 1) normalized.args = [path.join(bridgeSource(entry), "mcp-supervisor.mjs"), "index.mjs"];
     delete normalized.env?.CODEX_BRIDGE_ALLOWED_ROOTS;
     delete normalized.env?.CODEX_BRIDGE_PROJECT_POLICY;
     return JSON.stringify({ ...normalized, env: stable(normalized.env) });
   };
-  const sameBridge = (entry) => bridgeSource(entry) === bridgeSource(source);
+  const sources = bridgeSources(source);
+  const sameBridge = (entry, location) => {
+    if (bridgeSource(entry) === bridgeSource(source)) return true;
+    if (bridgeEntry(entry, sources)) throw new Error(`${location} runs another bridge installation from ${bridgeSource(entry)}; update or remove it before migration`);
+    return false;
+  };
   for (const [project, config] of Object.entries(updated.projects ?? {})) {
     for (const [alias, entry] of Object.entries(config.mcpServers ?? {})) {
-      if (!sameBridge(entry)) continue;
+      if (!sameBridge(entry, `Project ${project} entry ${alias}`)) continue;
       if (comparable(entry) !== comparable(source)) throw new Error(`Project ${project} has a customized ${alias} entry; review its settings instead of replacing it`);
       delete config.mcpServers[alias];
       changes.push({ kind: "remove-duplicate-project-entry", project, name: alias });
     }
   }
   for (const [alias, entry] of Object.entries(updatedDesktop.mcpServers ?? {})) {
-    if (!sameBridge(entry)) continue;
+    if (!sameBridge(entry, `Shared Desktop entry ${alias}`)) continue;
     if (comparable(entry) !== comparable(source)) throw new Error(`Shared Desktop entry ${alias} has customized settings; review it before migration`);
     delete updatedDesktop.mcpServers[alias];
     changes.push({ kind: "remove-shared-desktop-entry", name: alias });

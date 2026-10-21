@@ -37,6 +37,7 @@ import { captureProjectScope } from "./project-scope.mjs";
 import { DesktopReplyReceipts } from "./desktop-reply-receipts.mjs";
 import { registerDesktopReadTools } from "./desktop-read-tools.mjs";
 import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
+import { readRelayOwner } from "./native-relay-owner.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -103,6 +104,13 @@ async function beforeDesktopRequest({ operation, args, phase }) {
     context.dispatched = true;
     if (args.threadId) context.threadId = args.threadId;
   }
+}
+
+function relayOwnerLines(socketPath) {
+  if (IS_WINDOWS || !socketPath) return [];
+  const owner = readRelayOwner(socketPath);
+  if (!owner) return [];
+  return [`native owner:   ${owner.role === "host" ? `detached relay host PID ${owner.pid}; it keeps serving until Codex Desktop quits or a task's companion takes over` : `companion PID ${owner.pid}`}`];
 }
 
 function withheldDesktopResult(error, context) {
@@ -1010,6 +1018,7 @@ registerTool(
         "project scope:  verified Claude sender; same directory or Git repository, checked before each mutation",
         `native relay:   ${native.available ? "available; verified through Codex Desktop" : "unavailable"}`,
         `native endpoint: ${native.socketPath}`,
+        ...relayOwnerLines(native.socketPath),
         ...(native.available ? [`local projects: ${native.localProjects}`] : [`reason: ${native.reason}`]),
         "app-server:     disabled in Desktop-only mode; no external endpoint is contacted",
         "autostart:      off; external app-server fallback is disabled",

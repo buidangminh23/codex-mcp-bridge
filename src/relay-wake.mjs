@@ -184,9 +184,12 @@ export function createRelayWake({
       const executor = executorThreadId();
       const target = typeof threadId === "string" && THREAD_ID.test(threadId) && threadId !== executor
         ? threadId : (await findTask(senderCwd(), [executor])) ?? (await findAnyTask([executor]));
-      if (!target) return null;
       const startedAt = now();
       const failures = Number.isInteger(state.failures) ? state.failures : 0;
+      if (!target) {
+        if (background && stateFile) writeWakeState(stateFile, { ...readWakeState(stateFile), attemptAt: startedAt, failures: failures + 1 });
+        return null;
+      }
       const fail = (message) => {
         failedAt = now();
         if (stateFile) writeWakeState(stateFile, { ...readWakeState(stateFile), attemptAt: startedAt, failures: failures + 1 });

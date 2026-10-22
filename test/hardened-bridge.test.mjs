@@ -32,7 +32,7 @@ after(() => {
 function strictEnv(root, extra = {}) {
   return { CODEX_BRIDGE_HARDENED: "1", CODEX_BRIDGE_ALLOWED_ROOTS: root,
     CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_THREAD_POLICY: "roots",
-    CODEX_BRIDGE_REMAP: "0", CODEX_BRIDGE_AUTOSTART: "0", ...extra };
+    CODEX_BRIDGE_REMAP: "0", CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_RELAY_KEEPER: "0", ...extra };
 }
 
 function replaceDirectory(directory) {

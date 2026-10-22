@@ -239,6 +239,27 @@ describe("relay keeper", () => {
     assert.equal(fs.existsSync(`${stateFile}.lock`), false);
   });
 
+  it("backs off background wakes when Codex Desktop runs but no task can be opened", async (t) => {
+    const stateFile = stateFixture(t);
+    let checks = 0;
+    let time = 1_000_000;
+    const make = () => createRelayWake({
+      enabled: true, desktopRunning: () => { checks += 1; return true; }, executorThreadId: () => null,
+      findTask: async () => null, findAnyTask: async () => null, open: async () => { throw new Error("must not open"); },
+      answers: async () => false, stateFile, now: () => time, sleep: async () => {},
+    });
+    assert.equal(await make()({ socketPath: "/s", background: true }), null);
+    time += 30000;
+    assert.equal(await make()({ socketPath: "/s", background: true }), null);
+    assert.equal(checks, 1);
+    time += 30000;
+    assert.equal(await make()({ socketPath: "/s", background: true }), null);
+    assert.equal(checks, 2);
+    time += 60000;
+    assert.equal(await make()({ socketPath: "/s", background: true }), null);
+    assert.equal(checks, 2);
+  });
+
   it("checks whether Codex Desktop runs at most once a minute across processes while it is closed", async (t) => {
     const stateFile = stateFixture(t);
     let checks = 0;

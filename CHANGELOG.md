@@ -4,6 +4,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.17] - 2026-10-22
+
+### Fixed
+
+- `npm install -g @minhspark/codex-mcp-bridge` run from Claude Code's Bash tool no longer warns that the installed version could not be verified. Claude Code shell snapshots keep the `npm()` function from `scripts/npm-footer.sh` but drop functions whose names start with `_`, so the separate `_codex_bridge_installed_version` helper vanished and every install printed `Warning: npm completed, but the installed @minhspark/codex-mcp-bridge version could not be verified.` even though it succeeded. The version reader now lives inside `npm()` and the script defines no other function.
+- The 1.22.14 changelog entry no longer reads "The wake It needs".
+
+### Verification
+
+- New test `reports an upgrade when only the npm function survives a shell snapshot` loads only `typeset -f npm` in bash and zsh, the way a snapshot does. CI passed on Ubuntu, macOS and Windows with Node 22 and 24 (#151).
+
 ## [1.22.16] - 2026-10-22
 
 ### Fixed

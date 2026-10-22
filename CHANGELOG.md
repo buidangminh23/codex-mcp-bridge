@@ -4,6 +4,24 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.18] - 2026-10-22
+
+### Fixed
+
+- `wait_codex_reply` with a short `timeoutSec` no longer fails with `The response deadline elapsed while another operation held this thread` when no other operation held the thread. The tool's deadline starts before the caller's identity check, and that check spawns PowerShell on Windows. When it used up the whole budget, the observation never started and the bridge reported a held thread instead of a timeout. It now returns the normal timeout result with `nextAction: wait_codex_reply`. The held-thread message is now used only when another operation actually holds the thread; otherwise the error says the deadline elapsed before the operation started.
+
+### Tests
+
+- The account-change wait test no longer depends on timing. Its relay fixture parks `wait_threads` on a gate that the test releases, instead of a fixed 2.5 s sleep against a 1 s budget. That timing failed on a stalled `windows-latest` runner.
+- The relay fixture in `test/bridge-integration.test.mjs` provisions its creation receipts once per file, so Windows tests no longer spend four PowerShell cold starts inside their own timing.
+- The Desktop task integration assertions now print the tool result when they fail.
+
+### Verification
+
+- New unit tests cover a deadline that elapses before an unheld operation starts, and one that elapses while another operation holds the thread. The first fails on 1.22.17.
+- Simulating a 1.2 s caller check reproduced the CI failure text exactly on 1.22.17. The rewritten test passes with 1.2 s and 3 s simulated delays.
+- Full suite on macOS: 1558 pass, 0 fail, 23 skipped.
+
 ## [1.22.17] - 2026-10-22
 
 ### Fixed

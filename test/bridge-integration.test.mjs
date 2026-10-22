@@ -230,6 +230,8 @@ describe("Desktop task MCP integration", () => {
   it("withholds a completed wait result after an account change and keeps the no-resend guidance", { timeout: 30000 }, async () => {
     const calls = [];
     let changeAccount = null;
+    let releaseWait;
+    const waitGate = new Promise((resolve) => { releaseWait = resolve; });
     await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {
       calls.push(operation);
       if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [{ id: "previous-turn", status: "completed" }] };
@@ -237,7 +239,7 @@ describe("Desktop task MCP integration", () => {
       if (operation === "wait_threads") {
         if (!changeAccount) return { polls: [{ thread: { id: "original-task", hostId: "local", status: { type: "active" } }, latestTurn: { id: "original-turn", status: "inProgress" } }] };
         changeAccount();
-        await new Promise((resolve) => setTimeout(resolve, 2500));
+        await waitGate;
         return { polls: [{ thread: { id: "original-task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "original-turn", status: "completed" }, latestAssistantMessage: { turnId: "original-turn", phase: "final_answer", text: "PRIVATE_WAITED_REPLY" } }] };
       }
       throw new Error(`Unexpected operation ${operation}`);
@@ -247,8 +249,12 @@ describe("Desktop task MCP integration", () => {
       assert.equal(sent.structuredContent.nextAction, "wait_codex_reply");
       const sends = calls.filter((operation) => operation === "send_message_to_thread").length;
       changeAccount = () => desktopFixture.setAccount(CLAUDE_ACCOUNT_B);
-      const waited = await client.callTool({ name: "wait_codex_reply", arguments: { deliveryId: sent.structuredContent.deliveryId, timeoutSec: 1 } });
-      assert.equal(waited.isError, true);
+      const polls = calls.filter((operation) => operation === "wait_threads").length;
+      let waited;
+      try { waited = await client.callTool({ name: "wait_codex_reply", arguments: { deliveryId: sent.structuredContent.deliveryId, timeoutSec: 5 } }); }
+      finally { releaseWait(); }
+      assert.equal(calls.filter((operation) => operation === "wait_threads").length, polls + 1, JSON.stringify(calls));
+      assert.equal(waited.isError, true, JSON.stringify(waited.content));
       assert.doesNotMatch(JSON.stringify(waited), /PRIVATE_WAITED_REPLY/);
       assert.match(waited.content[0].text, /The read result was withheld\. Keep the deliveryId and retry wait_codex_reply; do not resend the original message\.$/);
       assert.equal(waited.structuredContent.operation, undefined);

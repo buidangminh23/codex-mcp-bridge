@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
-import { before, describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -27,13 +27,28 @@ function claudeFixtureRoot(home) {
     : process.platform === "win32" ? path.join(home, "AppData", "Roaming", "Claude") : path.join(home, ".config", "Claude");
 }
 
+const fixtureReceiptsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-receipts-"));
+let fixtureCreationReceiptsStore = null;
+
+function fixtureCreationReceipts() {
+  if (fixtureCreationReceiptsStore) return fixtureCreationReceiptsStore;
+  const directory = fs.mkdtempSync(path.join(fixtureReceiptsRoot, "store-"));
+  const receipts = new NativeCreationReceipts({ directory: path.join(directory, "native-creations") });
+  receipts.reserve(randomUUID(), {}, { claude: "fixture", codex: "fixture" }, "executor");
+  fixtureCreationReceiptsStore = receipts;
+  return receipts;
+}
+
+before(() => { try { fixtureCreationReceipts(); } catch {} });
+after(() => fs.rmSync(fixtureReceiptsRoot, { recursive: true, force: true }));
+
 function fixtureRelayServer({ home, socketPath, ...options }) {
   const assertAccount = (expected) => assertAccountIdentity(expected, {
     claude: readClaudeAccountContext({ root: claudeFixtureRoot(home) }),
     codex: readCodexAccountContext({ root: path.join(home, ".codex") }),
   });
   const servers = [socketPath, `${socketPath}-accounts-v2`].map((endpoint) => new RelaySocketServer({
-    ...options, socketPath: endpoint, assertAccount, creationReceipts: new NativeCreationReceipts({ directory: path.join(home, "native-creations") }),
+    ...options, socketPath: endpoint, assertAccount, creationReceipts: fixtureCreationReceipts(),
   }));
   return { start: () => Promise.all(servers.map((server) => server.start())), stop: () => servers.forEach((server) => server.stop()) };
 }
@@ -390,7 +405,7 @@ describe("Desktop task MCP integration", () => {
             assert.equal(sentResult.structuredContent.nextAction, "none");
           } finally { await restarted.client.close(); }
         }
-        assert.equal(sentResult.isError, undefined);
+        assert.equal(sentResult.isError, undefined, JSON.stringify(sentResult.content));
         assert.match(sentResult.content[0].text, new RegExp(itemId));
         assert.match(sentResult.content[0].text, new RegExp(expectedHash));
         assert.match(sentResult.content[0].text, /exact fixture reply/);
@@ -401,7 +416,7 @@ describe("Desktop task MCP integration", () => {
         if (!resume) {
           for (const [name, selector] of [["read_codex_thread", { threadId, turnId }], ["wait_codex_reply", { deliveryId: sentResult.structuredContent.deliveryId }]]) {
             const filtered = await client.callTool({ name, arguments: { ...selector, responsePreferences: { delivery: { type: "cursorPagination" } } } });
-            assert.equal(filtered.isError, undefined);
+            assert.equal(filtered.isError, undefined, JSON.stringify(filtered.content));
             assert.equal(filtered.structuredContent.responseVersion, 1);
             assert.equal(filtered.structuredContent.replySha256, expectedHash);
             assert.equal(filtered.structuredContent.items[0].item.text, reply);
@@ -464,7 +479,7 @@ describe("Desktop task MCP integration", () => {
       throw new Error(`Unexpected operation ${operation}`);
     }, async ({ client }) => {
       const result = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "target", prompt: "one native send", openInApp: false } });
-      assert.equal(result.isError, undefined);
+      assert.equal(result.isError, undefined, JSON.stringify(result.content));
       assert.match(result.content[0].text, /response observation: unavailable/);
       assert.match(result.content[0].text, /assistant response unavailable.*do not resend/i);
       assert.equal(calls.filter((operation) => operation === "send_message_to_thread").length, 1);
@@ -554,11 +569,11 @@ describe("Desktop task MCP integration", () => {
         assert.equal(calls.filter((operation) => operation === "create_thread").length, 1);
         releaseCreate();
         const accepted = await first;
-        assert.equal(accepted.isError, undefined);
+        assert.equal(accepted.isError, undefined, JSON.stringify(accepted.content));
         assert.match(accepted.content[0].text, /threadId: shared-receipt-task/);
         assert.deepEqual(creationReceipts(home).map(({ state, threadId }) => ({ state, threadId })), [{ state: "known", threadId: "shared-receipt-task" }]);
         const activeRetry = await simultaneous.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Slightly edited private brief" } });
-        assert.equal(activeRetry.isError, undefined);
+        assert.equal(activeRetry.isError, undefined, JSON.stringify(activeRetry.content));
         assert.match(activeRetry.content[0].text, /Reused the existing Codex Desktop task; the prompt was not resent/);
         assert.match(activeRetry.content[0].text, /^project assignment: verified in Desktop's current listing$/m);
         completed = true;
@@ -568,7 +583,7 @@ describe("Desktop task MCP integration", () => {
         clients.push(restarted.client);
         assert.notEqual(restarted.pid, simultaneous.pid);
         const retry = await restarted.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Slightly edited private brief" } });
-        assert.equal(retry.isError, undefined);
+        assert.equal(retry.isError, undefined, JSON.stringify(retry.content));
         assert.match(retry.content[0].text, /Reused the existing Codex Desktop task; the prompt was not resent/);
         assert.match(retry.content[0].text, /threadId: shared-receipt-task/);
         assert.match(retry.content[0].text, /^projectId: receipt-project$/m);
@@ -594,12 +609,12 @@ describe("Desktop task MCP integration", () => {
     }, async ({ client, home, env, server }) => {
       const args = { cwd: home, name: "Omitted title", prompt: "Original private brief", openInApp: false };
       const accepted = await client.callTool({ name: "start_codex_thread", arguments: args });
-      assert.equal(accepted.isError, undefined);
+      assert.equal(accepted.isError, undefined, JSON.stringify(accepted.content));
       await client.close();
       const restarted = await additionalBridgeProcess({ home, env });
       try {
         const reused = await restarted.client.callTool({ name: "delegate_to_codex", arguments: { ...args, prompt: "Edited private brief" } });
-        assert.equal(reused.isError, undefined);
+        assert.equal(reused.isError, undefined, JSON.stringify(reused.content));
         const text = reused.content[0].text;
         assert.match(text, /Reused the existing Codex Desktop task; the prompt was not resent/);
         assert.match(text, /^threadId: omitted-receipt-task$/m);
@@ -715,7 +730,7 @@ describe("Desktop task MCP integration", () => {
         const result = await client.callTool({ name: "delegate_to_codex", arguments: { ...args, timeoutSec: 10 } });
         const elapsed = Date.now() - started;
         assert.ok(elapsed >= 9500 && elapsed < 11000, `Whole operation took ${elapsed}ms; expected the single 10s budget`);
-        assert.equal(result.isError, undefined);
+        assert.equal(result.isError, undefined, JSON.stringify(result.content));
         assert.match(result.content[0].text, /threadId: timeout-receipt-task/);
         assert.match(result.content[0].text, /status: timeout/);
         assert.deepEqual(creationReceipts(home).map(({ state, threadId }) => ({ state, threadId })), [{ state: "known", threadId: "timeout-receipt-task" }]);
@@ -724,7 +739,7 @@ describe("Desktop task MCP integration", () => {
         const restarted = await additionalBridgeProcess({ home, env });
         try {
           const retry = await restarted.client.callTool({ name: "start_codex_thread", arguments: args });
-          assert.equal(retry.isError, undefined);
+          assert.equal(retry.isError, undefined, JSON.stringify(retry.content));
           assert.match(retry.content[0].text, /Reused the existing Codex Desktop task/);
           assert.match(retry.content[0].text, /threadId: timeout-receipt-task/);
           assert.match(retry.content[0].text, /^project assignment: verified in Desktop's current listing$/m);
@@ -748,12 +763,12 @@ describe("Desktop task MCP integration", () => {
     try {
       await withBridge(() => { throw new Error("Desktop diagnostics must not contact an external app-server"); }, async ({ client, home, server }) => {
         const status = await client.callTool({ name: "codex_bridge_status", arguments: {} });
-        assert.equal(status.isError, undefined);
+        assert.equal(status.isError, undefined, JSON.stringify(status.content));
         assert.match(status.content[0].text, /native relay:   available; verified/);
         assert.match(status.content[0].text, /autostart:      off/);
         assert.doesNotMatch(status.content[0].text, /Start one with/);
         const listed = await client.callTool({ name: "list_codex_threads", arguments: { cwd: home, searchTerm: "TARGET", limit: 5 } });
-        assert.equal(listed.isError, undefined);
+        assert.equal(listed.isError, undefined, JSON.stringify(listed.content));
         assert.match(listed.content[0].text, /1 Codex thread\(s\) via Codex Desktop/);
         assert.match(listed.content[0].text, /title: Target task/);
         assert.match(listed.content[0].text, /updated: 2026-09-05/);
@@ -762,11 +777,11 @@ describe("Desktop task MCP integration", () => {
         assert.equal(loaded.isError, true);
         assert.match(loaded.content[0].text, /does not expose a loaded-only/);
         const read = await client.callTool({ name: "read_codex_thread", arguments: { threadId: "target" } });
-        assert.equal(read.isError, undefined);
+        assert.equal(read.isError, undefined, JSON.stringify(read.content));
         const opened = await client.callTool({ name: "open_codex_thread", arguments: { threadId: "target" } });
-        assert.equal(opened.isError, undefined);
+        assert.equal(opened.isError, undefined, JSON.stringify(opened.content));
         const stopped = await client.callTool({ name: "stop_codex_app_server", arguments: {} });
-        assert.equal(stopped.isError, undefined);
+        assert.equal(stopped.isError, undefined, JSON.stringify(stopped.content));
         assert.match(stopped.content[0].text, /left unchanged/);
         assert.deepEqual(calls, ["list_projects", "list_threads", "read_thread", "read_thread", "read_thread", "read_thread", "read_thread", "navigate_to_codex_page"]);
         assert.equal(server.connections, 0);
@@ -837,7 +852,7 @@ describe("Desktop task MCP integration", () => {
         await Promise.race([firstWaiting, first.then((response) => assert.fail(`Desktop send returned before observation: ${JSON.stringify(response)}`))]);
         const second = send("same");
         const other = await send("other");
-        assert.equal(other.isError, undefined);
+        assert.equal(other.isError, undefined, JSON.stringify(other.content));
         assert.deepEqual(sends, ["same:1", "other:1"]);
         release();
         const results = await Promise.all([first, second]);
@@ -878,7 +893,7 @@ describe("Desktop task MCP integration", () => {
     try {
       await withBridge(() => { throw new Error("Native delivery must not call the external app-server"); }, async ({ client, home }) => {
         const result = await client.callTool({ name: "delegate_to_codex", arguments: { cwd: home, prompt: "Task", name: "Visible task", openInApp: true } });
-        assert.equal(result.isError, undefined);
+        assert.equal(result.isError, undefined, JSON.stringify({ content: result.content, calls: calls.map(([operation]) => operation) }));
         assert.match(result.content[0].text, /projectId: project-id/);
         assert.match(result.content[0].text, /opened in Codex Desktop while/);
         assert.match(result.content[0].text, /response observation: unavailable/);

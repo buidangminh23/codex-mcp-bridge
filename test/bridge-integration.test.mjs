@@ -116,7 +116,7 @@ async function withBridge(onRequest, run, extraEnv = () => ({})) {
       HOME: home, USERPROFILE: home, CODEX_APP_SERVER_URL: server.url,
       CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_ALLOWED_ROOTS: home,
       CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_OPEN_IN_APP: "0",
-      CODEX_BRIDGE_RELEASE_AFTER_TURN: "0",
+      CODEX_BRIDGE_RELEASE_AFTER_TURN: "0", CODEX_BRIDGE_RELAY_KEEPER: "0",
       ...await extraEnv(home),
     };
     const desktopFixture = env.CODEX_BRIDGE_DESKTOP_TASKS === "1" ? await desktopCallerFixture(home, env) : null;

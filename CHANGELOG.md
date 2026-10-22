@@ -4,6 +4,23 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.16] - 2026-10-22
+
+### Fixed
+
+- Start the Codex Desktop native relay on its own after Codex Desktop opens, instead of only when a send fails. In 1.22.14 the relay woke only inside a failing Desktop request, so `codex_bridge_status` (which has no calling task) could never wake it, and a wake that took longer than its 20-second window left the request failed with the relay-down guidance. Each bridge process now checks the relay socket every 30 seconds. When the relay is missing and Codex Desktop is running, it opens a recent Codex Desktop task in the background and waits up to 60 seconds for the relay. Codex Desktop is checked at most once a minute while it is closed.
+- Coordinate wakes across bridge processes. Every Claude Code session runs its own bridge, so several of them could open tasks at the same moment. Wakes now share a state file (`~/.codex/bridge-relay-wake.json`) and a lock beside it. Only one process opens a task at a time; an on-demand request that finds the lock held waits for the relay instead of opening another task. Failed background wakes, including those that find no Codex Desktop task to open, back off from one minute up to 30 minutes and reset after a success. A stale lock is reclaimed.
+- Fall back to the most recent Codex Desktop task of any project when neither the destination task nor a task of the sender's project is available, so a status call or a session in a new project can still wake the relay. The internal Native Relay executor task is still never opened.
+- `CODEX_BRIDGE_RELAY_KEEPER=0` turns off the background check; `CODEX_BRIDGE_RELAY_WAKE=0` still turns off every wake.
+- A request that arrives while a background wake is in progress waits only until its own deadline instead of the background wake's 60 seconds.
+- `codex-sites-connector` runs `whoami.exe` and `icacls.exe` from `%SystemRoot%\System32` instead of looking them up on `PATH`. Started from Git Bash, it ran GNU `whoami`, could not read the Windows user SID and refused to protect its files.
+- `npm test` runs the suite without the caller's `CLAUDE*`, `CODEX_*`, `ANTHROPIC_*` and `MCP_*` variables. Inside a Claude Code session they pointed tests at the live Claude Desktop data, messaging socket and bridge configuration, so tests that pass in CI failed locally.
+
+### Limitations
+
+- Opening a task through `codex://threads/<id>` makes Codex Desktop show that task. The keeper opens only while the relay is missing and picks the most recent task, which is usually the one already on screen.
+- The keeper runs only while a Claude client keeps a bridge process alive. With no Claude session open, the relay still starts when a task is opened in Codex Desktop.
+
 ## [1.22.15] - 2026-10-22
 
 ### Fixed

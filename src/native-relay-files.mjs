@@ -2,7 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 
 export function relayFileIdentity(target, kind, expected) {
-  const current = fs.lstatSync(target, { bigint: true });
+  const root = fs.realpathSync.native(path.dirname(target));
+  const name = path.basename(target);
+  if (kind === "config" && name !== "native-relay.json") throw new Error("Unexpected relay configuration filename");
+  const file = path.resolve(root, name);
+  if (!file.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`)) throw new Error("Relay file escaped its directory");
+  const current = fs.lstatSync(file, { bigint: true });
   if (current.isSymbolicLink() || (kind === "config" ? !current.isFile() : !current.isSocket())
       || current.nlink !== 1n
       || typeof process.getuid === "function" && current.uid !== BigInt(process.getuid())

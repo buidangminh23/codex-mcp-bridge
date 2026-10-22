@@ -415,7 +415,7 @@ function isImageToolCompanion(entry, entriesById) {
         && typeof tool.id === "string" && tool.id === part.tool_use_id));
 }
 
-function compactContinuation(entry, root, entriesById, sessionId, cwd) {
+function compactContinuation(entry, root, entriesById, transcriptIds, sessionId, cwd) {
   if (entry.type !== "system" || entry.subtype !== "compact_boundary" || entry.parentUuid !== null
       || typeof entry.logicalParentUuid !== "string") return null;
   const sameIdentity = (record) => record?.entrypoint === "claude-desktop"
@@ -425,13 +425,16 @@ function compactContinuation(entry, root, entriesById, sessionId, cwd) {
   const segment = entry.compactMetadata?.preservedSegment;
   const preserved = entry.compactMetadata?.preservedMessages;
   const ids = preserved?.uuids;
+  const allIds = preserved?.allUuids;
   if (!Array.isArray(ids) || !ids.length || ids.length > 65536
       || ids.some((id) => typeof id !== "string" || !id) || new Set(ids).size !== ids.length
-      || !Array.isArray(preserved.allUuids) || preserved.allUuids.length !== ids.length
-      || ids.some((id, index) => preserved.allUuids[index] !== id)
+      || !Array.isArray(allIds) || !allIds.length || allIds.length > 65536
+      || allIds.some((id) => typeof id !== "string" || !id.trim()) || new Set(allIds).size !== allIds.length
       || !ids.includes(root.uuid) || segment?.headUuid !== ids[0]
       || segment.tailUuid !== ids.at(-1) || segment.tailUuid !== entry.logicalParentUuid
       || typeof segment.anchorUuid !== "string" || preserved.anchorUuid !== segment.anchorUuid) return null;
+  const persistedIds = allIds.filter((id) => transcriptIds.has(id));
+  if (persistedIds.length !== ids.length || ids.some((id, index) => persistedIds[index] !== id)) return null;
   if (ids.some((id, index) => !sameIdentity(entriesById.get(id))
       || index > 0 && entriesById.get(id).parentUuid !== ids[index - 1])
       || ids.includes(entriesById.get(ids[0]).parentUuid)) return null;
@@ -457,12 +460,15 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
   const entries = [];
   const roots = [];
   const ids = new Set();
+  const transcriptIds = new Set();
   let ambiguous = false;
   for (const line of lines) {
     if (!line.trim()) continue;
     let entry;
     try { entry = JSON.parse(line); } catch { ambiguous = true; continue; }
-    if (!entry || typeof entry !== "object" || Array.isArray(entry) || entry.isSidechain) continue;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    if (typeof entry.uuid === "string") transcriptIds.add(entry.uuid);
+    if (entry.isSidechain) continue;
     if (typeof entry.uuid === "string") {
       if (ids.has(entry.uuid)) ambiguous = true;
       ids.add(entry.uuid);
@@ -490,7 +496,7 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
     let parentUuid = entry.parentUuid;
     if (!ambiguous && !interruptions.length && descendants.has(entry.logicalParentUuid)
         && openLeaves.has(entry.logicalParentUuid)) {
-      const summaryId = compactContinuation(entry, root, entriesById, sessionId, cwd);
+      const summaryId = compactContinuation(entry, root, entriesById, transcriptIds, sessionId, cwd);
       if (summaryId) {
         parentUuid = entry.logicalParentUuid;
         compactSummaries.add(summaryId);

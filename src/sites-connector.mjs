@@ -86,10 +86,11 @@ export function defaultSitesConfigPath(env = process.env) {
 async function protectPrivatePath(target, directory = false) {
   if (process.platform !== "win32") { await fs.chmod(target, directory ? 0o700 : 0o600); return; }
   const run = promisify(execFile);
-  const { stdout } = await run("whoami.exe", ["/user", "/fo", "csv", "/nh"], { windowsHide: true });
+  const system32 = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+  const { stdout } = await run(path.win32.join(system32, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { windowsHide: true });
   const sid = stdout.match(/S-1-\d+(?:-\d+)+/)?.[0];
   if (!sid) throw new Error("Current Windows user SID could not be verified");
-  await run("icacls.exe", [target, "/inheritance:r", "/grant:r", `*${sid}:${directory ? "(OI)(CI)" : ""}(F)`], { windowsHide: true });
+  await run(path.win32.join(system32, "icacls.exe"), [target, "/inheritance:r", "/grant:r", `*${sid}:${directory ? "(OI)(CI)" : ""}(F)`], { windowsHide: true });
 }
 
 export async function pairSitesConnector({ siteUrl, allowedRoots, configFile = defaultSitesConfigPath(), readAccounts = readBridgeAccounts, fetchImpl = fetch, allowLoopback = false }) {

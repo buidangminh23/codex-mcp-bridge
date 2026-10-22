@@ -20,7 +20,7 @@ function fixture(action) {
     marker: path.join(directory, "home", "bridge-full-access.enabled"),
     policy: path.join(directory, "system", "requirements.toml"),
   };
-  try { return action(paths); } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  try { return action(paths); } finally { fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 }
 
 describe("Codex Full access setup", () => {
@@ -102,6 +102,7 @@ describe("Codex Full access setup", () => {
         CODEX_HOME: path.dirname(paths.config),
         ProgramData: programData,
         CODEX_BRIDGE_DESKTOP_TASKS: "1",
+        CODEX_BRIDGE_RELAY_KEEPER: "0",
       },
       input: "",
       encoding: "utf8",

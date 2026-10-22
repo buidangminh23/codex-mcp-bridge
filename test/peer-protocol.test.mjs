@@ -742,6 +742,32 @@ describe("peer endpoint", () => {
     assert.equal(readTranscriptOutcome("compacted", sandbox, "request"), null);
     write(rows);
     assert.equal(readTranscriptReply("compacted", sandbox, "request")?.text, "verified reply");
+    const expanded = structuredClone(rows);
+    expanded[2].compactMetadata.preservedMessages.allUuids = ["request", "unpersisted-1", "unpersisted-2", "tail"];
+    write(expanded);
+    assert.deepEqual(readTranscriptOutcome("compacted", sandbox, "request"), {
+      status: "reply_received",
+      reply: { text: "verified reply", msgId: "answer", source: "transcript", inReplyTo: "request", absorbed: false },
+    });
+    for (const [name, change] of [
+      ["missing all identities", (records) => { delete records[2].compactMetadata.preservedMessages.allUuids; }],
+      ["empty all identities", (records) => { records[2].compactMetadata.preservedMessages.allUuids = []; }],
+      ["duplicate absent identity", (records) => { records[2].compactMetadata.preservedMessages.allUuids.splice(1, 0, "unpersisted-1"); }],
+      ["duplicate persisted identity", (records) => { records[2].compactMetadata.preservedMessages.allUuids.push("request"); }],
+      ["non-string identity", (records) => { records[2].compactMetadata.preservedMessages.allUuids[1] = 42; }],
+      ["blank identity", (records) => { records[2].compactMetadata.preservedMessages.allUuids[1] = " "; }],
+      ["too many identities", (records) => { records[2].compactMetadata.preservedMessages.allUuids = ["request", ...Array.from({ length: 65535 }, (_, i) => `unpersisted-${i}`), "tail"]; }],
+      ["reordered persisted identities", (records) => { records[2].compactMetadata.preservedMessages.allUuids = ["tail", "unpersisted-1", "request"]; }],
+      ["missing persisted identity", (records) => { records[2].compactMetadata.preservedMessages.allUuids = ["unpersisted-1", "tail"]; }],
+      ["omitted known identity", (records) => { records[2].compactMetadata.preservedMessages.allUuids.splice(1, 0, "instructions"); }],
+      ["omitted sidechain identity", (records) => { records.push({ ...identity, uuid: "unpersisted-1", isSidechain: true, type: "assistant" }); }],
+      ["omitted foreign identity", (records) => { records.push({ ...identity, uuid: "unpersisted-1", sessionId: "other", type: "assistant" }); }],
+    ]) {
+      const records = structuredClone(expanded);
+      change(records);
+      write(records);
+      assert.equal(readTranscriptReply("compacted", sandbox, "request"), null, name);
+    }
     for (const [name, change] of [
       ["missing metadata", (records) => { delete records[2].compactMetadata; }],
       ["wrong logical parent", (records) => { records[2].logicalParentUuid = "unrelated"; }],
@@ -775,6 +801,12 @@ describe("peer endpoint", () => {
     beforeCompact[1] = { ...human, uuid: "tail", parentUuid: "request" };
     write(beforeCompact);
     assert.equal(readTranscriptReply("compacted", sandbox, "request"), null, "compaction cannot reconnect an interrupted request");
+    beforeCompact[2].compactMetadata.preservedMessages.allUuids = expanded[2].compactMetadata.preservedMessages.allUuids;
+    write(beforeCompact);
+    assert.equal(readTranscriptReply("compacted", sandbox, "request"), null, "expanded identities cannot reconnect an interrupted request");
+    write([...expanded.slice(0, -1), human, { ...expanded.at(-1), parentUuid: "human" }]);
+    assert.equal(readTranscriptOutcome("compacted", sandbox, "request")?.status, "interrupted");
+    assert.equal(readTranscriptReply("compacted", sandbox, "request"), null, "expanded identities preserve later interruptions");
     const background = structuredClone(rows);
     background.splice(1, 0,
       { ...identity, uuid: "call", parentUuid: "request", type: "assistant", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", name: "Bash", id: "background-call" }] } },
@@ -785,6 +817,9 @@ describe("peer endpoint", () => {
     background[4].compactMetadata.preservedMessages.allUuids = ["request", "call", "result", "tail"];
     write(background);
     assert.equal(readTranscriptReply("compacted", sandbox, "request"), null, "compaction preserves outstanding background work");
+    background[4].compactMetadata.preservedMessages.allUuids.splice(2, 0, "unpersisted-1");
+    write(background);
+    assert.equal(readTranscriptReply("compacted", sandbox, "request"), null, "expanded identities preserve outstanding background work");
   });
 
   it("handles malformed transcript records and content without crashing", () => {

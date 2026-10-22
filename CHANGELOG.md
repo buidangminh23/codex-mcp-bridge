@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Confirm Claude peer replies after native compaction includes transient, nonpersisted message IDs. The receipt reader now validates the ordered projection onto persisted records instead of requiring both metadata lists to be identical. Account, project, process identity, ancestry, interruption and pending background-work checks remain unchanged; transient IDs never establish reply ancestry.
+
 ## [1.22.14] - 2026-10-21
 
 ### Fixed

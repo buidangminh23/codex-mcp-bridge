@@ -37,11 +37,11 @@ import { captureProjectScope } from "./project-scope.mjs";
 import { DesktopReplyReceipts } from "./desktop-reply-receipts.mjs";
 import { registerDesktopReadTools } from "./desktop-read-tools.mjs";
 import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
-import { createRelayWake } from "./relay-wake.mjs";
+import { createRelayWake, relayKeeperEnabled, relayWakeStateFile, startRelayKeeper } from "./relay-wake.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.15";
+const VERSION = "1.22.16";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -76,7 +76,8 @@ const desktopTasksEnabled = desktopTasksConfigured();
 const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
 const desktopOperation = new AsyncLocalStorage();
 const replyReceipts = new DesktopReplyReceipts();
-const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts, senderContext: () => desktopOperation.getStore()?.caller, wakeRelay: createRelayWake({ senderCwd: () => desktopOperation.getStore()?.caller?.cwd ?? null, log }) });
+const relayWake = createRelayWake({ senderCwd: () => desktopOperation.getStore()?.caller?.cwd ?? null, stateFile: relayWakeStateFile(), log });
+const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts, senderContext: () => desktopOperation.getStore()?.caller, wakeRelay: relayWake });
 
 async function assertDesktopOperation(context, { verifyProcess = false } = {}) {
   if (!context || context.diagnostic) return;
@@ -1094,6 +1095,7 @@ registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+if (desktopTasksEnabled && relayKeeperEnabled()) startRelayKeeper({ wake: relayWake, socketPath: () => desktopTasks.relay.accountSocketPath, log });
 let shutdownPromise;
 const shutdown = () => shutdownPromise ??= (async () => {
   client?.close();

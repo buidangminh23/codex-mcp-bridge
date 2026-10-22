@@ -34,12 +34,13 @@ import { createRuntimeState } from "./runtime-state.mjs";
 import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
+import { removeRelayFile, relayFileIdentity, verifyRelaySocketMode } from "./native-relay-files.mjs";
 
 import { NativeCreationReceipts, creationIdValid } from "./native-creation-receipts.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.18";
+const VERSION = "1.22.19";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent, details) {
@@ -393,8 +394,8 @@ export class RelaySocketServer {
     requireAccountContext = false,
     strict = hardenedBridgeEnabled(),
     protectSocket = protectCurrentUserPipe,
-    restrictSocket = (target) => {
-      if (!IS_WINDOWS) fs.chmodSync(target, 0o600);
+    restrictSocket = (target, expected) => {
+      if (!IS_WINDOWS) verifyRelaySocketMode(target, expected);
     },
     signalExit = true,
     log: logFn = () => {},
@@ -468,7 +469,7 @@ export class RelaySocketServer {
         this.aclReady = true;
         for (const provisional of this.provisionalSockets) provisional.destroy();
         this.provisionalSockets.clear();
-      } else this.restrictSocket(this.socketPath);
+      } else this.restrictSocket(this.socketPath, this.boundIdentity);
       if (generation !== this.startGeneration) throw new Error("Relay socket startup was cancelled");
     } catch (err) {
       this.aclReady = !IS_WINDOWS || !this.strict;
@@ -524,10 +525,15 @@ export class RelaySocketServer {
   #bind(target) {
     return new Promise((resolve, reject) => {
       this.server.once("error", reject);
-      this.server.listen(target, () => {
-        this.server.off("error", reject);
-        resolve();
-      });
+      const previousMask = IS_WINDOWS ? null : process.umask(0o177);
+      try {
+        this.server.listen(target, () => {
+          this.server.off("error", reject);
+          resolve();
+        });
+      } finally {
+        if (previousMask !== null) process.umask(previousMask);
+      }
     });
   }
 
@@ -553,7 +559,7 @@ export class RelaySocketServer {
           if (error.code !== "EEXIST") throw error;
           if (!replaceStale || attempt || await this.#socketIsLive()) throw new Error(`another native relay companion already owns ${this.socketPath}`);
           this.log(`removing the stale relay socket left at ${this.socketPath}`);
-          fs.rmSync(this.socketPath, { force: true });
+          removeRelayFile(this.socketPath);
         }
       }
       const identity = fs.lstatSync(this.socketPath, { bigint: true });
@@ -570,13 +576,8 @@ export class RelaySocketServer {
   async #listen({ replaceStale }) {
     if (!IS_WINDOWS && await this.#listenLinked(replaceStale)) return;
     try {
-      await new Promise((resolve, reject) => {
-        this.server.once("error", reject);
-        this.server.listen(this.socketPath, () => {
-          this.server.off("error", reject);
-          resolve();
-        });
-      });
+      await this.#bind(this.socketPath);
+      if (!IS_WINDOWS) this.boundIdentity = relayFileIdentity(this.socketPath, "socket");
     } catch (err) {
       if (err.code !== "EADDRINUSE" || !replaceStale) throw err;
       if (IS_WINDOWS) {
@@ -590,7 +591,7 @@ export class RelaySocketServer {
         throw new Error(`another native relay companion already owns ${this.socketPath}`);
       }
       this.log(`removing the stale relay socket left at ${this.socketPath}`);
-      fs.rmSync(this.socketPath, { force: true });
+      removeRelayFile(this.socketPath);
       await this.#listen({ replaceStale: false });
     }
   }

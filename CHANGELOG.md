@@ -4,6 +4,18 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.19] - 2026-10-22
+
+### Fixed
+
+- Relay cleanup validates the canonical parent, expected file type, ownership, link count and identity before removing a configuration file or Unix socket. A regular file selected through a socket path is preserved, and symlinks and hardlinks are rejected.
+- Unix relay sockets are created with mode `0600` before accepting connections. Startup verifies the socket identity and permissions without changing permissions through an environment-derived path, and restores the process umask after binding.
+- Supervisor timer intervals use explicit lower and upper bounds, including Node's timer overflow limit, so CodeQL can verify the resource limits.
+
+### Tests
+
+- Regression tests cover ordinary files, hardlinks, symlinks, custom Unix sockets, private socket creation, umask restoration, replaced socket identities and timer boundaries.
+
 ## [1.22.18] - 2026-10-22
 
 ### Fixed

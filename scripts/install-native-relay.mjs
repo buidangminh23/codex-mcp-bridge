@@ -21,10 +21,11 @@ import { applyStdioMcpRegistration, stdioMcpRegistration } from "../src/codex-mc
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
 import { codexAccessPaths, enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
 import { stableInstallPath } from "../src/install-paths.mjs";
+import { removeRelayFile } from "../src/native-relay-files.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.18";
+const VERSION = "1.22.19";
 const root = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const entry = path.join(root, "src", "mcp-supervisor.mjs");
 const entryArgs = ["native-relay-companion.mjs"];
@@ -50,8 +51,7 @@ if (remove) {
   const retiredExecutor = readRelayConfig()?.relayThreadId;
   const sockets = IS_WINDOWS ? [] : [...new Set([relaySocketPath(), desktopTaskSocketPath(), accountRelaySocketPath()])];
   for (const leftover of [relayConfigPath(), ...sockets]) {
-    if (fs.existsSync(leftover)) {
-      fs.rmSync(leftover, { force: true });
+    if (removeRelayFile(leftover, { kind: leftover === relayConfigPath() ? "config" : "socket" })) {
       console.log(`removed ${leftover}`);
     }
   }

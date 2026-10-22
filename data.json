@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-10-22T15:19:03.428Z",
+  "updatedAt": "2026-10-22T20:08:32.552Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -18194,7 +18194,7 @@
       }
     },
     {
-      "collectedAt": "2026-10-22T15:19:03.428Z",
+      "collectedAt": "2026-10-22T20:08:32.552Z",
       "views": {
         "count": 286,
         "uniques": 74,
@@ -18478,13 +18478,381 @@
           }
         ]
       },
-      "releases": [],
+      "releases": [
+        {
+          "tag": "v1.22.19",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.18",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.17",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.16",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.15",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.14",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.13",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.12",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.11",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.10",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.9",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.8",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.7",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.6",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.4",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.21.6",
+          "assets": []
+        },
+        {
+          "tag": "v1.21.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.21.4",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.4.zip",
+              "downloads": 1
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.4.zip.sha256",
+              "downloads": 1
+            }
+          ]
+        },
+        {
+          "tag": "v1.21.3",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.3.zip",
+              "downloads": 2
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.3.zip.sha256",
+              "downloads": 1
+            }
+          ]
+        },
+        {
+          "tag": "v1.21.2",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.2.zip",
+              "downloads": 2
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.2.zip.sha256",
+              "downloads": 1
+            }
+          ]
+        },
+        {
+          "tag": "v1.21.1",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.1.zip",
+              "downloads": 2
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.1.zip.sha256",
+              "downloads": 1
+            }
+          ]
+        },
+        {
+          "tag": "v1.21.0",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.0.zip",
+              "downloads": 3
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.0.zip.sha256",
+              "downloads": 1
+            }
+          ]
+        },
+        {
+          "tag": "v1.20.1",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.20.1.zip",
+              "downloads": 4
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.20.1.zip.sha256",
+              "downloads": 1
+            }
+          ]
+        },
+        {
+          "tag": "v1.20.0",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.20.0.zip",
+              "downloads": 4
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.20.0.zip.sha256",
+              "downloads": 1
+            }
+          ]
+        },
+        {
+          "tag": "v1.19.7",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.6",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.4",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.18.2",
+          "assets": [
+            {
+              "name": "minhspark-codex-mcp-bridge-1.18.2.tgz",
+              "downloads": 1
+            },
+            {
+              "name": "SHA256SUMS.txt",
+              "downloads": 2
+            }
+          ]
+        },
+        {
+          "tag": "v1.18.1",
+          "assets": [
+            {
+              "name": "minhspark-codex-mcp-bridge-1.18.1.tgz",
+              "downloads": 1
+            },
+            {
+              "name": "SHA256SUMS.txt",
+              "downloads": 2
+            }
+          ]
+        },
+        {
+          "tag": "v1.18.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.17.0",
+          "assets": [
+            {
+              "name": "minhspark-codex-mcp-bridge-1.17.0.tgz",
+              "downloads": 1
+            },
+            {
+              "name": "SHA256SUMS.txt",
+              "downloads": 2
+            }
+          ]
+        },
+        {
+          "tag": "v1.16.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.16.0",
+          "assets": [
+            {
+              "name": "desktop-demo.gif",
+              "downloads": 24
+            },
+            {
+              "name": "desktop-demo.mp4",
+              "downloads": 10
+            }
+          ]
+        },
+        {
+          "tag": "v1.15.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.15.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.15.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.9",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.8",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.7",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.6",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.4",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.12.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.12.4",
+          "assets": []
+        },
+        {
+          "tag": "v1.12.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.12.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.12.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.11.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.11.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.11.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.11.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.10.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.10.0",
+          "assets": []
+        }
+      ],
       "sourceCollectedAt": {
-        "views": "2026-10-22T15:19:03.428Z",
-        "clones": "2026-10-22T15:19:03.428Z",
-        "npm": "2026-10-22T15:19:03.428Z",
-        "repository": "2026-10-22T15:19:03.428Z",
-        "releases": "2026-10-22T15:19:03.428Z"
+        "views": "2026-10-22T20:08:32.552Z",
+        "clones": "2026-10-22T20:08:32.552Z",
+        "npm": "2026-10-22T20:08:32.552Z",
+        "repository": "2026-10-22T20:08:32.552Z",
+        "releases": "2026-10-22T20:08:32.552Z"
       }
     }
   ],
@@ -19114,7 +19482,7 @@
     }
   },
   "usage": {
-    "collectedAt": "2026-10-22T15:19:06Z",
+    "collectedAt": "2026-10-22T20:08:34Z",
     "active": {
       "day": 0,
       "week": 0,

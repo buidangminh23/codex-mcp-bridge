@@ -41,7 +41,7 @@ import { createRelayWake } from "./relay-wake.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.14";
+const VERSION = "1.22.15";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 

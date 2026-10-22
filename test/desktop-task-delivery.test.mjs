@@ -1166,6 +1166,38 @@ describe("Desktop creation receipts and deadlines", () => {
     assert.equal(nextRan, true);
   });
 
+  it("treats a deadline that elapsed before an unheld operation started as a deadline, not a held thread", async (t) => {
+    const f = fixture(t, { now: () => 50 });
+    let ran = false;
+    const observed = await f.delivery.withThread("task", () => { ran = true; }, {
+      deadline: 20,
+      onDeadline(error) { return { status: "timeout", reason: error.message }; },
+    });
+    assert.equal(ran, false);
+    assert.equal(observed.status, "timeout");
+    assert.match(observed.reason, /before the operation started/);
+    await assert.rejects(f.delivery.withThread("task", () => { ran = true; }, { deadline: 20 }), (error) => {
+      assert.match(error.message, /deadline elapsed before the operation started\. No new prompt was sent\./);
+      assert.doesNotMatch(error.message, /another operation/);
+      return true;
+    });
+    assert.equal(ran, false);
+    assert.equal(f.delivery.threadOperations.size, 0);
+  });
+
+  it("names the holding operation when a queued operation starts after its deadline", async (t) => {
+    let time = 0;
+    const f = fixture(t, { now: () => time });
+    let release;
+    const first = f.delivery.withThread("task", () => new Promise((resolve) => { release = resolve; }));
+    const queued = f.delivery.withThread("task", () => assert.fail("expired operation ran"), { deadline: 20, onDeadline(error) { throw error; } });
+    while (!release) await Promise.resolve();
+    time = 30;
+    release();
+    await assert.rejects(queued, /deadline elapsed while another operation held this thread\. No new prompt was sent\./);
+    await first;
+  });
+
   it("keeps an unconfirmed deadline as an error and does not run expired queued sends", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const f = fixture(t, { now: () => 0 });

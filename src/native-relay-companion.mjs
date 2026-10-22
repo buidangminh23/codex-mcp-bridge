@@ -39,7 +39,7 @@ import { NativeCreationReceipts, creationIdValid } from "./native-creation-recei
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.17";
+const VERSION = "1.22.18";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent, details) {

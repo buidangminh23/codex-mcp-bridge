@@ -160,10 +160,12 @@ export class DesktopTaskDelivery {
   }
 
   async withThread(threadId, operation, { deadline, onDeadline } = {}) {
+    const held = this.threadOperations.has(threadId);
     const previous = this.threadOperations.get(threadId) ?? Promise.resolve();
     let expired = false;
     const current = previous.catch(() => {}).then(() => {
-      if (expired || (deadline !== undefined && this.now() >= deadline)) throw new Error("The response deadline elapsed while another operation held this thread. No new prompt was sent.");
+      if (deadline !== undefined && this.now() >= deadline) expired = true;
+      if (expired) throw new Error(`The response deadline elapsed ${held ? "while another operation held this thread" : "before the operation started"}. No new prompt was sent.`);
       return operation();
     });
     this.threadOperations.set(threadId, current);

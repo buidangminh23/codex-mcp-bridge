@@ -53,7 +53,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 - On macOS the wake opens the task without activating Codex Desktop. On Windows the `codex://` handler brings the Codex Desktop window forward.
 - The wake helps only when the opened task does not already have its MCP servers loaded. If the relay process died while its task stayed loaded, reopening that task does not restart it; open another task or reconnect the task's MCP servers.
-- The wake It needs either the destination task or an earlier Codex Desktop task in the sender's project; otherwise the bridge reports the relay-down guidance.
+- The wake needs either the destination task or an earlier Codex Desktop task in the sender's project; otherwise the bridge reports the relay-down guidance.
 - Codex can unload a task's MCP servers when the task is idle; the next request wakes the relay again.
 
 ## [1.22.13] - 2026-10-20

@@ -18,6 +18,14 @@ const hasId = (message) => Object.hasOwn(message, "id");
 const idKey = (id) => JSON.stringify(id);
 const errorMessage = (id, message) => ({ jsonrpc: "2.0", id, error: { code: -32603, message } });
 
+export function supervisorInterval(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  if (parsed < 100) return 100;
+  if (parsed > 2147483647) return 2147483647;
+  return parsed;
+}
+
 function lines(stream, receive, failed) {
   let buffer = Buffer.alloc(0);
   stream.on("data", (chunk) => {
@@ -156,13 +164,9 @@ export async function runSupervisor(entry, options = {}) {
     const pipe = await resolveNativeToolsPipePath();
     if (pipe) env.CODEX_APP_TOOLS_PIPE_PATH = pipe;
   }
-  const interval = (value, fallback) => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed > 0 ? Math.max(100, Math.min(2147483647, parsed)) : fallback;
-  };
-  const pollMs = interval(env.CODEX_BRIDGE_RELOAD_POLL_MS, 1000);
-  const settleMs = interval(env.CODEX_BRIDGE_RELOAD_SETTLE_MS, 1500);
-  const pruneDelayMs = interval(env.CODEX_BRIDGE_RUNTIME_PRUNE_DELAY_MS, 60000);
+  const pollMs = supervisorInterval(env.CODEX_BRIDGE_RELOAD_POLL_MS, 1000);
+  const settleMs = supervisorInterval(env.CODEX_BRIDGE_RELOAD_SETTLE_MS, 1500);
+  const pruneDelayMs = supervisorInterval(env.CODEX_BRIDGE_RUNTIME_PRUNE_DELAY_MS, 60000);
   let active;
   let initializeParams;
   let initializeResult;

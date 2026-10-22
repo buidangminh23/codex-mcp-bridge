@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createReleaseSnapshot, sourceRevision } from "../src/release-snapshot.mjs";
+import { supervisorInterval } from "../src/mcp-supervisor.mjs";
 import { createProcessReaper, processAlive, waitForExit } from "./helpers/process-reaper.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -122,6 +123,21 @@ async function eventually(read, predicate, errorDetails = () => "") {
   } while (Date.now() < deadline);
   assert.fail(`Reload did not settle: ${JSON.stringify(value)} ${errorDetails()}`);
 }
+
+it("bounds supervisor intervals without changing valid configuration", () => {
+  for (const fallback of [1000, 1500, 60000]) {
+    for (const value of [undefined, "", "invalid", "NaN", "Infinity", "-Infinity", "0", "-1"]) {
+      assert.equal(supervisorInterval(value, fallback), fallback, `${value}: ${fallback}`);
+    }
+    for (const value of ["0.01", "1", "99.9"]) assert.equal(supervisorInterval(value, fallback), 100);
+    for (const value of ["100", "100.5", "2500", "2147483647"]) {
+      assert.equal(supervisorInterval(value, fallback), Number(value));
+    }
+    for (const value of ["2147483648", "4294967296", "1e300"]) {
+      assert.equal(supervisorInterval(value, fallback), 2147483647);
+    }
+  }
+});
 
 for (const value of ["Infinity", "4294967296"]) {
   it(`prevents timer overflow for reload interval ${value}`, async t => {

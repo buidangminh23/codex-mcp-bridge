@@ -21,6 +21,7 @@ import { applyStdioMcpRegistration, stdioMcpRegistration } from "../src/codex-mc
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
 import { codexAccessPaths, enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
 import { stableInstallPath } from "../src/install-paths.mjs";
+import { removeRelayFile } from "../src/native-relay-files.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -50,8 +51,7 @@ if (remove) {
   const retiredExecutor = readRelayConfig()?.relayThreadId;
   const sockets = IS_WINDOWS ? [] : [...new Set([relaySocketPath(), desktopTaskSocketPath(), accountRelaySocketPath()])];
   for (const leftover of [relayConfigPath(), ...sockets]) {
-    if (fs.existsSync(leftover)) {
-      fs.rmSync(leftover, { force: true });
+    if (removeRelayFile(leftover, { kind: leftover === relayConfigPath() ? "config" : "socket" })) {
       console.log(`removed ${leftover}`);
     }
   }

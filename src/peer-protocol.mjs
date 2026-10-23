@@ -532,7 +532,9 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
         && (typeof content === "string" && content.trim()
           || Array.isArray(content) && content.length > 0 && content.every((part) => part?.type === "text" && typeof part.text === "string")
             && content.some((part) => part.text.trim()));
-      if (ordinaryInput) {
+      // Another sender's native peer message starts a new turn just like human
+      // input; dropping it would hide every later reply and wedge this target.
+      if (ordinaryInput || entry.origin?.kind === "peer" && entry.origin.msg_id !== msgId) {
         interrupt(entry, outstanding);
         continue;
       }

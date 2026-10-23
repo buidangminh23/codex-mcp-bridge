@@ -540,6 +540,27 @@ describe("peer endpoint", () => {
     assert.equal(readTranscriptOutcome("interrupted", "unused", "request"), null, "duplicate record identities are ambiguous");
   });
 
+  it("ends reply observation when another sender's peer message follows a background wait", () => {
+    const dir = path.join(projectsDir, "peer-interrupted-replies");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "peer-interrupted.jsonl");
+    const peer = (uuid, parentUuid, msgId) => ({ uuid, parentUuid, type: "user", isMeta: true, origin: { kind: "peer", msg_id: msgId }, promptSource: "system", turnOrigin: "peer", message: { role: "user", content: "peer message" } });
+    const rows = [
+      peer("request", null, "request"),
+      { uuid: "call", parentUuid: "request", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tool-1", name: "Bash" }] } },
+      { uuid: "result", parentUuid: "call", toolUseResult: { backgroundTaskId: "bg-1" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "running" }] } },
+      { uuid: "interim", parentUuid: "result", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "still waiting" }] } },
+      peer("other-peer", "interim", "other-request"),
+      { uuid: "later-answer", parentUuid: "other-peer", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "answer to the other sender" }] } },
+    ];
+    fs.writeFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
+    const outcome = readTranscriptOutcome("peer-interrupted", "unused", "request");
+    assert.equal(outcome?.status, "interrupted");
+    assert.deepEqual(outcome.interruptedBy, ["other-peer"]);
+    assert.deepEqual(outcome.backgroundTaskIds, ["bg-1"]);
+    assert.equal(outcome.reply, undefined);
+  });
+
   it("recognizes interruption after inline native notifications and completed parallel leaves", () => {
     const dir = path.join(projectsDir, "parallel-interruption");
     fs.mkdirSync(dir, { recursive: true });

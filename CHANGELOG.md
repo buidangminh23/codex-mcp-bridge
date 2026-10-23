@@ -4,6 +4,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- A Claude Desktop target no longer stays blocked for good when another sender's peer message lands in a reply chain that is waiting on a background task. Reply observation used to drop that message and everything after it, so the delivery never resolved, every later send to that session failed with `PEER_REPLY_PENDING`, and reload stayed refused until Codex Desktop restarted. A peer message for a different message id now ends observation the same way human input does: the delivery is reported as interrupted, the task outcome stays unknown, and it is not marked safe to retry.
+
+### Tests
+
+- A transcript fixture covers a tracked message, an interim `end_turn` while a background task runs, a peer message from another sender, and a later `end_turn`. The test expects an interrupted outcome that names the peer message and the outstanding task.
+
 ## [1.22.19] - 2026-10-22
 
 ### Fixed

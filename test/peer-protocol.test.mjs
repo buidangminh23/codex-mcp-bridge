@@ -553,12 +553,35 @@ describe("peer endpoint", () => {
       peer("other-peer", "interim", "other-request"),
       { uuid: "later-answer", parentUuid: "other-peer", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "answer to the other sender" }] } },
     ];
-    fs.writeFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
-    const outcome = readTranscriptOutcome("peer-interrupted", "unused", "request");
-    assert.equal(outcome?.status, "interrupted");
-    assert.deepEqual(outcome.interruptedBy, ["other-peer"]);
-    assert.deepEqual(outcome.backgroundTaskIds, ["bg-1"]);
-    assert.equal(outcome.reply, undefined);
+    const write = (records) => fs.writeFileSync(file, records.map(JSON.stringify).join("\n") + "\n");
+    for (const isMeta of [true, false]) {
+      write([...rows.slice(0, 4), { ...rows[4], isMeta }, rows[5]]);
+      const outcome = readTranscriptOutcome("peer-interrupted", "unused", "request");
+      assert.equal(outcome?.status, "interrupted");
+      assert.deepEqual(outcome.interruptedBy, ["other-peer"]);
+      assert.deepEqual(outcome.backgroundTaskIds, ["bg-1"]);
+      assert.equal(outcome.reply, undefined);
+      assert.equal(readTranscriptReply("peer-interrupted", "unused", "request"), null);
+    }
+    for (const msgId of [undefined, null, "", " \t", 42, false, {}, [], "request"]) {
+      write([...rows.slice(0, 4), peer("other-peer", "interim", msgId), rows[5]]);
+      assert.equal(readTranscriptOutcome("peer-interrupted", "unused", "request"), null, `unverified peer ID ${JSON.stringify(msgId)} must preserve pending ownership`);
+    }
+    for (const entry of [
+      { ...rows[4], origin: { kind: "unknown", msg_id: "other-request" } },
+      { ...rows[4], origin: undefined },
+      { ...rows[4], parentUuid: "unrelated" },
+    ]) {
+      write([...rows.slice(0, 4), entry, rows[5]]);
+      assert.equal(readTranscriptOutcome("peer-interrupted", "unused", "request"), null);
+    }
+    write([...rows, { uuid: "other-branch", parentUuid: "interim", message: { role: "assistant", stop_reason: "tool_use", content: [] } }]);
+    assert.equal(readTranscriptOutcome("peer-interrupted", "unused", "request"), null, "an unresolved sibling keeps pending ownership");
+    write(rows);
+    fs.appendFileSync(file, '{"partial":');
+    assert.equal(readTranscriptOutcome("peer-interrupted", "unused", "request"), null, "a partial transcript cannot release pending ownership");
+    write([...rows, rows[4]]);
+    assert.equal(readTranscriptOutcome("peer-interrupted", "unused", "request"), null, "duplicate peer identities are ambiguous");
   });
 
   it("recognizes interruption after inline native notifications and completed parallel leaves", () => {
@@ -667,6 +690,71 @@ describe("peer endpoint", () => {
     assert.equal(second.reply?.text, "checked existing task");
     assert.equal(isolated.readDelivery(first.msgId).status, "interrupted");
     assert.equal(isolated.send.mock.callCount(), 2);
+  });
+
+  it("recovers a timed-out delivery through peer interruption while retaining its unknown outcome", async (t) => {
+    const isolated = new PeerEndpoint({ name: "peer-interruption-fixture", cwd: sandbox });
+    t.after(() => isolated.stop());
+    const dir = path.join(projectsDir, "peer-interruption-endpoint");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "peer-interruption-endpoint.jsonl");
+    const write = (records) => fs.writeFileSync(file, records.map(JSON.stringify).join("\n") + "\n");
+    let originalRows;
+    t.mock.method(isolated, "send", async (target, text, { msgId }) => {
+      const root = { uuid: msgId, origin: { kind: "peer", msg_id: msgId }, message: { role: "user", content: text } };
+      if (text === "original") {
+        originalRows = [
+          root,
+          { uuid: "call", parentUuid: msgId, message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tool-1", name: "Bash" }] } },
+          { uuid: "result", parentUuid: "call", toolUseResult: { backgroundTaskId: "bg-1" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "running" }] } },
+          { uuid: "interim", parentUuid: "result", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "still waiting" }] } },
+        ];
+        write(originalRows);
+      } else {
+        fs.appendFileSync(file, [root, { uuid: "follow-up-answer", parentUuid: msgId, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "checked existing task" }] } }].map(JSON.stringify).join("\n") + "\n");
+      }
+      return msgId;
+    });
+    const options = { timeoutMs: 20, transcriptSession: { sessionId: "peer-interruption-endpoint", cwd: "unused" } };
+    const first = await isolated.sendAndWait("peer-interruption-target", "original", options);
+    assert.equal(first.reply, null);
+    assert.equal(first.delivery, undefined);
+    assert.equal(isolated.readDelivery(first.msgId).pending, true);
+    assert.match(isolated.reloadReason(), /pending or unconfirmed/);
+    const next = { uuid: "other-peer", parentUuid: "interim", type: "user", isMeta: true, origin: { kind: "peer", msg_id: "other-request" }, promptSource: "system", turnOrigin: "peer", message: { role: "user", content: "inspect existing work" } };
+    const answer = { uuid: "foreign-answer", parentUuid: "other-peer", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "answer to another request" }] } };
+    for (const msgId of [undefined, null, "", " \t", 42, false, {}, [], first.msgId]) {
+      write([...originalRows, { ...next, origin: { kind: "peer", msg_id: msgId } }, answer]);
+      assert.equal(isolated.readDelivery(first.msgId).pending, true);
+      assert.match(isolated.reloadReason(), /pending or unconfirmed/);
+      await assert.rejects(isolated.sendAndWait("peer-interruption-target", "follow-up", options), (error) => error.code === "PEER_REPLY_PENDING");
+      assert.equal(isolated.send.mock.callCount(), 1);
+    }
+    write([...originalRows, next, answer]);
+    const receipt = isolated.readDelivery(first.msgId);
+    assert.equal(receipt.status, "interrupted");
+    assert.equal(receipt.pending, false);
+    assert.equal(receipt.outcome, "unknown");
+    assert.equal(receipt.waitEnded, true);
+    assert.equal(receipt.taskCancelled, false);
+    assert.equal(receipt.retrySafe, false);
+    assert.equal(receipt.reply, undefined);
+    assert.deepEqual(receipt.interruption.entryIds, ["other-peer"]);
+    assert.deepEqual(receipt.interruption.backgroundTaskIds, ["bg-1"]);
+    assert.equal(isolated.inbox.length, 0);
+    assert.equal(isolated.send.mock.callCount(), 1);
+    assert.equal(isolated.reloadReason(), null);
+    const restored = new PeerEndpoint({ name: "restored-peer-interruption-fixture", cwd: sandbox });
+    t.after(() => restored.stop());
+    restored.restoreReloadState(isolated.exportReloadState());
+    assert.deepEqual(restored.readDelivery(first.msgId), receipt);
+    assert.equal(restored.reloadReason(), null);
+    const second = await isolated.sendAndWait("peer-interruption-target", "follow-up", { ...options, timeoutMs: 1500 });
+    assert.notEqual(second.msgId, first.msgId);
+    assert.equal(second.reply?.text, "checked existing task");
+    assert.deepEqual(isolated.readDelivery(first.msgId), receipt);
+    assert.equal(isolated.send.mock.callCount(), 2);
+    assert.equal(isolated.reloadReason(), null);
   });
 
   /**

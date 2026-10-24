@@ -367,6 +367,12 @@ function injectedMessageRoot(entry, msgId) {
   return null;
 }
 
+function isOtherPeerInput(entry, msgId) {
+  const origin = entry.origin;
+  return origin?.kind === "peer" && typeof origin.msg_id === "string"
+    && origin.msg_id.trim().length > 0 && origin.msg_id !== msgId;
+}
+
 function isInterruptedDelivery(receipt) {
   return receipt?.status === "interrupted" && receipt.source === "transcript"
     && receipt.reasonCode === "CLAUDE_REPLY_INTERRUPTED"
@@ -532,7 +538,7 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
         && (typeof content === "string" && content.trim()
           || Array.isArray(content) && content.length > 0 && content.every((part) => part?.type === "text" && typeof part.text === "string")
             && content.some((part) => part.text.trim()));
-      if (ordinaryInput) {
+      if (ordinaryInput || isOtherPeerInput(entry, msgId)) {
         interrupt(entry, outstanding);
         continue;
       }

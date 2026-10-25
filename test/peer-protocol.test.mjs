@@ -485,6 +485,27 @@ describe("peer endpoint", () => {
     assert.equal(readTranscriptReply("background", "unused", "request"), null);
     write([...initial, notification]);
     assert.equal(readTranscriptReply("background", "unused", "request"), null);
+    const inline = { uuid: "notification", parentUuid: "interim", type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", origin: notification.origin, prompt: notification.message.content } };
+    for (const status of ["completed", "failed", "killed"]) {
+      write([...initial, { ...inline, attachment: { ...inline.attachment, prompt: inline.attachment.prompt.replace("completed", status) } }, final]);
+      assert.equal(readTranscriptReply("background", "unused", "request")?.text, "full report", `inline ${status} notification closes the background task`);
+    }
+    for (const attachment of [
+      { ...inline.attachment, commandMode: "unknown" },
+      { ...inline.attachment, origin: undefined },
+      { ...inline.attachment, origin: { kind: "peer", producer: "session-task", msg_id: "other" } },
+      { ...inline.attachment, origin: { kind: "task-notification", producer: "unknown" } },
+      { ...inline.attachment, prompt: inline.attachment.prompt.replace("<task-notification>", "") },
+      { ...inline.attachment, prompt: inline.attachment.prompt.replace("bg-1", "bg-other") },
+      { ...inline.attachment, prompt: inline.attachment.prompt.replace("tool-1", "tool-other") },
+      { ...inline.attachment, prompt: inline.attachment.prompt.replace("completed", "running") },
+      { ...inline.attachment, prompt: inline.attachment.prompt.replace("</task-id>", "</task-id><task-id>bg-1</task-id>") },
+    ]) {
+      write([...initial, { ...inline, attachment }, final]);
+      assert.equal(readTranscriptReply("background", "unused", "request"), null, "only a correlated native terminal notification closes the background task");
+    }
+    write([...initial, inline, { ...final, parentUuid: "interim" }]);
+    assert.equal(readTranscriptReply("background", "unused", "request"), null, "inline completion cannot release another branch");
     write([...initial, notification, final]);
     assert.equal(readTranscriptReply("background", "unused", "request")?.text, "full report");
     for (const bad of [
@@ -690,6 +711,39 @@ describe("peer endpoint", () => {
     assert.equal(second.reply?.text, "checked existing task");
     assert.equal(isolated.readDelivery(first.msgId).status, "interrupted");
     assert.equal(isolated.send.mock.callCount(), 2);
+  });
+
+  it("clears pending ownership after an inline background completion without resending the action", async (t) => {
+    const isolated = new PeerEndpoint({ name: "inline-completion-fixture", cwd: sandbox });
+    t.after(() => isolated.stop());
+    const dir = path.join(projectsDir, "inline-completion");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "inline-completion.jsonl");
+    t.mock.method(isolated, "send", async (target, text, { msgId }) => {
+      const rows = [{ uuid: msgId, message: { role: "user", content: text } }];
+      if (text === "original") rows.push(
+        { uuid: "call", parentUuid: msgId, message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tool-1", name: "Bash" }] } },
+        { uuid: "result", parentUuid: "call", toolUseResult: { backgroundTaskId: "bg-1" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "running" }] } },
+      );
+      fs.appendFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
+      return msgId;
+    });
+    const options = { timeoutMs: 0, transcriptSession: { sessionId: "inline-completion", cwd: "unused" } };
+    const first = await isolated.sendAndWait("inline-target", "original", options);
+    assert.equal(isolated.readDelivery(first.msgId).pending, true);
+    await assert.rejects(isolated.sendAndWait("inline-target", "follow-up", options), error => error.code === "PEER_REPLY_PENDING");
+    const notification = { uuid: "notification", parentUuid: "result", type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", origin: { kind: "task-notification", producer: "session-task" }, prompt: "<task-notification>\n<task-id>bg-1</task-id>\n<tool-use-id>tool-1</tool-use-id>\n<status>completed</status>\n</task-notification>" } };
+    const answer = { uuid: "answer", parentUuid: "notification", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "original report" }] } };
+    fs.appendFileSync(file, [notification, answer].map(JSON.stringify).join("\n") + "\n");
+    const receipt = isolated.readDelivery(first.msgId);
+    assert.equal(receipt.pending, false);
+    assert.equal(receipt.status, "reply_received");
+    assert.equal(receipt.reply, "original report");
+    assert.equal(isolated.reloadReason(), null);
+    assert.equal(isolated.send.mock.callCount(), 1, "reading the completed receipt never resends the original action");
+    const second = await isolated.sendAndWait("inline-target", "follow-up", options);
+    assert.notEqual(second.msgId, first.msgId);
+    assert.deepEqual(isolated.send.mock.calls.map(call => call.arguments[1]), ["original", "follow-up"]);
   });
 
   it("recovers a timed-out delivery through peer interruption while retaining its unknown outcome", async (t) => {

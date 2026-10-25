@@ -27,6 +27,8 @@ npm install -g @minhspark/codex-mcp-bridge@latest
 
 Requires **Node.js 22+**. In Windows PowerShell, use `npm.cmd` instead of `npm`. Run the same command to update; reconnect MCP servers if their settings or installation paths changed.
 
+If an installed update stays deferred on a pending receipt, ending the turn alone may not reconnect the MCP client. Follow [stuck-update recovery](REFERENCE.md#recovering-a-stuck-desktop-update); preserve the original receipt and do not resend the action merely to clear the blocker.
+
 On macOS or Linux you can install with [Homebrew](https://github.com/buidangminh23/homebrew-tap) instead, which brings its own Node.js:
 
 ```bash

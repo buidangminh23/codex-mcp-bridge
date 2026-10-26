@@ -2,6 +2,35 @@
 
 [Quick start](README.md)
 
+### Codex to Codex over SSH
+
+Update both computers with `npm install -g @minhspark/codex-mcp-bridge@latest`. If an existing task still shows the old tool catalog, reconnect the MCP server or start a fresh Codex task to load `remote_codex`.
+
+The native companion exposes `remote_codex` for an existing Codex Desktop task on another computer. It uses an existing SSH alias and the receiving computer's running native relay. It does not start an agent, create a task, change permissions, or delegate through Claude. The sender and recipient can use different Codex accounts. Each call discovers the current signed-in identities, and a change during delivery stops that operation.
+
+Install this bridge on both computers. Keep Codex Desktop and its updated native companion running on the receiver. The dedicated `-codex-remote-v1` socket verifies Codex independently of Claude login state; the Claude bridge's existing account protocol is unchanged. The receiver currently needs a POSIX shell with `zsh`, Node 22+, an authenticated SSH alias and a saved local Codex project. SSH uses batch mode and existing known-host verification. Configure `$CODEX_HOME/bridge-remote-hosts.json` (default `~/.codex/bridge-remote-hosts.json`) on the sender, using absolute paths:
+
+```json
+{
+  "version": 1,
+  "hosts": {
+    "mac": {
+      "sshHost": "mac",
+      "node": "/absolute/path/to/node",
+      "receiver": "/absolute/bridge/src/remote-codex-receiver.mjs",
+      "localCwd": "C:\\Projects\\example",
+      "remoteCwd": "/Users/<user>/code/example"
+    }
+  }
+}
+```
+
+Keep that file private to the local user (`0600` on POSIX). The calling task must work in `localCwd` or a registered worktree of its repository. The exact remote directory must be an existing saved local project, and both checkouts must have the same canonical `origin` repository. HTTPS and SSH origin spellings are equivalent; credential-bearing HTTPS URLs are rejected. A path mapping is selected explicitly and does not search other repositories.
+
+Call `remote_codex` with `{"host":"mac","action":"list"}` to discover matching recent and pinned tasks. Use `action: "read"` with the exact `threadId` to inspect the intended task, then `action: "send"` with that ID, an authorized `message` and a fresh v4 UUID `requestId`. Sending requires the host-verified calling turn to use Full access; the bridge does not change either task's permissions. The destination prompt identifies its real Codex author and originating task.
+
+`status: "submitted"` confirms native acceptance only. Read the same task to verify the reply. A signed receipt in the receiver's `$CODEX_HOME/bridge-remote-deliveries` records the exact request before dispatch. Repeating the same request ID and body recovers that receipt without sending again, including after process restart. A pending, failed or uncertain receipt never authorizes another attempt; inspect the original task. Changing either account, the prompt or destination cannot reuse an old receipt. A new call discovers a newly signed-in account without pinning the installation to the previous account.
+
 ### VS Code extension bridge (Windows preview)
 
 `src/vscode-bridge.mjs` connects existing Claude Code and Codex extension conversations inside VS Code. It is a separate MCP registration and does not replace the Desktop bridge. Start it with `node src/vscode-bridge.mjs claude` in Claude's MCP registry and `node src/vscode-bridge.mjs codex` in Codex's registry. Set `VSCODE_BRIDGE_ALLOWED_ROOTS` to explicit project directories, separated by semicolons. Reload the VS Code window after registering both servers.

@@ -16,7 +16,9 @@ export async function protectCurrentUserPipe(socketPath, { pid = process.pid, ru
   if (!IS_WINDOWS) return { skipped: true };
   const name = bridgePipeName(socketPath);
   const script = fileURLToPath(new URL("./windows-pipe-acl.ps1", import.meta.url));
-  const { stdout } = await run(powershell, ["-NoProfile", "-NonInteractive", "-File", script, "-PipeName", name, "-ServerPid", String(pid)], { windowsHide: true, timeout: 15000 });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
+  env.PSModulePath = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules";
+  const { stdout } = await run(powershell, ["-NoProfile", "-NonInteractive", "-File", script, "-PipeName", name, "-ServerPid", String(pid)], { env, windowsHide: true, timeout: 15000 });
   let result;
   try { result = JSON.parse(stdout.trim()); } catch { throw new Error("Windows pipe ACL helper returned invalid readback"); }
   if (result?.serverMatches !== true || result?.serverUserMatches !== true || result?.ownerMatches !== true || result?.protected !== true || result?.aceCount !== 1

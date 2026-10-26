@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { hermeticTestEnv } from "../scripts/run-tests.mjs";
 
 import {
   MAX_FRAME_BYTES,
@@ -2188,7 +2189,7 @@ describe("companion under a real MCP client", () => {
       command: process.execPath,
       args: [path.join(root, "src", "native-relay-companion.mjs")],
       env: {
-        PATH: process.env.PATH ?? "",
+        ...hermeticTestEnv(),
         HOME: codexHome,
         USERPROFILE: codexHome,
         CODEX_HOME: codexHome,
@@ -2196,22 +2197,26 @@ describe("companion under a real MCP client", () => {
         CODEX_APP_TOOLS_PIPE_PATH: nativeSocket,
         CODEX_NATIVE_RELAY_SOCKET: relaySocket,
       },
-      stderr: "ignore",
+      stderr: "pipe",
     });
+    let stderr = "";
+    transport.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-12000); });
     let native;
     let nativeRequests = 0;
     try {
       await client.connect(transport);
+      const catalog = await client.listTools();
+      assert.ok(catalog.tools.some((tool) => tool.name === "remote_codex"));
       const unavailable = await client.callTool({ name: "native_relay_status", arguments: {} });
       assert.match(unavailable.content[0].text, /not listening/);
       native = await nativePipe(() => { nativeRequests += 1; }, nativeSocket);
       let status;
-      const deadline = Date.now() + 3000;
+      const deadline = Date.now() + (process.platform === "win32" ? 30000 : 3000);
       do {
         await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
         status = await client.callTool({ name: "native_relay_status", arguments: {} });
       } while (status.content[0].text.includes("not listening") && Date.now() < deadline);
-      assert.doesNotMatch(status.content[0].text, /not listening/);
+      assert.doesNotMatch(status.content[0].text, /not listening/, stderr);
       assert.equal(nativeRequests, 0, "startup recovery must not dispatch a user message");
     } finally {
       await client.close();

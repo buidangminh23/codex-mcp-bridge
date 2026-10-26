@@ -4,6 +4,20 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-10-26
+
+### Added
+
+- `remote_codex` lists, reads and messages existing Codex Desktop tasks on an explicitly configured SSH host. Calling-turn verification, exact project and repository checks, current account binding and signed durable receipts prevent wrong-project delivery and duplicate sends after uncertain transport outcomes. The two computers may use different Codex accounts; signing in again is discovered on the next call.
+
+### Tests
+
+- Remote handoff regressions cover different accounts, mid-request identity changes, target and repository mismatches, missing sender metadata, SSH argument isolation, size and deadline limits, concurrent retries and receipt recovery after restart. Task membership is verified through native listings because native task reads can omit the project ID.
+
+### Upgrade
+
+- Update both computers with `npm install -g @minhspark/codex-mcp-bridge@latest`. If an existing Codex task keeps its old tool catalog, reconnect its MCP server or start a fresh task to load `remote_codex`.
+
 ## [1.22.21] - 2026-10-26
 
 ### Fixed

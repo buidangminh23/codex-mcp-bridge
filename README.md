@@ -166,6 +166,7 @@ Send a short message and confirm its reply **in both directions**. Registration 
 
 - **Claude → Codex:** “Send this review to my Codex task in this project and wait for its reply.”
 - **Codex → Claude:** “Send this result to my Claude Desktop Code session in this project.”
+- **Codex → Codex on another computer:** configure an SSH project mapping, then use `remote_codex` to list, read or message an existing Desktop task. Different Codex accounts on the two computers are supported. See [remote Codex setup](REFERENCE.md#codex-to-codex-over-ssh).
 - **New work:** “Create a new Codex conversation for this feature and send the brief there.”
 
 Continue unfinished work with its original `threadId`. For an authorized new Desktop task, use `delegate_to_codex` or `start_codex_thread` with a fresh UUID `requestId`; retain that ID on retries. If a send times out, use `wait_codex_reply` with the original `deliveryId` before retrying the message.

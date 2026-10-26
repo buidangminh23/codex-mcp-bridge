@@ -183,6 +183,34 @@ test("origin identity matches HTTPS and SSH without leaking credentials", (t) =>
   assert.throws(() => repositoryIdentity(root), { code: "REMOTE_PROJECT_UNVERIFIED" });
 });
 
+test("remote profile rejects replacement between inspection and opening", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remote-codex-config-race-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "bridge-remote-hosts.json");
+  fs.writeFileSync(file, JSON.stringify({ version: 1, hosts: { mac: profile } }), { mode: 0o600 });
+  const canonical = fs.realpathSync.native(file);
+  const original = fs.openSync;
+  fs.openSync = function (value, ...args) {
+    if (value === canonical) {
+      fs.openSync = original;
+      fs.writeFileSync(file, JSON.stringify({ version: 1, hosts: { mac: { ...profile, sshHost: "different-host" } } }));
+    }
+    return original.call(this, value, ...args);
+  };
+  try { assert.throws(() => readRemoteProfile("mac", { env: { CODEX_HOME: root } }), { code: "REMOTE_CONFIG_CHANGED" }); }
+  finally { fs.openSync = original; }
+});
+
+test("remote profile refuses a hardlink and relative Codex home", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remote-codex-config-link-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "bridge-remote-hosts.json");
+  fs.writeFileSync(file, JSON.stringify({ version: 1, hosts: { mac: profile } }), { mode: 0o600 });
+  fs.linkSync(file, path.join(root, "alias.json"));
+  assert.throws(() => readRemoteProfile("mac", { env: { CODEX_HOME: root } }), { code: "REMOTE_CONFIG_UNSAFE" });
+  assert.throws(() => readRemoteProfile("mac", { env: { CODEX_HOME: "." } }), { code: "REMOTE_CONFIG_UNSAFE" });
+});
+
 function fakeSsh(answer) {
   const child = new EventEmitter();
   child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();

@@ -94,10 +94,33 @@ export function repositoryIdentity(cwd) {
 
 export function readRemoteProfile(name, { env = process.env } = {}) {
   if (typeof name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) throw remoteFailure("REMOTE_HOST_INVALID", "Choose an exact configured remote host name");
-  const file = path.join(home(env), "bridge-remote-hosts.json");
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > LIMIT || process.platform !== "win32" && (stat.uid !== process.getuid() || stat.mode & 0o077)) throw remoteFailure("REMOTE_CONFIG_UNSAFE", "Remote host configuration must be a private regular file");
-  const config = JSON.parse(fs.readFileSync(file, "utf8"));
+  const root = home(env);
+  if (!cleanPath(root) || !path.isAbsolute(root)) throw remoteFailure("REMOTE_CONFIG_UNSAFE", "Codex configuration directory must be absolute");
+  const directory = fs.realpathSync.native(root);
+  const file = path.resolve(directory, "bridge-remote-hosts.json");
+  if (!file.startsWith(directory + path.sep)) throw remoteFailure("REMOTE_CONFIG_UNSAFE", "Remote host configuration is outside Codex home");
+  const stat = fs.lstatSync(file, { bigint: true });
+  const safe = (entry) => entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1n && entry.size <= BigInt(LIMIT)
+    && (process.platform === "win32" || entry.uid === BigInt(process.getuid()) && !(entry.mode & 0o077n));
+  const same = (left, right) => ["dev", "ino", "size", "mode", "uid", "nlink", "mtimeNs", "ctimeNs"].every((key) => left[key] === right[key]);
+  if (!safe(stat)) throw remoteFailure("REMOTE_CONFIG_UNSAFE", "Remote host configuration must be a private regular file");
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+  let config;
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    if (!safe(opened) || !same(stat, opened)) throw remoteFailure("REMOTE_CONFIG_CHANGED", "Remote host configuration changed before opening");
+    const data = Buffer.alloc(Number(opened.size));
+    let offset = 0;
+    while (offset < data.length) {
+      const count = fs.readSync(descriptor, data, offset, data.length - offset, offset);
+      if (!count) throw remoteFailure("REMOTE_CONFIG_CHANGED", "Remote host configuration changed during reading");
+      offset += count;
+    }
+    const current = fs.lstatSync(file, { bigint: true });
+    if (!safe(current) || !same(opened, fs.fstatSync(descriptor, { bigint: true })) || !same(opened, current)
+        || fs.realpathSync.native(root) !== directory) throw remoteFailure("REMOTE_CONFIG_CHANGED", "Remote host configuration changed during reading");
+    config = JSON.parse(data.toString("utf8"));
+  } finally { fs.closeSync(descriptor); }
   const profile = config.version === 1 && Object.hasOwn(config.hosts ?? {}, name) ? config.hosts[name] : null;
   if (!ownObject(profile) || Object.keys(profile).sort().join() !== ["sshHost", "node", "receiver", "localCwd", "remoteCwd"].sort().join()
       || typeof profile.sshHost !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(profile.sshHost)

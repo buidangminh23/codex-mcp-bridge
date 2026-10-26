@@ -2191,13 +2191,16 @@ describe("companion under a real MCP client", () => {
         PATH: process.env.PATH ?? "",
         HOME: codexHome,
         USERPROFILE: codexHome,
+        ...(process.env.PSExecutionPolicyPreference ? { PSExecutionPolicyPreference: process.env.PSExecutionPolicyPreference } : {}),
         CODEX_HOME: codexHome,
         CODEX_RELAY_ID: "test-executor",
         CODEX_APP_TOOLS_PIPE_PATH: nativeSocket,
         CODEX_NATIVE_RELAY_SOCKET: relaySocket,
       },
-      stderr: "ignore",
+      stderr: "pipe",
     });
+    let stderr = "";
+    transport.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-12000); });
     let native;
     let nativeRequests = 0;
     try {
@@ -2213,7 +2216,7 @@ describe("companion under a real MCP client", () => {
         await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
         status = await client.callTool({ name: "native_relay_status", arguments: {} });
       } while (status.content[0].text.includes("not listening") && Date.now() < deadline);
-      assert.doesNotMatch(status.content[0].text, /not listening/);
+      assert.doesNotMatch(status.content[0].text, /not listening/, stderr);
       assert.equal(nativeRequests, 0, "startup recovery must not dispatch a user message");
     } finally {
       await client.close();

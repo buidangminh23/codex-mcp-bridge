@@ -183,7 +183,7 @@ test("origin identity matches HTTPS and SSH without leaking credentials", (t) =>
   assert.throws(() => repositoryIdentity(root), { code: "REMOTE_PROJECT_UNVERIFIED" });
 });
 
-test("remote profile rejects replacement between inspection and opening", (t) => {
+test("remote profile rejects replacement after opening before reading", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remote-codex-config-race-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, "bridge-remote-hosts.json");
@@ -193,7 +193,10 @@ test("remote profile rejects replacement between inspection and opening", (t) =>
   fs.openSync = function (value, ...args) {
     if (value === canonical) {
       fs.openSync = original;
+      const descriptor = original.call(this, value, ...args);
+      fs.renameSync(file, path.join(root, "previous.json"));
       fs.writeFileSync(file, JSON.stringify({ version: 1, hosts: { mac: { ...profile, sshHost: "different-host" } } }));
+      return descriptor;
     }
     return original.call(this, value, ...args);
   };

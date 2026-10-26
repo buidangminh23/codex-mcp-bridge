@@ -99,16 +99,16 @@ export function readRemoteProfile(name, { env = process.env } = {}) {
   const directory = fs.realpathSync.native(root);
   const file = path.resolve(directory, "bridge-remote-hosts.json");
   if (!file.startsWith(directory + path.sep)) throw remoteFailure("REMOTE_CONFIG_UNSAFE", "Remote host configuration is outside Codex home");
-  const stat = fs.lstatSync(file, { bigint: true });
   const safe = (entry) => entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1n && entry.size <= BigInt(LIMIT)
     && (process.platform === "win32" || entry.uid === BigInt(process.getuid()) && !(entry.mode & 0o077n));
   const same = (left, right) => ["dev", "ino", "size", "mode", "uid", "nlink", "mtimeNs", "ctimeNs"].every((key) => left[key] === right[key]);
-  if (!safe(stat)) throw remoteFailure("REMOTE_CONFIG_UNSAFE", "Remote host configuration must be a private regular file");
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
   let config;
   try {
     const opened = fs.fstatSync(descriptor, { bigint: true });
-    if (!safe(opened) || !same(stat, opened)) throw remoteFailure("REMOTE_CONFIG_CHANGED", "Remote host configuration changed before opening");
+    const stat = fs.lstatSync(file, { bigint: true });
+    if (!safe(opened) || !safe(stat)) throw remoteFailure("REMOTE_CONFIG_UNSAFE", "Remote host configuration must be a private regular file");
+    if (!same(stat, opened)) throw remoteFailure("REMOTE_CONFIG_CHANGED", "Remote host configuration changed after opening");
     const data = Buffer.alloc(Number(opened.size));
     let offset = 0;
     while (offset < data.length) {

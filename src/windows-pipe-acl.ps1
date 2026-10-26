@@ -1,8 +1,6 @@
 param([Parameter(Mandatory)][string]$PipeName,[Parameter(Mandatory)][uint32]$ServerPid)
-[Console]::Error.WriteLine('pipe-acl: script entered')
 $ErrorActionPreference='Stop'
 if($PipeName -notmatch '^LOCAL\\(?:codex-native-relay|codex-bridge|cc-msg)-[A-Za-z0-9_.-]+$'){throw 'Refusing a pipe outside the bridge-owned namespace.'}
-[Console]::Error.WriteLine('pipe-acl: Add-Type starting')
 Add-Type @'
 using System;
 using System.ComponentModel;
@@ -58,13 +56,10 @@ public static class BridgePipeAcl {
  }
 }
 '@
-[Console]::Error.WriteLine('pipe-acl: Add-Type completed')
 $pipe=New-Object System.IO.Pipes.NamedPipeClientStream('.', $PipeName, [System.IO.Pipes.PipeAccessRights]::FullControl, [System.IO.Pipes.PipeOptions]::None, [System.Security.Principal.TokenImpersonationLevel]::Identification, [System.IO.HandleInheritability]::None)
 $serverIdentity=$null
 try {
- [Console]::Error.WriteLine('pipe-acl: Connect starting')
  $pipe.Connect(3000)
- [Console]::Error.WriteLine('pipe-acl: Connect completed')
  [uint32]$actualPid=0
  if(-not [BridgePipeAcl]::GetNamedPipeServerProcessId($pipe.SafePipeHandle,[ref]$actualPid) -or $actualPid -ne $ServerPid){throw 'Pipe server identity mismatch.'}
  $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -78,7 +73,6 @@ try {
  $acl.SetAccessRuleProtection($true,$false)
  $acl.AddAccessRule((New-Object System.IO.Pipes.PipeAccessRule($sid,[System.IO.Pipes.PipeAccessRights]::FullControl,[System.Security.AccessControl.AccessControlType]::Allow)))
  $pipe.SetAccessControl($acl)
- [Console]::Error.WriteLine('pipe-acl: ACL applied')
  if(-not [BridgePipeAcl]::GetNamedPipeServerProcessId($pipe.SafePipeHandle,[ref]$actualPid) -or $actualPid -ne $ServerPid){throw 'Pipe server identity changed.'}
  $after=$pipe.GetAccessControl(); $rules=@($after.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier]))
  if($after.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){throw 'Restricted owner readback mismatch.'}
@@ -86,7 +80,6 @@ try {
  $nativeName='\\.\pipe\'+$PipeName
  $readError=[BridgePipeAcl]::AttemptAnonymous($nativeName,[uint32]2147483648)
  $duplexError=[BridgePipeAcl]::AttemptAnonymous($nativeName,[uint32]3221225472)
- [Console]::Error.WriteLine('pipe-acl: anonymous checks completed')
  if($readError -ne 5 -or $duplexError -ne 5){throw "Anonymous pipe access was not denied: read=$readError duplex=$duplexError"}
  [pscustomobject]@{serverMatches=$true;serverUserMatches=$true;ownerMatches=$true;protected=$true;aceCount=1;rights=[int]$rules[0].PipeAccessRights;anonymousDenied=$true;readError=$readError;duplexError=$duplexError}|ConvertTo-Json -Compress
 } finally {if($null -ne $serverIdentity){$serverIdentity.Dispose()};$pipe.Dispose()}

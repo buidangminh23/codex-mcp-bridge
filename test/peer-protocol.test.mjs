@@ -432,6 +432,45 @@ describe("peer endpoint", () => {
     assert.equal(readTranscriptReply("reply", "unused", "request"), null);
   });
 
+  it("recognizes replies persisted before their parent records without crossing input boundaries", () => {
+    const dir = path.join(projectsDir, "out-of-order-replies");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "out-of-order.jsonl");
+    const root = { uuid: "request", origin: { kind: "peer", msg_id: "request" }, message: { role: "user", content: "cleanup" } };
+    const attachment = { uuid: "attachment", parentUuid: "request", type: "attachment", attachment: { type: "deferred_tools_record" } };
+    const answer = { uuid: "answer", parentUuid: "attachment", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "cleanup report" }] } };
+    const write = rows => fs.writeFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
+    for (const rows of [
+      [root, answer, attachment],
+      [answer, attachment, root],
+      [root, answer, { ...attachment, parentUuid: "earlier" }, { ...attachment, uuid: "earlier" }],
+    ]) {
+      write(rows);
+      assert.deepEqual(readTranscriptReply("out-of-order", "unused", "request"), { text: "cleanup report", msgId: "answer", source: "transcript", inReplyTo: "request", absorbed: false });
+    }
+    for (const rows of [
+      [root, answer],
+      [root, answer, { ...attachment, parentUuid: "unrelated" }],
+      [root, answer, { ...attachment, isSidechain: true }],
+      [root, answer, { ...attachment, parentUuid: "answer" }],
+      [root, answer, attachment, attachment],
+    ]) {
+      write(rows);
+      assert.equal(readTranscriptOutcome("out-of-order", "unused", "request"), null, "missing, unrelated, sidechain, cyclic or duplicate parents cannot establish a reply");
+    }
+    write([root, answer, attachment]);
+    fs.appendFileSync(file, '{"partial":');
+    assert.equal(readTranscriptOutcome("out-of-order", "unused", "request"), null, "partial transcripts cannot establish reordered ancestry");
+    for (const boundary of [
+      { uuid: "input", parentUuid: "attachment", origin: { kind: "human" }, promptSource: "sdk", turnOrigin: "human", message: { role: "user", content: "new task" } },
+      { uuid: "input", parentUuid: "attachment", origin: { kind: "peer", msg_id: "other-request" }, message: { role: "user", content: "other request" } },
+    ]) {
+      write([root, { ...answer, parentUuid: "input" }, boundary, attachment]);
+      assert.equal(readTranscriptOutcome("out-of-order", "unused", "request")?.status, "interrupted");
+      assert.equal(readTranscriptReply("out-of-order", "unused", "request"), null, "out-of-order ancestry cannot attach another input's reply");
+    }
+  });
+
   it("keeps Read image companions in the reply chain but rejects lookalikes and unrelated results", () => {
     const dir = path.join(projectsDir, "image-companion");
     fs.mkdirSync(dir, { recursive: true });
@@ -713,7 +752,7 @@ describe("peer endpoint", () => {
     assert.equal(isolated.send.mock.callCount(), 2);
   });
 
-  it("clears pending ownership after an inline background completion without resending the action", async (t) => {
+  it("clears pending ownership after an out-of-order inline background completion without resending the action", async (t) => {
     const isolated = new PeerEndpoint({ name: "inline-completion-fixture", cwd: sandbox });
     t.after(() => isolated.stop());
     const dir = path.join(projectsDir, "inline-completion");
@@ -734,7 +773,9 @@ describe("peer endpoint", () => {
     await assert.rejects(isolated.sendAndWait("inline-target", "follow-up", options), error => error.code === "PEER_REPLY_PENDING");
     const notification = { uuid: "notification", parentUuid: "result", type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", origin: { kind: "task-notification", producer: "session-task" }, prompt: "<task-notification>\n<task-id>bg-1</task-id>\n<tool-use-id>tool-1</tool-use-id>\n<status>completed</status>\n</task-notification>" } };
     const answer = { uuid: "answer", parentUuid: "notification", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "original report" }] } };
-    fs.appendFileSync(file, [notification, answer].map(JSON.stringify).join("\n") + "\n");
+    fs.appendFileSync(file, JSON.stringify(answer) + "\n");
+    assert.equal(isolated.readDelivery(first.msgId).pending, true, "a reply with a missing parent cannot clear ownership");
+    fs.appendFileSync(file, JSON.stringify(notification) + "\n");
     const receipt = isolated.readDelivery(first.msgId);
     assert.equal(receipt.pending, false);
     assert.equal(receipt.status, "reply_received");

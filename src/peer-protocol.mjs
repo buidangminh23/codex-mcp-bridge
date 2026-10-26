@@ -486,6 +486,28 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
   if (roots.length !== 1) return null;
   const { entry: root, absorbed } = roots[0];
   const entriesById = new Map(entries.map((entry) => [entry.uuid, entry]));
+  const orderedEntries = ambiguous ? entries : [];
+  if (!ambiguous) {
+    // Claude can persist a reply before its parent attachment; visit late
+    // ancestors before their children instead of assuming append order.
+    const visited = new Set();
+    for (const entry of entries) {
+      const ancestors = [];
+      const visiting = new Set();
+      let ancestor = entry;
+      while (ancestor && !visited.has(ancestor)) {
+        if (visiting.has(ancestor)) return null;
+        visiting.add(ancestor);
+        ancestors.push(ancestor);
+        ancestor = typeof ancestor.parentUuid === "string" ? entriesById.get(ancestor.parentUuid) : null;
+      }
+      while (ancestors.length) {
+        const ancestor = ancestors.pop();
+        visited.add(ancestor);
+        orderedEntries.push(ancestor);
+      }
+    }
+  }
   const descendants = new Map();
   const backgroundCalls = new Map();
   const openLeaves = new Set();
@@ -497,7 +519,7 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
     openLeaves.delete(entry.parentUuid);
     interruptions.push({ entryId: entry.uuid, backgroundTaskIds: [...outstanding.keys()] });
   };
-  for (const entry of entries) {
+  for (const entry of orderedEntries) {
     if (entry === root) { descendants.set(entry.uuid, new Map()); openLeaves.add(entry.uuid); continue; }
     let parentUuid = entry.parentUuid;
     if (!ambiguous && !interruptions.length && descendants.has(entry.logicalParentUuid)

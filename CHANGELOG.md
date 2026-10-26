@@ -7,6 +7,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 ### Fixed
 
 - Recognize native Claude background-task completion notifications stored as inline attachments. A completed command could otherwise remain outstanding, hiding the final reply and blocking later messages with `PEER_REPLY_PENDING`. Both notification formats retain native-origin, exact task/tool-call identity and transcript ancestry checks; observing the original reply never resends its action.
+- Resolve Claude reply ancestry when a final response is persisted before its parent attachment. Process unambiguous records with ancestors first, reject cycles, and preserve input boundaries and pending ownership until the required parent arrives.
 
 ## [1.22.20] - 2026-10-24
 

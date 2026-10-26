@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { hermeticTestEnv } from "../scripts/run-tests.mjs";
 
 import {
   MAX_FRAME_BYTES,
@@ -2188,10 +2189,9 @@ describe("companion under a real MCP client", () => {
       command: process.execPath,
       args: [path.join(root, "src", "native-relay-companion.mjs")],
       env: {
-        PATH: process.env.PATH ?? "",
+        ...hermeticTestEnv(),
         HOME: codexHome,
         USERPROFILE: codexHome,
-        ...(process.env.PSExecutionPolicyPreference ? { PSExecutionPolicyPreference: process.env.PSExecutionPolicyPreference } : {}),
         CODEX_HOME: codexHome,
         CODEX_RELAY_ID: "test-executor",
         CODEX_APP_TOOLS_PIPE_PATH: nativeSocket,

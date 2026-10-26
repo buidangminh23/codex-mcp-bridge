@@ -2202,11 +2202,13 @@ describe("companion under a real MCP client", () => {
     let nativeRequests = 0;
     try {
       await client.connect(transport);
+      const catalog = await client.listTools();
+      assert.ok(catalog.tools.some((tool) => tool.name === "remote_codex"));
       const unavailable = await client.callTool({ name: "native_relay_status", arguments: {} });
       assert.match(unavailable.content[0].text, /not listening/);
       native = await nativePipe(() => { nativeRequests += 1; }, nativeSocket);
       let status;
-      const deadline = Date.now() + 3000;
+      const deadline = Date.now() + (process.platform === "win32" ? 30000 : 3000);
       do {
         await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
         status = await client.callTool({ name: "native_relay_status", arguments: {} });

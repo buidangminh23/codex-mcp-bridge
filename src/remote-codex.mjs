@@ -229,17 +229,24 @@ export async function handleRemoteRequest(request, {
     try { return typeof value === "string" && canonical(value) === cwd; } catch { return false; }
   };
   const projectId = await project();
-  const matches = (thread) => thread?.kind === "codex" && thread.hostId === "local" && thread.projectId === projectId && exactCwd(thread.cwd);
-  if (request.action === "list") {
+  const matchesIdentity = (thread) => thread?.kind === "codex" && thread.hostId === "local" && exactCwd(thread.cwd);
+  const matches = (thread) => matchesIdentity(thread) && thread.projectId === projectId;
+  const listedThreads = async () => {
     const result = await call("list_threads", { limit: 50 });
-    const threads = [...(result?.pinnedThreads ?? []), ...(result?.threads ?? [])].filter(matches)
+    return [...(result?.pinnedThreads ?? []), ...(result?.threads ?? [])];
+  };
+  if (request.action === "list") {
+    const threads = (await listedThreads()).filter(matches)
       .map(({ id, title, status }) => ({ id, title, status, cwd, projectId }));
     return { threads, coverage: "Most recent 50 unpinned tasks plus pinned tasks in the exact saved project" };
   }
   const inspect = async (includeOutputs = false) => {
     if (await project() !== projectId) throw remoteFailure("REMOTE_PROJECT_MISMATCH", "The destination saved project changed");
     const result = await call("read_thread", { threadId: request.threadId, hostId: "local", turnLimit: 2, includeOutputs, maxOutputCharsPerItem: includeOutputs ? 6000 : 1 });
-    if (!matches(result?.thread) || result.thread.id !== request.threadId) throw remoteFailure("REMOTE_THREAD_MISMATCH", "The target task does not belong to the exact saved project");
+    const thread = result?.thread;
+    if (!matchesIdentity(thread) || thread.id !== request.threadId || (thread.projectId !== undefined && thread.projectId !== projectId)) throw remoteFailure("REMOTE_THREAD_MISMATCH", "The target task does not belong to the exact saved project");
+    const listed = (await listedThreads()).filter((item) => item.id === request.threadId);
+    if (listed.length !== 1 || !matches(listed[0])) throw remoteFailure("REMOTE_THREAD_MISMATCH", "The target task is no longer listed in the exact saved project");
     return result;
   };
   if (request.action === "read") return inspect(true);

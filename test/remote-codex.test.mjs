@@ -44,9 +44,10 @@ function fixture(overrides = {}) {
     relay: { async requestDesktop(operation, args, { beforeSend }) {
       await beforeSend();
       calls.push({ operation, args });
+      const { projectId, ...readThread } = thread;
       const result = operation === "list_projects" ? { projects: [project] }
         : operation === "list_threads" ? { pinnedThreads: [], threads: [thread, { ...thread, id: randomUUID(), projectId: "other" }] }
-        : operation === "read_thread" ? { thread: { ...thread }, turns: [{ id: randomUUID(), status: "completed" }] }
+        : operation === "read_thread" ? { thread: readThread, turns: [{ id: randomUUID(), status: "completed" }] }
         : { success: true, threadId: TARGET };
       return { result };
     } },
@@ -71,7 +72,27 @@ test("list filters other projects and read validates the exact task", async () =
   assert.deepEqual(listed.threads.map((thread) => thread.id), [TARGET]);
   const read = await handleRemoteRequest(request("read"), f.options);
   assert.equal(read.thread.id, TARGET);
+  assert.equal(read.thread.projectId, undefined);
   assert.equal(f.sends().length, 0);
+});
+
+test("read metadata must agree with the task's current listed project membership", async () => {
+  for (const state of ["conflicting-read", "missing-listing", "duplicate-listing", "moved-listing"]) {
+    const f = fixture();
+    const original = f.options.relay.requestDesktop;
+    f.options.relay.requestDesktop = async (operation, ...args) => {
+      const response = await original(operation, ...args);
+      if (operation === "read_thread" && state === "conflicting-read") response.result.thread.projectId = "other";
+      if (operation === "list_threads") {
+        if (state === "missing-listing") response.result.threads = [];
+        if (state === "duplicate-listing") response.result.threads.push({ ...f.thread });
+        if (state === "moved-listing") response.result.threads = [{ ...f.thread, projectId: "other" }];
+      }
+      return response;
+    };
+    await assert.rejects(handleRemoteRequest(request(), f.options), { code: "REMOTE_THREAD_MISMATCH" });
+    assert.equal(f.sends().length, 0);
+  }
 });
 
 test("sequential and concurrent retries never dispatch a send twice", async () => {
@@ -151,9 +172,7 @@ test("signed receipts survive receiver restart and bind both accounts and the re
   assert.equal((await handleRemoteRequest(input, f.options)).duplicate, true);
   assert.equal(f.sends().length, 1);
   f.accounts.codex = "d".repeat(64);
-  await assert.rejects(handleRemoteRequest(input, { ...f.options, relay: { async requestDesktop(operation) {
-    return { result: operation === "list_projects" ? { projects: [f.project] } : { thread: f.thread } };
-  } } }), /binding mismatch/);
+  await assert.rejects(handleRemoteRequest(input, f.options), /binding mismatch/);
   assert.equal(f.sends().length, 1);
 });
 

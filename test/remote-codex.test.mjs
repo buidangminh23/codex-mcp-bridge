@@ -195,7 +195,7 @@ test("remote profile rejects replacement after opening before reading", (t) => {
       fs.openSync = original;
       const descriptor = original.call(this, value, ...args);
       fs.renameSync(file, path.join(root, "previous.json"));
-      fs.writeFileSync(file, JSON.stringify({ version: 1, hosts: { mac: { ...profile, sshHost: "different-host" } } }));
+      fs.writeFileSync(file, JSON.stringify({ version: 1, hosts: { mac: { ...profile, sshHost: "different-host" } } }), { mode: 0o600 });
       return descriptor;
     }
     return original.call(this, value, ...args);

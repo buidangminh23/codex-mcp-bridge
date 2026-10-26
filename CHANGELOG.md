@@ -4,10 +4,21 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.22.21] - 2026-10-26
+
 ### Fixed
 
 - Recognize native Claude background-task completion notifications stored as inline attachments. A completed command could otherwise remain outstanding, hiding the final reply and blocking later messages with `PEER_REPLY_PENDING`. Both notification formats retain native-origin, exact task/tool-call identity and transcript ancestry checks; observing the original reply never resends its action.
 - Resolve Claude reply ancestry when a final response is persisted before its parent attachment. Process unambiguous records with ancestors first, reject cycles, and preserve input boundaries and pending ownership until the required parent arrives.
+
+### Verification
+
+- Three focused regressions fail against 1.22.20 and pass with this fix: inline completion, child-before-parent ancestry, and pending ownership recovery without repeating the original action.
+- Independent parser checks cover 1,320 record-order and invalid-notification combinations. Endpoint tests verify that missing parents keep ownership pending and that a distinct follow-up is allowed only after the original reply resolves.
+
+### Limitations
+
+- Missing or ambiguous transcript ancestry still cannot establish a reply. Inspect the existing task instead of resending its original action. An already blocked older runtime may need a client restart after upgrading to load this fix.
 
 ## [1.22.20] - 2026-10-24
 

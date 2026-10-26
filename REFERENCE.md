@@ -4,6 +4,8 @@
 
 ### Codex to Codex over SSH
 
+Update both computers with `npm install -g @minhspark/codex-mcp-bridge@latest`. If an existing task still shows the old tool catalog, reconnect the MCP server or start a fresh Codex task to load `remote_codex`.
+
 The native companion exposes `remote_codex` for an existing Codex Desktop task on another computer. It uses an existing SSH alias and the receiving computer's running native relay. It does not start an agent, create a task, change permissions, or delegate through Claude. The sender and recipient can use different Codex accounts. Each call discovers the current signed-in identities, and a change during delivery stops that operation.
 
 Install this bridge on both computers. Keep Codex Desktop and its updated native companion running on the receiver. The dedicated `-codex-remote-v1` socket verifies Codex independently of Claude login state; the Claude bridge's existing account protocol is unchanged. The receiver currently needs a POSIX shell with `zsh`, Node 22+, an authenticated SSH alias and a saved local Codex project. SSH uses batch mode and existing known-host verification. Configure `$CODEX_HOME/bridge-remote-hosts.json` (default `~/.codex/bridge-remote-hosts.json`) on the sender, using absolute paths:

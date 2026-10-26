@@ -42,7 +42,7 @@ import { remoteCodexSocketPath, remoteNativeAdapter, remoteRequestResponse } fro
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.22.21";
+const VERSION = "1.23.0";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent, details) {
@@ -904,7 +904,7 @@ if (invokedDirectly) {
     {
       instructions:
         "Companion process for the Codex Desktop native relay. It carries no work of its own: it accepts " +
-        "messages from claude-bridge on a private local socket and asks the Codex Desktop app-server that " +
+        "authorized Codex handoffs over SSH and messages from claude-bridge on private local sockets, and asks the Codex Desktop app-server that " +
         "launched it to deliver them into an already-open thread, so that thread keeps its writer lock.",
     },
   );

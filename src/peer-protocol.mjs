@@ -486,6 +486,28 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
   if (roots.length !== 1) return null;
   const { entry: root, absorbed } = roots[0];
   const entriesById = new Map(entries.map((entry) => [entry.uuid, entry]));
+  const orderedEntries = ambiguous ? entries : [];
+  if (!ambiguous) {
+    // Claude can persist a reply before its parent attachment; visit late
+    // ancestors before their children instead of assuming append order.
+    const visited = new Set();
+    for (const entry of entries) {
+      const ancestors = [];
+      const visiting = new Set();
+      let ancestor = entry;
+      while (ancestor && !visited.has(ancestor)) {
+        if (visiting.has(ancestor)) return null;
+        visiting.add(ancestor);
+        ancestors.push(ancestor);
+        ancestor = typeof ancestor.parentUuid === "string" ? entriesById.get(ancestor.parentUuid) : null;
+      }
+      while (ancestors.length) {
+        const ancestor = ancestors.pop();
+        visited.add(ancestor);
+        orderedEntries.push(ancestor);
+      }
+    }
+  }
   const descendants = new Map();
   const backgroundCalls = new Map();
   const openLeaves = new Set();
@@ -497,7 +519,7 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
     openLeaves.delete(entry.parentUuid);
     interruptions.push({ entryId: entry.uuid, backgroundTaskIds: [...outstanding.keys()] });
   };
-  for (const entry of entries) {
+  for (const entry of orderedEntries) {
     if (entry === root) { descendants.set(entry.uuid, new Map()); openLeaves.add(entry.uuid); continue; }
     let parentUuid = entry.parentUuid;
     if (!ambiguous && !interruptions.length && descendants.has(entry.logicalParentUuid)
@@ -509,6 +531,7 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
       }
     }
     if (!descendants.has(parentUuid)) continue;
+    let taskNotification = null;
     if (entry.type === "attachment" && entry.attachment?.type === "queued_command") {
       // Only a native command record is a boundary. Its text is never used as
       // proof of authorization, cancellation, or successful task completion.
@@ -516,12 +539,12 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
         interrupt(entry, descendants.get(entry.parentUuid));
         continue;
       }
-      // An inline native task notification is not a new prompt. Preserve the
-      // active reply chain even when the notification belongs to another task;
-      // its text alone never completes any outstanding background command.
+      // Inline native notifications preserve the chain; only matching task and
+      // tool-call identities below can complete an outstanding command.
       if (entry.attachment.commandMode !== "task-notification"
         || entry.attachment.origin?.kind !== "task-notification"
         || entry.attachment.origin?.producer !== "session-task") continue;
+      taskNotification = entry.attachment.prompt;
     }
     const role = entry.message?.role;
     const content = entry.message?.content;
@@ -548,14 +571,18 @@ export function readTranscriptOutcome(sessionId, cwd, msgId) {
       if (entry.origin?.kind !== "task-notification" || entry.origin.producer !== "session-task"
         || entry.promptSource !== "system" || entry.turnOrigin !== "task_notification"
         || typeof content !== "string" || !/^<task-notification>\s[\s\S]*<\/task-notification>$/.test(content.trim())) continue;
+      taskNotification = content;
+    }
+    if (typeof taskNotification === "string" && /^<task-notification>\s[\s\S]*<\/task-notification>$/.test(taskNotification.trim())) {
       const field = (name) => {
-        const matches = [...content.matchAll(new RegExp(`<${name}>([^<>]+)</${name}>`, "g"))];
+        const matches = [...taskNotification.matchAll(new RegExp(`<${name}>([^<>]+)</${name}>`, "g"))];
         return matches.length === 1 ? matches[0][1] : null;
       };
       const taskId = field("task-id");
       if (!outstanding.has(taskId) || outstanding.get(taskId) !== field("tool-use-id")
-        || !["completed", "failed", "killed"].includes(field("status"))) continue;
-      outstanding.delete(taskId);
+        || !["completed", "failed", "killed"].includes(field("status"))) {
+        if (role === "user") continue;
+      } else outstanding.delete(taskId);
     }
     if (typeof entry.uuid !== "string" || !entry.uuid.trim()) continue;
     if (role === "assistant" && Array.isArray(content)) {

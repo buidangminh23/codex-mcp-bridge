@@ -21,7 +21,9 @@ export class NativeCreationReceipts {
   #keyBoundary;
   #keyDirectoryBoundary;
   #keyDirectory;
-  constructor({ directory = path.join(process.env.CODEX_HOME ?? path.join(homeDir(), ".codex"), "bridge-native-creations") } = {}) {
+  constructor({ directory = path.join(process.env.CODEX_HOME ?? path.join(homeDir(), ".codex"), "bridge-native-creations"), accountProviders = ["claude", "codex"] } = {}) {
+    if (!["claude,codex", "codex"].includes(accountProviders?.join())) throw Error("Invalid receipt account providers");
+    this.accountProviders = Object.freeze([...accountProviders]);
     this.directory = path.resolve(directory);
     this.#keyDirectory = path.join(path.dirname(this.directory), "bridge-native-creation-authority");
   }
@@ -137,7 +139,7 @@ export class NativeCreationReceipts {
       if (current.isSymbolicLink() || !sameFile(opened, after) || !sameFile(after, current) || BigInt(count) !== opened.size) throw Error("Native creation receipt changed");
       const row = JSON.parse(bytes.subarray(0, count).toString());
       if (row.version !== 1 || row.id !== id || row.hash !== hash || creationRequestHash(row.args) !== hash ||
-          !accounts || ["claude", "codex"].some(k => !accounts[k] || row.accounts?.[k] !== accounts[k]) ||
+          !accounts || Object.keys(row.accounts ?? {}).sort().join() !== this.accountProviders.join() || this.accountProviders.some(k => !accounts[k] || row.accounts?.[k] !== accounts[k]) ||
           typeof row.executorThreadId !== "string" || !["pending", "completed", "failed"].includes(row.state)) throw Error("Native creation receipt binding mismatch");
       if (typeof row.signature !== "string" || !/^[a-f0-9]{64}$/.test(row.signature) ||
           !timingSafeEqual(Buffer.from(row.signature, "hex"), Buffer.from(this.#signature(row), "hex"))) throw Error("Native creation receipt signature is invalid; ownership recovery is blocked");

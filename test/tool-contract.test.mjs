@@ -45,7 +45,7 @@ const CLAUDE_TOOLS = [
   "claude_bridge_status",
 ];
 
-const NATIVE_RELAY_TOOLS = ["native_relay_status"];
+const NATIVE_RELAY_TOOLS = ["native_relay_status", "remote_codex"];
 
 /**
  * Both servers touch the real machine when they run for real, so the contract

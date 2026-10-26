@@ -37,6 +37,8 @@ import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { removeRelayFile, relayFileIdentity, verifyRelaySocketMode } from "./native-relay-files.mjs";
 
 import { NativeCreationReceipts, creationIdValid } from "./native-creation-receipts.mjs";
+import { registerRemoteCodexTools } from "./remote-codex-tools.mjs";
+import { remoteCodexSocketPath, remoteNativeAdapter, remoteRequestResponse } from "./remote-codex.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -392,6 +394,7 @@ export class RelaySocketServer {
     authorize,
     creationReceipts = new NativeCreationReceipts(),
     requireAccountContext = false,
+    requestHandler,
     strict = hardenedBridgeEnabled(),
     protectSocket = protectCurrentUserPipe,
     restrictSocket = (target, expected) => {
@@ -408,6 +411,7 @@ export class RelaySocketServer {
     this.authorize = authorize;
     this.creationReceipts = creationReceipts;
     this.requireAccountContext = requireAccountContext;
+    this.requestHandler = requestHandler;
     this.strict = strict;
     this.protectSocket = protectSocket;
     this.restrictSocket = restrictSocket;
@@ -667,6 +671,10 @@ export class RelaySocketServer {
       this.#reply(socket, errorResponse("RELAY_BAD_REQUEST", `malformed JSON: ${err.message}`));
       return;
     }
+    if (this.requestHandler) {
+      this.#reply(socket, await this.requestHandler(payload));
+      return;
+    }
     if ((this.requireAccountContext || this.strict) && !boundRequest(payload)) {
       this.#reply(socket, errorResponse("RELAY_BAD_REQUEST", "The account relay requires protocol 2 and the original account context", false));
       return;
@@ -875,7 +883,12 @@ export function createRelayServers({ nativeTools, env = process.env, signalExit 
     ...shared,
   });
   const strictDesktop = hardened && desktopTasksConfigured(env);
-  return { relay, desktopRelay, accountRelay, strictDesktop, relays: strictDesktop ? [accountRelay] : [relay, desktopRelay, accountRelay] };
+  const remoteRelay = new RelaySocketServer({
+    socketPath: remoteCodexSocketPath(env), strict: true,
+    requestHandler: (request) => remoteRequestResponse(request, { env, relay: remoteNativeAdapter(nativeTools, env) }),
+    ...shared,
+  });
+  return { relay, desktopRelay, accountRelay, remoteRelay, strictDesktop, relays: strictDesktop ? [accountRelay, remoteRelay] : [relay, desktopRelay, accountRelay, remoteRelay] };
 }
 
 /**
@@ -897,10 +910,11 @@ if (invokedDirectly) {
   );
 
   const nativeTools = new NativeToolsClient();
-  const { relay, desktopRelay, accountRelay, strictDesktop, relays } = createRelayServers({ nativeTools, signalExit: false, log });
+  const { relay, desktopRelay, accountRelay, remoteRelay, strictDesktop, relays } = createRelayServers({ nativeTools, signalExit: false, log });
   const runtime = createRuntimeState();
   const lifecycle = createNativeRelayLifecycle({ nativeTools, relays, log });
   const reload = createReloadControl({ entry: "native-relay-companion.mjs", ...lifecycle });
+  registerRemoteCodexTools(mcp, { nativeTools, runtime, reload });
 
   mcp.registerTool(
     "native_relay_status",
@@ -936,6 +950,7 @@ if (invokedDirectly) {
                `relay socket:   ${strictDesktop ? "disabled by hardened Desktop profile" : relay.started ? relay.socketPath : `${relay.socketPath} (${listening ? "shared companion listening" : "not listening"})`}`,
                `desktop tasks:  ${strictDesktop ? "disabled by hardened Desktop profile" : `${desktopRelay.socketPath} (${await desktopRelay.isListening() ? "listening" : "not listening"})`}`,
               `account relay:  ${accountRelay.socketPath} (protocol ${ACCOUNT_RELAY_PROTOCOL_VERSION}, ${await accountRelay.isListening() ? "listening" : "not listening"})`,
+              `remote Codex:   ${remoteRelay.socketPath} (${await remoteRelay.isListening() ? "listening" : "not listening"})`,
               `executor:       ${executor}`,
               `dispatch:       ${process.env.CODEX_NATIVE_RELAY_METHOD ?? NATIVE_DISPATCH_METHOD}`,
               `native pipe:    ${nativeTools.socketPath ?? "unavailable (requires Codex Desktop)"}`,

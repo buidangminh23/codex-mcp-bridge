@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-10-27T10:36:34.193Z",
+  "updatedAt": "2026-10-27T16:41:53.273Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -21524,16 +21524,11 @@
       }
     },
     {
-      "collectedAt": "2026-10-27T10:36:34.193Z",
+      "collectedAt": "2026-10-27T16:41:53.273Z",
       "views": {
-        "count": 293,
-        "uniques": 73,
+        "count": 289,
+        "uniques": 71,
         "views": [
-          {
-            "timestamp": "2026-10-12T00:00:00Z",
-            "count": 25,
-            "uniques": 8
-          },
           {
             "timestamp": "2026-10-13T00:00:00Z",
             "count": 64,
@@ -21598,18 +21593,18 @@
             "timestamp": "2026-10-25T00:00:00Z",
             "count": 13,
             "uniques": 5
+          },
+          {
+            "timestamp": "2026-10-26T00:00:00Z",
+            "count": 21,
+            "uniques": 7
           }
         ]
       },
       "clones": {
-        "count": 4434,
-        "uniques": 538,
+        "count": 4399,
+        "uniques": 544,
         "clones": [
-          {
-            "timestamp": "2026-10-12T00:00:00Z",
-            "count": 369,
-            "uniques": 49
-          },
           {
             "timestamp": "2026-10-13T00:00:00Z",
             "count": 785,
@@ -21674,6 +21669,11 @@
             "timestamp": "2026-10-25T00:00:00Z",
             "count": 71,
             "uniques": 31
+          },
+          {
+            "timestamp": "2026-10-26T00:00:00Z",
+            "count": 334,
+            "uniques": 66
           }
         ]
       },
@@ -21683,128 +21683,128 @@
         "subscribers": 0
       },
       "npm": {
-        "start": "2026-06-02",
-        "end": "2026-07-01",
+        "start": "2026-09-27",
+        "end": "2026-10-26",
         "downloads": [
           {
-            "day": "2026-06-02",
+            "day": "2026-09-27",
+            "downloads": 66
+          },
+          {
+            "day": "2026-09-28",
+            "downloads": 13
+          },
+          {
+            "day": "2026-09-29",
+            "downloads": 413
+          },
+          {
+            "day": "2026-09-30",
+            "downloads": 166
+          },
+          {
+            "day": "2026-10-01",
+            "downloads": 71
+          },
+          {
+            "day": "2026-10-02",
+            "downloads": 690
+          },
+          {
+            "day": "2026-10-03",
+            "downloads": 388
+          },
+          {
+            "day": "2026-10-04",
+            "downloads": 113
+          },
+          {
+            "day": "2026-10-05",
+            "downloads": 26
+          },
+          {
+            "day": "2026-10-06",
             "downloads": 0
           },
           {
-            "day": "2026-06-03",
+            "day": "2026-10-07",
+            "downloads": 136
+          },
+          {
+            "day": "2026-10-08",
+            "downloads": 63
+          },
+          {
+            "day": "2026-10-09",
+            "downloads": 38
+          },
+          {
+            "day": "2026-10-10",
+            "downloads": 314
+          },
+          {
+            "day": "2026-10-11",
+            "downloads": 324
+          },
+          {
+            "day": "2026-10-12",
+            "downloads": 360
+          },
+          {
+            "day": "2026-10-13",
             "downloads": 0
           },
           {
-            "day": "2026-06-04",
+            "day": "2026-10-14",
             "downloads": 0
           },
           {
-            "day": "2026-06-05",
+            "day": "2026-10-15",
             "downloads": 0
           },
           {
-            "day": "2026-06-06",
+            "day": "2026-10-16",
+            "downloads": 47
+          },
+          {
+            "day": "2026-10-17",
+            "downloads": 72
+          },
+          {
+            "day": "2026-10-18",
+            "downloads": 57
+          },
+          {
+            "day": "2026-10-19",
             "downloads": 0
           },
           {
-            "day": "2026-06-07",
+            "day": "2026-10-20",
             "downloads": 0
           },
           {
-            "day": "2026-06-08",
+            "day": "2026-10-21",
             "downloads": 0
           },
           {
-            "day": "2026-06-09",
-            "downloads": 0
+            "day": "2026-10-22",
+            "downloads": 873
           },
           {
-            "day": "2026-06-10",
-            "downloads": 0
+            "day": "2026-10-23",
+            "downloads": 55
           },
           {
-            "day": "2026-06-11",
-            "downloads": 0
+            "day": "2026-10-24",
+            "downloads": 608
           },
           {
-            "day": "2026-06-12",
-            "downloads": 0
+            "day": "2026-10-25",
+            "downloads": 35
           },
           {
-            "day": "2026-06-13",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-14",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-15",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-16",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-17",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-18",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-19",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-20",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-21",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-22",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-23",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-24",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-25",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-26",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-27",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-28",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-29",
-            "downloads": 0
-          },
-          {
-            "day": "2026-06-30",
-            "downloads": 0
-          },
-          {
-            "day": "2026-07-01",
-            "downloads": 0
+            "day": "2026-10-26",
+            "downloads": 341
           }
         ]
       },
@@ -22190,11 +22190,11 @@
         }
       ],
       "sourceCollectedAt": {
-        "views": "2026-10-27T10:36:34.193Z",
-        "clones": "2026-10-27T10:36:34.193Z",
-        "npm": "2026-10-27T10:36:34.193Z",
-        "repository": "2026-10-27T10:36:34.193Z",
-        "releases": "2026-10-27T10:36:34.193Z"
+        "views": "2026-10-27T16:41:53.273Z",
+        "clones": "2026-10-27T16:41:53.273Z",
+        "npm": "2026-10-27T16:41:53.273Z",
+        "repository": "2026-10-27T16:41:53.273Z",
+        "releases": "2026-10-27T16:41:53.273Z"
       }
     }
   ],
@@ -22423,6 +22423,10 @@
       "2026-10-25": {
         "count": 13,
         "uniques": 5
+      },
+      "2026-10-26": {
+        "count": 21,
+        "uniques": 7
       }
     },
     "clones": {
@@ -22649,6 +22653,10 @@
       "2026-10-25": {
         "count": 71,
         "uniques": 31
+      },
+      "2026-10-26": {
+        "count": 334,
+        "uniques": 66
       }
     },
     "npm": {
@@ -22954,11 +22962,23 @@
       },
       "2026-07-01": {
         "downloads": 0
+      },
+      "2026-10-23": {
+        "downloads": 55
+      },
+      "2026-10-24": {
+        "downloads": 608
+      },
+      "2026-10-25": {
+        "downloads": 35
+      },
+      "2026-10-26": {
+        "downloads": 341
       }
     }
   },
   "usage": {
-    "collectedAt": "2026-10-27T10:36:36Z",
+    "collectedAt": "2026-10-27T16:41:55Z",
     "active": {
       "day": 0,
       "week": 0,

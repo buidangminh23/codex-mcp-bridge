@@ -52,17 +52,17 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, beforeWrit
 }
 
 describe("Desktop creation receipts and deadlines", () => {
-  it("reports an unavailable accepted-dispatch observation without inventing task failure", async (t) => {
+  for (const nativeStatus of ["inProgress", "failed", "interrupted"]) it(`keeps unavailable observation separate from native task status: ${nativeStatus}`, async (t) => {
     const f = fixture(t, {
       resolveResponse: () => ({ status: "unavailable", turnId: "turn", reason: "Unrecognized native response record" }),
       dispatch({ operation }) {
-        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "active" }, latestTurn: { id: "turn", status: "inProgress" } }] };
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "active" }, latestTurn: { id: "turn", status: nativeStatus } }] };
       },
     });
     const result = await f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "old-turn", responseObservation: {
       threadId: "task", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
     } });
-    assert.equal(result.status, "observation_unavailable");
+    assert.equal(result.status, nativeStatus === "inProgress" ? "observation_unavailable" : nativeStatus);
     assert.equal(result.observationStatus, "unavailable");
     assert.equal(result.observationReason, "Unrecognized native response record");
     assert.equal(result.text, "");

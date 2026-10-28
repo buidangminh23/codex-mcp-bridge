@@ -645,7 +645,7 @@ export class DesktopTaskDelivery {
         turnId = observed.turnId ?? null;
         if (observed.status !== "pending") {
           return {
-            threadId, turnId, status: observed.status === "unavailable" ? "failed" : "completed",
+            threadId, turnId, status: observed.status === "unavailable" ? "observation_unavailable" : "completed",
             responseStatus: observed.status, observationStatus: observed.status,
             text: observed.status === "completed" ? observed.text : "",
             ...(observed.reason ? { observationReason: observed.reason } : {}),

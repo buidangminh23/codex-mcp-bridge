@@ -6,6 +6,9 @@ import { test } from "node:test";
 import { createAntigravityParentGuard, startAntigravitySidecar } from "../src/antigravity-sidecar.mjs";
 
 test("parent guard binds process creation identity and rejects orphan startup", async () => {
+  for (const parentPid of [0, 1, -1, NaN, 0x100000000]) {
+    await assert.rejects(createAntigravityParentGuard({ parentPid, inspect: async () => { assert.fail("Invalid parent must not be inspected"); } }), /parent is unavailable/);
+  }
   for (const rows of [[], [{ pid: 99, processStart: "1" }], [{ pid: 100, processStart: "" }]]) {
     await assert.rejects(createAntigravityParentGuard({ parentPid: 100, inspect: async () => rows }), /parent is unavailable/);
   }

@@ -8,6 +8,7 @@ import { exitForVersionRequest } from "./cli-version.mjs";
 import { readProcessAncestry } from "./claude-sender-context.mjs";
 
 export async function createAntigravityParentGuard({ parentPid = process.ppid, inspect = readProcessAncestry } = {}) {
+  if (!Number.isSafeInteger(parentPid) || parentPid <= 1 || parentPid > 0xffffffff) throw new Error("Antigravity sidecar parent is unavailable; relaunch it from the native app");
   const read = async () => {
     const rows = await inspect({ parentPid, maxDepth: 1 });
     const row = rows?.[0];

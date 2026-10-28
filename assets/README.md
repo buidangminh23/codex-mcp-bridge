@@ -1,9 +1,10 @@
 # Artwork sources
 
-`agent-pets.svg` pairs Claude Clawd and the original Codex companion with a right arrow above a left arrow. The artwork preserves each mascot's colors and proportions.
+`agent-pets.svg` places Claude Clawd, the original Codex companion, and the official Google Antigravity logo around a circle, connected by curved two-way arrows. The artwork preserves the original colors and proportions of all three marks.
 
 - Claude Clawd: `ClaudeCode` vector from [LobeHub Icons](https://github.com/lobehub/lobe-icons), copied from the `icons-pro-max` asset catalog. Copyright (c) 2023 LobeHub; MIT license below.
 - Codex companion: original idle frame from OpenAI's Codex desktop companion artwork (`codex-spritesheet-v6`, cell 0,0, 192 × 208 pixels). Copyright OpenAI. This third-party artwork and the represented trademarks are not covered by this repository's MIT license.
+- Antigravity: original vector mark from the [official Google Antigravity favicon](https://www.antigravity.google/favicon.svg), retrieved October 28, 2026. The favicon background is omitted; the logo paths, colors, masks, and filters are preserved. Copyright Google. This third-party artwork and the represented trademarks are not covered by this repository's MIT license.
 
 ## LobeHub Icons license
 

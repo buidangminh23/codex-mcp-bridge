@@ -473,7 +473,7 @@ async function realWorker(t, entry) {
   await fs.promises.cp(path.join(repository, "src"), path.join(fixture.root, "src"), {recursive:true});
   fs.copyFileSync(path.join(repository,"package.json"),path.join(fixture.root,"package.json"));
   await fs.promises.cp(path.join(repository,"node_modules"),path.join(fixture.root,"node_modules"),{recursive:true});
-  const prefix = process.platform === "win32" ? `\\\\.\\pipe\\supervisor-${randomUUID()}` : path.join("/tmp",`supervisor-${randomUUID()}.sock`);
+  const prefix = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\codex-native-relay-supervisor-${randomUUID()}` : path.join("/tmp",`supervisor-${randomUUID()}.sock`);
   const sockets = new Set();
   const native = net.createServer(socket => { sockets.add(socket); socket.on("close",()=>sockets.delete(socket)); });
   await new Promise(resolve=>native.listen(prefix,resolve));

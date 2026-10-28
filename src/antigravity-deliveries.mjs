@@ -18,10 +18,26 @@ export class AntigravityDeliveries {
 
   read(requestId) {
     const file = this.file(requestId);
-    if (!fs.existsSync(file)) return null;
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) throw new Error("Invalid delivery record");
-    const record = JSON.parse(fs.readFileSync(file, "utf8"));
+    let stat;
+    try { stat = fs.lstatSync(file, { bigint: true }); }
+    catch (error) { if (error.code === "ENOENT") return null; throw error; }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.size > 4n * 1024n * 1024n) throw new Error("Invalid delivery record");
+    const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    let record;
+    try {
+      const opened = fs.fstatSync(descriptor, { bigint: true });
+      if (!opened.isFile() || opened.nlink !== 1n || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size !== stat.size || opened.mtimeNs !== stat.mtimeNs) throw new Error("Delivery record changed before reading");
+      const buffer = Buffer.alloc(Number(opened.size) + 1);
+      let bytes = 0;
+      while (bytes < buffer.length) {
+        const count = fs.readSync(descriptor, buffer, bytes, buffer.length - bytes, bytes);
+        if (!count) break;
+        bytes += count;
+      }
+      const after = fs.fstatSync(descriptor, { bigint: true });
+      if (bytes !== Number(opened.size) || after.size !== opened.size || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) throw new Error("Delivery record changed while reading");
+      record = JSON.parse(buffer.subarray(0, bytes).toString("utf8"));
+    } finally { fs.closeSync(descriptor); }
     if (record.requestId !== requestId) throw new Error("Delivery identity mismatch");
     if (record.status === "pending" && !this.active.has(requestId)) return { ...record, status: "unknown", reason: "This process cannot observe the original worker. Inspect the exact destination; do not resend." };
     return record;

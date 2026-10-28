@@ -21,9 +21,32 @@ function snapshot(file) {
   let stat;
   try { stat = fs.lstatSync(file); }
   catch (error) { if (error.code === "ENOENT") return { file, text: null, value: {} }; throw error; }
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 16 * 1024 * 1024) throw new Error(`Unsafe configuration file: ${file}`);
-  const text = fs.readFileSync(file, "utf8");
-  return { file, text, value: object(JSON.parse(text), file), mode: stat.mode & 0o777, dev: stat.dev, ino: stat.ino };
+  const safe = (value) => value.isFile() && !value.isSymbolicLink() && value.nlink === 1 && value.size <= 16 * 1024 * 1024;
+  const matches = (left, right) => safe(right) && left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+  if (!safe(stat)) throw new Error(`Unsafe configuration file: ${file}`);
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = fs.fstatSync(descriptor);
+    if (!matches(stat, opened)) throw new Error(`Configuration changed while opening: ${file}`);
+    const buffer = Buffer.alloc(opened.size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = fs.readSync(descriptor, buffer, length, buffer.length - length, length);
+      if (!read) break;
+      length += read;
+    }
+    if (length !== opened.size || !matches(opened, fs.fstatSync(descriptor)) || !matches(opened, fs.lstatSync(file))) throw new Error(`Configuration changed while reading: ${file}`);
+    const text = buffer.subarray(0, length).toString("utf8");
+    return { file, text, value: object(JSON.parse(text), file), mode: opened.mode & 0o777, dev: opened.dev, ino: opened.ino };
+  } finally { fs.closeSync(descriptor); }
+}
+
+export function validateCodexExecutable(executable, { platform = process.platform } = {}) {
+  if (typeof executable !== "string" || !path.isAbsolute(executable) || executable.includes("\0")) throw new Error("Codex executable must be an absolute native executable path");
+  const resolved = fs.realpathSync.native(executable);
+  if (!fs.statSync(resolved).isFile()) throw new Error("Codex executable must be a regular file");
+  if (platform === "win32" && !/\.(exe|com)$/i.test(resolved)) throw new Error("Codex executable must be a native Windows executable, not a shell script");
+  return resolved;
 }
 
 function ownEntry(entry, expected, label) {
@@ -148,8 +171,8 @@ export function runAntigravityInstaller(args = process.argv.slice(2)) {
   let run;
   let codexExisting = null;
   if (options.targets.includes("codex")) {
-    const codexBin = resolveCodexBin(process.env.CODEX_EXE);
-    run = (command) => execFileSync(codexBin, command, { encoding: "utf8", env: spawnEnv(), windowsHide: true, timeout: 30000, stdio: "pipe" });
+    const codexBin = validateCodexExecutable(resolveCodexBin(process.env.CODEX_EXE));
+    run = (command) => execFileSync(codexBin, command, { encoding: "utf8", env: spawnEnv(), windowsHide: true, shell: false, timeout: 30000, stdio: "pipe" });
     const inventory = JSON.parse(run(["mcp", "list", "--json"]));
     if (!Array.isArray(inventory)) throw new Error("Codex returned an invalid MCP inventory");
     if (inventory.some((item) => item.name === NAME)) codexExisting = JSON.parse(run(["mcp", "get", NAME, "--json"]));

@@ -19,7 +19,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Verification
 
-- 62 Antigravity tests pass on Windows, with three platform-specific skips. Coverage includes real MCP stdio, caller identity, project scope, current-user pipe access, duplicate requests, native metadata, stream protocol failures, and installer preservation.
+- 68 Antigravity tests pass on Windows, with three platform-specific skips. Coverage includes real MCP stdio, caller identity, project scope, current-user pipe access, duplicate requests, native metadata, stream protocol failures, installer preservation, and file replacement during reads.
 - A live CLI session returned `ANTIGRAVITY_BRIDGE_OK` under native `request-review` permissions. The app-managed sidecar returned verified metadata from a real App conversation. App prompt delivery is covered by adapter tests; a live App send was not exercised.
 
 ## [1.23.0] - 2026-10-26

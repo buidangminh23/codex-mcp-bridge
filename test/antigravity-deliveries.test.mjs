@@ -91,3 +91,30 @@ test("native permission failures remain failed results rather than success", asy
   assert.equal(store.read(request.requestId).status, "failed");
   assert.equal(store.read(request.requestId).result.status, "PERMISSION_DENIED");
 });
+
+test("receipt reads reject hard-linked records", async (t) => {
+  const { store, request, directory } = fixture(t);
+  await store.dispatch(request, async () => ({ status: "SUCCESS", response: "done" }));
+  await delay(10);
+  const file = store.file(request.requestId);
+  fs.linkSync(file, path.join(directory, "duplicate.json"));
+  assert.throws(() => store.read(request.requestId), /Invalid delivery record/);
+});
+
+test("receipt reads reject a replacement between inspection and opening", async (t) => {
+  const { store, request, directory } = fixture(t);
+  await store.dispatch(request, async () => ({ status: "SUCCESS", response: "done" }));
+  await delay(10);
+  const file = store.file(request.requestId);
+  const original = fs.openSync;
+  let replaced = false;
+  t.mock.method(fs, "openSync", (...args) => {
+    if (args[0] === file && !replaced) {
+      replaced = true;
+      fs.renameSync(file, path.join(directory, "previous.json"));
+      fs.writeFileSync(file, "{}");
+    }
+    return original(...args);
+  });
+  assert.throws(() => store.read(request.requestId), /changed before reading/);
+});

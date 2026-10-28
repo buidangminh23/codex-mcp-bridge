@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
-import { applyJsonEdits, installerArguments, planAntigravityInstallation } from "../scripts/install-antigravity-bridge.mjs";
+import { applyJsonEdits, installerArguments, planAntigravityInstallation, validateCodexExecutable } from "../scripts/install-antigravity-bridge.mjs";
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "antigravity-installer-"));
 const root = path.join(sandbox, "package");
@@ -139,4 +139,66 @@ test("rejects symlinked JSON configuration", { skip: process.platform === "win32
   fs.symlinkSync(target, path.join(options.home, ".claude.json"));
   assert.throws(() => planAntigravityInstallation({ ...options, targets: ["claude"] }), /Unsafe configuration/);
   assert.deepEqual(read(target), { keep: true });
+});
+
+test("rejects a configuration replaced between inspection and opening", (t) => {
+  const options = fixture();
+  const file = write(options.home, ".claude.json", { original: true });
+  const replacement = write(options.home, "replacement.json", { replaced: true });
+  const originalOpen = fs.openSync;
+  let swapped = false;
+  t.mock.method(fs, "openSync", function (target, ...args) {
+    if (target === file && !swapped) {
+      swapped = true;
+      fs.renameSync(file, path.join(options.home, "original.json"));
+      fs.renameSync(replacement, file);
+    }
+    return originalOpen.call(fs, target, ...args);
+  });
+  assert.throws(() => planAntigravityInstallation({ ...options, targets: ["claude"] }), /changed while opening/);
+  assert.equal(swapped, true);
+  assert.deepEqual(read(file), { replaced: true });
+});
+
+test("rejects a configuration changed while reading its open descriptor", (t) => {
+  const options = fixture();
+  const file = write(options.home, ".claude.json", { original: true });
+  const originalRead = fs.readSync;
+  let changed = false;
+  t.mock.method(fs, "readSync", function (...args) {
+    const length = originalRead.apply(fs, args);
+    if (!changed) {
+      changed = true;
+      fs.appendFileSync(file, " ");
+    }
+    return length;
+  });
+  assert.throws(() => planAntigravityInstallation({ ...options, targets: ["claude"] }), /changed while reading/);
+  assert.equal(changed, true);
+});
+
+test("rejects hardlinked and oversized configuration files before reading", () => {
+  for (const kind of ["hardlink", "oversized"]) {
+    const options = fixture();
+    const file = write(options.home, ".claude.json", { original: true });
+    if (kind === "hardlink") fs.linkSync(file, path.join(options.home, "shared.json"));
+    else fs.truncateSync(file, 16 * 1024 * 1024 + 1);
+    assert.throws(() => planAntigravityInstallation({ ...options, targets: ["claude"] }), /Unsafe configuration/);
+  }
+});
+
+test("requires an absolute existing executable and rejects Windows shell scripts", () => {
+  const options = fixture();
+  assert.equal(validateCodexExecutable(process.execPath), fs.realpathSync.native(process.execPath));
+  assert.throws(() => validateCodexExecutable("codex"), /absolute native executable/);
+  assert.throws(() => validateCodexExecutable(options.home), /regular file/);
+  assert.throws(() => validateCodexExecutable(path.join(options.home, "missing.exe")), /ENOENT/);
+  for (const extension of ["cmd", "bat", "ps1", "js"]) {
+    const script = path.join(options.home, `codex.${extension}`);
+    fs.writeFileSync(script, "untrusted script");
+    assert.throws(() => validateCodexExecutable(script, { platform: "win32" }), /not a shell script/);
+  }
+  const native = path.join(options.home, "custom codex.exe");
+  fs.writeFileSync(native, "fixture");
+  assert.equal(validateCodexExecutable(native, { platform: "win32" }), fs.realpathSync.native(native));
 });

@@ -21,17 +21,17 @@ function fixture() {
 function darwinFixture() {
   const f = fixture();
   f.deps.platform = "darwin";
-  f.deps.home = "/Users/developer";
+  f.deps.home = "/Users/<user>";
   delete f.meta[prefix + "workspace_paths"];
-  f.meta[prefix + "artifacts_dir"] = `/Users/developer/.gemini/antigravity/brain/${id}`;
+  f.meta[prefix + "artifacts_dir"] = `/Users/<user>/.gemini/antigravity/brain/${id}`;
   f.images[0].executable = "/Applications/Antigravity.app/Contents/Resources/bin/language_server";
   f.images[1].executable = "/Applications/Antigravity.app/Contents/MacOS/Antigravity";
   f.ancestry[0].processStart = "Wed Oct 28 10:00:01 2026";
   f.ancestry[1].processStart = "Wed Oct 28 10:00:00 2026";
-  f.native.cwd = "/Users/developer/Work/Example Project";
-  f.project.projectResources.resources[0].gitFolder.folderUri = "file:///Users/developer/Work/Example%20Project";
+  f.native.cwd = "/Users/<user>/Work/Example Project";
+  f.project.projectResources.resources[0].gitFolder.folderUri = "file:///Users/<user>/Work/Example%20Project";
   f.deps.readJson = async (file) => {
-    assert.ok(["/Users/developer/.gemini/config/config.json", `/Users/developer/.gemini/config/projects/${projectId}.json`].includes(file));
+    assert.ok(["/Users/<user>/.gemini/config/config.json", `/Users/<user>/.gemini/config/projects/${projectId}.json`].includes(file));
     return structuredClone(file.endsWith("config.json") ? f.global : f.project);
   };
   return f;
@@ -41,7 +41,7 @@ test("darwin App ancestry and exact native project verify without optional works
   const f = darwinFixture();
   const result = await f.resolve();
   assert.equal(result.status, "verified");
-  assert.equal(result.cwd, "/Users/developer/Work/Example Project");
+  assert.equal(result.cwd, "/Users/<user>/Work/Example Project");
   assert.equal(result.projectId, projectId);
   assert.equal(result.conversationId, id);
   assert.equal(result.surface, "desktop");
@@ -56,14 +56,14 @@ test("darwin App ancestry and exact native project verify without optional works
 
 test("darwin denies mismatched installations, CLI ancestors, native identity and project workspace", async () => {
   for (const change of [
-    (f) => { f.images[1].executable = "/Users/developer/Applications/Antigravity.app/Contents/MacOS/Antigravity"; },
-    (f) => { f.images[0].executable = "/Users/developer/.local/bin/agy"; },
+    (f) => { f.images[1].executable = "/Users/<user>/Applications/Antigravity.app/Contents/MacOS/Antigravity"; },
+    (f) => { f.images[0].executable = "/Users/<user>/.local/bin/agy"; },
     (f) => { f.ancestry[0].parentPid = 99; },
     (f) => { f.native.conversationId = projectId; },
     (f) => { f.native.surface = "cli"; },
-    (f) => { f.native.cwd = "/Users/developer/Work/Other"; },
-    (f) => { f.project.projectResources.resources[0].gitFolder.folderUri = "file:///Users/developer/Work/Other"; },
-    (f) => { f.meta[prefix + "workspace_paths"] = ["/Users/developer/Work/Other"]; },
+    (f) => { f.native.cwd = "/Users/<user>/Work/Other"; },
+    (f) => { f.project.projectResources.resources[0].gitFolder.folderUri = "file:///Users/<user>/Work/Other"; },
+    (f) => { f.meta[prefix + "workspace_paths"] = ["/Users/<user>/Work/Other"]; },
   ]) {
     const f = darwinFixture();
     change(f);

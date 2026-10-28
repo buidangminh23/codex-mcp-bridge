@@ -17,6 +17,8 @@
 
 Send prompts and replies between **Claude and Codex**, keeping each conversation in its own app. Supports Windows, macOS, and Linux; native Desktop integration supports Windows and macOS.
 
+The optional **Antigravity bridge** also sends authorized work from Codex or Claude Desktop to an existing Antigravity App conversation or a new Antigravity CLI streaming session. [Setup and current limits](#antigravity-app-and-cli).
+
 https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 
 ## Installation
@@ -25,7 +27,7 @@ https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 npm install -g @minhspark/codex-mcp-bridge@latest
 ```
 
-Requires **Node.js 22+**. In Windows PowerShell, use `npm.cmd` instead of `npm`. Run the same command to update; reconnect MCP servers if their settings or installation paths changed.
+Requires **Node.js 22.13+**. In Windows PowerShell, use `npm.cmd` instead of `npm`. Run the same command to update; reconnect MCP servers if their settings or installation paths changed.
 
 On macOS or Linux you can install with [Homebrew](https://github.com/buidangminh23/homebrew-tap) instead, which brings its own Node.js:
 
@@ -36,6 +38,31 @@ brew install buidangminh23/tap/codex-mcp-bridge
 Update with `brew upgrade codex-mcp-bridge`. The installers record Homebrew's stable `opt` paths, so registrations keep working after an upgrade and running bridges reload the new version. Keep one install channel: whichever of npm or Homebrew comes first on `PATH` provides the commands.
 
 [Windows](#windows-powershell) · [macOS](#macos-terminal) · [Linux / WSL](#linux--wsl-bash) · [ChatGPT plugin](#chatgpt-plugin)
+
+### Antigravity App and CLI
+
+Install and sign in to the Antigravity App and/or `agy` CLI, then run:
+
+```bash
+antigravity-mcp-bridge-install --all
+```
+
+Use `.cmd` on Windows. Select `--codex`, `--claude`, or `--desktop` to install individual components; `--dry-run` previews changes. The installer preserves unrelated configuration and native permissions. Reload Codex/Claude to load the new MCP server. Antigravity launches its own sidecar from `~/.gemini/config/sidecars/codex-bridge/sidecar.json`; do not run that sidecar manually or copy authentication environment variables between processes.
+
+| Tool | Behavior |
+| --- | --- |
+| `antigravity_bridge_status` | Reports native sidecar connectivity and CLI capabilities. |
+| `list_antigravity_conversations` | Lists the selected surface in the verified sender's exact project directory. |
+| `send_to_antigravity_conversation` | Sends to an exact existing App conversation or a CLI session owned by this bridge. |
+| `start_antigravity_cli_session` | Starts an explicitly authorized CLI streaming session with its initial prompt. |
+| `read_antigravity_delivery` | Reads the original receipt without resending. |
+| `close_antigravity_cli_session` | Closes an idle CLI session owned by the sender. |
+
+Generate a new `requestId` UUID for each intentional delivery and reuse it only when inspecting or retrying that same delivery. A pending or unknown receipt must be inspected before further action. Receipts survive process restarts; live CLI processes do not. A CLI timeout retains its conversation identity for inspection. No mode or permission-bypass flag is added; headless tool requests requiring interaction may be denied by Antigravity.
+
+The App adapter uses the official [sidecar `agentapi`](https://antigravity.google/docs/sidecars), verifies native workspace metadata, and refuses busy or ambiguous destinations. An App `accepted` receipt confirms native acceptance, not a completed agent reply. Open the exact App conversation to read its response. The CLI adapter uses the official [streaming JSON interface](https://antigravity.google/docs/cli/headless) and returns the agent's final result. It creates bridge-owned headless sessions; it does not attach to an already running interactive terminal. The two surfaces never substitute for one another.
+
+This integration accepts verified Codex and Claude Desktop callers. Antigravity-origin requests into Codex/Claude, App conversation creation, and automatic App reply forwarding are not currently implemented. The existing Codex↔Claude bridge remains separate. Use `antigravity-mcp-bridge-install --all --remove` to remove only these registrations; delivery receipts are retained.
 
 ### Windows (PowerShell)
 

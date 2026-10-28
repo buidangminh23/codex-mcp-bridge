@@ -4,6 +4,24 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-10-28
+
+### Added
+
+- Optional Antigravity MCP bridge for verified Codex and Claude Desktop callers. Select an exact existing Antigravity App conversation or explicitly create a bridge-owned CLI streaming session in the same project directory.
+- Native App sidecar transport with current-user socket access, native workspace/project checks, busy-recipient protection, and durable request receipts. CLI streaming validates native conversation identity and preserves permission review; results and uncertain outcomes are recorded without automatic resends.
+- `antigravity-mcp-bridge-install` configures Codex, Claude, and the App sidecar independently or together, previews changes with `--dry-run`, preserves unrelated configuration, and removes only its own registrations.
+
+### Compatibility
+
+- Node.js 22.13 or newer is required for read-only native conversation discovery. The App adapter filters mirrored CLI records rather than trusting the database directory alone.
+- App receipts report native acceptance; App response forwarding and creation are not implemented. CLI support uses bridge-owned headless sessions, not attachment to existing interactive terminals. Antigravity-origin calls into Codex/Claude remain outside this integration.
+
+### Verification
+
+- 62 Antigravity tests pass on Windows, with three platform-specific skips. Coverage includes real MCP stdio, caller identity, project scope, current-user pipe access, duplicate requests, native metadata, stream protocol failures, and installer preservation.
+- A live CLI session returned `ANTIGRAVITY_BRIDGE_OK` under native `request-review` permissions. The app-managed sidecar returned verified metadata from a real App conversation. App prompt delivery is covered by adapter tests; a live App send was not exercised.
+
 ## [1.23.0] - 2026-10-26
 
 ### Added

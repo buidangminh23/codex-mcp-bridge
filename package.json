@@ -1,13 +1,14 @@
 {
   "name": "@minhspark/codex-mcp-bridge",
-  "version": "1.23.0",
-  "description": "Two-way MCP bridge between Claude and Codex: prompts into a live Codex thread, messages into a running Claude Code session.",
+  "version": "1.24.0",
+  "description": "MCP bridges for Claude, Codex, and Antigravity Desktop and CLI conversations.",
   "keywords": [
     "mcp",
     "codex",
     "claude-code",
     "claude-desktop",
     "app-server",
+    "antigravity",
     "model-context-protocol"
   ],
   "license": "MIT",
@@ -24,6 +25,8 @@
   "bin": {
     "codex-mcp-bridge": "src/codex-bridge-launcher.mjs",
     "claude-mcp-bridge": "src/claude-bridge-launcher.mjs",
+    "antigravity-mcp-bridge": "src/antigravity-bridge.mjs",
+    "antigravity-mcp-bridge-install": "scripts/install-antigravity-bridge.mjs",
     "codex-mcp-bridge-install": "scripts/install-claude-desktop.mjs",
     "codex-bridge-code-install": "scripts/install-claude-code.mjs",
     "bridge-projects": "scripts/bridge-projects.mjs",
@@ -62,6 +65,8 @@
     "analytics:publish": "node scripts/publish-repo-analytics.mjs",
     "start": "node src/codex-bridge-launcher.mjs",
     "claude-bridge": "node src/claude-bridge-launcher.mjs",
+    "antigravity-bridge": "node src/antigravity-bridge.mjs",
+    "install:antigravity": "node scripts/install-antigravity-bridge.mjs",
     "app-server": "codex app-server --listen ws://127.0.0.1:8791",
     "test": "node scripts/run-tests.mjs",
     "check": "node scripts/check.mjs",
@@ -79,7 +84,7 @@
     "version": "node scripts/sync-version.mjs && git add src/index.mjs src/claude-bridge.mjs src/native-relay-companion.mjs scripts/install-native-relay.mjs .codex-plugin/plugin.json"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

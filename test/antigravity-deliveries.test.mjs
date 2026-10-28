@@ -101,14 +101,14 @@ test("receipt reads reject hard-linked records", async (t) => {
   assert.throws(() => store.read(request.requestId), /Invalid delivery record/);
 });
 
-test("receipt reads reject a replacement between inspection and opening", async (t) => {
+test("receipt reads reject a replacement between opening and inspection", async (t) => {
   const { store, request, directory } = fixture(t);
   await store.dispatch(request, async () => ({ status: "SUCCESS", response: "done" }));
   await delay(10);
   const file = store.file(request.requestId);
-  const original = fs.openSync;
+  const original = fs.lstatSync;
   let replaced = false;
-  t.mock.method(fs, "openSync", (...args) => {
+  t.mock.method(fs, "lstatSync", (...args) => {
     if (args[0] === file && !replaced) {
       replaced = true;
       fs.renameSync(file, path.join(directory, "previous.json"));

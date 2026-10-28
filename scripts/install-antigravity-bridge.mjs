@@ -18,15 +18,19 @@ function object(value, label) {
 }
 
 function snapshot(file) {
-  let stat;
-  try { stat = fs.lstatSync(file); }
-  catch (error) { if (error.code === "ENOENT") return { file, text: null, value: {} }; throw error; }
+  let descriptor;
+  try { descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0)); }
+  catch (error) {
+    if (error.code === "ENOENT") return { file, text: null, value: {} };
+    if (error.code === "ELOOP") throw new Error(`Unsafe configuration file: ${file}`);
+    throw error;
+  }
   const safe = (value) => value.isFile() && !value.isSymbolicLink() && value.nlink === 1 && value.size <= 16 * 1024 * 1024;
   const matches = (left, right) => safe(right) && left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
-  if (!safe(stat)) throw new Error(`Unsafe configuration file: ${file}`);
-  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
+    const stat = fs.lstatSync(file);
     const opened = fs.fstatSync(descriptor);
+    if (!safe(stat) || !safe(opened)) throw new Error(`Unsafe configuration file: ${file}`);
     if (!matches(stat, opened)) throw new Error(`Configuration changed while opening: ${file}`);
     const buffer = Buffer.alloc(opened.size + 1);
     let length = 0;

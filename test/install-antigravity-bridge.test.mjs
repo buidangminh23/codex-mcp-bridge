@@ -141,22 +141,29 @@ test("rejects symlinked JSON configuration", { skip: process.platform === "win32
   assert.deepEqual(read(target), { keep: true });
 });
 
-test("rejects a configuration replaced between inspection and opening", (t) => {
+test("rejects a configuration path replaced after opening before reading", (t) => {
   const options = fixture();
   const file = write(options.home, ".claude.json", { original: true });
   const replacement = write(options.home, "replacement.json", { replaced: true });
-  const originalOpen = fs.openSync;
+  const originalLstat = fs.lstatSync;
+  const originalRead = fs.readSync;
   let swapped = false;
-  t.mock.method(fs, "openSync", function (target, ...args) {
+  let reads = 0;
+  t.mock.method(fs, "readSync", function (...args) {
+    reads++;
+    return originalRead.apply(fs, args);
+  });
+  t.mock.method(fs, "lstatSync", function (target, ...args) {
     if (target === file && !swapped) {
       swapped = true;
       fs.renameSync(file, path.join(options.home, "original.json"));
       fs.renameSync(replacement, file);
     }
-    return originalOpen.call(fs, target, ...args);
+    return originalLstat.call(fs, target, ...args);
   });
   assert.throws(() => planAntigravityInstallation({ ...options, targets: ["claude"] }), /changed while opening/);
   assert.equal(swapped, true);
+  assert.equal(reads, 0);
   assert.deepEqual(read(file), { replaced: true });
 });
 

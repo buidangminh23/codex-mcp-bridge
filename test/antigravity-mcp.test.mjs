@@ -22,7 +22,7 @@ function payload(response) {
 }
 
 async function fixture(t, { caller, verified = false } = {}) {
-  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "antigravity-mcp-")));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "antigravity-mcp-")));
   const cwd = path.join(home, "project");
   const otherCwd = path.join(home, "other-project");
   const bridgeDirectory = antigravityBridgeDirectory(home);

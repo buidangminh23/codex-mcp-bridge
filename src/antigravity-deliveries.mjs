@@ -18,13 +18,13 @@ export class AntigravityDeliveries {
 
   read(requestId) {
     const file = this.file(requestId);
-    let stat;
-    try { stat = fs.lstatSync(file, { bigint: true }); }
+    let descriptor;
+    try { descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0)); }
     catch (error) { if (error.code === "ENOENT") return null; throw error; }
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.size > 4n * 1024n * 1024n) throw new Error("Invalid delivery record");
-    const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
     let record;
     try {
+      const stat = fs.lstatSync(file, { bigint: true });
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.size > 4n * 1024n * 1024n) throw new Error("Invalid delivery record");
       const opened = fs.fstatSync(descriptor, { bigint: true });
       if (!opened.isFile() || opened.nlink !== 1n || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size !== stat.size || opened.mtimeNs !== stat.mtimeNs) throw new Error("Delivery record changed before reading");
       const buffer = Buffer.alloc(Number(opened.size) + 1);

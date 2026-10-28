@@ -6,6 +6,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { after, before, describe, it } from "node:test";
 import { setImmediate as yieldToEvents } from "node:timers/promises";
+import { ReplyForwarder } from "../src/reply-forwarder.mjs";
 
 import {
   BRIDGE_ENTRYPOINT,
@@ -715,6 +716,69 @@ describe("peer endpoint", () => {
     assert.equal(result.reply?.text, "observed after the first poll");
   });
 
+  for (const timeoutMs of [0, 20]) it(`publishes a scoped interruption after asynchronous send: timeout=${timeoutMs}`, { timeout: 3000 }, async (t) => {
+    const isolated = new PeerEndpoint({ name: "async-interruption-fixture", cwd: sandbox, env: { CODEX_BRIDGE_HARDENED: "1" } });
+    t.after(() => isolated.stop());
+    const dir = path.join(projectsDir, `async-interruption-${timeoutMs}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const sessionId = `async-interruption-${timeoutMs}`;
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    const notifications = [];
+    let forwarded;
+    const forwardedResult = new Promise(resolve => { forwarded = resolve; });
+    const forwarder = new ReplyForwarder({ minIntervalMs: 0, deliver: async (threadId, record) => forwarded({ threadId, record }) });
+    t.after(() => forwarder.close());
+    isolated.onMessage(record => {
+      notifications.push(record);
+      forwarder.enqueue(record, record.replyThreadId);
+    });
+    t.mock.method(isolated, "send", async (target, text, { msgId }) => {
+      fs.writeFileSync(file, JSON.stringify({ uuid: msgId, message: { role: "user", content: text } }) + "\n");
+      return msgId;
+    });
+    const accountContext = { claude: "a".repeat(64), codex: "b".repeat(64) };
+    const scopeBindings = { sender: { path: sandbox }, recipient: { path: "recipient-project" } };
+    const sent = await isolated.sendAndWait("async-peer", "request", { timeoutMs, transcriptSession: { sessionId, cwd: "recipient-project" },
+      replyThreadId: "original-task", accountContext, scopeBindings });
+    assert.equal(sent.reply, null);
+    assert.equal(notifications.length, 0);
+    fs.appendFileSync(file, JSON.stringify({ uuid: "human-boundary", parentUuid: sent.msgId, type: "attachment",
+      attachment: { type: "queued_command", commandMode: "prompt", prompt: "new input" } }) + "\n");
+    const receipt = isolated.readDelivery(sent.msgId);
+    assert.equal(receipt.status, "interrupted");
+    assert.equal(receipt.reply, undefined);
+    assert.equal(notifications.length, 1);
+    const notification = notifications[0];
+    assert.equal(notification.kind, "delivery_status");
+    assert.equal(notification.source, "bridge");
+    assert.equal(notification.inReplyTo, sent.msgId);
+    assert.equal(notification.replyThreadId, "original-task");
+    assert.deepEqual(notification.accountContext, accountContext);
+    assert.deepEqual(notification.scopeBindings, scopeBindings);
+    assert.equal(notification.cwd, "recipient-project");
+    assert.equal(notification.senderCwd, sandbox);
+    assert.equal(notification.outcome, "unknown");
+    assert.equal(notification.taskCancelled, false);
+    assert.equal(notification.retrySafe, false);
+    assert.match(notification.text, /do not resend/i);
+    const delivered = await forwardedResult;
+    assert.equal(delivered.threadId, "original-task");
+    assert.equal(delivered.record.kind, "delivery_status");
+    assert.deepEqual(delivered.record.accountContext, accountContext);
+    assert.deepEqual(delivered.record.scopeBindings, scopeBindings);
+    assert.equal(await isolated.waitForReply("async-peer", { timeoutMs: 10, msgId: sent.msgId }), null);
+    isolated.readDelivery(sent.msgId);
+    assert.equal(notifications.length, 1, "polling must not duplicate a notification");
+    const restored = new PeerEndpoint({ name: "restored-async-fixture", cwd: sandbox });
+    t.after(() => restored.stop());
+    restored.restoreReloadState(isolated.exportReloadState());
+    assert.deepEqual(restored.readDelivery(sent.msgId), receipt);
+    assert.deepEqual(restored.drainInbox(20, record => record.accountContext.codex === "other-account"), []);
+    assert.deepEqual(restored.drainInbox(), [notification]);
+    assert.deepEqual(restored.drainInbox(), []);
+    assert.equal(isolated.send.mock.callCount(), 1);
+  });
+
   it("retains interrupted receipts, releases only reply waiting, and permits a separate follow-up", async (t) => {
     const isolated = new PeerEndpoint({ name: "interruption-fixture", cwd: sandbox });
     t.after(() => isolated.stop());
@@ -737,7 +801,9 @@ describe("peer endpoint", () => {
     assert.equal(receipt.outcome, "unknown");
     assert.equal(receipt.taskCancelled, false);
     assert.equal(receipt.retrySafe, false);
-    assert.equal(isolated.inbox.length, 0, "interruption must not become a fabricated reply");
+    assert.equal(isolated.inbox.length, 1);
+    assert.equal(isolated.inbox[0].kind, "delivery_status", "interruption must not become a fabricated reply");
+    assert.equal(isolated.inbox[0].source, "bridge");
     assert.equal(isolated.send.mock.callCount(), 1, "never resend on interruption");
     assert.equal(isolated.reloadReason(), null);
     const snapshot = isolated.exportReloadState();
@@ -836,7 +902,8 @@ describe("peer endpoint", () => {
     assert.equal(receipt.reply, undefined);
     assert.deepEqual(receipt.interruption.entryIds, ["other-peer"]);
     assert.deepEqual(receipt.interruption.backgroundTaskIds, ["bg-1"]);
-    assert.equal(isolated.inbox.length, 0);
+    assert.equal(isolated.inbox.length, 1);
+    assert.equal(isolated.inbox[0].kind, "delivery_status");
     assert.equal(isolated.send.mock.callCount(), 1);
     assert.equal(isolated.reloadReason(), null);
     const restored = new PeerEndpoint({ name: "restored-peer-interruption-fixture", cwd: sandbox });

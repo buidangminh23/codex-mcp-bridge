@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/agent-pets.svg" width="144" height="52" alt="Claude Clawd → Codex; Codex → Claude" />
+  <img src="assets/agent-pets.svg" width="240" height="220" alt="Claude, Codex, and Antigravity connected by curved two-way arrows" />
 </p>
 
 <h1 align="center">codex-mcp-bridge</h1>
@@ -15,9 +15,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge" height="20" alt="license" /></a>
 </p>
 
-Send prompts and replies between **Claude and Codex**, keeping each conversation in its own app. Supports Windows, macOS, and Linux; native Desktop integration supports Windows and macOS.
+Connect **Claude, Codex, and Antigravity** through MCP, keeping work in each agent's own app and preserving native identity and permission checks. Supports Windows, macOS, and Linux; native Desktop integration supports Windows and macOS.
 
-The optional **Antigravity bridge** also sends authorized work from Codex or Claude Desktop to an existing Antigravity App conversation or a new Antigravity CLI streaming session. [Setup and current limits](#antigravity-app-and-cli).
+The optional **Antigravity bridge** sends work both ways between existing Desktop conversations in the same project. Codex and Claude can also start and continue bridge-owned Antigravity CLI streaming sessions. Antigravity App replies remain in the App; outbound calls from Antigravity CLI are not supported. [Setup and current limits](#antigravity-app-and-cli).
 
 https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 

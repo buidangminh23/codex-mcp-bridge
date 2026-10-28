@@ -118,3 +118,55 @@ test("receipt reads reject a replacement between opening and inspection", async 
   });
   assert.throws(() => store.read(request.requestId), /changed before reading/);
 });
+
+test("unconfirmed, held and refused native deliveries retain their status after restart", async (t) => {
+  const { store, request, directory } = fixture(t);
+  for (const status of ["sent_unconfirmed", "held", "refused"]) {
+    const next = { ...request, requestId: crypto.randomUUID(), surface: "claude", sender: { provider: "antigravity", id: crypto.randomUUID() } };
+    const msgId = crypto.randomUUID();
+    let calls = 0;
+    await store.dispatch(next, async () => {
+      calls++;
+      return { status, msgId, completed: false };
+    });
+    await delay(10);
+    const restarted = new AntigravityDeliveries(directory);
+    const receipt = restarted.read(next.requestId);
+    assert.equal(receipt.status, status);
+    assert.deepEqual(receipt.result, { status, msgId, completed: false });
+    assert.notEqual(receipt.status, "accepted");
+    assert.notEqual(receipt.status, "completed");
+    const repeated = await restarted.dispatch(next, async () => { calls++; return { status: "accepted" }; });
+    assert.equal(repeated.status, status);
+    assert.equal(calls, 1);
+  }
+});
+
+test("uncertain Claude delivery persists the native message ID without resending", async (t) => {
+  const { store, request, directory } = fixture(t);
+  const next = { ...request, surface: "claude", conversationId: crypto.randomUUID(), sender: { provider: "antigravity", id: crypto.randomUUID() } };
+  const msgId = crypto.randomUUID();
+  await store.dispatch(next, async () => {
+    throw Object.assign(new Error("Connection lost after dispatch"), { deliveryState: "unknown", msgId });
+  });
+  await delay(10);
+  const restarted = new AntigravityDeliveries(directory);
+  const receipt = restarted.read(next.requestId);
+  assert.equal(receipt.status, "unknown");
+  assert.equal(receipt.conversationId, next.conversationId);
+  assert.deepEqual(receipt.result, { msgId, completed: false });
+  assert.equal(receipt.reason, "Connection lost after dispatch");
+  const retried = await restarted.dispatch(next, async () => assert.fail("Uncertain delivery was sent again"));
+  assert.deepEqual(retried.result, { msgId, completed: false });
+});
+
+test("invalid native message IDs are not persisted as recovery handles", async (t) => {
+  const { store, request } = fixture(t);
+  await store.dispatch(request, async () => {
+    throw Object.assign(new Error("Invalid native response"), { deliveryState: "unknown", msgId: "../../foreign" });
+  });
+  await delay(10);
+  const receipt = store.read(request.requestId);
+  assert.equal(receipt.status, "unknown");
+  assert.equal(receipt.result, undefined);
+});

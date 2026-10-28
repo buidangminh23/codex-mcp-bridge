@@ -11,6 +11,7 @@ import { exitForVersionRequest } from "../src/cli-version.mjs";
 
 const NAME = "antigravity-bridge";
 const SIDECAR = "codex-bridge";
+const OUTBOUND = "agent-bridge";
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be a JSON object`);
@@ -72,7 +73,9 @@ export function planAntigravityInstallation({ home = os.homedir(), root = path.r
   if (!targets.length || targets.some((target) => !["codex", "claude", "desktop"].includes(target))) throw new Error("Unknown installation target");
   const entry = path.join(root, "src", "antigravity-bridge.mjs");
   const sidecarEntry = path.join(root, "src", "antigravity-sidecar.mjs");
+  const outboundEntry = path.join(root, "src", "antigravity-outbound-bridge.mjs");
   const edits = [];
+  const notices = [];
   let codex = null;
   if (targets.includes("codex")) {
     if (codexExisting && codexExisting.transport?.type !== "stdio") throw new Error("The existing Antigravity MCP transport is not stdio");
@@ -100,6 +103,24 @@ export function planAntigravityInstallation({ home = os.homedir(), root = path.r
   }
   if (targets.includes("desktop")) {
     const configRoot = path.join(home, ".gemini", "config");
+    const originalMcp = snapshot(path.join(configRoot, "mcp_config.json"));
+    const mcp = structuredClone(originalMcp.value);
+    if (mcp.mcpServers !== undefined) object(mcp.mcpServers, "Antigravity mcpServers");
+    const outbound = mcp.mcpServers?.[OUTBOUND];
+    ownEntry(outbound, outboundEntry, "Antigravity outbound bridge");
+    if (outbound?.type !== undefined && outbound.type !== "stdio" || outbound?.url !== undefined || outbound?.serverUrl !== undefined || outbound?.httpUrl !== undefined) throw new Error("The existing Antigravity outbound bridge transport is not stdio");
+    if (outbound?.env !== undefined) object(outbound.env, "Antigravity outbound bridge environment");
+    if (Object.keys(outbound?.env ?? {}).some((name) => /^(?:CLAUDE|CODEX_|ANTIGRAVITY_BRIDGE_CALLER$)/i.test(name))) throw new Error("The existing Antigravity outbound bridge contains a foreign caller environment; review it before installation");
+    for (const name of ["codex-bridge", "claude-bridge"]) {
+      if (Object.hasOwn(mcp.mcpServers ?? {}, name)) notices.push(`Existing Antigravity MCP entry ${name} was preserved; it is separate from the native agent-bridge sender integration.`);
+    }
+    if (remove) { if (outbound) delete mcp.mcpServers[OUTBOUND]; }
+    else {
+      mcp.mcpServers ??= {};
+      mcp.mcpServers[OUTBOUND] = { ...outbound, command: node, args: [outboundEntry] };
+    }
+    const mcpEdit = changed(originalMcp, mcp);
+    if (mcpEdit) edits.push(mcpEdit);
     const originalSidecar = snapshot(path.join(configRoot, "sidecars", SIDECAR, "sidecar.json"));
     if (originalSidecar.text !== null) ownEntry(originalSidecar.value, sidecarEntry, "Antigravity sidecar");
     const originalConfig = snapshot(path.join(configRoot, "config.json"));
@@ -120,7 +141,7 @@ export function planAntigravityInstallation({ home = os.homedir(), root = path.r
     if (sidecarEdit) edits.push(sidecarEdit);
     if (configEdit) edits.push(configEdit);
   }
-  return { name: NAME, targets: [...new Set(targets)], remove, edits, codex, entry, sidecarEntry };
+  return { name: NAME, targets: [...new Set(targets)], remove, edits, notices, codex, entry, sidecarEntry, outboundEntry };
 }
 
 function assertCurrent(edit) {
@@ -145,6 +166,7 @@ export function applyJsonEdits(edits) {
         } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
       }
       completed.push(edit);
+      if (snapshot(edit.file).text !== edit.next) throw new Error(`Configuration readback did not match the saved update: ${edit.file}`);
     }
   } catch (error) {
     for (const edit of completed.reverse()) {
@@ -183,12 +205,12 @@ export function runAntigravityInstaller(args = process.argv.slice(2)) {
   }
   const plan = planAntigravityInstallation({ ...options, home, root, node, codexExisting });
   if (!options.remove) {
-    for (const entry of [plan.entry, ...(options.targets.includes("desktop") ? [plan.sidecarEntry] : [])]) {
+    for (const entry of [plan.entry, ...(options.targets.includes("desktop") ? [plan.sidecarEntry, plan.outboundEntry] : [])]) {
       if (!fs.existsSync(entry)) throw new Error(`Missing bridge entrypoint: ${entry}`);
     }
   }
   if (options.dryRun) {
-    console.log(JSON.stringify({ dryRun: true, remove: plan.remove, targets: plan.targets, files: plan.edits.map((edit) => ({ path: edit.file, action: edit.next === null ? "remove" : "write" })), codex: plan.codex ? { name: NAME, action: options.remove ? "remove" : "register" } : null }, null, 2));
+    console.log(JSON.stringify({ dryRun: true, remove: plan.remove, targets: plan.targets, files: plan.edits.map((edit) => ({ path: edit.file, action: edit.next === null ? "remove" : "write" })), notices: plan.notices, codex: plan.codex ? { name: NAME, action: options.remove ? "remove" : "register" } : null }, null, 2));
     return plan;
   }
   for (const edit of plan.edits) assertCurrent(edit);
@@ -198,6 +220,8 @@ export function runAntigravityInstaller(args = process.argv.slice(2)) {
   }
   applyJsonEdits(plan.edits);
   console.log(`${options.remove ? "Removed" : "Installed"} Antigravity bridge: ${plan.targets.join(", ")}.`);
+  for (const notice of plan.notices) console.log(notice);
+  if (!options.remove && options.targets.includes("desktop")) console.log("In Antigravity Customizations > Installed, find agent-bridge and choose More actions > Restart. If it is absent, reopen the App to load its new registration. In the CLI, use /mcp to reload server configurations.");
   if (!options.remove) console.log("Reload the selected clients to load the bridge. Antigravity Desktop must launch its sidecar; installation alone does not prove a live connection. Native permissions were preserved.");
   return plan;
 }

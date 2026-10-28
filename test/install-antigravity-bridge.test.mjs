@@ -10,6 +10,7 @@ const root = path.join(sandbox, "package");
 const node = process.execPath;
 const entry = path.join(root, "src", "antigravity-bridge.mjs");
 const sidecarEntry = path.join(root, "src", "antigravity-sidecar.mjs");
+const outboundEntry = path.join(root, "src", "antigravity-outbound-bridge.mjs");
 let sequence = 0;
 
 after(() => {
@@ -38,7 +39,7 @@ test("plans both client registrations and an app-managed sidecar without writing
   const plan = planAntigravityInstallation(options);
   assert.equal(plan.codex.environment.ANTIGRAVITY_BRIDGE_CALLER, "codex");
   assert.deepEqual(plan.codex.commandArgs, [entry]);
-  assert.equal(plan.edits.length, 3);
+  assert.equal(plan.edits.length, 4);
   assert.deepEqual(fs.readdirSync(options.home), []);
   assert.ok(!JSON.stringify(plan).includes("dangerously-skip-permissions"));
 });
@@ -208,4 +209,76 @@ test("requires an absolute existing executable and rejects Windows shell scripts
   const native = path.join(options.home, "custom codex.exe");
   fs.writeFileSync(native, "fixture");
   assert.equal(validateCodexExecutable(native, { platform: "win32" }), fs.realpathSync.native(native));
+});
+
+test("desktop installs the native outbound MCP without claiming a foreign caller identity", () => {
+  const options = fixture();
+  const config = write(options.home, ".gemini/config/mcp_config.json", { custom: { keep: true }, mcpServers: { filesystem: { command: "filesystem", args: ["root"] } } });
+  const plan = planAntigravityInstallation({ ...options, targets: ["desktop"] });
+  assert.equal(plan.outboundEntry, outboundEntry);
+  applyJsonEdits(plan.edits);
+  const value = read(config);
+  assert.deepEqual(value.custom, { keep: true });
+  assert.deepEqual(value.mcpServers.filesystem, { command: "filesystem", args: ["root"] });
+  assert.deepEqual(value.mcpServers["agent-bridge"], { command: node, args: [outboundEntry] });
+  assert.equal(fs.existsSync(path.join(options.home, ".gemini/config/mcp.json")), false);
+  assert.equal(planAntigravityInstallation({ ...options, targets: ["desktop"] }).edits.length, 0);
+});
+
+test("outbound updates preserve custom settings and report copied bridges without editing them", () => {
+  const options = fixture();
+  const copied = { command: "node", args: ["some-source-bridge.mjs"], env: { CODEX_BRIDGE_DESKTOP_TASKS: "1" } };
+  const config = write(options.home, ".gemini/config/mcp_config.json", { mcpServers: {
+    "agent-bridge": { command: "old-node", args: [outboundEntry], disabled: true, timeoutSeconds: 120, env: { CUSTOM: "keep" } },
+    "codex-bridge": copied,
+    "claude-bridge": copied,
+  } });
+  const plan = planAntigravityInstallation({ ...options, targets: ["desktop"] });
+  assert.equal(plan.notices.length, 2);
+  applyJsonEdits(plan.edits);
+  const servers = read(config).mcpServers;
+  assert.deepEqual(servers["agent-bridge"], { command: node, args: [outboundEntry], disabled: true, timeoutSeconds: 120, env: { CUSTOM: "keep" } });
+  assert.deepEqual(servers["codex-bridge"], copied);
+  assert.deepEqual(servers["claude-bridge"], copied);
+});
+
+test("outbound entrypoint collisions and foreign identity environments fail before writes", () => {
+  for (const existing of [
+    { command: node, args: [path.join(root, "other.mjs")] },
+    { command: node, args: [outboundEntry], env: { CODEX_THREAD_ID: "foreign" } },
+    { command: node, args: [outboundEntry], env: { CLAUDE_SESSION_ID: "foreign" } },
+    { command: node, args: [outboundEntry], env: { ANTIGRAVITY_BRIDGE_CALLER: "codex" } },
+    { command: node, args: [outboundEntry], serverUrl: "https://example.invalid/mcp" },
+  ]) {
+    const options = fixture();
+    const file = write(options.home, ".gemini/config/mcp_config.json", { mcpServers: { "agent-bridge": existing } });
+    const before = fs.readFileSync(file, "utf8");
+    assert.throws(() => planAntigravityInstallation({ ...options, targets: ["desktop"] }), /different entrypoint|foreign caller|not stdio/);
+    assert.equal(fs.readFileSync(file, "utf8"), before);
+    assert.equal(fs.existsSync(path.join(options.home, ".gemini/config/sidecars")), false);
+  }
+});
+
+test("desktop removal deletes only its owned outbound registration", () => {
+  const options = fixture();
+  const file = write(options.home, ".gemini/config/mcp_config.json", { custom: true, mcpServers: { existing: { command: "keep" } } });
+  applyJsonEdits(planAntigravityInstallation({ ...options, targets: ["desktop"] }).edits);
+  applyJsonEdits(planAntigravityInstallation({ ...options, targets: ["desktop"], remove: true }).edits);
+  assert.deepEqual(read(file), { custom: true, mcpServers: { existing: { command: "keep" } } });
+  assert.equal(planAntigravityInstallation({ ...options, targets: ["desktop"], remove: true }).edits.length, 0);
+});
+
+test("JSON update readback detects a changed output without overwriting it", (t) => {
+  const options = fixture();
+  const file = write(options.home, ".gemini/config/mcp_config.json", { mcpServers: {} });
+  const plan = planAntigravityInstallation({ ...options, targets: ["desktop"] });
+  const originalRename = fs.renameSync;
+  t.mock.method(fs, "renameSync", function (source, destination) {
+    const result = originalRename.call(fs, source, destination);
+    if (destination === file) fs.writeFileSync(file, JSON.stringify({ concurrent: true }));
+    return result;
+  });
+  assert.throws(() => applyJsonEdits(plan.edits), /readback did not match/);
+  assert.deepEqual(read(file), { concurrent: true });
+  assert.equal(fs.existsSync(path.join(options.home, ".gemini/config/sidecars")), false);
 });

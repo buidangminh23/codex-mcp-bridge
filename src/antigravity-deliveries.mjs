@@ -72,12 +72,14 @@ export class AntigravityDeliveries {
     }
     this.active.add(requestId);
     void Promise.resolve().then(operation).then((result) => {
-      record.status = result?.status === "accepted" ? "accepted" : result?.status && result.status !== "SUCCESS" ? "failed" : "completed";
+      record.status = ["accepted", "sent_unconfirmed", "held", "refused"].includes(result?.status) ? result.status : result?.status && result.status !== "SUCCESS" ? "failed" : "completed";
       record.result = result;
       record.conversationId = result?.conversationId ?? result?.conversation_id ?? record.conversationId;
     }, (error) => {
       record.status = ["not_sent", "not-sent"].includes(error.deliveryState) ? "failed" : "unknown";
       record.reason = error.message;
+      if (typeof error.msgId === "string" && UUID.test(error.msgId)) record.result = { msgId: error.msgId, completed: false };
+      if (error.accountContext) record.result = { ...record.result, accountContext: error.accountContext };
     }).finally(() => {
       record.finishedAt = new Date().toISOString();
       try {

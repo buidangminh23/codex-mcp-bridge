@@ -23,11 +23,25 @@ https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 
 ## Installation
 
+Install the bridge package first, then follow the setup for the apps you use. The optional [workflow skill](#workflow-skill--npx-skills) has its own install commands; installing it does not register or start an MCP server.
+
+### Package — npm
+
+**macOS / Linux / WSL**
+
 ```bash
 npm install -g @minhspark/codex-mcp-bridge@latest
 ```
 
-Requires **Node.js 22.13+**. In Windows PowerShell, use `npm.cmd` instead of `npm`. Run the same command to update; reconnect MCP servers if their settings or installation paths changed.
+**Windows PowerShell**
+
+```powershell
+npm.cmd install -g @minhspark/codex-mcp-bridge@latest
+```
+
+Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows PowerShell. Run the same package command to update; reconnect MCP servers if their settings or installation paths changed.
+
+### Package — Homebrew
 
 On macOS or Linux you can install with [Homebrew](https://github.com/buidangminh23/homebrew-tap) instead, which brings its own Node.js:
 
@@ -35,9 +49,26 @@ On macOS or Linux you can install with [Homebrew](https://github.com/buidangminh
 brew install buidangminh23/tap/codex-mcp-bridge
 ```
 
-Update with `brew upgrade codex-mcp-bridge`. The installers record Homebrew's stable `opt` paths, so registrations keep working after an upgrade and running bridges reload the new version. Keep one install channel: whichever of npm or Homebrew comes first on `PATH` provides the commands.
+**Homebrew — update**
 
-[Windows](#windows-powershell) · [macOS](#macos-terminal) · [Linux / WSL](#linux--wsl-bash) · [ChatGPT plugin](#chatgpt-plugin)
+```bash
+brew upgrade codex-mcp-bridge
+```
+
+The installers record Homebrew's stable `opt` paths, so registrations keep working after an upgrade and running bridges reload the new version. Keep one install channel: whichever of npm or Homebrew comes first on `PATH` provides the commands.
+
+[Windows](#windows-powershell) · [macOS](#macos-terminal) · [Claude Code](#register-claude-code) · [Antigravity](#antigravity-app-and-cli) · [VS Code](#vs-code-extensions--windows-preview) · [Linux / WSL](#linux--wsl-bash) · [NPX Skills](#workflow-skill--npx-skills) · [ChatGPT plugin](#chatgpt-plugin)
+
+| Integration | Setup |
+| --- | --- |
+| Claude Desktop Code → Codex Desktop | Native relay plus user-level `claude mcp add` registration below |
+| Claude Code CLI → local Codex app-server | CLI registration with Desktop mode disabled |
+| Claude Desktop shared MCP → local Codex app-server | Optional legacy registration below |
+| Codex → Claude Desktop Code | `claude-mcp-bridge-install` with `CODEX_BRIDGE_DESKTOP_TASKS=1` |
+| Codex / Claude Desktop Code → Antigravity App or CLI | Antigravity `--codex` / `--claude` registrations |
+| Antigravity App → Codex / Claude Desktop Code | Antigravity `--desktop` registration |
+| Claude Code ↔ Codex inside VS Code | Separate Windows preview registrations below |
+| ChatGPT → paired Codex Desktop | Hosted plugin plus `codex-sites-connector --pair` |
 
 ### Antigravity App and CLI
 
@@ -47,7 +78,39 @@ Install and sign in to the Antigravity App and/or `agy` CLI, then run:
 antigravity-mcp-bridge-install --all
 ```
 
-Use `.cmd` on Windows. Select `--codex`, `--claude`, or `--desktop` to install individual components; `--dry-run` previews changes. The installer preserves unrelated configuration and native permissions. Reload Codex/Claude to load the new MCP server. Antigravity launches its own sidecar from `~/.gemini/config/sidecars/codex-bridge/sidecar.json`; do not run that sidecar manually or copy authentication environment variables between processes.
+**Windows PowerShell — all components**
+
+```powershell
+antigravity-mcp-bridge-install.cmd --all
+```
+
+**Codex → Antigravity App / CLI**
+
+```bash
+antigravity-mcp-bridge-install --codex
+```
+
+**Claude Desktop Code → Antigravity App / CLI**
+
+```bash
+antigravity-mcp-bridge-install --claude
+```
+
+**Antigravity App sidecar and outbound bridge**
+
+```bash
+antigravity-mcp-bridge-install --desktop
+```
+
+**Preview the installation without changing configuration**
+
+```bash
+antigravity-mcp-bridge-install --all --dry-run
+```
+
+Use `.cmd` for each command on Windows. `--all` includes all three components; the individual commands are alternatives when only some clients are needed. The installer preserves unrelated configuration and native permissions. Reload Codex/Claude to load the new MCP server. Antigravity launches its own sidecar from `~/.gemini/config/sidecars/codex-bridge/sidecar.json`; do not run that sidecar manually or copy authentication environment variables between processes.
+
+The `agy` CLI must be installed and signed in separately. CLI sessions are started through the `start_antigravity_cli_session` MCP tool; there is no separate `--cli` installer flag. Set `ANTIGRAVITY_CLI_BIN` to the absolute `agy` executable path in the MCP server environment if automatic discovery cannot find it.
 
 | Tool | Behavior |
 | --- | --- |
@@ -77,7 +140,6 @@ If the Codex CLI is missing, run `winget install --id OpenAI.Codex --exact`, ope
 ```powershell
 $env:CODEX_EXE = (Get-Command codex.exe).Source
 codex-native-relay-install.cmd --desktop-tasks
-codex-mcp-bridge-install.cmd --desktop-tasks
 $env:CODEX_BRIDGE_DESKTOP_TASKS = "1"
 claude-mcp-bridge-install.cmd
 ```
@@ -92,7 +154,6 @@ Install and sign in to Codex Desktop and Claude Desktop. Save the project in Cod
 npm install -g @openai/codex@latest
 codex login
 codex-native-relay-install --desktop-tasks
-codex-mcp-bridge-install --desktop-tasks
 CODEX_BRIDGE_DESKTOP_TASKS=1 claude-mcp-bridge-install
 ```
 
@@ -101,6 +162,8 @@ Keep bootstrap enabled on the first relay install. Next: [register Claude Code](
 ### Register Claude Code
 
 Claude Desktop and Claude Code have separate MCP registrations. If `claude --version` is unavailable, [install Claude Code](https://code.claude.com/docs/en/setup) first. For a new registration, replace the example project path below with the actual directory. Preserve custom settings if `codex-bridge` is already registered.
+
+Native Desktop handoffs require a verified Claude Desktop **Code** session. A shared Desktop chat MCP registration cannot establish that sender identity. If you also keep the optional legacy shared registration below, close Claude before editing its `claude_desktop_config.json` and rename that entry from `codex-bridge` to `codex-bridge-desktop`, keeping its contents. Otherwise the shared entry can shadow the user-level Code registration and hide the calling task. Later Desktop installer runs recognize the renamed entry.
 
 <details>
 <summary>Windows PowerShell</summary>
@@ -132,18 +195,64 @@ claude mcp add --scope user codex-bridge \
   -- "$(command -v node)" "$bridge_root/src/mcp-supervisor.mjs" index.mjs
 ```
 
-For a Homebrew install, use the stable paths instead of `npm root -g` and `command -v node`:
+For a Homebrew install, use this complete command with stable `opt` paths instead:
 
 ```bash
 bridge_root="$(brew --prefix)/opt/codex-mcp-bridge/libexec/lib/node_modules/@minhspark/codex-mcp-bridge"
 node_bin="$(brew --prefix)/opt/node/bin/node"
+claude mcp add --scope user codex-bridge \
+  -e CODEX_BIN="$(command -v codex)" \
+  -e CODEX_BRIDGE_DESKTOP_TASKS=1 \
+  -e CODEX_BRIDGE_AUTOSTART=0 \
+  -e CODEX_BRIDGE_THREAD_POLICY=roots \
+  -e CODEX_BRIDGE_ALLOWED_ROOTS="$HOME/YourProject" \
+  -- "$node_bin" "$bridge_root/src/mcp-supervisor.mjs" index.mjs
 ```
-
-and end the command with `-- "$node_bin" "$bridge_root/src/mcp-supervisor.mjs" index.mjs`.
 
 </details>
 
 Separate multiple allowed directories with `;` on Windows or `:` on macOS/Linux.
+
+`codex-bridge-code-install` is for checking or migrating an existing supervised Code registration to a shared project policy; it does not replace the first-install commands above. See [project onboarding](docs/project-onboarding.md).
+
+### Claude Desktop shared MCP — legacy option
+
+This optional registration connects a shared Claude Desktop MCP server to local Codex app-server sessions. For verified handoffs into Codex Desktop conversations, use the Code-tab setup above. Install and sign in to the Codex CLI first.
+
+**Windows PowerShell**
+
+```powershell
+$env:CODEX_EXE = (Get-Command codex.exe).Source
+$env:CODEX_BRIDGE_DESKTOP_TASKS = "0"
+$env:CODEX_BRIDGE_AUTOSTART = "1"
+codex-mcp-bridge-install.cmd
+```
+
+**macOS Terminal**
+
+```bash
+CODEX_BRIDGE_DESKTOP_TASKS=0 CODEX_BRIDGE_AUTOSTART=1 codex-mcp-bridge-install
+```
+
+The installer updates Claude Desktop's shared MCP configuration. Close and reopen Claude after configuration changes, and keep a distinct `codex-bridge-desktop` entry name if also using the user-level Code registration. `--desktop-tasks` configures the native destination mode but does not make a shared Desktop chat server a verified Code sender.
+
+### VS Code extensions — Windows preview
+
+For existing Claude Code and Codex extension conversations inside the same VS Code project, register the separate preview bridge in both clients. Install the npm package first and replace the example root with the real project directory. These registrations preserve extension sender checks and do not provide Desktop access.
+
+```powershell
+$bridgeRoot = Join-Path ((npm.cmd root -g).Trim()) '@minhspark/codex-mcp-bridge'
+$nodeBin = (Get-Command node.exe).Source
+$projectRoot = 'C:\Projects\YourProject'
+claude mcp add --scope user codex-vscode-bridge `
+  -e "VSCODE_BRIDGE_ALLOWED_ROOTS=$projectRoot" `
+  -- $nodeBin (Join-Path $bridgeRoot 'src/vscode-bridge.mjs') claude
+codex.exe mcp add claude-vscode-bridge `
+  --env "VSCODE_BRIDGE_ALLOWED_ROOTS=$projectRoot" `
+  -- $nodeBin (Join-Path $bridgeRoot 'src/vscode-bridge.mjs') codex
+```
+
+Reload the VS Code window after registration. Separate multiple explicit project roots with `;`; drive roots are not accepted. See [preview behavior and limits](REFERENCE.md#vs-code-extension-bridge-windows-preview).
 
 ### Native relay pipe forwarding
 
@@ -158,7 +267,7 @@ If you register the relay by hand, add the same line and append the variable nam
 
 ### Linux / WSL (Bash)
 
-Use Node.js 22+ and signed-in Codex and Claude Code CLIs under the same Linux user. This mode uses a local app-server; native Desktop integration requires Windows or macOS.
+Use Node.js 22.13+ and signed-in Codex and Claude Code CLIs under the same Linux user. This mode uses a local app-server; native Desktop integration requires Windows or macOS.
 
 <details>
 <summary>CLI registration commands</summary>
@@ -181,6 +290,114 @@ Replace `$HOME/YourProject` with the actual project directory. WSL and Windows u
 
 </details>
 
+<details>
+<summary>Linux Homebrew registration commands</summary>
+
+```bash
+npm install -g @openai/codex@latest
+codex login
+CODEX_BRIDGE_DESKTOP_TASKS=0 claude-mcp-bridge-install
+bridge_root="$(brew --prefix)/opt/codex-mcp-bridge/libexec/lib/node_modules/@minhspark/codex-mcp-bridge"
+node_bin="$(brew --prefix)/opt/node/bin/node"
+claude mcp add --scope user codex-bridge \
+  -e CODEX_BIN="$(command -v codex)" \
+  -e CODEX_BRIDGE_DESKTOP_TASKS=0 \
+  -e CODEX_BRIDGE_AUTOSTART=1 \
+  -e CODEX_BRIDGE_THREAD_POLICY=roots \
+  -e CODEX_BRIDGE_ALLOWED_ROOTS="$HOME/YourProject" \
+  -- "$node_bin" "$bridge_root/src/mcp-supervisor.mjs" index.mjs
+```
+
+Replace `$HOME/YourProject` with the actual project directory. The bridge and Node paths remain stable across Homebrew upgrades.
+
+</details>
+
+### Workflow skill — NPX Skills
+
+The repository includes one portable skill, `codex-bridge`, for the [hosted Codex Bridge workflow](#chatgpt-plugin). These commands install its Markdown instructions only. Using the workflow requires a client with the hosted plugin's MCP tools and a paired connector; copying the skill does not install the local bridges, configure authentication, or make a client a supported native sender.
+
+Use a Node.js version supported by the current [Skills CLI](https://github.com/vercel-labs/skills). The examples target the current project; add `-g` for a user-wide install. In Windows PowerShell use `npx.cmd` instead of `npx`.
+
+**NPX Skills — select the workflow skill**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --skill codex-bridge
+```
+
+**List available skills without installing**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --list
+```
+
+**Claude Code**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --skill codex-bridge -a claude-code
+```
+
+**Codex**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --skill codex-bridge -a codex
+```
+
+**Cursor**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --skill codex-bridge -a cursor
+```
+
+**Gemini CLI**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --skill codex-bridge -a gemini-cli
+```
+
+**Antigravity**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --skill codex-bridge -a antigravity
+```
+
+**Antigravity CLI**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --skill codex-bridge -a antigravity-cli
+```
+
+**Cline**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --skill codex-bridge -a cline
+```
+
+**OpenCode**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --skill codex-bridge -a opencode
+```
+
+**All Skills CLI agents — user-wide, without prompts**
+
+```bash
+npx skills add buidangminh23/codex-mcp-bridge --all -g
+```
+
+`--all` installs every skill in the repository for every supported Skills CLI agent, not just detected apps. Choose an individual `-a` command above for a narrower install. Agent names and scope flags follow the [Skills CLI reference](https://github.com/vercel-labs/skills/blob/main/docs/commands.md).
+
+**Legacy `add-skill` command**
+
+```bash
+npx add-skill buidangminh23/codex-mcp-bridge
+```
+
+`add-skill` is deprecated and forwards to `npx skills add`; use the current command above, especially on Windows where the legacy wrapper may fail to find `npx`.
+
+**Marketplace and Gemini extension installs**
+
+This repository ships a hosted ChatGPT plugin and the skill above. It does not currently publish a Claude/Codex marketplace catalog or a `gemini-extension.json` package. Consequently, `/plugin marketplace add`, `codex plugin marketplace add`, and `gemini extensions install` are not installation routes for this repository. Use the native bridge setup, NPX skill commands, or [hosted plugin setup](#chatgpt-plugin) as appropriate.
+
 ### Verify the installation
 
 Reconnect the affected MCP servers in the actual client tasks; Claude Code provides `/mcp`. Run these **MCP tools** inside the apps:
@@ -190,6 +407,16 @@ Reconnect the affected MCP servers in the actual client tasks; Claude Code provi
 | Claude Code | `codex_bridge_status` |
 | Codex | `claude_bridge_status` |
 | Codex Desktop | `native_relay_status` |
+| Codex / Claude Desktop Code with Antigravity installed | `antigravity_bridge_status` |
+
+To check CLI registrations without sending work:
+
+```bash
+codex mcp list
+claude mcp list
+```
+
+On Windows use `codex.exe mcp list`. An installed skill is listed separately with `npx skills list` (add `-g` for user-wide skills); it is not an MCP registration.
 
 Send a short message and confirm its reply **in both directions**. Registration alone does not prove delivery.
 

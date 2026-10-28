@@ -18,6 +18,59 @@ function fixture() {
   return { meta, ancestry, images, global, project, native, deps, resolve: () => resolveAntigravitySenderContext(meta, deps) };
 }
 
+function darwinFixture() {
+  const f = fixture();
+  f.deps.platform = "darwin";
+  f.deps.home = "/Users/developer";
+  delete f.meta[prefix + "workspace_paths"];
+  f.meta[prefix + "artifacts_dir"] = `/Users/developer/.gemini/antigravity/brain/${id}`;
+  f.images[0].executable = "/Applications/Antigravity.app/Contents/Resources/bin/language_server";
+  f.images[1].executable = "/Applications/Antigravity.app/Contents/MacOS/Antigravity";
+  f.ancestry[0].processStart = "Wed Oct 28 10:00:01 2026";
+  f.ancestry[1].processStart = "Wed Oct 28 10:00:00 2026";
+  f.native.cwd = "/Users/developer/Work/Example Project";
+  f.project.projectResources.resources[0].gitFolder.folderUri = "file:///Users/developer/Work/Example%20Project";
+  f.deps.readJson = async (file) => {
+    assert.ok(["/Users/developer/.gemini/config/config.json", `/Users/developer/.gemini/config/projects/${projectId}.json`].includes(file));
+    return structuredClone(file.endsWith("config.json") ? f.global : f.project);
+  };
+  return f;
+}
+
+test("darwin App ancestry and exact native project verify without optional workspace metadata", async () => {
+  const f = darwinFixture();
+  const result = await f.resolve();
+  assert.equal(result.status, "verified");
+  assert.equal(result.cwd, "/Users/developer/Work/Example Project");
+  assert.equal(result.projectId, projectId);
+  assert.equal(result.conversationId, id);
+  assert.equal(result.surface, "desktop");
+  assert.equal(result.mode, "bypass");
+  f.meta[prefix + "workspace_paths"] = [f.native.cwd];
+  f.project.permissionGrants.permissionGrants = { ask: ["shell(*)"] };
+  const restricted = await f.resolve();
+  assert.equal(restricted.status, "verified");
+  assert.equal(restricted.mode, "prompting");
+  assert.notEqual(restricted.permissionFingerprint, result.permissionFingerprint);
+});
+
+test("darwin denies mismatched installations, CLI ancestors, native identity and project workspace", async () => {
+  for (const change of [
+    (f) => { f.images[1].executable = "/Users/developer/Applications/Antigravity.app/Contents/MacOS/Antigravity"; },
+    (f) => { f.images[0].executable = "/Users/developer/.local/bin/agy"; },
+    (f) => { f.ancestry[0].parentPid = 99; },
+    (f) => { f.native.conversationId = projectId; },
+    (f) => { f.native.surface = "cli"; },
+    (f) => { f.native.cwd = "/Users/developer/Work/Other"; },
+    (f) => { f.project.projectResources.resources[0].gitFolder.folderUri = "file:///Users/developer/Work/Other"; },
+    (f) => { f.meta[prefix + "workspace_paths"] = ["/Users/developer/Work/Other"]; },
+  ]) {
+    const f = darwinFixture();
+    change(f);
+    assert.equal((await f.resolve()).status, "unverified");
+  }
+});
+
 test("verifies exact native caller and complete legacy unrestricted policy without an account claim", async () => {
   const f = fixture();
   const result = await f.resolve();
@@ -182,7 +235,7 @@ function configurationReader() {
     close: async () => { state.closed = true; },
   };
   const filesystem = {
-    lstat: async () => ({ ...state.stat }),
+    lstat: async () => { assert.equal(state.opened, true); return { ...state.stat }; },
     open: async (_file, flags) => {
       state.opened = true;
       if (constants.O_NOFOLLOW) assert.equal(flags & constants.O_NOFOLLOW, constants.O_NOFOLLOW);
@@ -200,13 +253,20 @@ test("reads configuration through a bounded descriptor and closes it", async () 
   assert.equal(f.state.closed, true);
 });
 
-test("rejects FIFO, symlink, hardlink and oversized configuration before opening", async () => {
+test("rejects FIFO, symlink, hardlink and oversized configuration before reading", async () => {
   for (const patch of [{ isFile: () => false }, { nlink: 2n }, { size: 1048577n }]) {
     const f = configurationReader();
     Object.assign(f.state.stat, patch);
     await assert.rejects(f.read(), /bounded regular file/);
-    assert.equal(f.state.opened, false);
+    assert.equal(f.state.opened, true);
+    assert.equal(f.state.reads, 0);
+    assert.equal(f.state.closed, true);
   }
+  const linked = configurationReader();
+  linked.filesystem.lstat = async () => ({ ...linked.state.stat, isFile: () => false });
+  await assert.rejects(linked.read(), /bounded regular file/);
+  assert.equal(linked.state.reads, 0);
+  assert.equal(linked.state.closed, true);
 });
 
 test("rejects configuration replacement, growth and same-size mutation while always closing", async () => {
@@ -215,7 +275,7 @@ test("rejects configuration replacement, growth and same-size mutation while alw
     if (scenario === "open-race") f.handle.stat = async () => ({ ...f.state.stat, ino: 9n });
     if (scenario === "path-race") {
       let calls = 0;
-      f.filesystem.lstat = async () => ({ ...f.state.stat, ino: ++calls > 2 ? 9n : 2n });
+      f.filesystem.lstat = async () => ({ ...f.state.stat, ino: ++calls > 1 ? 9n : 2n });
     }
     if (scenario === "growth") f.state.data = Buffer.concat([f.state.data, Buffer.from("x")]);
     if (scenario === "timestamp") {

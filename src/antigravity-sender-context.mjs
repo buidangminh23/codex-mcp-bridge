@@ -17,13 +17,12 @@ const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(value)
 export async function readAntigravityConfigurationJson(file, { filesystem = fs } = {}) {
   const valid = (stat) => stat.isFile() && stat.nlink === 1n && stat.size >= 0n && stat.size <= 1048576n;
   const same = (left, right) => ["dev", "ino", "size", "mtimeNs", "ctimeNs", "nlink"].every((key) => left[key] === right[key]);
-  const before = await filesystem.lstat(file, { bigint: true });
-  if (!valid(before)) fail("Native configuration must be a bounded regular file with one link");
   const handle = await filesystem.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const opened = await handle.stat({ bigint: true });
     const linked = await filesystem.lstat(file, { bigint: true });
-    if (!valid(opened) || !valid(linked) || !same(before, opened) || !same(opened, linked)) fail("Native configuration changed while opening");
+    if (!valid(opened) || !valid(linked)) fail("Native configuration must be a bounded regular file with one link");
+    if (!same(opened, linked)) fail("Native configuration changed while opening");
     const buffer = Buffer.alloc(Number(opened.size) + 1);
     let length = 0;
     while (length < buffer.length) {

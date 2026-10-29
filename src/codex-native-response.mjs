@@ -140,7 +140,7 @@ function scanSegment(file, maxBytes, { threadId, turnId, afterOffset, prefixSize
       if (start >= dispatchAfterOffset && dispatchOutputs && record.type === "response_item" && record.payload.type === "function_call_output" &&
           record.payload.namespace === "codex_app" && record.payload.name === "send_message_to_thread" && dispatchOutputs.includes(record.payload.output)) {
         const metadata = record.payload.internal_chat_message_metadata_passthrough;
-        const selectedTurnId = record.payload.turn_id ?? record.payload.root_turn_id ?? metadata?.turn_id ?? metadata?.root_turn_id;
+        const selectedTurnId = record.payload.turn_id ?? metadata?.turn_id ?? record.payload.root_turn_id ?? metadata?.root_turn_id;
         if (!UUID.test(selectedTurnId) || !recordBelongsToTurn(entry, threadId, selectedTurnId)) throw new Error("The native dispatch has no consistent turn identity");
         dispatches.push({ turnId: selectedTurnId, start });
         if (dispatches.length > 1) throw new Error("Multiple post-send native dispatches match the reply receipt");
@@ -223,7 +223,11 @@ function replyHash(text) {
 function recordBelongsToTurn(entry, threadId, turnId) {
   const payload = entry.record.payload;
   const metadata = object(payload.internal_chat_message_metadata_passthrough) ? payload.internal_chat_message_metadata_passthrough : {};
-  const turnFields = [payload.turn_id, payload.root_turn_id, metadata.turn_id, metadata.root_turn_id].filter((value) => value !== undefined);
+  // root_turn_id describes causal ancestry and may belong to another thread.
+  // Only older records without explicit turn IDs use it as their identity.
+  const explicitTurns = [payload.turn_id, metadata.turn_id].filter((value) => value !== undefined);
+  const turnFields = explicitTurns.length ? explicitTurns
+    : [payload.root_turn_id, metadata.root_turn_id].filter((value) => value !== undefined);
   if (!turnFields.includes(turnId)) return false;
   if (turnFields.some((value) => value !== turnId)) throw validationError("The native response contains contradictory turn identity", "turn_identity", { recordByte: entry.start });
   const threadFields = [payload.thread_id, metadata.thread_id].filter((value) => value !== undefined);

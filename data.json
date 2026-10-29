@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-10-29T14:22:38.755Z",
+  "updatedAt": "2026-10-29T20:19:44.181Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -22876,7 +22876,7 @@
       }
     },
     {
-      "collectedAt": "2026-10-29T14:22:38.755Z",
+      "collectedAt": "2026-10-29T20:19:44.181Z",
       "views": {
         "count": 269,
         "uniques": 72,
@@ -23035,13 +23035,9 @@
         "subscribers": 0
       },
       "npm": {
-        "start": "2026-09-28",
-        "end": "2026-10-27",
+        "start": "2026-09-29",
+        "end": "2026-10-28",
         "downloads": [
-          {
-            "day": "2026-09-28",
-            "downloads": 13
-          },
           {
             "day": "2026-09-29",
             "downloads": 413
@@ -23157,6 +23153,10 @@
           {
             "day": "2026-10-27",
             "downloads": 52
+          },
+          {
+            "day": "2026-10-28",
+            "downloads": 200
           }
         ]
       },
@@ -23274,11 +23274,11 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.4.zip",
-              "downloads": 1
+              "downloads": 2
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.4.zip.sha256",
-              "downloads": 1
+              "downloads": 2
             }
           ]
         },
@@ -23287,11 +23287,11 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.3.zip",
-              "downloads": 2
+              "downloads": 4
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.3.zip.sha256",
-              "downloads": 1
+              "downloads": 2
             }
           ]
         },
@@ -23300,11 +23300,11 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.2.zip",
-              "downloads": 2
+              "downloads": 3
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.2.zip.sha256",
-              "downloads": 1
+              "downloads": 4
             }
           ]
         },
@@ -23313,11 +23313,11 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.1.zip",
-              "downloads": 2
+              "downloads": 3
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.1.zip.sha256",
-              "downloads": 1
+              "downloads": 3
             }
           ]
         },
@@ -23326,11 +23326,11 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.0.zip",
-              "downloads": 3
+              "downloads": 4
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.0.zip.sha256",
-              "downloads": 1
+              "downloads": 2
             }
           ]
         },
@@ -23339,11 +23339,11 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.20.1.zip",
-              "downloads": 4
+              "downloads": 6
             },
             {
               "name": "codex-mcp-bridge-plugin-1.20.1.zip.sha256",
-              "downloads": 1
+              "downloads": 2
             }
           ]
         },
@@ -23352,11 +23352,11 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.20.0.zip",
-              "downloads": 4
+              "downloads": 5
             },
             {
               "name": "codex-mcp-bridge-plugin-1.20.0.zip.sha256",
-              "downloads": 1
+              "downloads": 2
             }
           ]
         },
@@ -23397,11 +23397,11 @@
           "assets": [
             {
               "name": "minhspark-codex-mcp-bridge-1.18.2.tgz",
-              "downloads": 1
+              "downloads": 2
             },
             {
               "name": "SHA256SUMS.txt",
-              "downloads": 2
+              "downloads": 5
             }
           ]
         },
@@ -23410,11 +23410,11 @@
           "assets": [
             {
               "name": "minhspark-codex-mcp-bridge-1.18.1.tgz",
-              "downloads": 1
+              "downloads": 2
             },
             {
               "name": "SHA256SUMS.txt",
-              "downloads": 2
+              "downloads": 4
             }
           ]
         },
@@ -23427,11 +23427,11 @@
           "assets": [
             {
               "name": "minhspark-codex-mcp-bridge-1.17.0.tgz",
-              "downloads": 1
+              "downloads": 3
             },
             {
               "name": "SHA256SUMS.txt",
-              "downloads": 2
+              "downloads": 3
             }
           ]
         },
@@ -23444,11 +23444,11 @@
           "assets": [
             {
               "name": "desktop-demo.gif",
-              "downloads": 24
+              "downloads": 26
             },
             {
               "name": "desktop-demo.mp4",
-              "downloads": 10
+              "downloads": 11
             }
           ]
         },
@@ -23550,11 +23550,11 @@
         }
       ],
       "sourceCollectedAt": {
-        "views": "2026-10-29T14:22:38.755Z",
-        "clones": "2026-10-29T14:22:38.755Z",
-        "npm": "2026-10-29T14:22:38.755Z",
-        "repository": "2026-10-29T14:22:38.755Z",
-        "releases": "2026-10-29T14:22:38.755Z"
+        "views": "2026-10-29T20:19:44.181Z",
+        "clones": "2026-10-29T20:19:44.181Z",
+        "npm": "2026-10-29T20:19:44.181Z",
+        "repository": "2026-10-29T20:19:44.181Z",
+        "releases": "2026-10-29T20:19:44.181Z"
       }
     }
   ],
@@ -24353,11 +24353,14 @@
       },
       "2026-10-27": {
         "downloads": 52
+      },
+      "2026-10-28": {
+        "downloads": 200
       }
     }
   },
   "usage": {
-    "collectedAt": "2026-10-29T14:22:41Z",
+    "collectedAt": "2026-10-29T20:19:46Z",
     "active": {
       "day": 0,
       "week": 0,

@@ -109,7 +109,7 @@ const replyForwarder = new ReplyForwarder({
     if (desktopOnly) assertAccountIdentity(record.accountContext);
     recheckScopeBindings(record.scopeBindings);
   },
-  deliver: (threadId, record) => delivery.deliver(threadId, `[message from Claude session ${record.fromSocket ?? "?"}]\n${record.absorbed ? "[This reply is the closing text of a turn that absorbed the message while it was running; it may not address the message.]\n" : ""}\n${record.text}`,
+  deliver: (threadId, record) => delivery.deliver(threadId, `${record.kind === "delivery_status" ? "[Bridge notification about Claude reply observation; not a Claude reply]" : `[message from Claude session ${record.fromSocket ?? "?"}]`}\n${record.absorbed ? "[This reply is the closing text of a turn that absorbed the message while it was running; it may not address the message.]\n" : ""}\n${record.text}`,
     desktopOnly ? { beforeSend: () => { assertAccountIdentity(record.accountContext); recheckScopeBindings(record.scopeBindings); }, accountContext: record.accountContext } : {}),
 });
 
@@ -593,13 +593,13 @@ registerTool(
       }
 
       if (wait === 0) {
-        return result(`Sent to peer transport for ${targetLabel}.\nClaude receipt unconfirmed; not waiting for a reply.\nMessage id: ${msgId}`);
+        return result(`Sent to peer transport for ${targetLabel}.\nClaude receipt unconfirmed; not waiting for a reply.\nMessage id: ${msgId}\nCheck read_claude_delivery with this message ID for terminal status, and read_claude_inbox for late replies or bridge notifications. Do not resend automatically.`);
       }
 
       if (!reply) {
         return result(
           `Sent to peer transport for ${targetLabel}.\n\nNo reply within ${wait}s; Claude receipt and outcome remain unconfirmed. ` +
-          `Do not automatically retry: the message may still be processed. Check read_claude_inbox for a late reply.\nMessage id: ${msgId}`,
+          `Do not automatically retry: the message may still be processed. Check read_claude_delivery for terminal status and read_claude_inbox for a late reply or bridge notification.\nMessage id: ${msgId}`,
           true,
         );
       }
@@ -633,7 +633,7 @@ registerTool(
     title: "Read messages Claude sent to this bridge",
     description:
       "Read and consume the oldest requested page of Claude messages, preserving unread messages. " +
-      "Includes late replies and their Codex forwarding status.",
+      "Includes late replies, terminal bridge-status notifications (not assistant replies), and their Codex forwarding status.",
     inputSchema: {
       limit: z.number().int().min(1).max(100).optional().describe("How many messages to return (default 20)"),
     },
@@ -655,7 +655,7 @@ registerTool(
           .map((m) => {
             const at = new Date(m.receivedAt).toISOString().replace("T", " ").slice(0, 19);
             const state = replyForwarder.read(m.inReplyTo ?? m.msgId) ?? m.forwardingError;
-            return `[${at}] from ${m.fromSocket ?? "?"}${state ? `\nCodex forwarding: ${state.status}${state.reason ? ` (${state.reason})` : ""}` : ""}\n${m.text}`;
+            return `[${at}] ${m.kind === "delivery_status" ? "bridge status for" : "from"} ${m.fromSocket ?? "?"}${state ? `\nCodex forwarding: ${state.status}${state.reason ? ` (${state.reason})` : ""}` : ""}\n${m.text}`;
           })
           .join("\n\n"),
       );

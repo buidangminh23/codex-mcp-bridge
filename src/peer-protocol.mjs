@@ -875,9 +875,7 @@ export class PeerEndpoint {
       this.log(`ignored uncorrelated inbound peer message from ${message.fromSocket ?? "?"} in hardened mode`);
       return;
     }
-    this.activityRevision += 1;
-    const record = { ...message, receivedAt: Date.now(), sequence: ++this.messageSequence };
-    this.inbox.push(record);
+    const record = { ...message };
     if (key && correlated && pending.targetSocket === record.fromSocket) {
       const sent = this.sentMessages.get(key);
       if (sent) {
@@ -891,6 +889,13 @@ export class PeerEndpoint {
       }
       this.#removePendingReply(record.fromSocket, key);
     }
+    this.#publishMessage(record);
+  }
+
+  #publishMessage(record) {
+    this.activityRevision += 1;
+    Object.assign(record, { receivedAt: Date.now(), sequence: ++this.messageSequence });
+    this.inbox.push(record);
     this.log(`inbox <- ${record.fromSocket ?? "?"}: ${record.text.length} characters`);
     for (const listener of [...this.listeners]) {
       try { listener(record); }
@@ -911,9 +916,22 @@ export class PeerEndpoint {
       const outcome = readTranscriptOutcome(sessionId, cwd, msgId);
       if (outcome?.reply) this.#receiveMessage({ ...outcome.reply, fromSocket: pending.targetSocket });
       else if (outcome?.status === "interrupted") {
-        this.activityRevision += 1;
         this.deliveryReceipts.set(msgId, { ...outcome, fromSocket: pending.targetSocket, observedAt: Date.now() });
         this.#removePendingReply(pending.targetSocket, msgId);
+        const sent = this.sentMessages.get(msgId);
+        // A terminal observation is a bridge notification, never a Claude reply.
+        // Retain the send's original routing and scope for inbox filtering and
+        // forwarding; do not infer either from the currently active task.
+        this.#publishMessage({
+          kind: "delivery_status", source: "bridge", status: "interrupted",
+          msgId: `interrupted:${msgId}`, inReplyTo: msgId, fromSocket: pending.targetSocket,
+          replyThreadId: sent?.replyThreadId ?? null, accountContext: sent?.accountContext ?? null,
+          cwd: sent?.transcriptSession?.cwd ?? null, senderCwd: sent?.scopeBindings?.sender?.path ?? null,
+          scopeBindings: sent?.scopeBindings ?? null,
+          outcome: "unknown", waitEnded: true, taskCancelled: false, retrySafe: false,
+          reasonCode: outcome.reasonCode, interruptedBy: outcome.interruptedBy, backgroundTaskIds: outcome.backgroundTaskIds,
+          text: `[Bridge delivery status: ${outcome.reasonCode}]\nMessage id: ${msgId}\n${outcome.reason}`,
+        });
         this.log(`reply observation interrupted for ${msgId}; task outcome remains unknown`);
       }
     }
@@ -1096,7 +1114,7 @@ export class PeerEndpoint {
    */
   waitForReply(fromSocket, { timeoutMs = 120000, since = Date.now(), afterSequence = null, msgId } = {}) {
     const expectsTranscript = Boolean(msgId && this.sentMessages.get(msgId)?.transcriptSession);
-    const matches = (record) => record.fromSocket === fromSocket
+    const matches = (record) => record.kind !== "delivery_status" && record.fromSocket === fromSocket
       && (!expectsTranscript || (record.source === "transcript" && record.inReplyTo === msgId))
       && (!record.inReplyTo || !msgId || record.inReplyTo === msgId)
       && (afterSequence === null ? record.receivedAt >= since : record.sequence > afterSequence);

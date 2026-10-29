@@ -767,6 +767,7 @@ describe("peer endpoint", () => {
     assert.deepEqual(delivered.record.accountContext, accountContext);
     assert.deepEqual(delivered.record.scopeBindings, scopeBindings);
     assert.equal(await isolated.waitForReply("async-peer", { timeoutMs: 10, msgId: sent.msgId }), null);
+    assert.equal(await isolated.waitForReply("async-peer", { timeoutMs: 10, afterSequence: 0 }), null, "a bridge notification must not satisfy a reply wait");
     isolated.readDelivery(sent.msgId);
     assert.equal(notifications.length, 1, "polling must not duplicate a notification");
     const restored = new PeerEndpoint({ name: "restored-async-fixture", cwd: sandbox });

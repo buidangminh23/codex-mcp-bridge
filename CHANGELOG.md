@@ -4,6 +4,18 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.24.1] - 2026-10-29
+
+### Fixed
+
+- Native Codex turns whose `root_turn_id` names a different causal root are no longer rejected as contradictory. Membership comes from explicit turn IDs, contradictory explicit IDs are still rejected, and a turn is never selected only because its causal root matches the requested turn (#169, #171 by @deinspanjer).
+- An accepted Desktop send whose response cannot be verified now reports `status: observation_unavailable` with `nextAction: inspect_existing_task` and the original receipt, instead of `failed`. Desktop's own `failed` or `interrupted` status is still reported when it belongs to the exact observed turn. `wait_codex_reply` with `responsePreferences` returns the same next action plus `guidance` telling the caller not to resend the prompt.
+- When a Claude reply observation is interrupted by a new input boundary after an asynchronous or timed-out `send_to_claude_session`, the bridge now publishes a correlated bridge-status notification to `read_claude_inbox` and to the originating Codex task. It is labelled as a bridge notification rather than a Claude reply, keeps the original account and project scope, reports outcome unknown, task not cancelled and retry unsafe, and survives reload without duplication. Asynchronous send guidance now points to `read_claude_delivery` (#170, #172 by @deinspanjer).
+
+### Upgrade
+
+- `npm install -g @minhspark/codex-mcp-bridge@latest`, then restart Claude Desktop and Codex Desktop (or reconnect their MCP servers) so running bridges load 1.24.1.
+
 ## [1.24.0] - 2026-10-28
 
 ### Added

@@ -24,7 +24,7 @@ import {
 import { runTurn } from "./turn.mjs";
 import { BridgeSecurityPolicy } from "./security-policy.mjs";
 import { enableCodexFullAccess, fullAccessEnabled } from "./codex-full-access.mjs";
-import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS } from "./thread-delivery.mjs";
+import { DesktopTaskDelivery, DESKTOP_TOOL_BUDGET_MS, OBSERVATION_UNAVAILABLE_GUIDANCE } from "./thread-delivery.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
@@ -41,7 +41,7 @@ import { createRelayWake, relayKeeperEnabled, relayWakeStateFile, startRelayKeep
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.24.0";
+const VERSION = "1.24.1";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -171,7 +171,7 @@ function replyResult(delivered, deliveryId, result, notes = []) {
   const deliveryStatus = ["completed", "completed_no_reply"].includes(result.responseStatus) ? "accepted" : delivered.deliveryStatus ?? "accepted";
   const pending = result.status === "timeout";
   const observationUnavailable = result.status === "observation_unavailable";
-  if (observationUnavailable) notes = [...notes, "The response could not be verified; this does not establish that delivery or the task failed. Inspect the existing task and this receipt; do not resend the prompt."];
+  if (observationUnavailable) notes = [...notes, OBSERVATION_UNAVAILABLE_GUIDANCE];
   const continuation = deliveryId ? `deliveryId: ${deliveryId}\n${pending ? "Continue automatically with wait_codex_reply and this deliveryId; it only observes the original send. Do not resend the prompt." : "Keep this deliveryId to inspect the same send after reconnecting."}` : "";
   return {
     ...textResult([...notes, `deliveryStatus: ${deliveryStatus}`, formatTurn(result, { desktop: true }), continuation].filter(Boolean).join("\n"), result.status === "failed" || result.status === "systemError"),

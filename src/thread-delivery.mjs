@@ -27,6 +27,7 @@ import { requireClaudeSenderContext } from "./claude-sender-context.mjs";
 export const NATIVE_BACKEND = "codex-desktop-native";
 export const APP_SERVER_BACKEND = "app-server";
 export const DESKTOP_TOOL_BUDGET_MS = 40000;
+export const OBSERVATION_UNAVAILABLE_GUIDANCE = "The response could not be verified; this does not establish that delivery or the task failed. Inspect the existing task and this receipt; do not resend the prompt.";
 export const WORKSPACE_UNASSIGNED = "DESKTOP_WORKSPACE_UNASSIGNED";
 export const UNASSIGNED_WORKSPACE_GRACE_MS = 120000;
 const RELEASE_STATUSES = new Set(["completed", "interrupted", "failed"]);

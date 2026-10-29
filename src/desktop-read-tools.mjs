@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { DESKTOP_TOOL_BUDGET_MS } from "./thread-delivery.mjs";
+import { DESKTOP_TOOL_BUDGET_MS, OBSERVATION_UNAVAILABLE_GUIDANCE } from "./thread-delivery.mjs";
 import { captureProjectScope, recheckProjectScope } from "./project-scope.mjs";
 import { ResponseSnapshots, responsePreferencesSchema, normalizeResponsePreferences, projectHistory, projectReply, assertResponseResultSize } from "./response-preferences.mjs";
 
@@ -102,7 +102,8 @@ export function registerDesktopReadTools(registerTool, {
         metadata: { ...metadata, threadId: delivered.threadId, turnId: result.turnId ?? null,
           turnStatus: ["completed", "interrupted", "failed"].includes(result.status) ? result.status : null, deliveryId,
           deliveryStatus: ["completed", "completed_no_reply"].includes(result.responseStatus) ? "accepted" : delivered.deliveryStatus ?? "accepted",
-          nextAction: result.status === "timeout" ? "wait_codex_reply" : "none" },
+          nextAction: result.status === "observation_unavailable" ? "inspect_existing_task" : result.status === "timeout" ? "wait_codex_reply" : "none",
+          ...(result.status === "observation_unavailable" ? { guidance: OBSERVATION_UNAVAILABLE_GUIDANCE } : {}) },
         items: projectReply(assistantItems ?? [], result.turnId) });
     };
     if (!delivered.threadId || Date.now() >= observationDeadline) return finish(timeout());

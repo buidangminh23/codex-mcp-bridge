@@ -176,6 +176,21 @@ it('wait continuations page verified replies without waiting or resolving again 
   assert.equal(timeout.structuredContent.turnStatus, null);
 });
 
+it('wait continuations keep unavailable observation distinct from failure and discourage resends', async t => {
+  const f = await fixture(t);
+  f.state.reply = { threadId: 'thread', turnId: 'current', status: 'observation_unavailable', responseStatus: 'unavailable',
+    observationStatus: 'unavailable', observationReason: 'Unrecognized native response record', text: '' };
+  const result = await f.call('wait_codex_reply', { deliveryId: f.deliveryId, responsePreferences: pagePrefs });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.status, 'observation_unavailable');
+  assert.equal(result.structuredContent.deliveryStatus, 'accepted');
+  assert.equal(result.structuredContent.deliveryId, f.deliveryId);
+  assert.equal(result.structuredContent.nextAction, 'inspect_existing_task');
+  assert.match(result.structuredContent.guidance, /do not resend the prompt/i);
+  assert.equal(result.structuredContent.page.nextCursor, null);
+  assert.deepEqual(result.structuredContent.items, []);
+});
+
 it('cached pages block account switches, revoked scope, replaced roots and receipt tampering', async t => {
   const f = await fixture(t);
   const first = await f.call('wait_codex_reply', { deliveryId: f.deliveryId, responsePreferences: pagePrefs });

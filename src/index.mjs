@@ -170,10 +170,12 @@ function replyResult(delivered, deliveryId, result, notes = []) {
   result = { activity: [], errors: [], ...result };
   const deliveryStatus = ["completed", "completed_no_reply"].includes(result.responseStatus) ? "accepted" : delivered.deliveryStatus ?? "accepted";
   const pending = result.status === "timeout";
+  const observationUnavailable = result.status === "observation_unavailable";
+  if (observationUnavailable) notes = [...notes, "The response could not be verified; this does not establish that delivery or the task failed. Inspect the existing task and this receipt; do not resend the prompt."];
   const continuation = deliveryId ? `deliveryId: ${deliveryId}\n${pending ? "Continue automatically with wait_codex_reply and this deliveryId; it only observes the original send. Do not resend the prompt." : "Keep this deliveryId to inspect the same send after reconnecting."}` : "";
   return {
     ...textResult([...notes, `deliveryStatus: ${deliveryStatus}`, formatTurn(result, { desktop: true }), continuation].filter(Boolean).join("\n"), result.status === "failed" || result.status === "systemError"),
-    structuredContent: { ...result, threadId: delivered.threadId, deliveryStatus, ...(deliveryId ? { deliveryId } : {}), nextAction: pending && deliveryId ? "wait_codex_reply" : "none" },
+    structuredContent: { ...result, threadId: delivered.threadId, deliveryStatus, ...(deliveryId ? { deliveryId } : {}), nextAction: observationUnavailable ? "inspect_existing_task" : pending && deliveryId ? "wait_codex_reply" : "none" },
   };
 }
 

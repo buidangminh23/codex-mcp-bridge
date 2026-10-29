@@ -52,6 +52,23 @@ function fixture(t, { dispatch, now = Date.now, sleep, beforeRequest, beforeWrit
 }
 
 describe("Desktop creation receipts and deadlines", () => {
+  for (const nativeStatus of ["inProgress", "failed", "interrupted"]) it(`keeps unavailable observation separate from native task status: ${nativeStatus}`, async (t) => {
+    const f = fixture(t, {
+      resolveResponse: () => ({ status: "unavailable", turnId: "turn", reason: "Unrecognized native response record" }),
+      dispatch({ operation }) {
+        if (operation === "wait_threads") return { polls: [{ thread: { id: "task", hostId: "local", status: "active" }, latestTurn: { id: "turn", status: nativeStatus } }] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 1000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+    } });
+    assert.equal(result.status, nativeStatus === "inProgress" ? "observation_unavailable" : nativeStatus);
+    assert.equal(result.observationStatus, "unavailable");
+    assert.equal(result.observationReason, "Unrecognized native response record");
+    assert.equal(result.text, "");
+    assert.equal(f.calls.some(call => call.operation === "send_message_to_thread"), false);
+  });
+
   for (const resolveDispatch of [true, false]) {
     for (const boundary of ["initial_read", "confirmation_read", "relay_timeout", "relay_send_deadline"]) it(`withholds an unverified reply when ${boundary} exhausts observation time: resolver=${resolveDispatch}`, async (t) => {
       let time = 0;
@@ -166,7 +183,7 @@ describe("Desktop creation receipts and deadlines", () => {
       if (variant.endsWith("changed")) await assert.rejects(pending, /account changed|task changed|workspace/i);
       else {
         const result = await pending;
-        assert.equal(result.status, variant === "pending" ? "timeout" : variant === "unavailable" ? "failed" : "completed");
+        assert.equal(result.status, variant === "pending" ? "timeout" : variant === "unavailable" ? "observation_unavailable" : "completed");
         assert.equal(result.turnId, variant === "completed" ? "historic-turn" : null);
         assert.equal(result.text, variant === "completed" ? "Historic final" : "");
       }
@@ -290,7 +307,7 @@ describe("Desktop creation receipts and deadlines", () => {
     const result = await f.delivery.wait("task", { timeoutMs: 6000, previousTurnId: "old-turn", responseObservation: {
       threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: resolveDispatch ? "available" : "unavailable" },
     } });
-    assert.equal(result.status, resolveDispatch ? "failed" : "interrupted");
+    assert.equal(result.status, resolveDispatch ? "observation_unavailable" : "interrupted");
     assert.equal(result.observationReason, "The rollout has an incomplete final record");
     assert.equal(reads, 1);
     assert.equal(time, 0);

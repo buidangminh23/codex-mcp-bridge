@@ -644,8 +644,9 @@ export class DesktopTaskDelivery {
         }
         turnId = observed.turnId ?? null;
         if (observed.status !== "pending") {
+          const nativeFailure = turnId && turn?.id === turnId && ["failed", "interrupted"].includes(turn.status) ? turn.status : null;
           return {
-            threadId, turnId, status: observed.status === "unavailable" ? "failed" : "completed",
+            threadId, turnId, status: observed.status === "unavailable" ? nativeFailure ?? "observation_unavailable" : "completed",
             responseStatus: observed.status, observationStatus: observed.status,
             text: observed.status === "completed" ? observed.text : "",
             ...(observed.reason ? { observationReason: observed.reason } : {}),

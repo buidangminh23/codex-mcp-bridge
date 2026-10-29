@@ -60,6 +60,37 @@ function fixture(t) {
 }
 
 describe("native Codex response observation", () => {
+  for (const activeTurn of [false, true]) it(`reads a turn with a different causal root: active=${activeTurn}`, (t) => {
+    const f = fixture(t);
+    const records = f.turn();
+    records[0].payload.root_turn_id = EXECUTOR_ID;
+    // A payload root must not override the dispatch's explicit metadata turn.
+    records[2].payload.root_turn_id = EXECUTOR_ID;
+    records[3].payload.internal_chat_message_metadata_passthrough.root_turn_id = EXECUTOR_ID;
+    if (activeTurn) f.append(records.slice(0, 2));
+    const mark = f.capture();
+    f.append(activeTurn ? records.slice(2) : records);
+    const resolved = f.resolve(mark, { previousTurnId: activeTurn ? TURN_ID : PREVIOUS_TURN_ID });
+    assert.equal(resolved.status, "completed", resolved.reason);
+    assert.equal(resolved.turnId, TURN_ID);
+    assert.equal(resolved.text, "Received safely");
+    const read = inspectCodexNativeTurn({ threadId: THREAD_ID, turnId: TURN_ID, expectedCwd: f.cwd }, { env: f.env });
+    assert.equal(read.status, "completed", read.reason);
+    assert.equal(read.text, "Received safely");
+  });
+
+  it("does not include another turn merely because it shares the selected causal root", (t) => {
+    const f = fixture(t);
+    const mark = f.capture();
+    f.append(f.turn());
+    const other = f.turn({ turnId: EXECUTOR_ID, prompt: "unrelated" });
+    for (const { payload } of other) payload.root_turn_id = TURN_ID;
+    f.append(other);
+    const result = f.read(mark);
+    assert.equal(result.status, "completed", result.reason);
+    assert.equal(result.text, "Received safely");
+  });
+
   for (const variant of ["identical", "permission_changed", "workspace_changed", "identity_changed", "after_completion"]) {
     it(`validates refreshed turn contexts after compaction: ${variant}`, (t) => {
       const f = fixture(t);
@@ -70,7 +101,7 @@ describe("native Codex response observation", () => {
       const refreshed = structuredClone(records[1]);
       if (variant === "permission_changed") refreshed.payload.permission_profile.type = "read-only";
       if (variant === "workspace_changed") refreshed.payload.cwd = f.home;
-      if (variant === "identity_changed") refreshed.payload.root_turn_id = EXECUTOR_ID;
+      if (variant === "identity_changed") refreshed.payload.internal_chat_message_metadata_passthrough = { turn_id: EXECUTOR_ID };
       f.append(variant === "after_completion" ? [...records.slice(2), refreshed] : [records[2], refreshed, ...records.slice(3)]);
       const result = f.resolve(mark, { previousTurnId: TURN_ID });
       assert.equal(result.status, variant === "identical" ? "completed" : "unavailable", result.reason);
@@ -157,7 +188,7 @@ describe("native Codex response observation", () => {
       if (variant === "wrong_sender") records[2] = f.turn({ executorThreadId: PREVIOUS_TURN_ID })[2];
       if (variant === "wrong_prompt") records[2] = f.turn({ prompt: "Different prompt" })[2];
       if (variant === "superseding_turn") records.splice(3, 0, ...f.turn({ turnId: EXECUTOR_ID }).slice(0, 2));
-      if (variant === "contradictory_id") records[2].payload.root_turn_id = EXECUTOR_ID;
+      if (variant === "contradictory_id") records[2].payload.turn_id = EXECUTOR_ID;
       if (variant === "aborted") records.splice(3, 0, { type: "event_msg", payload: { type: "task_aborted", turn_id: TURN_ID } });
       if (variant !== "old_dispatch") f.append(records);
       if (variant === "duplicate_other_turn") f.append(f.turn({ turnId: EXECUTOR_ID }));

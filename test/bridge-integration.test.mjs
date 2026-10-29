@@ -366,7 +366,7 @@ describe("Desktop task MCP integration", () => {
     });
   });
 
-  for (const resume of [false, true, "lost-ack", "creation", "creation-lost-ack"]) it(resume ? `continues ${resume} after MCP restart with the same reply and no duplicate dispatch` : "returns the same exact assistant item and hash from send and authoritative turn read", async () => {
+  for (const resume of [false, true, "lost-ack", "creation", "creation-lost-ack", "unavailable"]) it(resume === "unavailable" ? "keeps accepted delivery distinct from failed response verification" : resume ? `continues ${resume} after MCP restart with the same reply and no duplicate dispatch` : "returns the same exact assistant item and hash from send and authoritative turn read", async () => {
     const threadId = "01a08745-d26e-7db2-aa9c-0758d52ea3e0";
     const turnId = "01a08812-f472-7f43-8f9b-1137e61f6d32";
     const previousTurnId = "01a087dd-d587-76c3-93c3-60c16bc08542";
@@ -378,12 +378,26 @@ describe("Desktop task MCP integration", () => {
     const calls = [];
     let relay;
     let sent = false;
-    let completed = !resume;
+    let completed = !resume || resume === "unavailable";
     const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
     const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-integrity-${randomUUID()}` : path.join(socketRoot, "d.sock");
     try {
       await withBridge(() => { throw new Error("Desktop integrity test must not reach an external app-server"); }, async ({ client, home, env }) => {
         let sentResult = await client.callTool({ name: String(resume).startsWith("creation") ? "delegate_to_codex" : "send_to_codex_thread", arguments: { ...(String(resume).startsWith("creation") ? { cwd: home, requestId: randomUUID() } : { threadId }), prompt, openInApp: false, ...(resume ? { timeoutSec: 10 } : {}) } });
+        if (resume === "unavailable") {
+          const deliveryId = sentResult.structuredContent.deliveryId;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            assert.equal(sentResult.isError, undefined);
+            assert.equal(sentResult.structuredContent.status, "observation_unavailable");
+            assert.equal(sentResult.structuredContent.deliveryStatus, "accepted");
+            assert.equal(sentResult.structuredContent.nextAction, "inspect_existing_task");
+            assert.equal(sentResult.structuredContent.deliveryId, deliveryId);
+            assert.match(sentResult.content[0].text, /do not resend the prompt/i);
+            if (attempt === 0) sentResult = await client.callTool({ name: "wait_codex_reply", arguments: { deliveryId } });
+          }
+          assert.equal(calls.filter(operation => operation === "send_message_to_thread").length, 1);
+          return;
+        }
         if (resume) {
           assert.equal(sentResult.isError, undefined, JSON.stringify(sentResult));
           assert.equal(sentResult.structuredContent.deliveryStatus, ["lost-ack", "creation-lost-ack"].includes(resume) ? "unconfirmed" : "accepted");
@@ -455,7 +469,8 @@ describe("Desktop task MCP integration", () => {
           else if (operation === "send_message_to_thread" || operation === "create_thread" && String(resume).startsWith("creation")) {
             if (resume === "creation-lost-ack") await new Promise(resolve => setTimeout(resolve, 11000));
             sent = true;
-            append({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } });
+            append({ type: "event_msg", payload: { type: "task_started", turn_id: turnId, root_turn_id: executorThreadId,
+              ...(resume === "unavailable" ? { internal_chat_message_metadata_passthrough: { turn_id: previousTurnId } } : {}) } });
             append({ type: "turn_context", payload: { turn_id: turnId, cwd: home } });
             append({ type: "response_item", payload: { type: "function_call_output", id: randomUUID(), namespace: "codex_app", name: operation, output: `<codex_delegation>\n  <source_thread_id>${executorThreadId}</source_thread_id>\n  <input>${prompt}</input>\n</codex_delegation>`, internal_chat_message_metadata_passthrough: { turn_id: turnId } } });
             completeTurn();

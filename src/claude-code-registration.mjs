@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,15 +63,25 @@ export function planInitialCodeRegistration({ code, desktop, root, node, environ
   if (code.mcpServers !== undefined) configurationObject(code.mcpServers, "Claude Code mcpServers");
   if (desktop.mcpServers !== undefined) configurationObject(desktop.mcpServers, "Claude Desktop mcpServers");
   if (code.projects !== undefined) configurationObject(code.projects, "Claude Code projects");
-  const source = code.mcpServers?.[name];
+  const originalCode = code.mcpServers?.[name];
+  const sharedNative = desktop.mcpServers?.[name] ?? desktop.mcpServers?.[`${name}-desktop`];
+  const inheritedShared = originalCode === undefined && sharedNative?.env?.CODEX_BRIDGE_DESKTOP_TASKS === "1";
+  const source = inheritedShared ? sharedNative : originalCode;
   if (source !== undefined) initialBridgeEntry(source, root, `Claude Code ${name}`);
   const defaults = Object.fromEntries(INITIAL_ENVIRONMENT_KEYS.filter((key) => environment[key] !== undefined).map((key) => [key, environment[key]]));
   if (Object.values(defaults).some((value) => typeof value !== "string")) throw new Error("Bridge environment defaults must be strings");
   const scopeKeys = ["CODEX_BRIDGE_THREAD_POLICY", "CODEX_BRIDGE_ALLOWED_ROOTS", "CODEX_BRIDGE_PROJECT_POLICY", "CODEX_BRIDGE_ALLOWED_THREADS", "CODEX_BRIDGE_HARDENED"];
-  if (scopeKeys.some((key) => Object.hasOwn(source?.env ?? {}, key))) {
+  if (source !== undefined) {
     for (const key of scopeKeys) delete defaults[key];
   }
   const values = { ...defaults, ...source?.env };
+  if (defaults.CODEX_BIN && source?.env?.CODEX_BIN && path.isAbsolute(source.env.CODEX_BIN)) {
+    try { fs.lstatSync(source.env.CODEX_BIN); }
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      values.CODEX_BIN = defaults.CODEX_BIN;
+    }
+  }
   const replacement = { ...source, type: "stdio", command: node, args: [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"], env: values };
   const updated = structuredClone(code);
   const updatedDesktop = structuredClone(desktop);
@@ -78,7 +89,8 @@ export function planInitialCodeRegistration({ code, desktop, root, node, environ
   updated.mcpServers[name] = replacement;
   const changes = [];
   const notices = [];
-  if (JSON.stringify(source) !== JSON.stringify(replacement)) changes.push({ kind: source ? "update-user-code-entry" : "create-user-code-entry", name });
+  if (inheritedShared) notices.push("Preserved the existing shared native bridge settings in the new user-level Code entry");
+  if (JSON.stringify(originalCode) !== JSON.stringify(replacement)) changes.push({ kind: originalCode ? "update-user-code-entry" : "create-user-code-entry", name });
   const shared = updatedDesktop.mcpServers?.[name];
   if (shared !== undefined) {
     initialBridgeEntry(shared, root, `Shared Desktop ${name}`);

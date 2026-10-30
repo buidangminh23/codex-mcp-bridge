@@ -162,6 +162,18 @@ test("read-only verification detects missing bootstrap and disabled servers", (t
   assert.ok(setup.calls.every((call) => call.args[0] === "mcp" && ["list", "get"].includes(call.args[1])));
 });
 
+test("verification reports preserved shared native routing as incompatible with Desktop chat", (t) => {
+  const setup = fixture(t);
+  runSetup({ ...setup, args: ["--no-download"], platform: "win32", root });
+  const desktop = JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8"));
+  desktop.mcpServers["codex-bridge-desktop"].env = { CODEX_BRIDGE_DESKTOP_TASKS: "1" };
+  setup.write(setup.paths.desktop, desktop);
+  const result = checkSetup({ ...setup, platform: "win32", root });
+  assert.equal(result.configured, false);
+  assert.ok(result.components.some((item) => item.name === "Claude Desktop / codex-bridge-desktop" && /native Code routing/.test(item.detail)));
+  assert.deepEqual(JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8")), desktop);
+});
+
 test("the package lifecycle skips local npm ci without creating application files", (t) => {
   const setup = fixture(t);
   const child = spawnSync(process.execPath, [path.join(root, "scripts", "setup.mjs"), "--postinstall"], {

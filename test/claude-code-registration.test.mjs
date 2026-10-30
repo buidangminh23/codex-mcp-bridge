@@ -162,6 +162,39 @@ test("first-install update retargets known package installations and refuses an 
   ]) assert.throws(() => initialPlan({ code: { mcpServers: { "codex-bridge": conflicting } } }), /conflicting|unrecognized|customized/);
 });
 
+test("moving shared native registration into Code preserves restrictions and implicit owned scope", () => {
+  const shared = { ...entry(), disabled: true, permissions: { allow: [] }, env: {
+    CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_ALLOWED_ROOTS: path.resolve("restricted"),
+    CODEX_BRIDGE_HARDENED: "1", CODEX_BRIDGE_SANDBOX: "read-only", CUSTOM: "preserved",
+  } };
+  for (const name of ["codex-bridge", "codex-bridge-desktop"]) {
+    const desktop = { mcpServers: { [name]: shared } };
+    const plan = initialPlan({ desktop });
+    assert.equal(plan.entry.disabled, true);
+    assert.deepEqual(plan.entry.permissions, shared.permissions);
+    for (const [key, value] of Object.entries(shared.env)) assert.equal(plan.entry.env[key], value);
+    assert.equal(plan.entry.env.CODEX_BRIDGE_THREAD_POLICY, undefined);
+    assert.deepEqual(plan.desktop.mcpServers["codex-bridge-desktop"], shared);
+    assert.equal(plan.changes[0].kind, "create-user-code-entry");
+  }
+  const prior = { ...entry(), env: { CODEX_BRIDGE_DESKTOP_TASKS: "1" } };
+  const plan = initialPlan({ code: { mcpServers: { "codex-bridge": prior } } });
+  assert.equal(plan.entry.env.CODEX_BRIDGE_THREAD_POLICY, undefined);
+  assert.equal(plan.entry.env.CODEX_BRIDGE_ALLOWED_ROOTS, undefined);
+});
+
+test("setup repairs a missing saved Codex executable while preserving a valid custom binary", (t) => {
+  const fixture = initialSandbox(t);
+  const missing = path.join(fixture.root, "removed-codex.exe");
+  const environment = { CODEX_BIN: process.execPath };
+  const previous = { ...entry(), env: { CODEX_BIN: missing, CODEX_BRIDGE_DESKTOP_TASKS: "0" } };
+  assert.equal(initialPlan({ code: { mcpServers: { "codex-bridge": previous } }, environment }).entry.env.CODEX_BIN, process.execPath);
+  const existing = path.join(fixture.root, "custom-codex.exe");
+  fs.writeFileSync(existing, "");
+  previous.env.CODEX_BIN = existing;
+  assert.equal(initialPlan({ code: { mcpServers: { "codex-bridge": previous } }, environment }).entry.env.CODEX_BIN, existing);
+});
+
 test("first-install plan renames the shadowing shared bridge intact and preserves project overrides with notices", () => {
   const shared = { ...direct(), env: { ...direct().env, CUSTOM: "shared-secret", CODEX_BRIDGE_DESKTOP_TASKS: "0" } };
   const code = { projects: { project: { trust: "keep", mcpServers: { "codex-bridge": entry() } } } };

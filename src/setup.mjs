@@ -128,7 +128,13 @@ export function checkSetup({ env = process.env, platform = process.platform, roo
     ["Claude Desktop / codex-bridge-desktop", paths.desktop, "codex-bridge-desktop", "index.mjs"],
     ["Claude Code / antigravity-bridge", paths.code, "antigravity-bridge", "antigravity-bridge.mjs", "claude"],
     ["Antigravity / agent-bridge", path.join(paths.gemini, "mcp_config.json"), "agent-bridge", "antigravity-outbound-bridge.mjs"],
-  ]) configurationCheck(label, () => assertEntry(readJson(file)?.mcpServers?.[name], worker, root, { caller }), components);
+  ]) configurationCheck(label, () => {
+    const entry = readJson(file)?.mcpServers?.[name];
+    assertEntry(entry, worker, root, { caller });
+    if (name === "codex-bridge-desktop" && entry.env?.CODEX_BRIDGE_DESKTOP_TASKS === "1") {
+      throw new Error("Shared Desktop chat cannot use native Code routing. Its saved choice was preserved; explicitly set CODEX_BRIDGE_DESKTOP_TASKS=0 for the local app-server route and CODEX_BRIDGE_AUTOSTART=1 if the bridge should start that server.");
+    }
+  }, components);
   configurationCheck("Antigravity / codex-bridge sidecar", () => {
     assertEntry(readJson(path.join(paths.gemini, "sidecars", "codex-bridge", "sidecar.json")), "antigravity-sidecar.mjs", root);
     if (readJson(path.join(paths.gemini, "config.json"))?.sidecars?.["codex-bridge"]?.enabled !== true) throw new Error("Antigravity sidecar is not enabled");

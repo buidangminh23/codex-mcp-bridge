@@ -9,8 +9,12 @@ import { automaticSetupEnabled, checkSetup, runSetup, setupArguments, setupEnvir
 const root = path.resolve(import.meta.dirname, "..");
 
 function fixture(t) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-setup-"));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-setup-"));
+  const home = path.join(directory, "home");
+  const binary = path.join(directory, "codex.exe");
+  fs.mkdirSync(home);
+  fs.writeFileSync(binary, "");
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const env = { HOME: home, USERPROFILE: home, APPDATA: path.join(home, "roaming"), CODEX_HOME: path.join(home, "codex"), npm_config_global: "true" };
   const paths = setupPaths(env, "win32");
   const calls = [];
@@ -44,7 +48,7 @@ function fixture(t) {
     } else throw new Error(`Unexpected setup script ${name}`);
     return "{}";
   };
-  return { home, env, paths, calls, inventory, write, run, resolve: () => process.execPath };
+  return { home, env, paths, calls, inventory, write, run, resolve: () => binary };
 }
 
 test("only explicit global npm installs configure applications automatically", () => {
@@ -54,6 +58,41 @@ test("only explicit global npm installs configure applications automatically", (
     const result = runSetup({ args: ["--postinstall"], env, run: () => assert.fail("must not run") });
     assert.equal(result.skipped, true);
   }
+});
+
+test("setup targets the Microsoft Store Claude data root and respects explicit paths", (t) => {
+  const setup = fixture(t);
+  const local = path.join(setup.home, "local");
+  const desktopRoot = path.join(local, "Packages", "Claude_test", "LocalCache", "Roaming", "Claude");
+  fs.mkdirSync(path.dirname(path.dirname(path.dirname(desktopRoot))), { recursive: true });
+  const env = { ...setup.env, LOCALAPPDATA: local };
+  const desktop = path.join(desktopRoot, "claude_desktop_config.json");
+  assert.equal(setupPaths(env, "win32").desktop, desktop);
+  fs.mkdirSync(desktopRoot, { recursive: true });
+  assert.equal(setupPaths(env, "win32").desktop, desktop);
+  const customRoot = path.join(setup.home, "custom-desktop");
+  assert.equal(setupPaths({ ...env, CLAUDE_DESKTOP_USER_DATA: customRoot }, "win32").desktop,
+    path.join(customRoot, "claude_desktop_config.json"));
+  const customFile = path.join(setup.home, "custom.json");
+  assert.equal(setupPaths({ ...env, CLAUDE_DESKTOP_USER_DATA: customRoot, CLAUDE_DESKTOP_CONFIG: customFile }, "win32").desktop, customFile);
+  assert.ok(runSetup({ ...setup, env, args: ["--dry-run"], platform: "win32", root }).files.includes(desktop));
+  assert.equal(setup.calls.length, 0);
+});
+
+test("setup refuses ambiguous Claude roots and follows the uniquely identified account root", (t) => {
+  const setup = fixture(t);
+  const local = path.join(setup.home, "local");
+  const desktopRoot = path.join(local, "Packages", "Claude_test", "LocalCache", "Roaming", "Claude");
+  fs.mkdirSync(desktopRoot, { recursive: true });
+  fs.mkdirSync(path.dirname(setup.paths.desktop), { recursive: true });
+  const env = { ...setup.env, LOCALAPPDATA: local };
+  assert.throws(() => runSetup({ ...setup, env, args: ["--no-download"], platform: "win32", root }), /Multiple Claude Desktop data roots/);
+  assert.equal(setup.calls.length, 0);
+  const account = { lastKnownAccountUuid: "12345678-1234-4234-8234-123456789abc", windowSizeWasSignedIn: true };
+  setup.write(path.join(desktopRoot, "config.json"), account);
+  assert.equal(setupPaths(env, "win32").desktop, path.join(desktopRoot, "claude_desktop_config.json"));
+  setup.write(path.join(path.dirname(setup.paths.desktop), "config.json"), account);
+  assert.throws(() => setupPaths(env, "win32"), /Multiple Claude Desktop data roots/);
 });
 
 test("invalid flags and dry-run never start installers or write configuration", (t) => {

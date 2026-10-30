@@ -64,6 +64,24 @@ function candidateRoots({ platform, env, root }) {
   return unique;
 }
 
+export function resolveClaudeDesktopConfigRoot({ platform = process.platform, env = process.env } = {}) {
+  const roots = candidateRoots({ platform, env });
+  if (roots.length === 1) return roots[0];
+  const account = readClaudeAccountContext({ platform, env });
+  if (account.status === "verified" || account.status === "signed_out") return account.root;
+  const existing = roots.filter((root) => {
+    try { directoryStat(root); return true; }
+    catch (error) { if (isMissing(error)) return false; throw error; }
+  });
+  if (existing.length === 1) return existing[0];
+  if (!existing.length && roots.length === 2) {
+    const home = env.HOME ?? env.USERPROFILE ?? os.homedir();
+    const ordinary = path.resolve(env.APPDATA || path.join(home, "AppData", "Roaming"), "Claude");
+    return roots.find((root) => root.toLowerCase() !== ordinary.toLowerCase());
+  }
+  throw new Error("Multiple Claude Desktop data roots exist. Set CLAUDE_DESKTOP_USER_DATA to the application's active data directory, then rerun setup.");
+}
+
 function readConfig(root) {
   let rootStat;
   try { rootStat = directoryStat(root); }

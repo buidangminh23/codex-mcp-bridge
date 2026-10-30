@@ -53,11 +53,23 @@ export function validateCodexExecutable(executable, { platform = process.platfor
   return resolved;
 }
 
-function ownEntry(entry, expected, label) {
+function ownEntry(entry, expected, label, retarget = false) {
   if (entry === undefined || entry === null) return;
   object(entry, label);
-  if (!Array.isArray(entry.args) || entry.args.length !== 1 || typeof entry.args[0] !== "string" || path.resolve(entry.args[0]) !== path.resolve(expected)) {
+  const script = entry.args?.[0];
+  if (!Array.isArray(entry.args) || entry.args.length !== 1 || typeof script !== "string") {
     throw new Error(`${label} is already configured with a different entrypoint; it was not changed`);
+  }
+  if (path.resolve(script) === path.resolve(expected)) return;
+  const source = path.dirname(script);
+  if (!retarget || !path.isAbsolute(script) || script.includes("\0") || path.basename(script) !== path.basename(expected)
+    || path.basename(source) !== "src" || path.basename(path.dirname(source)).toLowerCase() !== "codex-mcp-bridge") {
+    throw new Error(`${label} is already configured with a different entrypoint; it was not changed`);
+  }
+  const command = entry.command;
+  if (typeof command !== "string" || command.includes("\0") || !/^(?:node|node\.exe)$/i.test(path.basename(command))
+    || !path.isAbsolute(command) && command !== path.basename(command)) {
+    throw new Error(`${label} is already configured with a different launcher; it was not changed`);
   }
 }
 
@@ -75,10 +87,11 @@ export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = 
   const outboundEntry = path.join(root, "src", "antigravity-outbound-bridge.mjs");
   const edits = [];
   const notices = [];
+  const retarget = setup && !remove;
   let codex = null;
   if (targets.includes("codex")) {
     if (codexExisting && codexExisting.transport?.type !== "stdio") throw new Error("The existing Antigravity MCP transport is not stdio");
-    ownEntry(codexExisting?.transport, entry, "Codex Antigravity bridge");
+    ownEntry(codexExisting?.transport, entry, "Codex Antigravity bridge", retarget);
     const existingCaller = codexExisting?.transport?.env?.ANTIGRAVITY_BRIDGE_CALLER;
     if (existingCaller !== undefined && existingCaller !== "codex") throw new Error("The existing Codex bridge has a conflicting caller identity");
     codex = remove ? { remove: Boolean(codexExisting) } : stdioMcpRegistration({ name: NAME, existing: codexExisting, node, entry, envOverrides: { ANTIGRAVITY_BRIDGE_CALLER: "codex" } });
@@ -88,7 +101,7 @@ export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = 
     const value = structuredClone(original.value);
     if (value.mcpServers !== undefined) object(value.mcpServers, "Claude mcpServers");
     const existing = value.mcpServers?.[NAME];
-    ownEntry(existing, entry, "Claude Antigravity bridge");
+    ownEntry(existing, entry, "Claude Antigravity bridge", retarget);
     if (existing?.type !== undefined && existing.type !== "stdio") throw new Error("The existing Claude bridge transport is not stdio");
     if (existing?.env !== undefined) object(existing.env, "Claude bridge environment");
     if (existing?.env?.ANTIGRAVITY_BRIDGE_CALLER !== undefined && existing.env.ANTIGRAVITY_BRIDGE_CALLER !== "claude") throw new Error("The existing Claude bridge has a conflicting caller identity");
@@ -106,7 +119,7 @@ export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = 
     const mcp = structuredClone(originalMcp.value);
     if (mcp.mcpServers !== undefined) object(mcp.mcpServers, "Antigravity mcpServers");
     const outbound = mcp.mcpServers?.[OUTBOUND];
-    ownEntry(outbound, outboundEntry, "Antigravity outbound bridge");
+    ownEntry(outbound, outboundEntry, "Antigravity outbound bridge", retarget);
     if (outbound?.type !== undefined && outbound.type !== "stdio" || outbound?.url !== undefined || outbound?.serverUrl !== undefined || outbound?.httpUrl !== undefined) throw new Error("The existing Antigravity outbound bridge transport is not stdio");
     if (outbound?.env !== undefined) object(outbound.env, "Antigravity outbound bridge environment");
     if (Object.keys(outbound?.env ?? {}).some((name) => /^(?:CLAUDE|CODEX_|ANTIGRAVITY_BRIDGE_CALLER$)/i.test(name))) throw new Error("The existing Antigravity outbound bridge contains a foreign caller environment; review it before installation");
@@ -121,7 +134,7 @@ export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = 
     const mcpEdit = changed(originalMcp, mcp);
     if (mcpEdit) edits.push(mcpEdit);
     const originalSidecar = snapshot(path.join(configRoot, "sidecars", SIDECAR, "sidecar.json"));
-    if (originalSidecar.text !== null) ownEntry(originalSidecar.value, sidecarEntry, "Antigravity sidecar");
+    if (originalSidecar.text !== null) ownEntry(originalSidecar.value, sidecarEntry, "Antigravity sidecar", retarget);
     const originalConfig = snapshot(path.join(configRoot, "config.json"));
     const config = structuredClone(originalConfig.value);
     if (config.sidecars !== undefined) object(config.sidecars, "Antigravity sidecars");

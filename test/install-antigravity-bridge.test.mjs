@@ -160,6 +160,52 @@ test("retargets recognized Codex entries without resetting custom settings", () 
   assert.throws(() => planAntigravityInstallation({ ...options, targets: ["codex"], codexExisting: { transport: { type: "http", url: "http://localhost" } } }), /not stdio/);
 });
 
+test("automatic setup migrates recognized package entries and preserves existing access settings", () => {
+  const options = fixture();
+  const source = path.join(options.home, "tools", "codex-mcp-bridge", "src");
+  const oldEntry = path.join(source, "antigravity-bridge.mjs");
+  const codexExisting = { enabled: false, disabled_tools: ["send_to_antigravity"], tool_timeout_sec: 90, transport: { type: "stdio", command: node, args: [oldEntry], env: { ANTIGRAVITY_BRIDGE_CALLER: "codex", CUSTOM: "yes" }, cwd: options.home } };
+  const originalCodex = structuredClone(codexExisting);
+  const claudePath = write(options.home, ".claude.json", { mcpServers: { "antigravity-bridge": { command: node, args: [oldEntry], disabled: true, custom: 4, env: { ANTIGRAVITY_BRIDGE_CALLER: "claude", CUSTOM: "yes" } } } });
+  const outboundPath = write(options.home, ".gemini/config/mcp_config.json", { mcpServers: { "agent-bridge": { command: node, args: [path.join(source, "antigravity-outbound-bridge.mjs")], disabled: true, timeoutSeconds: 70, env: { CUSTOM: "yes" } } } });
+  const definitionPath = write(options.home, ".gemini/config/sidecars/codex-bridge/sidecar.json", { command: node, args: [path.join(source, "antigravity-sidecar.mjs")], display_name: "Saved name", restart_policy: "never", env: { CUSTOM: "yes" } });
+  const settingsPath = write(options.home, ".gemini/config/config.json", { sidecars: { "codex-bridge": { enabled: false } }, userSettings: { permissions: "ask" } });
+  const plan = planAntigravityInstallation({ ...options, setup: true, codexExisting });
+  assert.equal(plan.codex.mode, "retarget");
+  assert.deepEqual(plan.codex.commandArgs, [entry]);
+  assert.deepEqual(plan.codex.environment, codexExisting.transport.env);
+  assert.deepEqual(codexExisting, originalCodex);
+  applyJsonEdits(plan.edits);
+  assert.deepEqual(read(claudePath).mcpServers["antigravity-bridge"], { type: "stdio", command: node, args: [entry], disabled: true, custom: 4, env: { ANTIGRAVITY_BRIDGE_CALLER: "claude", CUSTOM: "yes" } });
+  assert.deepEqual(read(outboundPath).mcpServers["agent-bridge"], { command: node, args: [outboundEntry], disabled: true, timeoutSeconds: 70, env: { CUSTOM: "yes" } });
+  assert.deepEqual(read(definitionPath), { command: node, args: [sidecarEntry], display_name: "Saved name", restart_policy: "never", env: { CUSTOM: "yes" } });
+  assert.deepEqual(read(settingsPath), { sidecars: { "codex-bridge": { enabled: false } }, userSettings: { permissions: "ask" } });
+  assert.equal(planAntigravityInstallation({ ...options, setup: true, codexExisting }).edits.length, 0);
+  for (const mode of [{}, { setup: true, remove: true }]) {
+    assert.throws(() => planAntigravityInstallation({ ...options, ...mode, targets: ["codex"], codexExisting }), /different entrypoint/);
+  }
+});
+
+test("automatic setup refuses unknown package paths, scripts, launchers and extra arguments before writing", () => {
+  const source = path.join(sandbox, "previous", "codex-mcp-bridge", "src");
+  const cases = [
+    { command: "python", args: [path.join(source, "antigravity-bridge.mjs")] },
+    { command: path.join(sandbox, "custom-launcher"), args: [path.join(source, "antigravity-bridge.mjs")] },
+    { command: node, args: [path.join(source, "antigravity-bridge.mjs"), "--custom"] },
+    { command: node, args: [path.join(source, "antigravity-sidecar.mjs")] },
+    { command: node, args: [path.join(sandbox, "other-package", "src", "antigravity-bridge.mjs")] },
+    { command: node, args: [path.join("codex-mcp-bridge", "src", "antigravity-bridge.mjs")] },
+  ];
+  for (const existing of cases) {
+    const options = fixture();
+    const config = write(options.home, ".claude.json", { mcpServers: { "antigravity-bridge": existing } });
+    const before = fs.readFileSync(config, "utf8");
+    assert.throws(() => planAntigravityInstallation({ ...options, targets: ["claude", "desktop"], setup: true }), /different entrypoint|different launcher/);
+    assert.equal(fs.readFileSync(config, "utf8"), before);
+    assert.equal(fs.existsSync(path.join(options.home, ".gemini")), false);
+  }
+});
+
 test("rejects a concurrently changed configuration before applying the plan", () => {
   const options = fixture();
   const file = write(options.home, ".claude.json", { keep: true });

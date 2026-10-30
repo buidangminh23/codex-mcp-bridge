@@ -15,6 +15,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 ### Fixed
 
 - Initial Claude Code registration no longer requires hand-written JSON or an existing supervised entry. Setup preserves custom settings and scope, retargets recognized bridge paths, separates a shadowing shared connector, and reports conflicting entries instead of replacing them. Antigravity setup respects a custom Claude configuration directory and an explicitly disabled sidecar.
+- Setup detects Microsoft Store Claude data directories and explicit data-root overrides, refusing ambiguous installations. Antigravity registrations from recognized older package paths are also retargeted during setup.
 - Simultaneous Claude sender-ancestry checks now share one pending Windows inspector. Completed results and failures are discarded; subsequent operations still verify current OS identity, task and account.
 - A delivered Codex request with no matching reply marker no longer waits indefinitely when a new native turn remains finished and idle. After a bounded grace period and a fresh state check, the receipt reports `observation_unavailable` and directs the caller to inspect the existing task without resending or attributing unrelated output.
 - Tool instructions for already-open Claude sessions now require native session discovery and peer delivery. The misleading instruction to inspect a title in the app was removed, and external Computer Use typing/clicking is explicitly excluded as a delivery fallback.

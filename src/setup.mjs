@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { resolveCodexBin, resolvePackagedCodexBin } from "./platform.mjs";
 import { readRegularConfigFile } from "./project-policy.mjs";
 import { stableInstallPath } from "./install-paths.mjs";
+import { resolveClaudeDesktopConfigRoot } from "./desktop-account-context.mjs";
 
 const ROOT = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const CODEX_PACKAGE = "@openai/codex@0.166.0";
@@ -27,10 +28,7 @@ export function setupPaths(env = process.env, platform = process.platform) {
   const home = env.HOME || env.USERPROFILE || os.homedir();
   const codeDirectory = env.CLAUDE_CONFIG_DIR || home;
   const configRoot = env.XDG_CONFIG_HOME || path.join(home, ".config");
-  const desktop = env.CLAUDE_DESKTOP_CONFIG || (platform === "win32"
-    ? path.join(env.APPDATA || path.join(home, "AppData", "Roaming"), "Claude", "claude_desktop_config.json")
-    : platform === "darwin" ? path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
-      : path.join(configRoot, "Claude", "claude_desktop_config.json"));
+  const desktop = env.CLAUDE_DESKTOP_CONFIG || path.join(resolveClaudeDesktopConfigRoot({ env, platform }), "claude_desktop_config.json");
   return { home, code: path.join(codeDirectory, ".claude.json"), desktop,
     codex: env.CODEX_HOME || path.join(home, ".codex"),
     gemini: path.join(home, ".gemini", "config"), tools: path.join(configRoot, "GptClaudeBridge", "tools") };

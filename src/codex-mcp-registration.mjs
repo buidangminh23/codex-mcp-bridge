@@ -37,6 +37,7 @@ export function codexMcpRegistration({ name, existing, node, entry, entryArgs = 
   for (const key of ["CLAUDE_BRIDGE_PEER_NAME", "CLAUDE_BRIDGE_PERMISSION_MODE", "CODEX_BRIDGE_DESKTOP_TASKS", "CLAUDE_DESKTOP_USER_DATA", "CODEX_BRIDGE_PROJECT_POLICY"]) {
     if (env[key] !== undefined) values[key] = env[key];
   }
+  if (!existing && env.CODEX_BIN !== undefined) values.CODEX_BIN = env.CODEX_BIN;
   values.CODEX_BRIDGE_DESKTOP_TASKS ??= desktopOnly ? "1" : "0";
   if (!["0", "1"].includes(values.CODEX_BRIDGE_DESKTOP_TASKS)) throw new Error("CODEX_BRIDGE_DESKTOP_TASKS must be 0 or 1");
   if (values.CLAUDE_BRIDGE_PERMISSION_MODE !== undefined && !["bypass", "prompting"].includes(values.CLAUDE_BRIDGE_PERMISSION_MODE)) {

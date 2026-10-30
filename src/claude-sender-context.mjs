@@ -8,6 +8,7 @@ const execute = promisify(execFile);
 const MAX_ANCESTORS = 8;
 const INSPECTION_OUTPUT_LIMIT = 16384;
 const activeInspectors = new Set();
+const pendingAncestryReads = new WeakMap();
 let inspectorsStopping = false;
 
 export async function stopProcessInspectors() {
@@ -223,10 +224,29 @@ export function runProcessInspector(command, args, { timeout, startupTimeout, re
 export async function readProcessAncestry({ parentPid = process.ppid, platform = process.platform, maxDepth = MAX_ANCESTORS, run } = {}) {
   if (!Number.isSafeInteger(parentPid) || parentPid <= 0 || parentPid > 0xffffffff) return [];
   const limit = Number.isInteger(maxDepth) && maxDepth > 0 ? Math.min(maxDepth, MAX_ANCESTORS) : MAX_ANCESTORS;
+  const inspector = run ?? (platform === "win32" ? runProcessInspector : execute);
+  let pending = pendingAncestryReads.get(inspector);
+  if (!pending) {
+    pending = new Map();
+    pendingAncestryReads.set(inspector, pending);
+  }
+  const key = JSON.stringify([platform, parentPid, limit, platform === "win32" ? process.env.SystemRoot ?? "C:\\Windows" : null]);
+  let inspection = pending.get(key);
+  if (!inspection) {
+    inspection = inspectProcessAncestry({ parentPid, platform, limit, run: inspector }).finally(() => {
+      if (pending.get(key) === inspection) pending.delete(key);
+      if (pending.size === 0) pendingAncestryReads.delete(inspector);
+    });
+    pending.set(key, inspection);
+  }
+  return (await inspection).map((row) => ({ ...row }));
+}
+
+async function inspectProcessAncestry({ parentPid, platform, limit, run }) {
   if (platform === "win32") {
     const shell = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     const script = `$ErrorActionPreference='Stop'; $PSModuleAutoLoadingPreference='None'; Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop; Add-Type -TypeDefinition @'\n${WINDOWS_ANCESTRY_SOURCE}\n'@\n[Console]::Error.WriteLine('${INSPECTOR_READY_MARKER}')\n[Console]::Out.Write([ClaudeProcessAncestry]::ReadJson(${parentPid},${limit}))`;
-    const { stdout } = await (run ?? runProcessInspector)(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+    const { stdout } = await run(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
       timeout: INSPECTION_TIMEOUT_MS, startupTimeout: INSPECTOR_START_TIMEOUT_MS, readyMarker: INSPECTOR_READY_MARKER, maxBuffer: INSPECTION_OUTPUT_LIMIT, windowsHide: true,
     });
     return parseWindowsAncestry(stdout, parentPid, limit);
@@ -239,7 +259,7 @@ export async function readProcessAncestry({ parentPid = process.ppid, platform =
     seen.add(next);
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error("process inspection deadline elapsed");
-    const { stdout } = await (run ?? execute)("/bin/ps", ["-p", String(next), "-o", "pid=,ppid=,lstart="], {
+    const { stdout } = await run("/bin/ps", ["-p", String(next), "-o", "pid=,ppid=,lstart="], {
       timeout: remaining, maxBuffer: INSPECTION_OUTPUT_LIMIT, windowsHide: true, env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
     });
     const match = stdout.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);

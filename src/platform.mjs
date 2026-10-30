@@ -1,5 +1,6 @@
 import { execFile, execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -168,16 +169,67 @@ function pathCandidates() {
  * ~/.local/bin, ~/.npm-global/bin or Homebrew. Probe every known install
  * location for the running platform before giving up on PATH resolution.
  */
-export function resolveCodexBin(explicit) {
+export function resolvePackagedCodexBin({
+  platform = process.platform,
+  arch = process.arch,
+  resolvePackage = (specifier, from) => createRequire(from).resolve(specifier),
+  exists = isRunnable,
+} = {}) {
+  const packagePlatform = platform === "android" ? "linux" : platform;
+  const target = {
+    "linux-x64": "x86_64-unknown-linux-musl",
+    "linux-arm64": "aarch64-unknown-linux-musl",
+    "darwin-x64": "x86_64-apple-darwin",
+    "darwin-arm64": "aarch64-apple-darwin",
+    "win32-x64": "x86_64-pc-windows-msvc",
+    "win32-arm64": "aarch64-pc-windows-msvc",
+  }[`${packagePlatform}-${arch}`];
+  if (!target) return null;
+
+  let codexManifest;
+  try { codexManifest = resolvePackage("@openai/codex/package.json", import.meta.url); } catch {}
+  if (typeof codexManifest !== "string" || !path.isAbsolute(codexManifest)) codexManifest = null;
+  const packageName = `@openai/codex-${packagePlatform}-${arch}/package.json`;
+  const roots = [];
+  for (const anchor of [codexManifest, import.meta.url].filter(Boolean)) {
+    try {
+      const manifest = resolvePackage(packageName, anchor);
+      if (typeof manifest === "string" && path.isAbsolute(manifest)) roots.push(path.dirname(manifest));
+    } catch {}
+  }
+  if (codexManifest) roots.push(path.dirname(codexManifest));
+  for (const root of new Set(roots)) {
+    const candidate = path.join(root, "vendor", target, "bin", platform === "win32" ? "codex.exe" : "codex");
+    if (exists(candidate)) return candidate;
+  }
+  return null;
+}
+
+export function resolveCodexBin(explicit, {
+  env = process.env,
+  platform = process.platform,
+  arch = process.arch,
+  candidates: discovered,
+  runnable = isRunnable,
+  packaged = resolvePackagedCodexBin,
+} = {}) {
   const candidates = [
     explicit,
-    process.env.CODEX_BIN,
-    ...(IS_WINDOWS ? windowsCodexCandidates() : IS_MACOS ? macosCodexCandidates() : unixCodexCandidates()),
-    ...pathCandidates(),
+    env.CODEX_BIN,
+    ...(discovered ?? [
+      ...(IS_WINDOWS ? windowsCodexCandidates() : IS_MACOS ? macosCodexCandidates() : unixCodexCandidates()),
+      ...pathCandidates(),
+    ]),
   ].filter(Boolean);
 
+  const deferredShim = (candidate) => platform === "win32" && /\.(?:cmd|bat)$/i.test(candidate);
   for (const candidate of candidates) {
-    if (isRunnable(candidate)) return candidate;
+    if (!deferredShim(candidate) && runnable(candidate)) return candidate;
+  }
+  const bundled = packaged({ platform, arch });
+  if (bundled) return bundled;
+  for (const candidate of candidates) {
+    if (deferredShim(candidate) && runnable(candidate)) return candidate;
   }
   return "codex";
 }

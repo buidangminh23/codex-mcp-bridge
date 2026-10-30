@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { checkCodeRegistration, planCodeRegistration } from "../src/claude-code-registration.mjs";
+import { checkCodeRegistration, planCodeRegistration, planInitialCodeRegistration } from "../src/claude-code-registration.mjs";
 
 const entry = () => ({ command: process.execPath, args: [path.resolve("src/mcp-supervisor.mjs"), "index.mjs"], env: { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_ALLOWED_ROOTS: path.resolve("test"), CUSTOM: "preserve" } });
 test("one user-level Code entry replaces ambiguous shared and duplicate project entries without touching other tools", () => {
@@ -115,4 +115,195 @@ test("installer rejects oversized configuration before JSON parsing", (t) => {
     "--desktop-config", path.join(root, "desktop.json"), "--check"], { encoding: "utf8", windowsHide: true });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /size|limit|oversized/i);
+});
+
+const initialPlan = (options = {}) => planInitialCodeRegistration({ code: {}, desktop: {}, root: path.resolve("."), node: process.execPath,
+  environment: { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_ALLOWED_ROOTS: path.resolve("test") }, ...options });
+
+test("first-install plan creates the supervised Code bridge without copying permissions or unrelated environment", () => {
+  const code = { preferences: { keep: true }, mcpServers: { other: { command: "keep" } } };
+  const before = structuredClone(code);
+  const plan = initialPlan({ code, environment: { CODEX_BIN: path.resolve("codex.exe"), CODEX_BRIDGE_DESKTOP_TASKS: "1",
+    CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_ENFORCE_FULL_ACCESS: "1", CODEX_BRIDGE_APPROVAL_POLICY: "never",
+    CODEX_BRIDGE_SANDBOX: "danger-full-access", ANTHROPIC_API_KEY: "private", PATH: "private" } });
+  assert.deepEqual(code, before);
+  assert.deepEqual(plan.entry.args, [path.resolve("src/mcp-supervisor.mjs"), "index.mjs"]);
+  assert.equal(plan.entry.command, process.execPath);
+  assert.equal(plan.entry.type, "stdio");
+  assert.deepEqual(plan.entry.env, { CODEX_BIN: path.resolve("codex.exe"), CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_AUTOSTART: "0" });
+  assert.deepEqual(plan.code.mcpServers.other, before.mcpServers.other);
+  assert.deepEqual(plan.code.preferences, before.preferences);
+  assert.deepEqual(plan.desktop, {});
+  assert.deepEqual(initialPlan({ code: plan.code, desktop: plan.desktop, environment: plan.entry.env }).changes, []);
+});
+
+test("first-install update preserves custom environment, permission fields, routing opt-out and the original scope authority", () => {
+  const prior = { ...entry(), disabled: true, permissions: { allow: [] }, env: { CUSTOM: "private", CODEX_BRIDGE_DESKTOP_TASKS: "0",
+    CODEX_BRIDGE_AUTOSTART: "1", CODEX_BRIDGE_ALLOWED_ROOTS: "narrow", CODEX_BRIDGE_SANDBOX: "read-only", CODEX_BRIDGE_APPROVAL: "deny" } };
+  const plan = initialPlan({ code: { mcpServers: { "codex-bridge": prior } }, environment: {
+    CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_THREAD_POLICY: "all",
+    CODEX_BRIDGE_PROJECT_POLICY: path.resolve("broader-policy.json"), CODEX_BIN: path.resolve("codex.exe") } });
+  assert.deepEqual(plan.entry.env, { CODEX_BRIDGE_DESKTOP_TASKS: "0", CODEX_BRIDGE_AUTOSTART: "1", CODEX_BIN: path.resolve("codex.exe"),
+    ...prior.env });
+  assert.equal(plan.entry.disabled, true);
+  assert.deepEqual(plan.entry.permissions, prior.permissions);
+  assert.equal(plan.entry.env.CODEX_BRIDGE_PROJECT_POLICY, undefined);
+  assert.equal(plan.entry.env.CODEX_BRIDGE_THREAD_POLICY, undefined);
+});
+
+test("first-install update retargets known package installations and refuses an unrelated or customized command", () => {
+  const old = { ...entry(), args: [path.resolve("old/codex-mcp-bridge/src/index.mjs")] };
+  assert.deepEqual(initialPlan({ code: { mcpServers: { "codex-bridge": old } } }).entry.args, [path.resolve("src/mcp-supervisor.mjs"), "index.mjs"]);
+  for (const conflicting of [
+    { command: "custom", args: [] },
+    { ...entry(), args: [path.resolve("unrelated/src/index.mjs")] },
+    { ...entry(), args: [path.resolve("src/index.mjs"), "--custom"] },
+    { type: "http", url: "https://example.invalid/mcp" },
+  ]) assert.throws(() => initialPlan({ code: { mcpServers: { "codex-bridge": conflicting } } }), /conflicting|unrecognized|customized/);
+});
+
+test("moving shared native registration into Code preserves restrictions and implicit owned scope", () => {
+  const shared = { ...entry(), disabled: true, permissions: { allow: [] }, env: {
+    CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_ALLOWED_ROOTS: path.resolve("restricted"),
+    CODEX_BRIDGE_HARDENED: "1", CODEX_BRIDGE_SANDBOX: "read-only", CUSTOM: "preserved",
+  } };
+  for (const name of ["codex-bridge", "codex-bridge-desktop"]) {
+    const desktop = { mcpServers: { [name]: shared } };
+    const plan = initialPlan({ desktop });
+    assert.equal(plan.entry.disabled, true);
+    assert.deepEqual(plan.entry.permissions, shared.permissions);
+    for (const [key, value] of Object.entries(shared.env)) assert.equal(plan.entry.env[key], value);
+    assert.equal(plan.entry.env.CODEX_BRIDGE_THREAD_POLICY, undefined);
+    assert.deepEqual(plan.desktop.mcpServers["codex-bridge-desktop"], shared);
+    assert.equal(plan.changes[0].kind, "create-user-code-entry");
+  }
+  const prior = { ...entry(), env: { CODEX_BRIDGE_DESKTOP_TASKS: "1" } };
+  const plan = initialPlan({ code: { mcpServers: { "codex-bridge": prior } } });
+  assert.equal(plan.entry.env.CODEX_BRIDGE_THREAD_POLICY, undefined);
+  assert.equal(plan.entry.env.CODEX_BRIDGE_ALLOWED_ROOTS, undefined);
+});
+
+test("setup repairs a missing saved Codex executable while preserving a valid custom binary", (t) => {
+  const fixture = initialSandbox(t);
+  const missing = path.join(fixture.root, "removed-codex.exe");
+  const environment = { CODEX_BIN: process.execPath };
+  const previous = { ...entry(), env: { CODEX_BIN: missing, CODEX_BRIDGE_DESKTOP_TASKS: "0" } };
+  assert.equal(initialPlan({ code: { mcpServers: { "codex-bridge": previous } }, environment }).entry.env.CODEX_BIN, process.execPath);
+  const existing = path.join(fixture.root, "custom-codex.exe");
+  fs.writeFileSync(existing, "");
+  previous.env.CODEX_BIN = existing;
+  assert.equal(initialPlan({ code: { mcpServers: { "codex-bridge": previous } }, environment }).entry.env.CODEX_BIN, existing);
+});
+
+test("first-install plan renames the shadowing shared bridge intact and preserves project overrides with notices", () => {
+  const shared = { ...direct(), env: { ...direct().env, CUSTOM: "shared-secret", CODEX_BRIDGE_DESKTOP_TASKS: "0" } };
+  const code = { projects: { project: { trust: "keep", mcpServers: { "codex-bridge": entry() } } } };
+  const desktop = { mcpServers: { "codex-bridge": shared, other: { command: "keep" } }, preferences: { keep: true } };
+  const before = structuredClone({ code, desktop });
+  const plan = initialPlan({ code, desktop });
+  assert.deepEqual({ code, desktop }, before);
+  assert.equal(plan.desktop.mcpServers["codex-bridge"], undefined);
+  assert.deepEqual(plan.desktop.mcpServers["codex-bridge-desktop"], shared);
+  assert.deepEqual(plan.desktop.mcpServers.other, desktop.mcpServers.other);
+  assert.deepEqual(plan.code.projects, code.projects);
+  assert.equal(plan.notices.length, 1);
+  assert.match(plan.notices[0], /Project project.*override/);
+  assert.throws(() => initialPlan({ desktop: { mcpServers: { "codex-bridge": shared, "codex-bridge-desktop": entry() } } }), /already exists/);
+});
+
+test("first-install plan rejects malformed configuration instead of replacing it", () => {
+  for (const code of [null, [], { mcpServers: [] }, { projects: [] }]) assert.throws(() => initialPlan({ code }), /JSON object/);
+  assert.throws(() => initialPlan({ desktop: { mcpServers: [] } }), /JSON object/);
+  assert.throws(() => initialPlan({ code: { mcpServers: { "codex-bridge": { ...entry(), env: [] } } } }), /JSON object/);
+  assert.throws(() => initialPlan({ environment: { CODEX_BRIDGE_DESKTOP_TASKS: true } }), /must be strings/);
+});
+
+function initialSandbox(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-code-first-install-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codeFile = path.join(root, "code", ".claude.json");
+  const desktopFile = path.join(root, "desktop", "claude_desktop_config.json");
+  const env = { ...process.env, HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: path.dirname(codeFile),
+    CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_ALLOWED_ROOTS: root };
+  const base = [path.resolve("scripts/install-claude-code.mjs"), "--install", "--desktop-config", desktopFile];
+  return { root, codeFile, desktopFile, env, run: (...args) => spawnSync(process.execPath, [...base, ...args], { env, encoding: "utf8", windowsHide: true }) };
+}
+
+test("--install creates missing Code config, honors CLAUDE_CONFIG_DIR and leaves a missing shared config absent", (t) => {
+  const fixture = initialSandbox(t);
+  const preview = fixture.run("--dry-run");
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.equal(JSON.parse(preview.stdout).configured, false);
+  assert.equal(fs.existsSync(fixture.codeFile), false);
+  assert.equal(fs.existsSync(fixture.desktopFile), false);
+  const installed = fixture.run();
+  assert.equal(installed.status, 0, installed.stderr);
+  const result = JSON.parse(installed.stdout);
+  assert.equal(result.configured, true);
+  assert.equal(result.liveVerified, false);
+  assert.equal(result.writtenFiles, 1);
+  assert.equal(result.restartRequired, true);
+  const config = JSON.parse(fs.readFileSync(fixture.codeFile, "utf8"));
+  assert.equal(config.mcpServers["codex-bridge"].env.CODEX_BRIDGE_ALLOWED_ROOTS, fixture.root);
+  assert.equal(fs.existsSync(fixture.desktopFile), false);
+  assert.equal(fs.existsSync(path.join(fixture.root, ".claude.json")), false);
+  const before = fs.statSync(fixture.codeFile, { bigint: true });
+  const repeated = fixture.run();
+  assert.equal(repeated.status, 0, repeated.stderr);
+  const next = JSON.parse(repeated.stdout);
+  assert.equal(next.writtenFiles, 0);
+  assert.equal(next.restartRequired, false);
+  assert.deepEqual(next.changes, []);
+  assert.equal(fs.statSync(fixture.codeFile, { bigint: true }).mtimeNs, before.mtimeNs);
+  assert.deepEqual(fs.readdirSync(path.dirname(fixture.codeFile)), [".claude.json"]);
+});
+
+test("--install backs up exact input before fixing shared-name shadowing and does not print environment values", (t) => {
+  const fixture = initialSandbox(t);
+  fs.mkdirSync(path.dirname(fixture.codeFile), { recursive: true });
+  fs.mkdirSync(path.dirname(fixture.desktopFile), { recursive: true });
+  const originalCode = JSON.stringify({ mcpServers: { "codex-bridge": { ...entry(), env: { ...entry().env, CUSTOM: "do-not-print-this" } } } });
+  const originalDesktop = JSON.stringify({ mcpServers: { "codex-bridge": direct() } });
+  fs.writeFileSync(fixture.codeFile, originalCode);
+  fs.writeFileSync(fixture.desktopFile, originalDesktop);
+  const installed = fixture.run();
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.equal(installed.stdout.includes("do-not-print-this"), false);
+  assert.equal(JSON.parse(installed.stdout).writtenFiles, 2);
+  assert.deepEqual(JSON.parse(fs.readFileSync(fixture.desktopFile, "utf8")).mcpServers["codex-bridge-desktop"], direct());
+  const backupFor = (file) => path.join(path.dirname(file), fs.readdirSync(path.dirname(file)).find((name) => name.includes(".backup-")));
+  assert.equal(fs.readFileSync(backupFor(fixture.codeFile), "utf8"), originalCode);
+  assert.equal(fs.readFileSync(backupFor(fixture.desktopFile), "utf8"), originalDesktop);
+});
+
+test("--install leaves both files untouched when a shared rename collision or malformed JSON is found", (t) => {
+  const fixture = initialSandbox(t);
+  fs.mkdirSync(path.dirname(fixture.codeFile), { recursive: true });
+  fs.mkdirSync(path.dirname(fixture.desktopFile), { recursive: true });
+  const code = JSON.stringify({ mcpServers: { "codex-bridge": entry() } });
+  const desktop = JSON.stringify({ mcpServers: { "codex-bridge": direct(), "codex-bridge-desktop": entry() } });
+  fs.writeFileSync(fixture.codeFile, code);
+  fs.writeFileSync(fixture.desktopFile, desktop);
+  assert.equal(fixture.run().status, 1);
+  assert.equal(fs.readFileSync(fixture.codeFile, "utf8"), code);
+  assert.equal(fs.readFileSync(fixture.desktopFile, "utf8"), desktop);
+  assert.equal(fs.readdirSync(path.dirname(fixture.codeFile)).length, 1);
+  fs.writeFileSync(fixture.desktopFile, "not json");
+  assert.equal(fixture.run().status, 1);
+  assert.equal(fs.readFileSync(fixture.codeFile, "utf8"), code);
+  assert.equal(fs.readFileSync(fixture.desktopFile, "utf8"), "not json");
+});
+
+test("--install refuses a hard-linked config before modifying any settings", (t) => {
+  const fixture = initialSandbox(t);
+  fs.mkdirSync(path.dirname(fixture.codeFile), { recursive: true });
+  const original = JSON.stringify({ preferences: { keep: true } });
+  const alias = path.join(fixture.root, "alias.json");
+  fs.writeFileSync(alias, original);
+  fs.linkSync(alias, fixture.codeFile);
+  const result = fixture.run();
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /linked|regular/);
+  assert.equal(fs.readFileSync(alias, "utf8"), original);
+  assert.equal(fs.existsSync(fixture.desktopFile), false);
 });

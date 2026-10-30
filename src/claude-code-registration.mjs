@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,6 +19,99 @@ function bridgeEntry(entry, sources) {
   return worker(entry) || sources.has(bridgeSource(entry));
 }
 const stable = (value) => JSON.stringify(value, Object.keys(value ?? {}).sort());
+
+const INITIAL_ENVIRONMENT_KEYS = [
+  "CODEX_BIN", "CODEX_HOME", "CLAUDE_DESKTOP_USER_DATA", "CODEX_BRIDGE_DESKTOP_TASKS",
+  "CODEX_BRIDGE_AUTOSTART", "CODEX_BRIDGE_THREAD_POLICY", "CODEX_BRIDGE_ALLOWED_ROOTS",
+  "CODEX_BRIDGE_PROJECT_POLICY",
+];
+
+function configurationObject(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be a JSON object`);
+  return value;
+}
+
+function initialBridgeEntry(entry, root, label) {
+  configurationObject(entry, label);
+  if (entry.type !== undefined && entry.type !== "stdio" || ["url", "serverUrl", "httpUrl"].some((key) => entry[key] !== undefined)) {
+    throw new Error(`${label} has a conflicting transport; no configuration was changed`);
+  }
+  const args = entry.args;
+  const script = args?.[0];
+  const leaf = typeof script === "string" ? path.basename(script) : null;
+  const supervised = args?.length === 2 && leaf === "mcp-supervisor.mjs" && args[1] === "index.mjs";
+  const direct = args?.length === 1 && ["index.mjs", "codex-bridge-launcher.mjs"].includes(leaf);
+  const source = typeof script === "string" && path.isAbsolute(script) ? path.dirname(path.resolve(script)) : null;
+  const ownSource = source && (source === PACKAGE_SOURCE || source === path.join(root, "src")
+    || path.basename(source) === "src" && path.basename(path.dirname(source)).toLowerCase() === "codex-mcp-bridge");
+  if (!Array.isArray(args) || !(supervised || direct) || !ownSource) {
+    throw new Error(`${label} is already configured with an unrecognized or customized entrypoint; no configuration was changed`);
+  }
+  if (entry.env !== undefined) {
+    configurationObject(entry.env, `${label} environment`);
+    if (Object.values(entry.env).some((value) => typeof value !== "string")) throw new Error(`${label} environment values must be strings`);
+  }
+}
+
+export function planInitialCodeRegistration({ code, desktop, root, node, environment = {}, name = "codex-bridge" }) {
+  configurationObject(code, "Claude Code configuration");
+  configurationObject(desktop, "Claude Desktop configuration");
+  configurationObject(environment, "Bridge environment");
+  if (typeof root !== "string" || !path.isAbsolute(root) || typeof node !== "string" || !path.isAbsolute(node)) {
+    throw new Error("Bridge package and Node paths must be absolute");
+  }
+  if (code.mcpServers !== undefined) configurationObject(code.mcpServers, "Claude Code mcpServers");
+  if (desktop.mcpServers !== undefined) configurationObject(desktop.mcpServers, "Claude Desktop mcpServers");
+  if (code.projects !== undefined) configurationObject(code.projects, "Claude Code projects");
+  const originalCode = code.mcpServers?.[name];
+  const sharedNative = desktop.mcpServers?.[name] ?? desktop.mcpServers?.[`${name}-desktop`];
+  const inheritedShared = originalCode === undefined && sharedNative?.env?.CODEX_BRIDGE_DESKTOP_TASKS === "1";
+  const source = inheritedShared ? sharedNative : originalCode;
+  if (source !== undefined) initialBridgeEntry(source, root, `Claude Code ${name}`);
+  const defaults = Object.fromEntries(INITIAL_ENVIRONMENT_KEYS.filter((key) => environment[key] !== undefined).map((key) => [key, environment[key]]));
+  if (Object.values(defaults).some((value) => typeof value !== "string")) throw new Error("Bridge environment defaults must be strings");
+  const scopeKeys = ["CODEX_BRIDGE_THREAD_POLICY", "CODEX_BRIDGE_ALLOWED_ROOTS", "CODEX_BRIDGE_PROJECT_POLICY", "CODEX_BRIDGE_ALLOWED_THREADS", "CODEX_BRIDGE_HARDENED"];
+  if (source !== undefined) {
+    for (const key of scopeKeys) delete defaults[key];
+  }
+  const values = { ...defaults, ...source?.env };
+  if (defaults.CODEX_BIN && source?.env?.CODEX_BIN && path.isAbsolute(source.env.CODEX_BIN)) {
+    try { fs.lstatSync(source.env.CODEX_BIN); }
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      values.CODEX_BIN = defaults.CODEX_BIN;
+    }
+  }
+  const replacement = { ...source, type: "stdio", command: node, args: [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"], env: values };
+  const updated = structuredClone(code);
+  const updatedDesktop = structuredClone(desktop);
+  updated.mcpServers ??= {};
+  updated.mcpServers[name] = replacement;
+  const changes = [];
+  const notices = [];
+  if (inheritedShared) notices.push("Preserved the existing shared native bridge settings in the new user-level Code entry");
+  if (JSON.stringify(originalCode) !== JSON.stringify(replacement)) changes.push({ kind: originalCode ? "update-user-code-entry" : "create-user-code-entry", name });
+  const shared = updatedDesktop.mcpServers?.[name];
+  if (shared !== undefined) {
+    initialBridgeEntry(shared, root, `Shared Desktop ${name}`);
+    const destination = `${name}-desktop`;
+    if (Object.hasOwn(updatedDesktop.mcpServers, destination)) {
+      throw new Error(`Shared Desktop ${destination} already exists; resolve the name collision before installation`);
+    }
+    updatedDesktop.mcpServers[destination] = shared;
+    delete updatedDesktop.mcpServers[name];
+    changes.push({ kind: "rename-shared-desktop-entry", from: name, to: destination });
+  }
+  const sources = bridgeSources(source);
+  for (const [project, config] of Object.entries(code.projects ?? {})) {
+    configurationObject(config, `Claude project ${project}`);
+    if (config.mcpServers !== undefined) configurationObject(config.mcpServers, `Claude project ${project} mcpServers`);
+    for (const [alias, item] of Object.entries(config.mcpServers ?? {})) {
+      if (alias === name || bridgeEntry(item, sources)) notices.push(`Project ${project} has an existing ${alias} entry that may override the user registration; its settings were preserved`);
+    }
+  }
+  return { code: updated, desktop: updatedDesktop, entry: replacement, changes, notices };
+}
 
 export function planCodeRegistration({ code, desktop, policyFile, name = "codex-bridge" }) {
   if (!path.isAbsolute(policyFile)) throw new Error("Shared project policy path must be absolute");

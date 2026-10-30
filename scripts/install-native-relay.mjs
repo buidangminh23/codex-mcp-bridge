@@ -25,13 +25,13 @@ import { removeRelayFile } from "../src/native-relay-files.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.24.1";
+const VERSION = "1.25.0";
 const root = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const entry = path.join(root, "src", "mcp-supervisor.mjs");
 const entryArgs = ["native-relay-companion.mjs"];
 const serverName = process.env.CODEX_NATIVE_RELAY_NAME ?? "codex-native-relay";
 const remove = process.argv.includes("--remove");
-if (!remove && (process.argv.includes("--full-access") || fullAccessEnabled())) enableCodexFullAccess();
+if (!remove && (process.argv.includes("--full-access") || !process.argv.includes("--setup") && fullAccessEnabled())) enableCodexFullAccess();
 const skipBootstrap = process.argv.includes("--no-bootstrap");
 
 const codexBin = resolveCodexBin(process.env.CODEX_EXE);
@@ -116,6 +116,7 @@ if (existing) {
   console.log(`\nskipped the relay thread bootstrap; set CODEX_RELAY_ID or rerun without --no-bootstrap.`);
 } else {
   const client = new CodexAppServerClient({
+    repairFullAccess: !process.argv.includes("--setup"),
     clientInfo: { name: "native-relay-install", title: "Native Relay Install", version: VERSION },
     log: (msg) => console.log(`  ${msg}`),
   });

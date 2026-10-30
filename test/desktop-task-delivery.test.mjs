@@ -191,6 +191,113 @@ describe("Desktop creation receipts and deadlines", () => {
     });
   }
 
+  for (const nativeStatus of ["completed", "failed", "interrupted"]) it(`stops waiting for an unmatched reply after a stable idle ${nativeStatus} turn`, async (t) => {
+    let time = 0;
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      resolveResponse: () => ({ status: "pending", turnId: null }),
+      dispatch({ operation, cwd }) {
+        const thread = { id: "task", hostId: "local", cwd, status: { type: "idle" } };
+        const turn = { id: "new-turn", status: nativeStatus };
+        if (operation === "wait_threads") return { polls: [{ thread, latestTurn: turn, latestAssistantMessage: { text: "Unverified reply" } }] };
+        if (operation === "read_thread") return { thread, turns: [turn] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 40000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+    } });
+    assert.equal(result.status, "observation_unavailable");
+    assert.equal(result.responseStatus, "unavailable");
+    assert.equal(result.observationStatus, "unavailable");
+    assert.equal(result.turnId, null);
+    assert.equal(result.text, "");
+    assert.deepEqual(result.assistantItems, []);
+    assert.equal(result.replySha256, null);
+    assert.match(result.observationReason, /could not be correlated.*do not resend/);
+    assert.equal(result.durationMs, 3000);
+    assert.equal(f.calls.filter(({ operation }) => operation === "wait_threads").length, 3);
+    assert.equal(f.calls.some(({ operation }) => ["send_message_to_thread", "create_thread"].includes(operation)), false);
+  });
+
+  for (const variant of ["active", "queued", "previous_turn", "missing_turn", "changing_turn", "correlated_pending", "final_recheck_active", "short_budget"]) {
+    it(`does not stop unmatched reply observation prematurely: ${variant}`, async (t) => {
+      let time = 0;
+      let polls = 0;
+      let reads = 0;
+      const timeoutMs = variant === "short_budget" ? 2000 : 6000;
+      const f = fixture(t, {
+        now: () => time,
+        sleep: async (ms) => { time += ms; },
+        resolveResponse: () => ({ status: "pending", turnId: variant === "correlated_pending" ? "new-turn" : null }),
+        dispatch({ operation, cwd }) {
+          if (operation === "wait_threads") polls++;
+          if (operation === "read_thread") reads++;
+          const status = ["active", "queued"].includes(variant) ? variant : variant === "final_recheck_active" && reads >= 7 ? "active" : "idle";
+          const thread = { id: "task", hostId: "local", cwd, status };
+          const turn = variant === "missing_turn" ? null : { id: variant === "previous_turn" ? "old-turn" : variant === "changing_turn" ? `new-turn-${polls}` : "new-turn", status: "completed" };
+          if (operation === "wait_threads") return { polls: [{ thread, latestTurn: turn }] };
+          if (operation === "read_thread") return { thread, turns: turn ? [turn] : [] };
+        },
+      });
+      const result = await f.delivery.wait("task", { timeoutMs, previousTurnId: "old-turn", responseObservation: {
+        threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+      } });
+      assert.equal(result.status, "timeout");
+      assert.equal(result.durationMs, timeoutMs);
+      assert.equal(result.text, "");
+      assert.deepEqual(result.assistantItems, []);
+      assert.equal(f.calls.some(({ operation }) => ["send_message_to_thread", "create_thread"].includes(operation)), false);
+    });
+  }
+
+  for (const variant of ["rollout_write", "active_task"]) it(`restarts the unmatched reply grace period after ${variant}`, async (t) => {
+    let time = 0;
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      resolveResponse: () => variant === "rollout_write" && time === 1500
+        ? { status: "unavailable", reason: "A rollout segment changed while reading", turnId: null }
+        : { status: "pending", turnId: null },
+      dispatch({ operation, cwd }) {
+        const thread = { id: "task", hostId: "local", cwd, status: variant === "active_task" && time === 1500 ? "active" : "idle" };
+        const turn = { id: "new-turn", status: "completed" };
+        if (operation === "wait_threads") return { polls: [{ thread, latestTurn: turn }] };
+        if (operation === "read_thread") return { thread, turns: [turn] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 40000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+    } });
+    assert.equal(result.status, "observation_unavailable");
+    assert.equal(result.durationMs, 6000);
+    assert.equal(result.turnId, null);
+    assert.equal(result.text, "");
+  });
+
+  for (const visibleAt of [1500, 3000]) it(`returns a correlated reply that appears during the terminal rollout grace period: ${visibleAt}`, async (t) => {
+    let time = 0;
+    const f = fixture(t, {
+      now: () => time,
+      sleep: async (ms) => { time += ms; },
+      resolveResponse: () => time < visibleAt ? { status: "pending", turnId: null }
+        : { status: "completed", turnId: "new-turn", text: "Verified reply", assistantItems: [{ id: "reply", text: "Verified reply" }], replySha256: "a".repeat(64) },
+      dispatch({ operation, cwd }) {
+        const thread = { id: "task", hostId: "local", cwd, status: "idle" };
+        const turn = { id: "new-turn", status: "completed" };
+        if (operation === "wait_threads") return { polls: [{ thread, latestTurn: turn }] };
+        if (operation === "read_thread") return { thread, turns: [turn] };
+      },
+    });
+    const result = await f.delivery.wait("task", { timeoutMs: 40000, previousTurnId: "old-turn", responseObservation: {
+      threadId: "task", previousTurnId: "old-turn", expectedCwd: f.cwd, executorThreadId: "executor-thread", prompt: "request", watermark: { status: "available" },
+    } });
+    assert.equal(result.status, "completed");
+    assert.equal(result.turnId, "new-turn");
+    assert.equal(result.text, "Verified reply");
+    assert.equal(result.durationMs, visibleAt);
+  });
+
   for (const variant of ["recovers", "deadline"]) it(`keeps observing a dispatch receipt through transient rollout writes: ${variant}`, async (t) => {
     let time = 0;
     let reads = 0;

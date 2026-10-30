@@ -1,70 +1,129 @@
-# New Windows setup and initial permissions
+# Windows setup and initial permissions
 
-This is a Windows local Desktop source-install guide, not evidence of testing
-on a second machine. Use a pinned source revision containing these scripts;
-published npm versions may not yet include this branch. The optional card
-extension is distributed separately. Keep the source in a stable directory.
+Install Node.js 22.13+ and sign in to the apps you intend to use. For native
+handoffs, save the local project in Codex Desktop and open the same directory
+in Claude Desktop's **Code tab**. Run one PowerShell command:
 
-Install/sign in to Codex Desktop and Claude Desktop; install Node 22+ and Git,
-and make the Codex CLI available. Record the source revision and optional MCPB
-version/hash. Do not copy login caches, old session identities, unfinished
-receipts or directory-identity grants from another machine.
+```powershell
+npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
+```
 
-## Three messaging entries
+The `--allow-scripts` value permits only this package's setup hook. npm versions
+that block install scripts by default need it; a plain install runs setup only
+when scripts are allowed. Add `--foreground-scripts` to see setup progress. If
+npm reports `1 package had install scripts blocked`, run the recommended command
+again or run `codex-bridge-setup.cmd` explicitly.
+
+The global installation configures the bridges and verifies their saved
+registrations. It reuses an available native Codex CLI, or installs a pinned
+official package in the current user's `.config\GptClaudeBridge\tools`
+directory. It also configures native pipe forwarding and bootstraps the relay
+executor. A failed component is reported as incomplete rather than ready. The
+package stays installed when an app configuration step fails, so the setup
+command remains available for repair. npm success alone does not verify setup.
+
+## Installed entries
 
 | Client | Entry | Purpose |
 | --- | --- | --- |
 | Codex | `claude-bridge` | Send to Claude and observe replies |
 | Codex | `codex-native-relay` | Deliver Claude requests through the Desktop host |
 | Claude Code, user scope | `codex-bridge` | Send to Codex and continue reply observation |
+| Claude Desktop shared connectors | `codex-bridge-desktop` | Connect ordinary chat to local Codex app-server sessions |
+| Codex and Claude Code | `antigravity-bridge` | Send to Antigravity App or bridge-owned CLI sessions |
+| Antigravity | `agent-bridge` and `codex-bridge` sidecar | Outbound agent messages and native App connectivity |
 
-Begin with one dedicated test directory and explicitly grant it:
+The shared `codex-bridge-desktop` connector does not establish a native Code
+sender identity. Use the actual Code session for native Codex Desktop work.
+Existing project restrictions, permission modes, and custom settings are
+preserved. Setup does not sign in, grant workspace trust, or close applications.
+
+After active work finishes, open or reconnect the affected apps so they load
+the entries. A conversation refresh may leave the previous MCP process loaded.
+Check `codex_bridge_status` inside the sending Claude Code task,
+`claude_bridge_status` and `native_relay_status` in Codex, and
+`agent_bridge_status` in Antigravity. Configuration verification is separate
+from a completed live exchange.
+
+## Checks and recovery
+
+```powershell
+codex-bridge-setup.cmd --check
+codex-bridge-setup.cmd --dry-run
+codex-bridge-setup.cmd
+```
+
+The first command inspects configuration; the second previews components and
+paths without writes or downloads; the third applies setup again. Add `--json`
+for structured output or `--no-download` to require an existing Codex CLI.
+Explicit setup and `--check` return a nonzero exit status if configuration is
+incomplete.
+`codex-mcp-bridge.cmd setup` is an equivalent setup entry point. If Claude Code
+has no bridge tools, inspect and reconnect `codex-bridge` using `/mcp` before
+attempting delivery.
+
+Local `npm install` and `npm ci` do not configure apps. To opt out during a
+global install, set `CODEX_BRIDGE_SKIP_SETUP=1` or use `--ignore-scripts`.
+The optional card extension, hosted ChatGPT pairing, and VS Code preview have
+separate installation steps.
+
+## If startup still fails
+
+Check the version reported by `codex_bridge_status` in the actual Claude Code
+session against the installed package:
+
+```powershell
+npm.cmd list -g @minhspark/codex-mcp-bridge --depth=0
+```
+
+Also inspect the session's MCP command and script path. A source checkout can
+keep an older version running even after npm updates the global package. If
+the tool is unavailable, the startup log and configured path identify which
+installation Claude tried to load. Rerun setup and reconnect the affected
+client after active work finishes before comparing another result.
+
+Setup prepares runtime snapshots in advance. However, a startup message such
+as `prepared ... (reused)` means only that the runtime directory already
+existed; missing or invalid integrity metadata can still require verification
+work. If a 30-second connection timeout persists after the intended global
+installation is loaded, collect the runtime version, startup log and exact
+timeout. Configuration repair and a reused directory do not prove that the
+reported startup delay has been resolved.
+
+Claude may label ordinary startup diagnostics as `Server stderr`, including
+`preparing`, `prepared`, and `ready` lines. Check the real connection status and
+error rather than treating that label alone as failure. Keep diagnostics off
+stdout: MCP uses stdout for protocol messages.
+
+## Optional source installation and project policy
+
+For a pinned source checkout in a stable directory, `node scripts/setup.mjs`
+runs the same setup. The individual installers remain available for deliberate
+manual configuration. For example, with an available Codex CLI and an explicitly
+selected test project:
 
 ```powershell
 node scripts/bridge-projects.mjs allow-project 'C:\Projects\BridgeTest'
-```
-
-Merge a user-level Claude Code entry, replacing placeholder paths with actual
-absolute paths and preserving unrelated settings:
-
-```json
-{
-  "mcpServers": {
-    "codex-bridge": {
-      "command": "C:/Tools/nodejs/node.exe",
-      "args": ["C:/Tools/GptClaudeBridge/src/mcp-supervisor.mjs", "index.mjs"],
-      "env": {
-        "CODEX_BIN": "C:/Tools/Codex/codex.exe",
-        "CODEX_BRIDGE_DESKTOP_TASKS": "1",
-        "CODEX_BRIDGE_AUTOSTART": "0",
-        "CODEX_BRIDGE_PROJECT_POLICY": "C:/Users/<user>/.config/GptClaudeBridge/projects.json",
-        "CODEX_BRIDGE_ALLOWED_ROOTS": "C:/Projects/BridgeTest",
-        "CODEX_BRIDGE_THREAD_POLICY": "roots",
-        "CODEX_BRIDGE_APPROVAL_POLICY": "on-request",
-        "CODEX_BRIDGE_SANDBOX": "workspace-write"
-      }
-    }
-  }
-}
-```
-
-Then run `node scripts/install-claude-code.mjs --check`. That helper migrates or
-checks an existing supervised entry; it does not create a first entry from
-nothing. See [project onboarding](project-onboarding.md) for migration.
-
-Configure the same policy for Codex using the repository installers:
-
-```powershell
+$env:CODEX_BIN = (Get-Command codex.exe).Source
+$env:CODEX_EXE = $env:CODEX_BIN
 $env:CODEX_BRIDGE_PROJECT_POLICY = Join-Path $env:USERPROFILE '.config\GptClaudeBridge\projects.json'
 $env:CODEX_BRIDGE_DESKTOP_TASKS = '1'
+$env:CODEX_BRIDGE_AUTOSTART = '0'
+node scripts/install-claude-code.mjs --install
 node scripts/install-native-relay.mjs
 node scripts/install-codex-mcp.mjs
 ```
 
-If discovery fails, set `CODEX_EXE` to the real CLI executable. Relay setup may
-create an initial relay task. Do not add a permission-bypass mode. If CC Switch
-manages the entries, save the same configuration there. Reload affected clients
-and inspect the tools inside the actual Code/dispatch conversations.
+`--install` creates a missing Code entry or updates a recognized one;
+`--install --dry-run` previews it. For an existing entry with a different scope,
+use the explicit policy migration in [project onboarding](project-onboarding.md).
+`--check` on that helper checks the optional shared policy arrangement; it is
+not the general setup check. Keep CC Switch or another configuration manager
+consistent with the saved entries so it does not restore an obsolete copy.
+
+Do not copy login caches, session identities, unfinished receipts or
+directory-identity grants from another machine. This guide is not evidence
+that a particular second machine or client build has passed live verification.
 
 ## Permissions are separate
 

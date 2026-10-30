@@ -8,6 +8,15 @@ import { applyStdioMcpRegistration, codexMcpRegistration, stdioMcpRegistration }
 const defaults = { name: "claude-bridge", node: "/runtime/node", entry: "/bridge/mcp-supervisor.mjs", entryArgs: ["claude-bridge.mjs"], env: {}, desktopOnly: true };
 const existing = (env = {}) => ({ enabled: true, transport: { type: "stdio", env } });
 
+it("records a downloaded CLI for fresh installs without changing customized existing environments", () => {
+  const fresh = codexMcpRegistration({ ...defaults, env: { CODEX_BIN: "/managed/codex" } });
+  assert.equal(fresh.environment.CODEX_BIN, "/managed/codex");
+  const previous = { ...existing({ CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_AUTOSTART: "0" }), tool_timeout_sec: 90 };
+  const kept = codexMcpRegistration({ ...defaults, existing: previous, env: { CODEX_BIN: "/managed/codex" } });
+  assert.equal(kept.mode, "retarget");
+  assert.equal(Object.hasOwn(kept.environment, "CODEX_BIN"), false);
+});
+
 it("preserves configured environment and pins Desktop mode without inventing a sender permission class", () => {
   const result = codexMcpRegistration({ ...defaults, existing: existing({ CLAUDE_BRIDGE_PEER_NAME: "keep", FUTURE_SETTING: "keep-too", CODEX_BRIDGE_AUTOSTART: "1" }) });
   assert.ok(result.args.includes("FUTURE_SETTING=keep-too"));

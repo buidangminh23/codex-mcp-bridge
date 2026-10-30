@@ -31,6 +31,7 @@ export const OBSERVATION_UNAVAILABLE_GUIDANCE = "The response could not be verif
 export const WORKSPACE_UNASSIGNED = "DESKTOP_WORKSPACE_UNASSIGNED";
 export const UNASSIGNED_WORKSPACE_GRACE_MS = 120000;
 const RELEASE_STATUSES = new Set(["completed", "interrupted", "failed"]);
+const UNMATCHED_REPLY_GRACE_MS = 3000;
 const METADATA_READ_OPTIONS = { includeOutputs: false, maxOutputCharsPerItem: 1 };
 
 function unavailableWaitRenderer(error) {
@@ -573,6 +574,7 @@ export class DesktopTaskDelivery {
     let readSnapshots = false;
     let deferredReason = null;
     let deferredTurn = null;
+    let unmatchedTerminal = null;
     const readSnapshot = async () => {
       const result = await this.request("read_thread", { threadId, hostId: "local", turnLimit: 1, ...METADATA_READ_OPTIONS }, { deadline: startedAt + timeoutMs });
       const thread = result?.thread;
@@ -615,6 +617,7 @@ export class DesktopTaskDelivery {
       } catch (err) {
         if (deadlineError(err)) return expired();
         if (err.code === WORKSPACE_UNASSIGNED) {
+          unmatchedTerminal = null;
           await pause();
           continue;
         }
@@ -640,6 +643,7 @@ export class DesktopTaskDelivery {
         const observed = await observe(null, true);
         if (!observed) return expired();
         if (observed === observeLater) {
+          unmatchedTerminal = null;
           await pause();
           continue;
         }
@@ -658,6 +662,34 @@ export class DesktopTaskDelivery {
           };
         }
         if (needsAttention) return attention();
+        if (turnId === null && observed.dispatchObserved !== true && threadStatus === "idle" &&
+            typeof turn?.id === "string" && turn.id && turn.id !== previousTurnId && RELEASE_STATUSES.has(turn.status)) {
+          if (unmatchedTerminal?.id !== turn.id || unmatchedTerminal.status !== turn.status) {
+            unmatchedTerminal = { id: turn.id, status: turn.status, since: this.now(), polls: 1 };
+          } else unmatchedTerminal.polls++;
+          if (unmatchedTerminal.polls >= 3 && this.now() - unmatchedTerminal.since >= UNMATCHED_REPLY_GRACE_MS) {
+            let snapshot;
+            try { snapshot = (await readSnapshot()).polls[0]; }
+            catch (error) {
+              if (deadlineError(error)) return expired();
+              if (error.code === WORKSPACE_UNASSIGNED) {
+                unmatchedTerminal = null;
+                await pause();
+                continue;
+              }
+              throw error;
+            }
+            const status = typeof snapshot.thread.status === "string" ? snapshot.thread.status : snapshot.thread.status?.type;
+            if (status === "idle" && snapshot.latestTurn?.id === unmatchedTerminal.id && snapshot.latestTurn.status === unmatchedTerminal.status) {
+              return {
+                threadId, turnId: null, status: "observation_unavailable", responseStatus: "unavailable", observationStatus: "unavailable",
+                observationReason: "Codex Desktop reports an idle task, but its latest finished turn could not be correlated to this delivery after the rollout grace period. Inspect the existing task and receipt; do not resend the prompt.",
+                text: "", assistantItems: [], replySha256: null, responseSource: null, activity: [], errors: [], durationMs: this.now() - startedAt,
+              };
+            }
+            unmatchedTerminal = null;
+          }
+        } else unmatchedTerminal = null;
         if (this.now() - startedAt >= timeoutMs) return expired();
         await this.sleep(Math.min(1500, timeoutMs - (this.now() - startedAt)));
         continue;

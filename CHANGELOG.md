@@ -4,6 +4,27 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-10-30
+
+### Added
+
+- Global npm installation now configures Claude Desktop, Claude Code, Codex and Antigravity in one command. On npm versions that require lifecycle-script authorization, use `npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge`.
+- Setup creates the distinct shared Claude Desktop `codex-bridge-desktop` connector and user-level Claude Code `codex-bridge`, registers the native Codex relay and its executor, and installs Antigravity's inbound, outbound and sidecar entries. An absent Codex CLI is installed from the official package into a separate per-user tools directory.
+- `codex-bridge-setup` and `codex-mcp-bridge setup` support read-only `--check`, `--dry-run`, JSON reports and `--no-download`. Local dependency installation does not change application configuration; global setup can be skipped with `CODEX_BRIDGE_SKIP_SETUP=1`.
+
+### Fixed
+
+- Initial Claude Code registration no longer requires hand-written JSON or an existing supervised entry. Setup preserves custom settings and scope, retargets recognized bridge paths, separates a shadowing shared connector, and reports conflicting entries instead of replacing them. Antigravity setup respects a custom Claude configuration directory and an explicitly disabled sidecar.
+- Simultaneous Claude sender-ancestry checks now share one pending Windows inspector. Completed results and failures are discarded; subsequent operations still verify current OS identity, task and account.
+- A delivered Codex request with no matching reply marker no longer waits indefinitely when a new native turn remains finished and idle. After a bounded grace period and a fresh state check, the receipt reports `observation_unavailable` and directs the caller to inspect the existing task without resending or attributing unrelated output.
+- Tool instructions for already-open Claude sessions now require native session discovery and peer delivery. The misleading instruction to inspect a title in the app was removed, and external Computer Use typing/clicking is explicitly excluded as a delivery fallback.
+
+### Verification and limitations
+
+- Windows packed-package installation and configuration readback cover all registered clients. Focused regressions cover initial installation, existing settings, collisions, disabled components, lifecycle opt-outs, native CLI resolution, concurrent sender inspection, reply observation and MCP routing instructions.
+- Configuration verification does not prove that running applications have reloaded their MCP servers. Applications still need to be installed and signed in; native Desktop handoffs require the same saved project and retain host permissions. Shared Claude Desktop chat uses the legacy local app-server route.
+- Setup prewarms runtime snapshots, but the reported 30-second connection timeout was not reproduced and is not claimed resolved. Missing reply correlation still requires inspection of the original task. Updated tool instructions guide model behavior and cannot guarantee every model follows them.
+
 ## [1.24.1] - 2026-10-29
 
 ### Fixed

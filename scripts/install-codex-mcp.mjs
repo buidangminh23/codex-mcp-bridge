@@ -21,7 +21,7 @@ const serverName = process.env.CLAUDE_BRIDGE_NAME ?? "claude-bridge";
 const entry = path.join(root, "src", "mcp-supervisor.mjs");
 const entryArgs = ["claude-bridge.mjs"];
 const remove = process.argv.includes("--remove");
-if (!remove && (process.argv.includes("--full-access") || fullAccessEnabled())) enableCodexFullAccess();
+if (!remove && (process.argv.includes("--full-access") || !process.argv.includes("--setup") && fullAccessEnabled())) enableCodexFullAccess();
 const permissionMode = process.env.CLAUDE_BRIDGE_PERMISSION_MODE;
 if (!remove && permissionMode && !["bypass", "prompting"].includes(permissionMode)) throw new Error("CLAUDE_BRIDGE_PERMISSION_MODE must be bypass or prompting");
 

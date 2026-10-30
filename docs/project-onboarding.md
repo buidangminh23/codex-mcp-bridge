@@ -1,5 +1,38 @@
 # Project onboarding and shared authorization
 
+The recommended global installation registers the bridges automatically:
+
+```sh
+npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
+```
+
+In Windows PowerShell use `npm.cmd`. The script allowance authorizes only this
+package's setup hook; npm versions that block install scripts by default need
+it. A plain install runs setup only when the hook is allowed. Append
+`--foreground-scripts` to see progress. If npm prints
+`1 package had install scripts blocked`, rerun the recommended command or run
+`codex-bridge-setup` explicitly. The setup creates
+`codex-bridge` for Claude Code and the separate `codex-bridge-desktop` shared
+Claude connector, configures Codex and Antigravity, and initializes the native
+relay on Windows/macOS. See [installation](../README.md#installation).
+
+Setup preserves existing scope and permission choices. Registration does not
+grant workspace trust, authorize cross-project work, or establish a live
+connection. The shared Desktop connector uses local app-server sessions;
+native Codex Desktop handoffs require a verified Claude Code sender in the
+same saved project.
+
+`codex-bridge-setup --check` inspects all saved registrations. Use
+`codex-bridge-setup --dry-run` to preview or rerun `codex-bridge-setup` to apply
+setup after correcting an incomplete component. Add `.cmd` on Windows and
+`--json` for structured output. Local package installs do not run setup;
+`CODEX_BRIDGE_SKIP_SETUP=1` and npm `--ignore-scripts` opt out of global setup.
+If app configuration is incomplete, npm retains the package for repair; its
+success exit alone does not verify setup. Explicit setup and `--check` return
+a nonzero status until the saved configuration passes verification.
+
+## Optional shared project policy
+
 Both bridge directions can read the same optional policy file via
 `CODEX_BRIDGE_PROJECT_POLICY`. `bridge-projects` defaults to
 `~/.config/GptClaudeBridge/projects.json`. A shared home-directory path avoids
@@ -48,20 +81,42 @@ node scripts/bridge-projects.mjs prepare /absolute/projects/example
 
 Changes are backed up and verified. Concurrent changes abort; failed rollback
 returns `partial_needs_review` and remaining files. `configured` does not mean
-live communication passed. Setup does not approve tools, change session modes,
-create conversations or restart clients. Workspace trust follows Claude's
+live communication passed. Project preparation does not approve tools, change
+session modes, create conversations or restart clients. The package installer
+separately initializes an internal relay executor when needed. Workspace trust
+follows Claude's
 [documented project settings](https://code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust).
 
 ## Correct Code registration
 
 Claude's user-level `codex-bridge` must run under the actual Code session. A
-generic shared Desktop process cannot establish that caller's ancestry. The
-Code migration helper previews changes by default; it is not a first-install
-wizard. With both clients stopped, `--apply --clients-stopped` backs up and
-migrates an existing supervised entry. `--check` diagnoses shared/duplicate
-entries and policy errors. Customized entries are left for review. Keep an
-external configuration manager, such as CC Switch, consistent with the selected
-entry so it does not restore an obsolete copy later.
+generic shared Desktop process cannot establish that caller's ancestry.
+Automatic setup creates or updates the supervised Code entry and safely
+renames a recognized shared entry to `codex-bridge-desktop`. Conflicting or
+unrecognized entries are reported without overwriting them; custom project
+overrides are preserved and reported.
+
+For selective installation, `codex-bridge-code-install --install` creates a
+missing Code entry or updates a recognized one. `--install --dry-run` previews
+the change. The complete `codex-bridge-setup` command also handles the other
+registrations and prerequisites. Neither path copies permissions or login
+credentials from another client.
+
+The helper's existing policy migration remains an explicit operation and
+previews changes by default. After initializing the desired policy and stopping
+Claude and any configuration manager, run:
+
+```sh
+codex-bridge-code-install --policy /absolute/path/projects.json
+codex-bridge-code-install --policy /absolute/path/projects.json --apply --clients-stopped
+codex-bridge-code-install --check
+```
+
+Migration backs up and updates an existing supervised entry. This helper's
+`--check` diagnoses the optional shared-policy arrangement, including shared or
+duplicate entries; use `codex-bridge-setup --check` for the general installation
+check. Keep CC Switch or another external configuration manager consistent
+with the selected entry so it does not restore an obsolete copy later.
 
 Reload the affected client after changing MCP registration. Merely refreshing
 the conversation did not reload the Code process in the measured Windows

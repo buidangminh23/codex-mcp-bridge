@@ -67,6 +67,66 @@ describe("bounded Windows native process ancestry", () => {
     assert.deepEqual(await readProcessAncestry({ platform: "win32", parentPid: 200, run: async () => ({ stdout: "[]" }) }), []);
   });
 
+  it("coalesces concurrent ancestry reads without caching completed process identities", async () => {
+    let calls = 0;
+    let finish;
+    const pending = new Promise((resolve) => { finish = resolve; });
+    const replaced = [{ ...rows[0], processStart: "133200000000000000" }, rows[1]];
+    const run = async () => {
+      calls++;
+      return calls === 1 ? pending : { stdout: JSON.stringify(replaced) };
+    };
+    const options = { platform: "win32", parentPid: 200, run };
+    const first = readProcessAncestry(options);
+    const second = readProcessAncestry({ ...options, maxDepth: 100 });
+    const third = readProcessAncestry(options);
+    const count = calls;
+    finish({ stdout: JSON.stringify(rows) });
+    const results = await Promise.all([first, second, third]);
+    assert.equal(count, 1, "Concurrent callers must share one native inspector");
+    for (const result of results) assert.deepEqual(result, rows);
+    results[0][0].processStart = "modified";
+    assert.equal(results[1][0].processStart, rows[0].processStart);
+    assert.deepEqual(await readProcessAncestry(options), replaced);
+    assert.equal(calls, 2, "A later read must inspect current OS identity again");
+  });
+
+  it("separates in-flight reads by process, depth and inspector implementation", async () => {
+    let calls = 0;
+    let finish;
+    const pending = new Promise((resolve) => { finish = resolve; });
+    const run = async () => { calls++; await pending; return { stdout: "[]" }; };
+    const separate = async (...args) => run(...args);
+    const reads = [
+      readProcessAncestry({ platform: "win32", parentPid: 200, run }),
+      readProcessAncestry({ platform: "win32", parentPid: 201, run }),
+      readProcessAncestry({ platform: "win32", parentPid: 200, maxDepth: 1, run }),
+      readProcessAncestry({ platform: "win32", parentPid: 200, run: separate }),
+    ];
+    const count = calls;
+    finish();
+    await Promise.all(reads);
+    assert.equal(count, 4);
+  });
+
+  it("shares a pending refusal but retries failed inspections on the next call", async () => {
+    let calls = 0;
+    let refuse;
+    const pending = new Promise((_resolve, reject) => { refuse = reject; });
+    const timeout = Object.assign(new Error("Timed out"), { code: "ETIMEDOUT", phase: "inspection" });
+    const run = async () => { calls++; return calls === 1 ? pending : { stdout: JSON.stringify(rows) }; };
+    const options = { platform: "win32", parentPid: 200, run };
+    const outcomes = Promise.allSettled([readProcessAncestry(options), readProcessAncestry(options)]);
+    refuse(timeout);
+    for (const result of await outcomes) {
+      assert.equal(result.status, "rejected");
+      assert.equal(result.reason, timeout);
+    }
+    assert.equal(calls, 1);
+    assert.deepEqual(await readProcessAncestry(options), rows);
+    assert.equal(calls, 2);
+  });
+
   it("matches the live OS parent and stable FILETIME identity within the production deadlines on a cold Windows host", { skip: process.platform !== "win32", timeout: 70000 }, async (t) => {
     const timings = [];
     const runProduction = async (command, args, options) => {

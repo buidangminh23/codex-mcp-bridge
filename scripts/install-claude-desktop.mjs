@@ -16,9 +16,14 @@ exitForVersionRequest(import.meta.url);
 
 const root = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();
+const entryOption = process.argv.indexOf("--entry-name");
+const requestedEntryName = entryOption < 0 ? undefined : process.argv[entryOption + 1];
+if (entryOption >= 0 && !["codex-bridge", "codex-bridge-desktop"].includes(requestedEntryName)) throw new Error("--entry-name must be codex-bridge or codex-bridge-desktop");
+const quiet = process.argv.includes("--quiet");
+const log = (...values) => { if (!quiet) console.log(...values); };
 const reset = process.argv.includes("--reset");
 const forceDesktopTasks = process.argv.includes("--desktop-tasks");
-const fullAccess = process.argv.includes("--full-access") || fullAccessEnabled();
+const fullAccess = process.argv.includes("--full-access") || requestedEntryName === undefined && fullAccessEnabled();
 
 /**
  * This bridge is intentionally the local hand-off point between Claude and
@@ -73,6 +78,8 @@ function readConfig() {
 
 const original = readConfig();
 const cfg = original ? JSON.parse(original.data.toString("utf8")) : {};
+if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("Desktop configuration must be a JSON object");
+if (cfg.mcpServers !== undefined && (!cfg.mcpServers || typeof cfg.mcpServers !== "object" || Array.isArray(cfg.mcpServers))) throw new Error("Desktop mcpServers must be a JSON object");
 cfg.mcpServers = cfg.mcpServers ?? {};
 
 /**
@@ -97,16 +104,31 @@ const runsThisBridge = (entry) => {
   return name === "index.mjs" || name === "mcp-supervisor.mjs" && entry.args[1] === "index.mjs";
 };
 const bridgeEntries = Object.keys(cfg.mcpServers).filter((name) => KNOWN_ENTRY_NAMES.has(name) || runsThisBridge(cfg.mcpServers[name]));
-if (bridgeEntries.length > 1) {
+if (bridgeEntries.length > 1 || requestedEntryName && bridgeEntries.some((name) => name !== requestedEntryName)) {
   throw new Error(`Claude Desktop already has several bridge entries (${bridgeEntries.join(", ")}); remove all but one and re-run. No configuration was changed.`);
 }
-const entryName = bridgeEntries[0] ?? "codex-bridge";
+const entryName = requestedEntryName ?? bridgeEntries[0] ?? "codex-bridge";
+if (requestedEntryName && cfg.mcpServers[entryName] !== undefined) {
+  const existing = cfg.mcpServers[entryName];
+  const script = existing?.args?.[0];
+  const source = typeof script === "string" && path.isAbsolute(script) ? path.dirname(script) : null;
+  const ownedSource = source && (sourceDirectories.has(source)
+    || path.basename(source) === "src" && path.basename(path.dirname(source)).toLowerCase() === "codex-mcp-bridge");
+  const supervised = existing?.args?.length === 2 && path.basename(script ?? "") === "mcp-supervisor.mjs" && existing.args[1] === "index.mjs";
+  const direct = existing?.args?.length === 1 && ["index.mjs", "codex-bridge-launcher.mjs"].includes(path.basename(script ?? ""));
+  if (!existing || typeof existing !== "object" || Array.isArray(existing) || !ownedSource || !(supervised || direct)
+      || existing.type !== undefined && existing.type !== "stdio" || ["url", "httpUrl", "serverUrl"].some((key) => existing[key] !== undefined)) {
+    throw new Error(`Desktop ${entryName} has an unrecognized or customized entrypoint; no configuration was changed`);
+  }
+  if (existing.env !== undefined && (!existing.env || typeof existing.env !== "object" || Array.isArray(existing.env)
+      || Object.values(existing.env).some((value) => typeof value !== "string"))) throw new Error(`Desktop ${entryName} environment must contain string values`);
+}
 if (fullAccess) enableCodexFullAccess();
 
 const previousEntry = (reset ? {} : cfg.mcpServers[entryName]) ?? {};
 const previousEnv = previousEntry.env ?? {};
 const settled = (name, fallback) => process.env[name] ?? previousEnv[name] ?? fallback;
-const desktopMode = forceDesktopTasks ? "1" : settled("CODEX_BRIDGE_DESKTOP_TASKS");
+const desktopMode = forceDesktopTasks ? "1" : settled("CODEX_BRIDGE_DESKTOP_TASKS", requestedEntryName === "codex-bridge-desktop" ? "0" : undefined);
 const desktopEnabled = desktopMode === undefined ? desktopTasksConfigured() : desktopMode === "1";
 
 const kept = Object.keys(previousEnv).filter(
@@ -166,39 +188,44 @@ cfg.mcpServers[entryName] = {
 
 createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...cfg.mcpServers[entryName].env }) });
 
-const backup = `${cfgPath}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge`;
-if (original) {
-  try { fs.writeFileSync(backup, original.data, { flag: "wx", mode: 0o600 }); }
-  catch (error) { if (error.code !== "EEXIST") throw error; }
-}
-const temporary = `${cfgPath}.${randomUUID()}.tmp`;
-try {
-  fs.writeFileSync(temporary, `${JSON.stringify(cfg, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  const current = readConfig();
-  if (original === null ? current !== null : current === null || !original.data.equals(current.data) || original.version.some((value, index) => value !== current.version[index])) {
-    throw new Error("Desktop configuration changed during installation; retry after the other writer finishes");
+const changed = original === null || JSON.stringify(JSON.parse(original.data.toString("utf8"))) !== JSON.stringify(cfg);
+if (changed) {
+  const backup = `${cfgPath}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge`;
+  if (original) {
+    try { fs.writeFileSync(backup, original.data, { flag: "wx", mode: 0o600 }); }
+    catch (error) { if (error.code !== "EEXIST") throw error; }
   }
-  fs.renameSync(temporary, cfgPath);
-} finally {
-  try { fs.unlinkSync(temporary); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
+  const temporary = `${cfgPath}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(cfg, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    const current = readConfig();
+    if (original === null ? current !== null : current === null || !original.data.equals(current.data) || original.version.some((value, index) => value !== current.version[index])) {
+      throw new Error("Desktop configuration changed during installation; retry after the other writer finishes");
+    }
+    fs.renameSync(temporary, cfgPath);
+  } finally {
+    try { fs.unlinkSync(temporary); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
 }
+const saved = readConfig();
+if (saved === null || JSON.stringify(JSON.parse(saved.data.toString("utf8"))) !== JSON.stringify(cfg)) throw new Error("Desktop configuration readback did not match the saved registration");
 
-console.log(`platform: ${PLATFORM_LABEL}`);
-console.log(`updated ${cfgPath} (entry ${entryName})`);
-console.log(JSON.stringify(cfg.mcpServers[entryName], null, 2));
-console.log(`Desktop tasks: ${desktopEnabled ? "enabled" : "disabled"} (${desktopMode === undefined ? "automatic relay configuration" : forceDesktopTasks ? "--desktop-tasks" : "explicit environment setting"}).`);
+log(`platform: ${PLATFORM_LABEL}`);
+log(`${changed ? "updated" : "unchanged"} ${cfgPath} (entry ${entryName})`);
+log(JSON.stringify(cfg.mcpServers[entryName], null, 2));
+log(`Desktop tasks: ${desktopEnabled ? "enabled" : "disabled"} (${desktopMode === undefined ? "automatic relay configuration" : forceDesktopTasks ? "--desktop-tasks" : "explicit environment setting"}).`);
 
 if (reset) {
-  console.log("\n--reset: existing values were discarded in favour of the defaults.");
+  log("\n--reset: existing values were discarded in favour of the defaults.");
 } else if (kept.length) {
-  console.log(`\nkept from the existing entry: ${kept.join(", ")}`);
-  console.log("Pass the variable to override one, or --reset to drop them all.");
+  log(`\nkept from the existing entry: ${kept.join(", ")}`);
+  log("Pass the variable to override one, or --reset to drop them all.");
 }
 
 const writtenRoots = cfg.mcpServers[entryName].env.CODEX_BRIDGE_ALLOWED_ROOTS;
 if (writtenRoots.split(path.delimiter).some((entry) => entry.split(path.sep).includes("node_modules"))) {
-  console.log(
+  log(
     "\nWARNING: CODEX_BRIDGE_ALLOWED_ROOTS points inside an install directory, which is not a workspace.\n" +
       "The bridge will start but refuse every thread. Re-run with the projects you actually work in:\n" +
       `  CODEX_BRIDGE_ALLOWED_ROOTS="${["<project-a>", "<project-b>"].join(path.delimiter)}" codex-mcp-bridge-install`,
@@ -206,7 +233,7 @@ if (writtenRoots.split(path.delimiter).some((entry) => entry.split(path.sep).inc
 }
 
 if (cfg.mcpServers[entryName].env.CODEX_BRIDGE_THREAD_POLICY === "owned") {
-  console.log(
+  log(
     "\nNOTE: thread policy is `owned` - this bridge may only act on threads it created itself.\n" +
       "A thread you open in the Codex app or the VS Code extension will answer NOT AUTHORIZED,\n" +
       "because its id is assigned as it opens and cannot be allowlisted in advance. To let the\n" +
@@ -220,7 +247,7 @@ if (entryName === "codex-bridge") {
   let codeEntry;
   try { codeEntry = JSON.parse(readRegularConfigFile(codeConfig, { missing: true, maxBytes: 8 * 1024 * 1024 }) ?? "{}").mcpServers?.["codex-bridge"]; } catch {}
   if (codeEntry) {
-    console.log(
+    log(
       `\nWARNING: ${codeConfig} also registers codex-bridge for Claude Code. A Desktop entry with the same name can\n` +
         "shadow it inside Code sessions and hide the calling task. Rename this Desktop entry, for example to\n" +
         "codex-bridge-desktop; later installer runs update the renamed entry in place.",
@@ -228,6 +255,7 @@ if (entryName === "codex-bridge") {
   }
 }
 
-console.log("\nReconnect codex-bridge once in the existing Claude task to load the supervisor. Subsequent compatible installed-source updates reload automatically when the worker is safely idle.");
-console.log("Verify codex_bridge_status from that task: autoReload must be enabled and runtime state must be current. A separate diagnostic process does not verify the app's loaded MCP process.");
-if (desktopEnabled) console.log("Verify Desktop tasks are enabled and the native relay is available. Configuration changes require MCP reconnect even when source auto-reload is enabled; keep the destination task open in Codex Desktop.");
+log(`\nReconnect ${entryName} once in the existing Claude task to load the supervisor. Subsequent compatible installed-source updates reload automatically when the worker is safely idle.`);
+log("Verify codex_bridge_status from that task: autoReload must be enabled and runtime state must be current. A separate diagnostic process does not verify the app's loaded MCP process.");
+if (desktopEnabled) log("Verify Desktop tasks are enabled and the native relay is available. Configuration changes require MCP reconnect even when source auto-reload is enabled; keep the destination task open in Codex Desktop.");
+if (quiet) console.log(JSON.stringify({ action: "install", entry: entryName, configured: true, liveVerified: false, changed, restartRequired: changed, desktopTasks: desktopEnabled }));

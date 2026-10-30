@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { applyJsonEdits, installerArguments, planAntigravityInstallation, validateCodexExecutable } from "../scripts/install-antigravity-bridge.mjs";
 
@@ -22,7 +24,7 @@ after(() => {
 function fixture() {
   const home = path.join(sandbox, `home-${++sequence}`);
   fs.mkdirSync(home);
-  return { home, root, node };
+  return { home, codeConfigDir: home, root, node };
 }
 
 function write(home, relative, value) {
@@ -74,6 +76,59 @@ test("enables only the owned sidecar and retains native permission configuration
   assert.equal(definition.command, node);
   assert.deepEqual(definition.args, [sidecarEntry]);
   assert.equal(definition.restart_policy, "on-failure");
+});
+
+test("uses a separate Claude configuration directory without changing the home configuration", () => {
+  const options = fixture();
+  const homeConfig = write(options.home, ".claude.json", { preserved: true });
+  const codeConfigDir = path.join(options.home, "custom-claude");
+  const codeConfig = write(codeConfigDir, ".claude.json", { preferences: { theme: "dark" }, mcpServers: { existing: { command: "keep" } } });
+  const installOptions = { ...options, codeConfigDir, targets: ["claude"], setup: true };
+  const plan = planAntigravityInstallation(installOptions);
+  assert.equal(plan.edits.length, 1);
+  assert.equal(plan.edits[0].file, codeConfig);
+  applyJsonEdits(plan.edits);
+  assert.deepEqual(read(homeConfig), { preserved: true });
+  assert.deepEqual(read(codeConfig).preferences, { theme: "dark" });
+  assert.deepEqual(read(codeConfig).mcpServers.existing, { command: "keep" });
+  assert.equal(read(codeConfig).mcpServers["antigravity-bridge"].env.ANTIGRAVITY_BRIDGE_CALLER, "claude");
+  assert.equal(planAntigravityInstallation(installOptions).edits.length, 0);
+  applyJsonEdits(planAntigravityInstallation({ ...installOptions, remove: true }).edits);
+  assert.deepEqual(read(codeConfig).mcpServers, { existing: { command: "keep" } });
+  assert.throws(() => planAntigravityInstallation({ ...installOptions, codeConfigDir: "relative" }), /absolute/);
+});
+
+test("CLI setup uses HOME and CLAUDE_CONFIG_DIR consistently on every platform", () => {
+  const options = fixture();
+  const script = fileURLToPath(new URL("../scripts/install-antigravity-bridge.mjs", import.meta.url));
+  const codeConfigDir = path.join(options.home, "custom-claude");
+  const output = execFileSync(process.execPath, [script, "--claude", "--desktop", "--setup", "--dry-run"], {
+    env: { ...process.env, HOME: options.home, USERPROFILE: path.join(options.home, "unused-profile"), CLAUDE_CONFIG_DIR: codeConfigDir },
+    encoding: "utf8", windowsHide: true, timeout: 15000,
+  });
+  const plan = JSON.parse(output);
+  assert.ok(plan.files.some((file) => file.path === path.join(codeConfigDir, ".claude.json")));
+  assert.ok(plan.files.some((file) => file.path === path.join(options.home, ".gemini", "config", "config.json")));
+  assert.deepEqual(fs.readdirSync(options.home), []);
+});
+
+test("automatic setup preserves a disabled sidecar and custom display and restart settings", () => {
+  const options = fixture();
+  const definitionPath = write(options.home, ".gemini/config/sidecars/codex-bridge/sidecar.json", {
+    command: "old-node", args: [sidecarEntry], display_name: "Custom bridge name", restart_policy: "never", custom: { keep: true },
+  });
+  const configPath = write(options.home, ".gemini/config/config.json", { sidecars: { "codex-bridge": { enabled: false, custom: 3 } }, userSettings: { permissions: "ask" } });
+  const mcpPath = write(options.home, ".gemini/config/mcp_config.json", { mcpServers: { "agent-bridge": { command: "old-node", args: [outboundEntry], disabled: true, timeoutSeconds: 70 } } });
+  const plan = planAntigravityInstallation({ ...options, targets: ["desktop"], setup: true });
+  assert.ok(plan.notices.some((notice) => notice.includes("disabled")));
+  applyJsonEdits(plan.edits);
+  assert.deepEqual(read(configPath), { sidecars: { "codex-bridge": { enabled: false, custom: 3 } }, userSettings: { permissions: "ask" } });
+  assert.deepEqual(read(definitionPath), { command: node, args: [sidecarEntry], display_name: "Custom bridge name", restart_policy: "never", custom: { keep: true } });
+  assert.equal(read(mcpPath).mcpServers["agent-bridge"].disabled, true);
+  assert.equal(read(mcpPath).mcpServers["agent-bridge"].timeoutSeconds, 70);
+  assert.equal(planAntigravityInstallation({ ...options, targets: ["desktop"], setup: true }).edits.length, 0);
+  applyJsonEdits(planAntigravityInstallation({ ...options, targets: ["desktop"] }).edits);
+  assert.equal(read(configPath).sidecars["codex-bridge"].enabled, true);
 });
 
 test("rejects occupied registration and sidecar names before writing any file", () => {
@@ -129,7 +184,8 @@ test("removes only owned entries and leaves delivery data intact", () => {
 });
 
 test("argument parsing supports selected targets and rejects typos", () => {
-  assert.deepEqual(installerArguments(["--desktop", "--claude", "--dry-run"]), { targets: ["claude", "desktop"], dryRun: true, remove: false, help: false });
+  assert.deepEqual(installerArguments(["--desktop", "--claude", "--dry-run"]), { targets: ["claude", "desktop"], dryRun: true, remove: false, setup: false, help: false });
+  assert.equal(installerArguments(["--all", "--setup"]).setup, true);
   assert.equal(installerArguments([]).targets.length, 3);
   assert.throws(() => installerArguments(["--dangerously-skip-permissions"]), /Unknown option/);
 });

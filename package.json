@@ -1,6 +1,6 @@
 {
   "name": "@minhspark/codex-mcp-bridge",
-  "version": "1.24.1",
+  "version": "1.25.0",
   "description": "Connect Claude, Codex, and Antigravity through MCP, with native Desktop handoffs and bridge-owned Antigravity CLI sessions.",
   "keywords": [
     "mcp",
@@ -29,6 +29,7 @@
     "antigravity-mcp-bridge-install": "scripts/install-antigravity-bridge.mjs",
     "codex-mcp-bridge-install": "scripts/install-claude-desktop.mjs",
     "codex-bridge-code-install": "scripts/install-claude-code.mjs",
+    "codex-bridge-setup": "scripts/setup.mjs",
     "bridge-projects": "scripts/bridge-projects.mjs",
     "claude-mcp-bridge-install": "scripts/install-codex-mcp.mjs",
     "codex-native-relay": "src/native-relay-launcher.mjs",
@@ -61,6 +62,8 @@
     "access": "public"
   },
   "scripts": {
+    "postinstall": "node scripts/setup.mjs --postinstall",
+    "setup": "node scripts/setup.mjs",
     "analytics": "node scripts/collect-repo-analytics.mjs",
     "analytics:publish": "node scripts/publish-repo-analytics.mjs",
     "start": "node src/codex-bridge-launcher.mjs",

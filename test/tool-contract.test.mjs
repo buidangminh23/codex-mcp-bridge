@@ -848,6 +848,24 @@ describe("agent prompt guidance", async () => {
     assert.ok(claude.instructions.includes(AGENT_PROMPT_GUIDANCE), "claude-bridge instructions omit the prompt shape");
   });
 
+  it("routes existing Claude conversations through discovered peer identities without Computer Use fallback", () => {
+    const send = claude.tools.find((entry) => entry.name === "send_to_claude_session");
+    const list = claude.tools.find((entry) => entry.name === "list_claude_sessions");
+    for (const text of [claude.instructions, send.description]) {
+      assert.match(text, /already-open Claude Code conversation.*list_claude_sessions.*expectedCwd.*sessionId.*taskId.*send_to_claude_session.*expectedTaskId/);
+      assert.match(text, /read_claude_transcript.*no visual UI verification is required/);
+    }
+    for (const text of [claude.instructions, send.description, list.description]) {
+      assert.match(text, /Do not use Computer Use.*clipboard paste.*clicks and typing/);
+      assert.match(text, /report the exact unavailable tool or blocked reason/);
+      assert.match(text, /never fall back to submitting the prompt through the UI/);
+    }
+    assert.match(claude.instructions, /already-live session is sent directly without opening a composer/);
+    assert.match(claude.instructions, /send_to_claude_session with target auto.*bridge reopen that saved task/);
+    assert.match(send.inputSchema.properties.expectedTaskId.description, /list_claude_sessions.*returned title and cwd.*No UI interaction is required/);
+    assert.doesNotMatch(send.inputSchema.properties.expectedTaskId.description, /verify its title in the app/);
+  });
+
   it("names every section on every field that carries a prompt", () => {
     const fields = [
       [codex, "delegate_to_codex", "prompt"],

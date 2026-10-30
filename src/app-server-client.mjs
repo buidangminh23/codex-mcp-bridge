@@ -106,6 +106,7 @@ export class CodexAppServerClient {
     this.codexBin = resolveCodexBin(options.codexBin);
     this.requirementsPath = options.requirementsPath ?? managedRequirementsPath();
     this.autoStart = options.autoStart ?? process.env.CODEX_BRIDGE_AUTOSTART !== "0";
+    this.repairFullAccess = options.repairFullAccess !== false;
     this.log = options.log ?? (() => {});
     const requestedApproval = options.approval ?? process.env.CODEX_BRIDGE_APPROVAL ?? "deny";
     const autoApproveAcknowledged = options.allowAutoApprove ?? process.env.CODEX_BRIDGE_AUTO_APPROVE_ACK === "1";
@@ -215,7 +216,7 @@ export class CodexAppServerClient {
       for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt += 1) {
         try {
           this.#assertConnectionEpoch(epoch);
-          if (fullAccessEnabled()) {
+          if (this.repairFullAccess && fullAccessEnabled()) {
             try {
               enableCodexFullAccess();
             } catch (error) {

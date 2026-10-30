@@ -16,6 +16,7 @@ import {
   isWritableDir,
   launchAgentPath,
   resolveCodexBin,
+  resolvePackagedCodexBin,
   resolveCodexDesktopNodeBin,
   resolveWorkspacePath,
   spawnEnv,
@@ -224,6 +225,110 @@ describe("platform facts", () => {
       }
     },
   );
+});
+
+describe("packaged Codex binary discovery", () => {
+  it("resolves each official platform package from the optional Codex dependency", () => {
+    for (const [platform, arch, target] of [
+      ["win32", "x64", "x86_64-pc-windows-msvc"],
+      ["win32", "arm64", "aarch64-pc-windows-msvc"],
+      ["darwin", "x64", "x86_64-apple-darwin"],
+      ["darwin", "arm64", "aarch64-apple-darwin"],
+      ["linux", "x64", "x86_64-unknown-linux-musl"],
+      ["linux", "arm64", "aarch64-unknown-linux-musl"],
+      ["android", "arm64", "aarch64-unknown-linux-musl"],
+    ]) {
+      const packagePlatform = platform === "android" ? "linux" : platform;
+      const codexManifest = path.join(sandbox, "bridge", "node_modules", "@openai", "codex", "package.json");
+      const nativeRoot = path.join(path.dirname(codexManifest), "node_modules", "@openai", `codex-${packagePlatform}-${arch}`);
+      const binary = path.join(nativeRoot, "vendor", target, "bin", platform === "win32" ? "codex.exe" : "codex");
+      const resolved = resolvePackagedCodexBin({
+        platform,
+        arch,
+        resolvePackage(specifier, from) {
+          if (specifier === "@openai/codex/package.json") return codexManifest;
+          if (from === codexManifest && specifier === `@openai/codex-${packagePlatform}-${arch}/package.json`) return path.join(nativeRoot, "package.json");
+          throw new Error("Package is not hoisted");
+        },
+        exists: (candidate) => candidate === binary,
+      });
+      assert.equal(resolved, binary, `${platform}/${arch}`);
+    }
+  });
+
+  it("finds a hoisted platform package even when the wrapper package is absent", () => {
+    const nativeRoot = path.join(sandbox, "node_modules", "@openai", "codex-win32-x64");
+    const binary = path.join(nativeRoot, "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe");
+    assert.equal(resolvePackagedCodexBin({
+      platform: "win32",
+      arch: "x64",
+      resolvePackage(specifier, from) {
+        assert.ok(from.startsWith("file:"));
+        if (specifier === "@openai/codex-win32-x64/package.json") return path.join(nativeRoot, "package.json");
+        throw new Error("Missing wrapper");
+      },
+      exists: (candidate) => candidate === binary,
+    }), binary);
+  });
+
+  it("supports the official legacy vendor directory when the platform package is absent", () => {
+    const codexRoot = path.join(sandbox, "node_modules", "@openai", "codex");
+    const binary = path.join(codexRoot, "vendor", "aarch64-apple-darwin", "bin", "codex");
+    assert.equal(resolvePackagedCodexBin({
+      platform: "darwin",
+      arch: "arm64",
+      resolvePackage(specifier) {
+        if (specifier === "@openai/codex/package.json") return path.join(codexRoot, "package.json");
+        throw new Error("Missing optional package");
+      },
+      exists: (candidate) => candidate === binary,
+    }), binary);
+  });
+
+  it("returns no binary for unsupported systems, missing packages, or absent executables", () => {
+    for (const [platform, arch] of [["freebsd", "x64"], ["win32", "ia32"], ["linux", "riscv64"]]) {
+      assert.equal(resolvePackagedCodexBin({ platform, arch, resolvePackage: () => assert.fail("must not resolve unsupported packages") }), null);
+    }
+    assert.equal(resolvePackagedCodexBin({ platform: "win32", arch: "x64", resolvePackage: () => { throw new Error("Missing"); } }), null);
+    assert.equal(resolvePackagedCodexBin({
+      platform: "win32",
+      arch: "x64",
+      resolvePackage: () => path.join(sandbox, "missing-package", "package.json"),
+      exists: () => false,
+    }), null);
+  });
+
+  it("preserves explicit and installed native binaries ahead of the optional dependency", () => {
+    const options = {
+      platform: "win32",
+      env: { CODEX_BIN: "configured.exe" },
+      candidates: ["desktop.exe", "standalone.exe"],
+      runnable: () => true,
+      packaged: () => assert.fail("must preserve the installed native binary"),
+    };
+    assert.equal(resolveCodexBin("explicit.exe", options), "explicit.exe");
+    assert.equal(resolveCodexBin(undefined, options), "configured.exe");
+    assert.equal(resolveCodexBin(undefined, { ...options, env: {} }), "desktop.exe");
+  });
+
+  it("uses native packaged Codex before Windows command shims", () => {
+    const options = {
+      platform: "win32",
+      arch: "arm64",
+      env: {},
+      candidates: ["global.cmd", "path.BAT"],
+      runnable: () => true,
+      packaged: ({ platform, arch }) => {
+        assert.equal(platform, "win32");
+        assert.equal(arch, "arm64");
+        return "packaged.exe";
+      },
+    };
+    assert.equal(resolveCodexBin("explicit.cmd", options), "packaged.exe");
+    assert.equal(resolveCodexBin(undefined, { ...options, candidates: ["global.cmd", "path-native.exe"] }), "path-native.exe");
+    assert.equal(resolveCodexBin(undefined, { ...options, packaged: () => null }), "global.cmd");
+    assert.equal(resolveCodexBin(undefined, { ...options, packaged: () => null, runnable: () => false }), "codex");
+  });
 });
 
 describe("workspace resolution", () => {

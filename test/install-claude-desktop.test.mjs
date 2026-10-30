@@ -449,4 +449,83 @@ describe("claude desktop installer", () => {
     assert.match(output, /CODEX_BRIDGE_ALLOWED_ROOTS\"\s*:\s*\"\*\"/);
     assert.match(output, /CODEX_BRIDGE_THREAD_POLICY\"\s*:\s*\"roots\"/);
   });
+
+  it("creates the explicitly named shared connector in legacy mode even when native relay is enabled", () => {
+    const relayHome = fs.mkdtempSync(path.join(sandbox, "shared-routing-"));
+    fs.writeFileSync(path.join(relayHome, "native-relay.json"), JSON.stringify({ desktopTasks: true }));
+    const config = configWith(null);
+    const result = JSON.parse(installOutput({ config, args: ["--entry-name", "codex-bridge-desktop", "--quiet"], env: { CODEX_HOME: relayHome } }));
+    assert.equal(result.entry, "codex-bridge-desktop");
+    assert.equal(result.configured, true);
+    assert.equal(result.liveVerified, false);
+    assert.equal(result.desktopTasks, false);
+    const cfg = JSON.parse(fs.readFileSync(config, "utf8"));
+    assert.deepEqual(Object.keys(cfg.mcpServers), ["codex-bridge-desktop"]);
+    const env = cfg.mcpServers["codex-bridge-desktop"].env;
+    assert.equal(env.CODEX_BRIDGE_DESKTOP_TASKS, "0");
+    assert.equal(env.CODEX_BRIDGE_AUTOSTART, "1");
+    assert.equal(env.CODEX_BRIDGE_APPROVAL, "deny");
+    assert.equal(env.CODEX_BRIDGE_AUTO_APPROVE_ACK, "0");
+    assert.equal(env.CODEX_BRIDGE_APPROVAL_POLICY, "on-request");
+    assert.equal(env.CODEX_BRIDGE_SANDBOX, "workspace-write");
+    assert.equal(env.CODEX_BRIDGE_ENFORCE_FULL_ACCESS, "0");
+  });
+
+  it("preserves named shared settings and secrets while quiet upgrades remain idempotent", () => {
+    const config = configWith({ mcpServers: { "codex-bridge-desktop": {
+      command: process.execPath, args: [path.join(root, "src", "index.mjs")], disabled: true,
+      customAccess: { allow: ["codex_bridge_status"] }, env: { CUSTOM_TOKEN: "do-not-print", CODEX_BRIDGE_ALLOWED_ROOTS: "/limited",
+        CODEX_BRIDGE_THREAD_POLICY: "owned", CODEX_BRIDGE_DESKTOP_TASKS: "0", CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_SANDBOX: "read-only" },
+    } } });
+    const args = ["--entry-name", "codex-bridge-desktop", "--quiet"];
+    const output = installOutput({ config, args });
+    assert.doesNotMatch(output, /do-not-print|CUSTOM_TOKEN|\/limited/);
+    assert.equal(JSON.parse(output).changed, true);
+    const stored = JSON.parse(fs.readFileSync(config, "utf8")).mcpServers["codex-bridge-desktop"];
+    assert.equal(stored.disabled, true);
+    assert.deepEqual(stored.customAccess, { allow: ["codex_bridge_status"] });
+    assert.equal(stored.env.CUSTOM_TOKEN, "do-not-print");
+    assert.equal(stored.env.CODEX_BRIDGE_ALLOWED_ROOTS, "/limited");
+    assert.equal(stored.env.CODEX_BRIDGE_THREAD_POLICY, "owned");
+    assert.equal(stored.env.CODEX_BRIDGE_AUTOSTART, "0");
+    assert.equal(stored.env.CODEX_BRIDGE_SANDBOX, "read-only");
+    const before = fs.statSync(config, { bigint: true });
+    const beforeFiles = fs.readdirSync(sandbox).filter((name) => name.startsWith(path.basename(config)));
+    const repeated = JSON.parse(installOutput({ config, args }));
+    assert.equal(repeated.changed, false);
+    assert.equal(repeated.restartRequired, false);
+    assert.equal(fs.statSync(config, { bigint: true }).mtimeNs, before.mtimeNs);
+    assert.deepEqual(fs.readdirSync(sandbox).filter((name) => name.startsWith(path.basename(config))), beforeFiles);
+    const changed = install({ config, args, env: { CODEX_BRIDGE_AUTOSTART: "1" } }).mcpServers["codex-bridge-desktop"];
+    assert.equal(changed.env.CODEX_BRIDGE_AUTOSTART, "1");
+    assert.equal(changed.env.CODEX_BRIDGE_ALLOWED_ROOTS, "/limited");
+  });
+
+  it("refuses invalid requested names or conflicting shared entries without touching configuration", () => {
+    const unrelated = { mcpServers: { "codex-bridge-desktop": { command: "custom", args: ["custom.mjs"], env: { KEEP: "private" } } } };
+    const config = configWith(unrelated);
+    const before = fs.readFileSync(config, "utf8");
+    assert.throws(() => install({ config, args: ["--entry-name", "codex-bridge-desktop", "--quiet"] }), /unrecognized|customized/);
+    assert.equal(fs.readFileSync(config, "utf8"), before);
+    for (const args of [["--entry-name"], ["--entry-name", "other-server"]]) {
+      assert.throws(() => install({ config, args }), /--entry-name must be/);
+      assert.equal(fs.readFileSync(config, "utf8"), before);
+    }
+    const shadowing = { mcpServers: { "codex-bridge": { command: process.execPath, args: [path.join(root, "src", "index.mjs")] } } };
+    const shared = configWith(shadowing);
+    assert.throws(() => install({ config: shared, args: ["--entry-name", "codex-bridge-desktop"] }), /bridge entries/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(shared, "utf8")), shadowing);
+  });
+
+  it("does not apply a persisted full-access preference when explicitly creating the shared connector", () => {
+    const policyHome = fs.mkdtempSync(path.join(sandbox, "shared-access-"));
+    fs.writeFileSync(path.join(policyHome, "bridge-full-access.enabled"), "1");
+    const config = configWith(null);
+    const cfg = install({ config, args: ["--entry-name", "codex-bridge-desktop", "--quiet"], env: { CODEX_HOME: policyHome } });
+    const env = cfg.mcpServers["codex-bridge-desktop"].env;
+    assert.equal(env.CODEX_BRIDGE_APPROVAL_POLICY, "on-request");
+    assert.equal(env.CODEX_BRIDGE_ENFORCE_FULL_ACCESS, "0");
+    assert.equal(env.CODEX_BRIDGE_SANDBOX, "workspace-write");
+    assert.equal(fs.existsSync(path.join(policyHome, "config.toml")), false);
+  });
 });

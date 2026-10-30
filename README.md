@@ -23,23 +23,55 @@ https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 
 ## Installation
 
-Install the bridge package first, then follow the setup for the apps you use. The optional [workflow skill](#workflow-skill--npx-skills) has its own install commands; installing it does not register or start an MCP server.
+One global npm command installs the package and configures the local Claude, Codex, and Antigravity bridges. Install and sign in to the apps you intend to use first. Setup preserves existing project restrictions and custom settings; it does not sign in, grant workspace trust, change permission modes, or restart running apps.
 
 ### Package — npm
 
 **macOS / Linux / WSL**
 
 ```bash
-npm install -g @minhspark/codex-mcp-bridge@latest
+npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
 ```
 
 **Windows PowerShell**
 
 ```powershell
-npm.cmd install -g @minhspark/codex-mcp-bridge@latest
+npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
 ```
 
-Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows PowerShell. Run the same package command to update; reconnect MCP servers if their settings or installation paths changed.
+Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows PowerShell. Run the same command to update. The global install runs setup automatically and verifies the saved registrations. If a native Codex CLI is missing, setup installs a pinned official `@openai/codex` package in the current user's `~/.config/GptClaudeBridge/tools` (or the corresponding `XDG_CONFIG_HOME` path); no separate CLI install command is needed.
+
+`--allow-scripts=@minhspark/codex-mcp-bridge` authorizes only this package's setup hook. npm versions that block install scripts by default need this flag; a plain install works only when the hook is allowed. Add `--foreground-scripts` to the command to see setup progress because npm may hide lifecycle output. If npm prints `1 package had install scripts blocked`, rerun the recommended command or run `codex-bridge-setup` explicitly.
+
+| Client | Installed entry | Purpose |
+| --- | --- | --- |
+| Claude Code | `codex-bridge` | Native Codex Desktop handoffs on Windows/macOS; local app-server mode on Linux |
+| Claude Desktop shared connectors | `codex-bridge-desktop` | Local Codex app-server sessions from ordinary chat |
+| Codex | `claude-bridge` | Send to Claude and observe replies |
+| Codex Desktop, Windows/macOS | `codex-native-relay` | Native delivery, pipe forwarding, and relay executor bootstrap |
+| Codex and Claude Code | `antigravity-bridge` | Send to Antigravity App or bridge-owned CLI sessions |
+| Antigravity | `agent-bridge` and `codex-bridge` sidecar | Outbound agent messages and native App connectivity |
+
+After setup, open or reconnect the affected apps after active work finishes. For native Claude-to-Codex handoffs, use Claude Desktop's **Code tab** and the same local project saved in Codex Desktop. The shared `codex-bridge-desktop` connector has its own legacy route; it does not establish a native Code sender identity. Saved configuration is not proof of a live connection. Complete [verification](#verify-the-installation) in the actual clients.
+
+Automatic setup runs only for a **global npm install**. Local `npm install` and `npm ci` do not change app settings. Set `CODEX_BRIDGE_SKIP_SETUP=1`, or pass `--ignore-scripts`, to install the package without configuring apps. The optional [workflow skill](#workflow-skill--npx-skills), VS Code preview, and hosted ChatGPT pairing retain their separate setup steps.
+
+### Setup recovery and checks
+
+If an app configuration step fails, the npm install retains the package and its commands so setup can be repaired. A successful npm exit alone does not mean all registrations are configured. If setup reports an incomplete component, correct its reported issue and rerun:
+
+```bash
+codex-bridge-setup
+```
+
+On Windows use `codex-bridge-setup.cmd`. `codex-mcp-bridge setup` is an equivalent entry point. Repeated setup keeps existing settings and reports conflicts rather than overwriting unrelated registrations.
+
+```bash
+codex-bridge-setup --check
+codex-bridge-setup --dry-run
+```
+
+`--check` inspects saved registrations without sending work. Explicit setup and `--check` exit with a nonzero status when configuration is incomplete. `--dry-run` lists planned components and configuration paths without downloads or writes. Add `--json` for structured output, or `--no-download` to require an already available Codex CLI. Setup never labels a saved registration as a verified live exchange.
 
 ### Package — Homebrew
 
@@ -55,24 +87,24 @@ brew install buidangminh23/tap/codex-mcp-bridge
 brew upgrade codex-mcp-bridge
 ```
 
-The installers record Homebrew's stable `opt` paths, so registrations keep working after an upgrade and running bridges reload the new version. Keep one install channel: whichever of npm or Homebrew comes first on `PATH` provides the commands.
+Run `codex-bridge-setup` after installing through Homebrew. The installers record Homebrew's stable `opt` paths, so registrations keep working after an upgrade and running bridges reload compatible code changes. Keep one install channel: whichever of npm or Homebrew comes first on `PATH` provides the commands.
 
 [Windows](#windows-powershell) · [macOS](#macos-terminal) · [Claude Code](#register-claude-code) · [Antigravity](#antigravity-app-and-cli) · [VS Code](#vs-code-extensions--windows-preview) · [Linux / WSL](#linux--wsl-bash) · [NPX Skills](#workflow-skill--npx-skills) · [ChatGPT plugin](#chatgpt-plugin)
 
 | Integration | Setup |
 | --- | --- |
-| Claude Desktop Code → Codex Desktop | Native relay plus user-level `claude mcp add` registration below |
-| Claude Code CLI → local Codex app-server | CLI registration with Desktop mode disabled |
-| Claude Desktop shared MCP → local Codex app-server | Optional legacy registration below |
-| Codex → Claude Desktop Code | `claude-mcp-bridge-install` with `CODEX_BRIDGE_DESKTOP_TASKS=1` |
-| Codex / Claude Desktop Code → Antigravity App or CLI | Antigravity `--codex` / `--claude` registrations |
-| Antigravity App → Codex / Claude Desktop Code | Antigravity `--desktop` registration |
+| Claude Desktop Code → Codex Desktop | Automatic native setup on Windows/macOS |
+| Claude Code CLI → local Codex app-server | Automatic on Linux; optional manual CLI mode on Windows/macOS |
+| Claude Desktop shared MCP → local Codex app-server | Automatic `codex-bridge-desktop` registration |
+| Codex → Claude Desktop Code | Automatic `claude-bridge` registration |
+| Codex / Claude Desktop Code → Antigravity App or CLI | Automatic Antigravity registrations |
+| Antigravity App → Codex / Claude Desktop Code | Automatic outbound registration and sidecar |
 | Claude Code ↔ Codex inside VS Code | Separate Windows preview registrations below |
 | ChatGPT → paired Codex Desktop | Hosted plugin plus `codex-sites-connector --pair` |
 
 ### Antigravity App and CLI
 
-Install and sign in to the Antigravity App and/or `agy` CLI, then run:
+The global npm setup registers all Antigravity components. Install and sign in to the Antigravity App and/or `agy` CLI to use them. The following commands are optional for selective manual setup or repair:
 
 ```bash
 antigravity-mcp-bridge-install --all
@@ -133,9 +165,12 @@ Outbound support targets existing local Codex tasks and live Claude Desktop Code
 
 ### Windows (PowerShell)
 
-Install and sign in to [Codex Desktop](https://developers.openai.com/codex/app) and [Claude Desktop](https://claude.com/download). Save the project in Codex Desktop and open the same directory in Claude Desktop's **Code tab**. Have the Codex and Claude Code CLIs available.
+Install and sign in to [Codex Desktop](https://developers.openai.com/codex/app) and [Claude Desktop](https://claude.com/download). Save the project in Codex Desktop and open the same directory in Claude Desktop's **Code tab**. The [global npm command](#package--npm) configures both apps, the shared `codex-bridge-desktop` connector, and Antigravity. Then [verify](#verify-the-installation).
 
-If the Codex CLI is missing, run `winget install --id OpenAI.Codex --exact`, open a new terminal, then run `codex.exe login`.
+<details>
+<summary>Optional manual native setup</summary>
+
+These advanced commands require an existing Codex CLI on PATH. If it is missing, use `codex-bridge-setup.cmd` to resolve or install it automatically. A separately managed CLI can instead be installed with `winget install --id OpenAI.Codex --exact` and signed in with `codex.exe login`.
 
 ```powershell
 $env:CODEX_EXE = (Get-Command codex.exe).Source
@@ -144,11 +179,16 @@ $env:CODEX_BRIDGE_DESKTOP_TASKS = "1"
 claude-mcp-bridge-install.cmd
 ```
 
-Next: [register Claude Code](#register-claude-code), add [relay pipe forwarding](#native-relay-pipe-forwarding), then [verify](#verify-the-installation).
+For manual setup, also [register Claude Code](#register-claude-code) and check [relay pipe forwarding](#native-relay-pipe-forwarding).
+
+</details>
 
 ### macOS (Terminal)
 
-Install and sign in to Codex Desktop and Claude Desktop. Save the project in Codex Desktop and open the same directory in Claude Desktop's **Code tab**.
+Install and sign in to Codex Desktop and Claude Desktop. Save the project in Codex Desktop and open the same directory in Claude Desktop's **Code tab**. Run the [global npm command](#package--npm), then [verify](#verify-the-installation). Setup selects the trusted app-bundled relay runtime when available and initializes the relay executor.
+
+<details>
+<summary>Optional manual native setup</summary>
 
 ```bash
 npm install -g @openai/codex@latest
@@ -157,13 +197,15 @@ codex-native-relay-install --desktop-tasks
 CODEX_BRIDGE_DESKTOP_TASKS=1 claude-mcp-bridge-install
 ```
 
-Keep bootstrap enabled on the first relay install. Next: [register Claude Code](#register-claude-code), add [relay pipe forwarding](#native-relay-pipe-forwarding), then [verify](#verify-the-installation).
+Keep bootstrap enabled on the first manual relay install. Also [register Claude Code](#register-claude-code) and check [relay pipe forwarding](#native-relay-pipe-forwarding).
+
+</details>
 
 ### Register Claude Code
 
-Claude Desktop and Claude Code have separate MCP registrations. If `claude --version` is unavailable, [install Claude Code](https://code.claude.com/docs/en/setup) first. For a new registration, replace the example project path below with the actual directory. Preserve custom settings if `codex-bridge` is already registered.
+Global npm setup creates the user-level Code registration automatically. Claude Desktop and Claude Code have separate MCP registrations. The commands below are optional manual alternatives; they require the [Claude Code CLI](https://code.claude.com/docs/en/setup). Replace the example project path with the actual directory and preserve custom settings if `codex-bridge` is already registered.
 
-Native Desktop handoffs require a verified Claude Desktop **Code** session. A shared Desktop chat MCP registration cannot establish that sender identity. If you also keep the optional legacy shared registration below, close Claude before editing its `claude_desktop_config.json` and rename that entry from `codex-bridge` to `codex-bridge-desktop`, keeping its contents. Otherwise the shared entry can shadow the user-level Code registration and hide the calling task. Later Desktop installer runs recognize the renamed entry.
+Native Desktop handoffs require a verified Claude Desktop **Code** session. A shared Desktop chat MCP registration cannot establish that sender identity. Automatic setup safely renames a recognized shared `codex-bridge` entry to `codex-bridge-desktop`, retaining its contents, so it cannot shadow the Code registration. A conflicting target or unknown entry is reported for review. For manual edits, close Claude first and keep the two entry names distinct.
 
 <details>
 <summary>Windows PowerShell</summary>
@@ -213,11 +255,11 @@ claude mcp add --scope user codex-bridge \
 
 Separate multiple allowed directories with `;` on Windows or `:` on macOS/Linux.
 
-`codex-bridge-code-install` is for checking or migrating an existing supervised Code registration to a shared project policy; it does not replace the first-install commands above. See [project onboarding](docs/project-onboarding.md).
+`codex-bridge-code-install --install` now creates or updates the supervised Code entry; `--install --dry-run` previews it. The complete `codex-bridge-setup` command also supplies the other registrations and prerequisites. The helper's existing `--check` and policy migration modes remain available; see [project onboarding](docs/project-onboarding.md).
 
 ### Claude Desktop shared MCP — legacy option
 
-This optional registration connects a shared Claude Desktop MCP server to local Codex app-server sessions. For verified handoffs into Codex Desktop conversations, use the Code-tab setup above. Install and sign in to the Codex CLI first.
+Global setup includes this connector as **`codex-bridge-desktop`** in Claude Desktop's shared MCP configuration. It connects ordinary chat to local Codex app-server sessions. For verified handoffs into Codex Desktop conversations, use the Code-tab route above. The following commands are optional manual alternatives and require an available, signed-in Codex CLI.
 
 **Windows PowerShell**
 
@@ -225,16 +267,16 @@ This optional registration connects a shared Claude Desktop MCP server to local 
 $env:CODEX_EXE = (Get-Command codex.exe).Source
 $env:CODEX_BRIDGE_DESKTOP_TASKS = "0"
 $env:CODEX_BRIDGE_AUTOSTART = "1"
-codex-mcp-bridge-install.cmd
+codex-mcp-bridge-install.cmd --entry-name codex-bridge-desktop
 ```
 
 **macOS Terminal**
 
 ```bash
-CODEX_BRIDGE_DESKTOP_TASKS=0 CODEX_BRIDGE_AUTOSTART=1 codex-mcp-bridge-install
+CODEX_BRIDGE_DESKTOP_TASKS=0 CODEX_BRIDGE_AUTOSTART=1 codex-mcp-bridge-install --entry-name codex-bridge-desktop
 ```
 
-The installer updates Claude Desktop's shared MCP configuration. Close and reopen Claude after configuration changes, and keep a distinct `codex-bridge-desktop` entry name if also using the user-level Code registration. `--desktop-tasks` configures the native destination mode but does not make a shared Desktop chat server a verified Code sender.
+Close and reopen Claude after active work finishes to load changed shared configuration. A fresh `--entry-name codex-bridge-desktop` registration defaults to legacy mode even when the native relay is configured. Existing custom modes are preserved. `--desktop-tasks` does not make a shared Desktop chat server a verified Code sender.
 
 ### VS Code extensions — Windows preview
 
@@ -267,7 +309,7 @@ If you register the relay by hand, add the same line and append the variable nam
 
 ### Linux / WSL (Bash)
 
-Use Node.js 22.13+ and signed-in Codex and Claude Code CLIs under the same Linux user. This mode uses a local app-server; native Desktop integration requires Windows or macOS.
+The global npm command configures local app-server mode on Linux/WSL and resolves the Codex CLI automatically. Use Node.js 22.13+ and signed-in Codex and Claude Code under the same Linux user. Native Desktop integration requires Windows or macOS. WSL and Windows have separate paths and registrations. The following commands are optional manual alternatives.
 
 <details>
 <summary>CLI registration commands</summary>
@@ -400,7 +442,9 @@ This repository ships a hosted ChatGPT plugin and the skill above. It does not c
 
 ### Verify the installation
 
-Reconnect the affected MCP servers in the actual client tasks; Claude Code provides `/mcp`. Run these **MCP tools** inside the apps:
+Run `codex-bridge-setup --check` (`codex-bridge-setup.cmd --check` on Windows) to inspect saved registrations. An incomplete result names the component requiring attention; rerun setup after correcting it.
+
+Reconnect the affected MCP servers in the actual client tasks; Claude Code provides `/mcp`. If the app has not loaded the new registrations, close and reopen it after active work finishes. Setup does not kill or restart apps. Run these **MCP tools** inside the apps:
 
 | Client | Tool |
 |---|---|
@@ -408,6 +452,7 @@ Reconnect the affected MCP servers in the actual client tasks; Claude Code provi
 | Codex | `claude_bridge_status` |
 | Codex Desktop | `native_relay_status` |
 | Codex / Claude Desktop Code with Antigravity installed | `antigravity_bridge_status` |
+| Antigravity App | `agent_bridge_status` |
 
 To check CLI registrations without sending work:
 
@@ -416,7 +461,7 @@ codex mcp list
 claude mcp list
 ```
 
-On Windows use `codex.exe mcp list`. An installed skill is listed separately with `npx skills list` (add `-g` for user-wide skills); it is not an MCP registration.
+These optional CLI checks require the respective CLI on PATH; the complete setup check can also use its managed Codex CLI. On Windows use `codex.exe mcp list`. An installed skill is listed separately with `npx skills list` (add `-g` for user-wide skills); it is not an MCP registration.
 
 Send a short message and confirm its reply **in both directions**. Registration alone does not prove delivery.
 
@@ -456,6 +501,12 @@ Dispatch expires after two minutes; operation history remains stored. Disconnect
 
 - **Command missing:** open a new terminal and check Node.js 22+ and the global npm directory (or Homebrew's `bin`) on PATH.
 - **PowerShell blocks scripts:** use `npm.cmd`, installer `.cmd` launchers, and `codex.exe`.
+- **Installed package but no entries:** run `codex-bridge-setup.cmd --check` on Windows, or `codex-bridge-setup --check` elsewhere. A local install, `--ignore-scripts`, or `CODEX_BRIDGE_SKIP_SETUP=1` skips automatic configuration; run setup explicitly when wanted.
+- **npm says install scripts were blocked:** rerun the recommended install with `--allow-scripts=@minhspark/codex-mcp-bridge`, or run `codex-bridge-setup` explicitly. The flag allows this package's hook without changing the global script security setting. Add `--foreground-scripts` when installation progress is needed.
+- **Claude connector failed or tools missing:** inspect `codex-bridge` in `/mcp` inside the actual Code session and reconnect it. A standalone process answering `initialize` does not prove the app loaded that server. For ordinary Claude chat, check the separate `codex-bridge-desktop` connector.
+- **A new package still runs an older bridge:** compare the version reported by `codex_bridge_status` in the actual client with the installed package, and inspect that client's MCP command and script path. An old source checkout can remain active beside a newer global package. Rerun setup and reconnect the affected client so it loads the intended installation.
+- **Startup reaches a connection timeout:** setup prepares runtime snapshots in advance, but this does not guarantee a particular machine's startup time. A `prepared ... (reused)` line means the runtime directory was reused; its integrity metadata may still need to be rebuilt. After correcting the installation path and reloading, collect the runtime version, startup log, and exact timeout to distinguish a cache miss from another startup failure. A reported 30-second timeout is not established as fixed by configuration changes alone.
+- **Claude labels startup diagnostics as `Server stderr`:** ordinary `preparing`, `prepared`, and `ready` lines are diagnostics, not evidence of failure by themselves. Inspect the actual connection status and error. MCP reserves stdout for protocol messages; redirecting diagnostics there can break the connection.
 - **No sessions or wrong project:** open the intended Claude **Code** session and use the exact project directory saved in Codex Desktop.
 - **Relay unavailable:** Codex Desktop runs the relay only while a task has its MCP servers loaded. On macOS the bridge opens the destination task (or your project's latest Codex task) in the background to start it; otherwise open a regular project task and send it a turn. If it still fails, check [pipe forwarding](#native-relay-pipe-forwarding) and run `native_relay_status` in that task.
 - **Timeout or unconfirmed send:** inspect the original task or receipt before sending again.

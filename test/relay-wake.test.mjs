@@ -1,328 +1,93 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import zlib from "node:zlib";
 import { describe, it } from "node:test";
 
-import { createRelayWake, endpointAnswers, keeperBackoffMs, recentDesktopTaskFor, relayKeeperEnabled, relayWakeEnabled, startRelayKeeper } from "../src/relay-wake.mjs";
+import { createRelayWake, endpointAnswers, relayWakeEnabled } from "../src/relay-wake.mjs";
 import { DesktopTaskDelivery, RELAY_DOWN_GUIDANCE } from "../src/thread-delivery.mjs";
 import { NativeRelayError } from "../src/native-relay.mjs";
 
-const ids = {
-  latest: "01a15746-88bc-7de0-a7ee-f8c2e9767fbf",
-  older: "01a1572f-bdf0-7693-983d-678fe49c79ab",
-  other: "01a1586b-21ea-7660-97fc-144e7bea8614",
-  cli: "01a1338c-6c88-7931-b937-8928025b42e4",
-  executor: "01a071bc-3739-7ce2-93e4-f59220245944",
-  target: "01a15f09-cbc7-7792-a8a3-507750699337",
-};
+const ids = { latest: "01a15746-88bc-7de0-a7ee-f8c2e9767fbf" };
 
-function sessionsFixture(t) {
-  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "relay-wake-")));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const project = path.join(root, "project");
-  const elsewhere = path.join(root, "elsewhere");
-  fs.mkdirSync(project);
-  fs.mkdirSync(elsewhere);
-  const sessions = path.join(root, "sessions");
-  let tick = 0;
-  const write = (day, id, cwd, { originator = "Codex Desktop", compressed = false } = {}) => {
-    const directory = path.join(sessions, "2026", "10", day);
-    fs.mkdirSync(directory, { recursive: true });
-    const body = `${JSON.stringify({ type: "session_meta", payload: { id, cwd, originator } })}\n${JSON.stringify({ type: "event_msg" })}\n`;
-    const file = path.join(directory, `rollout-2026-10-${day}T10-00-00-${id}.jsonl${compressed ? ".zst" : ""}`);
-    fs.writeFileSync(file, compressed ? zlib.zstdCompressSync(Buffer.from(body)) : body);
-    const stamp = new Date(Date.UTC(2026, 9, 1) + (tick += 60000));
-    fs.utimesSync(file, stamp, stamp);
-  };
-  return { root, project, elsewhere, sessions, write };
-}
-
-describe("relay wake", () => {
-  it("picks the most recent Codex Desktop task of the sender's project and skips the executor, CLI and other projects", async (t) => {
-    const { project, elsewhere, sessions, write } = sessionsFixture(t);
-    write("13", ids.older, project, { compressed: true });
-    write("20", ids.cli, project, { originator: "codex_cli_rs" });
-    write("20", ids.latest, project);
-    write("20", ids.other, elsewhere);
-    write("21", ids.executor, project);
-    assert.equal(await recentDesktopTaskFor(project, { sessions, exclude: [ids.executor] }), ids.latest);
-    assert.equal(await recentDesktopTaskFor(project, { sessions, exclude: [ids.executor, ids.latest] }), ids.older);
-    assert.equal(await recentDesktopTaskFor(path.join(project, "missing"), { sessions }), null);
-    assert.equal(await recentDesktopTaskFor(null, { sessions }), null);
-  });
-
-  it("opens the destination task in the background and waits for the relay socket", async () => {
-    const opened = [];
-    let live = false;
+describe("silent relay recovery", () => {
+  it("waits for recovery without opening a task even when legacy wake flags are enabled", async () => {
     let time = 0;
+    const messages = [];
     const wake = createRelayWake({
-      enabled: true, desktopRunning: () => true, executorThreadId: () => ids.executor,
-      findTask: async () => { throw new Error("the destination is known"); },
-      open: async (threadId) => { opened.push(threadId); },
-      answers: async () => { time += 1000; if (time > 3000) live = true; return live; },
-      now: () => time, sleep: async () => {},
+      enabled: true, env: { CODEX_BRIDGE_RELAY_KEEPER: "1", CODEX_BRIDGE_RELAY_WAKE: "1" },
+      open: () => assert.fail("recovery must never open a task"),
+      findTask: () => assert.fail("recovery must not select a task"),
+      findAnyTask: () => assert.fail("recovery must not navigate another project"),
+      answers: async () => time >= 500, now: () => time, sleep: async ms => { time += ms; },
+      log: message => messages.push(message),
     });
-    assert.deepEqual(await wake({ socketPath: "/tmp/relay.sock", threadId: ids.target }), { threadId: ids.target });
-    assert.deepEqual(opened, [ids.target]);
+    assert.deepEqual(await wake({ socketPath: "/s", threadId: ids.latest }), { threadId: null });
+    assert.equal(time, 500);
+    assert.match(messages[0], /original operation will verify native dispatch/);
   });
 
-  it("falls back to the sender project's recent task, never wakes through the executor, and backs off after a failure", async () => {
-    const opened = [];
+  it("bounds probes and sleeps by the caller's remaining deadline", async () => {
     let time = 0;
-    const findings = [];
+    const timeouts = [];
     const wake = createRelayWake({
-      enabled: true, desktopRunning: () => true, executorThreadId: () => ids.executor, senderCwd: () => "/project",
-      findTask: async (cwd, exclude) => { findings.push([cwd, exclude]); return ids.latest; },
-      open: async (threadId) => { opened.push(threadId); },
-      answers: async () => false, waitMs: 5000, cooldownMs: 60000,
-      now: () => time, sleep: async (ms) => { time += ms; },
+      enabled: true, waitMs: 20000, now: () => time,
+      answers: async (_path, options) => { timeouts.push(options.timeoutMs); return false; },
+      sleep: async ms => { time += ms; },
     });
-    assert.equal(await wake({ socketPath: "/tmp/relay.sock", threadId: ids.executor }), null);
-    assert.deepEqual(opened, [ids.latest]);
-    assert.deepEqual(findings, [["/project", [ids.executor]]]);
-    assert.equal(await wake({ socketPath: "/tmp/relay.sock", threadId: ids.target }), null);
-    assert.deepEqual(opened, [ids.latest]);
-    time += 60000;
-    assert.equal(await wake({ socketPath: "/tmp/relay.sock", threadId: ids.target }), null);
-    assert.deepEqual(opened, [ids.latest, ids.target]);
+    assert.equal(await wake({ socketPath: "/s", deadline: 400 }), null);
+    assert.equal(time, 400);
+    assert.deepEqual(timeouts, [400, 150]);
+    assert.equal(await wake({ socketPath: "/s", deadline: 399 }), null);
+    assert.equal(timeouts.length, 2);
   });
 
-  it("does nothing when disabled, when Codex Desktop is not running or when no task is known", async () => {
-    const opened = [];
-    const base = { executorThreadId: () => null, open: async (threadId) => { opened.push(threadId); }, answers: async () => true, findTask: async () => null, findAnyTask: async () => null };
-    assert.equal(await createRelayWake({ ...base, enabled: false, desktopRunning: () => true })({ socketPath: "/s", threadId: ids.target }), null);
-    assert.equal(await createRelayWake({ ...base, enabled: true, desktopRunning: () => false })({ socketPath: "/s", threadId: ids.target }), null);
-    assert.equal(await createRelayWake({ ...base, enabled: true, desktopRunning: () => true })({ socketPath: "/s", threadId: "not-a-task" }), null);
-    assert.deepEqual(opened, []);
-    assert.equal(relayWakeEnabled({}, "darwin"), true);
-    assert.equal(relayWakeEnabled({ CODEX_BRIDGE_RELAY_WAKE: "0" }, "darwin"), false);
+  it("does not suppress recovery after a previous timeout", async () => {
+    let time = 0;
+    let ready = false;
+    const wake = createRelayWake({ enabled: true, waitMs: 100, now: () => time,
+      answers: async () => ready, sleep: async ms => { time += ms; } });
+    assert.equal(await wake({ socketPath: "/s" }), null);
+    ready = true;
+    assert.deepEqual(await wake({ socketPath: "/s" }), { threadId: null });
+  });
+
+  it("never accepts a transport answer that arrived after the deadline", async () => {
+    let time = 0;
+    const wake = createRelayWake({ enabled: true, now: () => time,
+      answers: async () => { time = 501; return true; } });
+    assert.equal(await wake({ socketPath: "/s", deadline: 500 }), null);
+  });
+
+  it("respects explicit opt-outs and invalid endpoints without probing", async () => {
+    const answers = async () => assert.fail("must not probe");
+    assert.equal(await createRelayWake({ enabled: false, answers })({ socketPath: "/s" }), null);
+    assert.equal(await createRelayWake({ enabled: true, answers })({ socketPath: "" }), null);
+    assert.equal(relayWakeEnabled({ CODEX_BRIDGE_RELAY_WAKE: "0" }, "win32"), false);
     assert.equal(relayWakeEnabled({}, "win32"), true);
-    assert.equal(relayWakeEnabled({ CODEX_BRIDGE_RELAY_WAKE: "off" }, "win32"), false);
+    assert.equal(relayWakeEnabled({}, "darwin"), true);
     assert.equal(relayWakeEnabled({}, "linux"), false);
   });
 
-  it("waits for an asynchronous Codex Desktop check before opening anything", async () => {
-    const opened = [];
-    const wake = createRelayWake({
-      enabled: true, desktopRunning: async () => false, executorThreadId: () => null,
-      open: async (threadId) => { opened.push(threadId); }, answers: async () => true, findTask: async () => null, findAnyTask: async () => null,
+  it("recovers when a real relay socket appears and keeps concurrent deadlines separate", async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "relay-recover-"));
+    const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\relay-recover-${process.pid}-${Date.now()}` : path.join(root, "s");
+    const server = net.createServer(socket => socket.destroy());
+    let timer;
+    t.after(async () => {
+      clearTimeout(timer);
+      if (server.listening) await new Promise(resolve => server.close(resolve));
+      fs.rmSync(root, { recursive: true, force: true });
     });
-    assert.equal(await wake({ socketPath: "/s", threadId: ids.target }), null);
-    assert.deepEqual(opened, []);
-  });
-
-  it("finds a Desktop task of the same repository when the sender works in a linked worktree", async (t) => {
-    const { root, sessions, write } = sessionsFixture(t);
-    const repo = path.join(root, "repo");
-    const git = (...args) => execFileSync("git", args, { cwd: repo, stdio: "ignore" });
-    fs.mkdirSync(repo);
-    git("init", "-q");
-    git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
-    const worktree = path.join(root, "worktree");
-    git("worktree", "add", "-q", worktree);
-    write("20", ids.latest, repo);
-    assert.equal(await recentDesktopTaskFor(worktree, { sessions }), ids.latest);
-  });
-
-  it("coalesces concurrent wakes into one open", async () => {
-    const opened = [];
-    let release;
-    const gate = new Promise((resolve) => { release = resolve; });
-    const wake = createRelayWake({
-      enabled: true, desktopRunning: () => true, executorThreadId: () => null,
-      open: async (threadId) => { opened.push(threadId); await gate; }, answers: async () => true, sleep: async () => {},
-    });
-    const first = wake({ socketPath: "/s", threadId: ids.target });
-    const second = wake({ socketPath: "/s", threadId: ids.latest });
-    release();
-    const results = await Promise.all([first, second]);
-    assert.deepEqual(results[0], { threadId: ids.target });
-    assert.ok(results[1]);
-    assert.deepEqual(opened, [ids.target]);
-  });
-
-  it("lets a request joining a background wake give up at its own deadline", async () => {
-    let clock = 0;
-    let opened = 0;
-    let relayUp = false;
-    const wake = createRelayWake({
-      enabled: true, desktopRunning: () => true, executorThreadId: () => null,
-      findTask: async () => null, findAnyTask: async () => ids.target,
-      open: async () => { opened += 1; }, answers: async () => relayUp,
-      now: () => clock, sleep: async (ms) => { clock += ms; }, waitMs: 20000, backgroundWaitMs: 60000,
-    });
-    const background = wake({ socketPath: "/s", background: true });
-    const joined = await wake({ socketPath: "/s", threadId: ids.latest, deadline: 5000 });
-    assert.equal(joined, null);
-    assert.ok(clock < 60000);
-    relayUp = true;
-    assert.deepEqual(await background, { threadId: ids.target });
-    assert.equal(opened, 1);
-  });
-
-  it("checks an endpoint by connecting to it", async (t) => {
-    let socketPath;
-    if (process.platform === "win32") socketPath = String.raw`\\.\pipe\LOCAL\relay-wake-test-${process.pid}-${Date.now()}`;
-    else {
-      const directory = fs.mkdtempSync(path.join("/tmp", "rw-"));
-      t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-      socketPath = path.join(directory, "s.sock");
-    }
     assert.equal(await endpointAnswers(socketPath), false);
-    const server = net.createServer((socket) => socket.destroy());
-    await new Promise((resolve) => server.listen(socketPath, resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const wake = createRelayWake({ enabled: true, waitMs: 3000, pollMs: 10 });
+    const short = wake({ socketPath, deadline: Date.now() - 1 });
+    const long = wake({ socketPath });
+    timer = setTimeout(() => server.listen(socketPath), 30);
+    assert.equal(await short, null);
+    assert.deepEqual(await long, { threadId: null });
     assert.equal(await endpointAnswers(socketPath), true);
-  });
-});
-
-describe("relay keeper", () => {
-  function stateFixture(t) {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-keeper-"));
-    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-    return path.join(directory, "bridge-relay-wake.json");
-  }
-
-  it("finds the most recent Codex Desktop task of any project when asked", async (t) => {
-    const { project, elsewhere, sessions, write } = sessionsFixture(t);
-    write("19", ids.older, project);
-    write("20", ids.cli, elsewhere, { originator: "codex_cli_rs" });
-    write("20", ids.other, elsewhere);
-    write("21", ids.executor, project);
-    assert.equal(await recentDesktopTaskFor(null, { sessions, exclude: [ids.executor], anyProject: true }), ids.other);
-    assert.equal(await recentDesktopTaskFor(null, { sessions, exclude: [ids.executor] }), null);
-  });
-
-  it("opens a task of another project when neither a destination nor a sender task is known", async () => {
-    const opened = [];
-    const wake = createRelayWake({
-      enabled: true, desktopRunning: () => true, executorThreadId: () => ids.executor, senderCwd: () => null,
-      findTask: async () => null, findAnyTask: async (exclude) => { assert.deepEqual(exclude, [ids.executor]); return ids.other; },
-      open: async (threadId) => { opened.push(threadId); }, answers: async () => true, sleep: async () => {},
-    });
-    assert.deepEqual(await wake({ socketPath: "/s" }), { threadId: ids.other });
-    assert.deepEqual(opened, [ids.other]);
-  });
-
-  it("backs off background wakes across processes and resets after a success", async (t) => {
-    const stateFile = stateFixture(t);
-    const opened = [];
-    let time = 1_000_000;
-    let live = false;
-    const make = () => createRelayWake({
-      enabled: true, desktopRunning: () => true, executorThreadId: () => null, findTask: async () => ids.latest, findAnyTask: async () => null,
-      open: async (threadId) => { opened.push(threadId); }, answers: async () => live,
-      backgroundWaitMs: 5000, cooldownMs: 60000, stateFile, now: () => time, sleep: async (ms) => { time += ms; },
-    });
-    const failures = () => JSON.parse(fs.readFileSync(stateFile, "utf8")).failures;
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.equal(failures(), 1);
-    time += 30000;
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.equal(opened.length, 1);
-    time += 60000;
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.equal(opened.length, 2);
-    assert.equal(failures(), 2);
-    assert.equal(keeperBackoffMs(2), 120000);
-    time += 60000;
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.equal(opened.length, 2);
-    time += 60000;
-    live = true;
-    assert.deepEqual(await make()({ socketPath: "/s", background: true }), { threadId: ids.latest });
-    assert.equal(failures(), 0);
-    assert.equal(fs.existsSync(`${stateFile}.lock`), false);
-  });
-
-  it("backs off background wakes when Codex Desktop runs but no task can be opened", async (t) => {
-    const stateFile = stateFixture(t);
-    let checks = 0;
-    let time = 1_000_000;
-    const make = () => createRelayWake({
-      enabled: true, desktopRunning: () => { checks += 1; return true; }, executorThreadId: () => null,
-      findTask: async () => null, findAnyTask: async () => null, open: async () => { throw new Error("must not open"); },
-      answers: async () => false, stateFile, now: () => time, sleep: async () => {},
-    });
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    time += 30000;
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.equal(checks, 1);
-    time += 30000;
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.equal(checks, 2);
-    time += 60000;
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.equal(checks, 2);
-  });
-
-  it("checks whether Codex Desktop runs at most once a minute across processes while it is closed", async (t) => {
-    const stateFile = stateFixture(t);
-    let checks = 0;
-    let time = 1_000_000;
-    const make = () => createRelayWake({
-      enabled: true, desktopRunning: () => { checks += 1; return false; }, executorThreadId: () => null,
-      findTask: async () => ids.latest, findAnyTask: async () => null, open: async () => { throw new Error("must not open"); },
-      answers: async () => false, stateFile, now: () => time, sleep: async () => {},
-    });
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.equal(checks, 1);
-    time += 60000;
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.equal(checks, 2);
-  });
-
-  it("lets only one process open a task and makes a waiting request reuse its wake", async (t) => {
-    const stateFile = stateFixture(t);
-    fs.writeFileSync(`${stateFile}.lock`, JSON.stringify({ pid: 1, at: 1_000_000 }));
-    let time = 1_000_000;
-    const opened = [];
-    let probes = 0;
-    const make = () => createRelayWake({
-      enabled: true, desktopRunning: () => true, executorThreadId: () => null, findTask: async () => ids.latest, findAnyTask: async () => null,
-      open: async (threadId) => { opened.push(threadId); }, answers: async () => ++probes > 2,
-      stateFile, now: () => time, sleep: async (ms) => { time += ms; },
-    });
-    assert.equal(await make()({ socketPath: "/s", background: true }), null);
-    assert.deepEqual(await make()({ socketPath: "/s", threadId: ids.target, deadline: time + 10000 }), { threadId: null });
-    assert.deepEqual(opened, []);
-    time += 200000;
-    assert.deepEqual(await make()({ socketPath: "/s", threadId: ids.target }), { threadId: ids.target });
-    assert.deepEqual(opened, [ids.target]);
-  });
-
-  it("wakes only while the relay is down and stops cleanly", async () => {
-    const calls = [];
-    const scheduled = [];
-    const timers = {
-      setTimeout: (fn, ms) => { scheduled.push(["timeout", ms]); return { kind: "timeout" }; },
-      setInterval: (fn, ms) => { scheduled.push(["interval", ms]); return { kind: "interval" }; },
-      clearTimeout: (handle) => scheduled.push(["clear", handle.kind]),
-      clearInterval: (handle) => scheduled.push(["clear", handle.kind]),
-    };
-    let live = true;
-    const keeper = startRelayKeeper({ wake: async (request) => { calls.push(request); return { threadId: ids.latest }; }, socketPath: () => "/accounts.sock", answers: async () => live, timers, intervalMs: 30000, initialDelayMs: 3000 });
-    assert.deepEqual(scheduled, [["timeout", 3000], ["interval", 30000]]);
-    assert.equal(await keeper.tick(), null);
-    live = false;
-    assert.deepEqual(await keeper.tick(), { threadId: ids.latest });
-    assert.deepEqual(calls, [{ socketPath: "/accounts.sock", background: true }]);
-    keeper.stop();
-    assert.equal(await keeper.tick(), null);
-    assert.deepEqual(scheduled.slice(2), [["clear", "timeout"], ["clear", "interval"]]);
-    assert.equal(relayKeeperEnabled({}, "win32"), false);
-    assert.equal(relayKeeperEnabled({ CODEX_BRIDGE_RELAY_KEEPER: "1" }, "win32"), true);
-    assert.equal(relayKeeperEnabled({ CODEX_BRIDGE_RELAY_KEEPER: "on" }, "win32"), true);
-    assert.equal(relayKeeperEnabled({ CODEX_BRIDGE_RELAY_KEEPER: "1", CODEX_BRIDGE_RELAY_WAKE: "0" }, "win32"), false);
-    assert.equal(relayKeeperEnabled({ CODEX_BRIDGE_RELAY_KEEPER: "0" }, "win32"), false);
-    assert.equal(relayKeeperEnabled({}, "darwin"), true);
-    assert.equal(relayKeeperEnabled({ CODEX_BRIDGE_RELAY_WAKE: "0" }, "darwin"), false);
-    assert.equal(relayKeeperEnabled({}, "linux"), false);
   });
 });
 
@@ -362,4 +127,33 @@ describe("Desktop delivery relay wake", () => {
     });
     assert.deepEqual(wakes, ["list_projects"]);
   });
+});
+
+it("recomputes the operation budget after recovery and refuses an expired retry", async () => {
+  let time = 0;
+  const budgets = [];
+  const relay = { socketPath: "/s", async requestDesktop(_op, _args, options) {
+    budgets.push(options.timeoutMs);
+    if (budgets.length === 1) throw Object.assign(new NativeRelayError("offline", "RELAY_UNREACHABLE"), { sent: false });
+    return { result: { projects: [] } };
+  } };
+  const delivery = new DesktopTaskDelivery({ relay, security: { assertCwd() {} }, now: () => time,
+    wakeRelay: async () => { time = 700; return { threadId: null }; } });
+  assert.deepEqual(await delivery.request("list_projects", {}, { deadline: 1000 }), { projects: [] });
+  assert.deepEqual(budgets, [1000, 300]);
+  budgets.length = 0;
+  time = 0;
+  await assert.rejects(delivery.request("list_projects", {}, { deadline: 600 }), /deadline has elapsed/);
+  assert.deepEqual(budgets, [600]);
+});
+
+it("does not report a successful operation merely because the relay socket recovered", async () => {
+  let attempts = 0;
+  const relay = { socketPath: "/s", async requestDesktop() {
+    if (++attempts === 1) throw Object.assign(new NativeRelayError("offline", "RELAY_UNREACHABLE"), { sent: false });
+    throw new NativeRelayError("native dispatch rejected", "NATIVE_DISPATCH_FAILED");
+  } };
+  const delivery = new DesktopTaskDelivery({ relay, security: { assertCwd() {} }, wakeRelay: async () => ({ threadId: null }) });
+  await assert.rejects(delivery.request("list_projects", {}), /native dispatch rejected/);
+  assert.equal(attempts, 2);
 });

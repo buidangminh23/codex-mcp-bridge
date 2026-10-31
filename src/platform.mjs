@@ -545,6 +545,7 @@ export async function openThreadInCodexApp(threadId, { activate = true, platform
   if (typeof threadId !== "string" || !threadId) throw new Error("A Codex thread id is required");
   const url = codexThreadUrl(encodeURIComponent(threadId));
   if (platform === "win32") {
+    if (!activate) throw Object.assign(new Error("Windows cannot open a Codex task without activating its window; background navigation is disabled"), { code: "BACKGROUND_NAVIGATION_UNAVAILABLE" });
     const [shell, args] = windowsOpenUrlCommand(url, env);
     await run(shell, args, { windowsHide: true, timeout: 10000 });
     return url;

@@ -4,6 +4,19 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.25.2] - 2026-10-31
+
+### Fixed
+
+- Relay recovery no longer opens a task or activates a Desktop window, including request-triggered recovery. The old keeper flag cannot restore navigation. Windows background task navigation now fails explicitly instead of silently stealing focus.
+- The Desktop-owned supervisor restarts crashed native relay workers with bounded exponential backoff and validates their protocol and tool catalog before activation. In-flight operations fail without replay; client disconnect still shuts down the supervisor and its workers.
+- Stale inherited native pipe hints can recover through verified Desktop ancestry. Explicitly configured endpoints stay pinned, and uncertain native sends are never replayed.
+- Recovery waits and subsequent retries share the original request deadline. Native relay status checks a read-only operation through the serving shared relay instead of treating socket availability as proof of working dispatch.
+
+### Limitations
+
+- Reconnect the relay MCP once after upgrading to load the new supervisor. Worker hot reload alone cannot replace its running parent. Automatic recovery requires that Desktop-owned supervisor to remain alive; it cannot cold-start MCP in an idle application with no loaded session.
+
 ## [1.25.1] - 2026-10-31
 
 ### Fixed

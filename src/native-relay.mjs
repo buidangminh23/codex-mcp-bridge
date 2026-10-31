@@ -560,9 +560,9 @@ export async function resolveNativeToolsPipePath({
 }
 
 export class NativeToolsClient {
-  constructor({ env = process.env, socketPath = env.CODEX_APP_TOOLS_PIPE_PATH, timeoutMs = DEFAULT_TIMEOUT_MS, resolveSocketPath = () => resolveNativeToolsPipePath({ env }), assertAccount = assertAccountIdentity } = {}) {
+  constructor({ env = process.env, socketPath, timeoutMs = DEFAULT_TIMEOUT_MS, resolveSocketPath = () => resolveNativeToolsPipePath({ env: { ...env, CODEX_APP_TOOLS_PIPE_PATH: undefined } }), assertAccount = assertAccountIdentity } = {}) {
     this.env = env;
-    this.socketPath = socketPath;
+    this.socketPath = socketPath ?? env.CODEX_APP_TOOLS_PIPE_PATH;
     this.explicitSocketPath = socketPath || null;
     this.hasDiscoveredSocket = false;
     this.timeoutMs = timeoutMs;
@@ -581,7 +581,7 @@ export class NativeToolsClient {
     if (this.socket && !this.socket.destroyed) return;
     const generation = this.connectionGeneration;
     this.connecting = (async () => {
-      const socketPath = this.socketPath || await this.resolveSocketPath();
+      const socketPath = this.socketPath || await this.resolveSocketPath() || this.env.CODEX_APP_TOOLS_PIPE_PATH;
       if (generation !== this.connectionGeneration) {
         throw new NativeRelayError("Native tools client closed while discovering the Desktop pipe", "NATIVE_PIPE_UNAVAILABLE");
       }

@@ -853,7 +853,7 @@ describe("Desktop task MCP integration", () => {
         assert.doesNotMatch(result.content[0].text, /Start one with/, name);
       }
       assert.equal(server.connections, 0);
-    }, (home) => ({ CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-missing-${randomUUID()}` : path.join(home, "absent.sock"), CODEX_BRIDGE_AUTOSTART: "1", CODEX_APP_SERVER_URL: "invalid-unused-legacy-endpoint" }));
+    }, (home) => ({ CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_RELAY_WAKE: "0", CODEX_NATIVE_RELAY_SOCKET: process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-missing-${randomUUID()}` : path.join(home, "absent.sock"), CODEX_BRIDGE_AUTOSTART: "1", CODEX_APP_SERVER_URL: "invalid-unused-legacy-endpoint" }));
   });
 
   it("serializes overlapping Desktop sends to one thread while another thread can finish", async () => {

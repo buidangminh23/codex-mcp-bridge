@@ -170,6 +170,7 @@ export async function runSupervisor(entry, options = {}) {
   let active;
   let initializeParams;
   let initializeResult;
+  let initializeCatalog;
   let ready = false;
   let switching = false;
   let stopping = false;
@@ -181,6 +182,17 @@ export async function runSupervisor(entry, options = {}) {
   let retryAt = 0;
   let reason = null;
   let reloads = 0;
+  let recoveries = 0;
+  let recoveryAttempts = 0;
+  let recoveryAt = 0;
+  let activeSince = Date.now();
+  const recoveryDelayMs = Math.min(30000, supervisorInterval(env.CODEX_BRIDGE_RECOVERY_DELAY_MS, 1000));
+  const recoveryLimit = 5;
+  const canRecover = () => entry === "native-relay-companion.mjs" && ready && initializeResult && initializeCatalog;
+  const scheduleRecovery = () => {
+    if (recoveryAttempts >= recoveryLimit) return;
+    recoveryAt = Date.now() + Math.min(30000, recoveryDelayMs * 2 ** recoveryAttempts);
+  };
   const queue = [];
   const requests = new Map();
   const reverse = new Map();
@@ -189,7 +201,7 @@ export async function runSupervisor(entry, options = {}) {
     revision: active?.release.revision ?? null, availableRevision: observed,
     routingConfiguration: active?.routingConfiguration ?? null, availableRoutingConfiguration: observedRouting,
     pending: Boolean(observed && (observed !== active?.release.revision || observedRouting !== active?.routingConfiguration)),
-    state: failure ? "failed" : switching ? "reloading" : reason ? "deferred" : "current", reason: failure ?? reason, reloads });
+    state: failure ? canRecover() && recoveryAttempts < recoveryLimit ? "recovering" : "failed" : switching ? "reloading" : reason ? "deferred" : "current", reason: failure ?? reason, reloads, recoveries, recoveryAttempts });
 
   const handlers = {
     message(worker, message) {
@@ -210,12 +222,16 @@ export async function runSupervisor(entry, options = {}) {
       const respond = async () => {
         if (pending.method === "initialize" && !message.error) {
           initializeResult = message.result;
+          if (entry === "native-relay-companion.mjs") {
+            initializeCatalog = await worker.rpc("tools/list", {});
+            if (!Array.isArray(initializeCatalog.tools) || !initializeCatalog.tools.length || initializeCatalog.nextCursor) throw new Error("The native relay tool catalog is incomplete");
+          }
           await worker.control("activate");
           ready = true;
         }
         if (message.result && ["codex_bridge_status", "claude_bridge_status", "native_relay_status"].includes(pending.tool)) {
           message.result.structuredContent = { ...message.result.structuredContent, autoReload: diagnostics() };
-          message.result.content = [...(message.result.content ?? []), { type: "text", text: `automatic reload: ${diagnostics().state}\nsupervisor pid: ${process.pid}\nworker pid: ${worker.process.pid}\nreload count: ${reloads}${reason ? `\nreload detail: ${reason}` : ""}` }];
+          message.result.content = [...(message.result.content ?? []), { type: "text", text: `automatic reload: ${diagnostics().state}\nsupervisor pid: ${process.pid}\nworker pid: ${worker.process.pid}\nreload count: ${reloads}\nrecovery count: ${recoveries}${reason ? `\nreload detail: ${reason}` : ""}` }];
         }
         output({ ...message, id: pending.id });
       };
@@ -228,7 +244,15 @@ export async function runSupervisor(entry, options = {}) {
         worker.clientPending.delete(id);
       }
       for (const [id, pending] of reverse) if (pending.worker === worker) reverse.delete(id);
-      if (worker === active && !worker.retiring && !stopping) { failure = `${error.message}; automatic replay is disabled because delivery state may be unknown`; log(failure); }
+      if (worker === active && !worker.retiring && !stopping) {
+        failure = `${error.message}; automatic replay is disabled because delivery state may be unknown`;
+        if (canRecover()) {
+          if (Date.now() - activeSince >= 60000) recoveryAttempts = 0;
+          scheduleRecovery();
+          if (recoveryAttempts >= recoveryLimit) failure += "; recovery limit reached, reconnect MCP";
+        }
+        log(failure);
+      }
     },
   };
   const spawn = (release, routing) => {
@@ -245,7 +269,56 @@ export async function runSupervisor(entry, options = {}) {
     return worker;
   };
   const check = async () => {
-    if (switching || !ready || stopping || failure) return;
+    if (switching || !ready || stopping) return;
+    if (failure) {
+      if (!canRecover() || recoveryAttempts >= recoveryLimit || Date.now() < recoveryAt) return;
+      switching = true;
+      recoveryAttempts++;
+      const previous = active;
+      let candidate;
+      try {
+        await previous.stop();
+        workers.delete(previous);
+        if (stopping) return;
+        const source = currentRoot();
+        const release = createReleaseSnapshot(source, { expectedRevision: sourceRevision(source), lease: true });
+        candidate = spawn(release, routingConfiguration());
+        const initialized = await candidate.rpc("initialize", initializeParams);
+        if (initialized.protocolVersion !== initializeResult.protocolVersion || JSON.stringify(initialized.capabilities) !== JSON.stringify(initializeResult.capabilities)) {
+          throw new Error("The replacement MCP protocol or capabilities require an explicit client reconnect");
+        }
+        candidate.write({ jsonrpc: "2.0", method: "notifications/initialized" });
+        const catalog = await candidate.rpc("tools/list", {});
+        if (JSON.stringify(catalog) !== JSON.stringify(initializeCatalog)) throw new Error("The replacement tool catalog requires an explicit client reconnect");
+        await candidate.control("activate");
+        if (stopping || candidate.closed) throw new Error("The relay replacement stopped before activation completed");
+        active = candidate;
+        candidate = null;
+        activeSince = Date.now();
+        failure = null;
+        reason = null;
+        recoveries++;
+        log(`recovered native relay worker after exit; recovery ${recoveries}, no requests replayed`);
+        schedulePrune();
+      } catch (error) {
+        failure = `Native relay recovery failed: ${error.message}; no requests were replayed`;
+        if (candidate) {
+          try {
+            await candidate.stop();
+            workers.delete(candidate);
+          } catch (stopError) {
+            recoveryAttempts = recoveryLimit;
+            failure += `; replacement shutdown could not be confirmed: ${stopError.message}`;
+          }
+        }
+        scheduleRecovery();
+        if (recoveryAttempts >= recoveryLimit) failure += "; recovery limit reached, reconnect MCP";
+        log(failure);
+      } finally {
+        switching = false;
+      }
+      return;
+    }
     let source;
     let revision;
     let routing;
@@ -279,8 +352,12 @@ export async function runSupervisor(entry, options = {}) {
       await candidate.control("restore", exported.state);
       await candidate.control("activate");
       if (stopping) throw new Error("The MCP client disconnected during activation");
+      if (candidate.closed) throw new Error("The replacement worker exited during activation");
       active = candidate;
       candidate = null;
+      initializeCatalog = catalog;
+      activeSince = Date.now();
+      failure = null;
       reloads++;
       reason = null;
       if (JSON.stringify(catalog) !== JSON.stringify(oldCatalog)) output({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
@@ -321,7 +398,7 @@ export async function runSupervisor(entry, options = {}) {
       }
       return;
     }
-    if (failure) { if (hasId(message)) output(errorMessage(message.id, failure)); return; }
+    if (failure) { if (hasId(message)) output(errorMessage(message.id, `${failure}${canRecover() && recoveryAttempts < recoveryLimit ? "; native relay recovery is pending, this request was not sent" : ""}`)); return; }
     if (switching || !active) {
       const bytes = queue.reduce((size, queued) => size + Buffer.byteLength(JSON.stringify(queued)), 0);
       if (queue.length >= MAX_QUEUE || bytes + Buffer.byteLength(JSON.stringify(message)) > MAX_FRAME_BYTES) { if (hasId(message)) output(errorMessage(message.id, "Reload request queue is full; no operation was dispatched")); return; }

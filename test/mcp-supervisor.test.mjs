@@ -31,6 +31,10 @@ let reverseId = 0;
 const reverse = new Map();
 const reply = message => process.stdout.write(JSON.stringify(message) + '\\n');
 const control = createReloadControl({entry: ENTRY, inspect: () => pending ? 'Waiting for original reply' : null,
+  activate: () => {
+    if (process.env.TEST_ACTIVATIONS) fs.appendFileSync(process.env.TEST_ACTIVATIONS, Date.now() + '\\n');
+    if (process.env.TEST_CRASH_ACTIVATION && fs.existsSync(process.env.TEST_CRASH_ACTIVATION)) process.exit(10);
+  },
   exportState: () => ({records, desktopMode}), restore: state => { if (VERSION === 'FAIL_RESTORE') throw new Error('Incompatible saved state'); assertRoutingReload(state.desktopMode, desktopMode); records = state.records; }});
 control.listen();
 readline.createInterface({input: process.stdin}).on('line', async line => {
@@ -40,7 +44,7 @@ readline.createInterface({input: process.stdin}).on('line', async line => {
   try {
     let result;
     if (msg.method === 'initialize') result = {protocolVersion:msg.params.protocolVersion,capabilities:{tools:{listChanged:true}},serverInfo:{name:'fixture',version:VERSION}};
-    else if (msg.method === 'tools/list') result = {tools:[{name:'codex_bridge_status',description:'Read test worker',inputSchema:{type:'object'}}]};
+    else if (msg.method === 'tools/list') result = {tools:[{name:'codex_bridge_status',description:VERSION === 'CHANGED_CATALOG' ? 'Changed tools' : 'Read test worker',inputSchema:{type:'object'}}]};
     else if (msg.method === 'ping') result = {};
     else result = await control.run(async () => {
       const name = msg.params.name;
@@ -302,6 +306,69 @@ it("does not interrupt active calls and does not replay writes after a worker cr
   await assert.rejects(api.call("crash", {value:"uncertain"}), /not retried|may be unknown/);
   await assert.rejects(api.call("add", {value:"must-not-send"}), /unknown/);
   assert.equal(fs.readFileSync(fixture.ledger, "utf8"), "once\nuncertain\n");
+});
+
+it("recovers a crashed native relay on its original MCP connection without replaying writes", async t => {
+  const fixture = installation(t, "native-relay-companion.mjs");
+  const api = await connect(t, fixture, { CODEX_BRIDGE_RECOVERY_DELAY_MS: "200" });
+  const before = await api.call();
+  const status = () => api.call().catch(error => ({ error: error.message }));
+  await assert.rejects(api.call("crash", { value: "uncertain" }), /not retried/);
+  await assert.rejects(api.call("add", { value: "must-not-send" }), /recovery is pending.*not sent/);
+  const after = await eventually(status, value => value.structuredContent?.autoReload.recoveries === 1, api.stderr);
+  assert.equal(after.structuredContent.autoReload.supervisorPid, before.structuredContent.autoReload.supervisorPid);
+  assert.notEqual(after.structuredContent.autoReload.workerPid, before.structuredContent.autoReload.workerPid);
+  assert.equal(processAlive(before.structuredContent.autoReload.workerPid), false);
+  await api.call("add", { value: "new-request" });
+  await assert.rejects(api.call("crash", { value: "second-uncertain" }), /not retried/);
+  const recovered = await eventually(status, value => value.structuredContent?.autoReload.recoveries === 2, api.stderr);
+  assert.equal(recovered.structuredContent.autoReload.recoveryAttempts, 2);
+  assert.equal(fs.readFileSync(fixture.ledger, "utf8"), "uncertain\nnew-request\nsecond-uncertain\n");
+});
+
+it("bounds repeated native relay activation crashes with exponential backoff", { timeout: 25000 }, async t => {
+  const fixture = installation(t, "native-relay-companion.mjs");
+  const activations = path.join(fixture.root, "activations.txt");
+  const crashActivation = path.join(fixture.root, "crash-activation");
+  const api = await connect(t, fixture, {
+    CODEX_BRIDGE_RECOVERY_DELAY_MS: "100", TEST_ACTIVATIONS: activations, TEST_CRASH_ACTIVATION: crashActivation,
+  });
+  fs.writeFileSync(crashActivation, "1");
+  await assert.rejects(api.call("crash", { value: "once" }), /not retried/);
+  await eventually(async () => api.stderr(), value => value.includes("recovery limit reached"), api.stderr);
+  const times = fs.readFileSync(activations, "utf8").trim().split("\n").map(Number);
+  assert.equal(times.length, 6);
+  for (let index = 2; index < times.length; index++) {
+    assert.ok(times[index] - times[index - 1] >= 100 * 2 ** (index - 1), `Missing backoff at attempt ${index}`);
+  }
+  await assert.rejects(api.call("add", { value: "blocked" }), /recovery failed/);
+  await new Promise(resolve => setTimeout(resolve, 350));
+  assert.equal(fs.readFileSync(activations, "utf8").trim().split("\n").length, 6);
+  assert.equal(fs.readFileSync(fixture.ledger, "utf8"), "once\n");
+});
+
+it("does not restart a native relay after its MCP client closes during recovery backoff", async t => {
+  const fixture = installation(t, "native-relay-companion.mjs");
+  const activations = path.join(fixture.root, "activations.txt");
+  const api = await connect(t, fixture, { CODEX_BRIDGE_RECOVERY_DELAY_MS: "1000", TEST_ACTIVATIONS: activations });
+  await assert.rejects(api.call("crash", { value: "once" }), /not retried/);
+  await api.client.close();
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  assert.equal(fs.readFileSync(activations, "utf8").trim().split("\n").length, 1);
+});
+
+it("rejects an incompatible native relay replacement catalog before activation", async t => {
+  const fixture = installation(t, "native-relay-companion.mjs");
+  const activations = path.join(fixture.root, "activations.txt");
+  const api = await connect(t, fixture, { CODEX_BRIDGE_RECOVERY_DELAY_MS: "300", TEST_ACTIVATIONS: activations });
+  await assert.rejects(api.call("crash", { value: "once" }), /not retried/);
+  fixture.update("CHANGED_CATALOG");
+  await eventually(async () => api.stderr(), value => value.includes("replacement tool catalog requires an explicit client reconnect"), api.stderr);
+  assert.equal(fs.readFileSync(activations, "utf8").trim().split("\n").length, 1);
+  fixture.update("A");
+  const after = await eventually(() => api.call().catch(error => ({ error: error.message })), value => value.structuredContent?.autoReload.recoveries === 1, api.stderr);
+  assert.equal(after.structuredContent.autoReload.recoveryAttempts, 2);
+  assert.equal(fs.readFileSync(fixture.ledger, "utf8"), "once\n");
 });
 
 it("keeps the old worker available when an updated release cannot initialize", async t => {

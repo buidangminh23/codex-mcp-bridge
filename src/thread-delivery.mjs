@@ -74,7 +74,7 @@ export function matchDesktopProject(projects, cwd, { canonicalize = realpathSync
   return matches[0];
 }
 
-export const RELAY_DOWN_GUIDANCE = "The Codex Desktop native relay is not listening: Codex Desktop runs codex-native-relay only while a task has its MCP servers loaded. Open any regular project task (not the internal Native Relay executor task) and send it a turn or reconnect its MCP servers, then retry.";
+export const RELAY_DOWN_GUIDANCE = "The Codex Desktop native relay is not listening after waiting for silent recovery. Its Desktop-owned supervisor restarts crashed relay workers without replaying requests. If Desktop has not loaded the relay MCP, reconnect it in a regular project task; automatic recovery never opens a task or window. Do not open the internal Native Relay executor task.";
 
 function relayUnreachable(error) {
   return error?.code === "RELAY_UNREACHABLE" && error.sent === false;
@@ -126,23 +126,25 @@ export class DesktopTaskDelivery {
       if (scopeBinding) this.security.hardenedRoots.recheck(scopeBinding);
       const projectScope = expectedScope ?? await this.mutationProjectScope(operation, args, { deadline });
       if (expectedScope) recheckProjectScope(expectedScope, this.senderProjectScope(expectedScope.recipient.input));
-      const remaining = deadline === undefined ? undefined : deadline - this.now();
-      if (remaining !== undefined && remaining <= 0) throw Object.assign(new Error("The bridge's response deadline has elapsed; this operation was not sent"), { code: "DESKTOP_RESPONSE_DEADLINE" });
       const accountContext = this.accountContext?.();
-      const send = () => this.relay.requestDesktop(operation, args, {
-        ...(remaining === undefined ? {} : { timeoutMs: remaining }),
-        ...(this.beforeRequest || projectScope || scopeBinding ? { beforeSend: async () => {
-          await this.beforeRequest?.({ operation, args, phase: "write" });
-          if (projectScope) {
-            recheckProjectScope(projectScope);
-            recheckProjectScope(projectScope, await this.mutationProjectScope(operation, args, { deadline }));
-          }
-          await this.beforeRequest?.({ operation, args, phase: "dispatch" });
-          if (scopeBinding) this.security.hardenedRoots.recheck(scopeBinding);
-        } } : {}),
-        ...(accountContext ? { accountContext } : {}),
-        ...(creationReceiptId ? { creationReceiptId } : {}),
-      });
+      const send = () => {
+        const remaining = deadline === undefined ? undefined : deadline - this.now();
+        if (remaining !== undefined && remaining <= 0) throw Object.assign(new Error("The bridge's response deadline has elapsed; this operation was not sent"), { code: "DESKTOP_RESPONSE_DEADLINE" });
+        return this.relay.requestDesktop(operation, args, {
+          ...(remaining === undefined ? {} : { timeoutMs: remaining }),
+          ...(this.beforeRequest || projectScope || scopeBinding ? { beforeSend: async () => {
+            await this.beforeRequest?.({ operation, args, phase: "write" });
+            if (projectScope) {
+              recheckProjectScope(projectScope);
+              recheckProjectScope(projectScope, await this.mutationProjectScope(operation, args, { deadline }));
+            }
+            await this.beforeRequest?.({ operation, args, phase: "dispatch" });
+            if (scopeBinding) this.security.hardenedRoots.recheck(scopeBinding);
+          } } : {}),
+          ...(accountContext ? { accountContext } : {}),
+          ...(creationReceiptId ? { creationReceiptId } : {}),
+        });
+      };
       let response;
       try {
         response = await send();

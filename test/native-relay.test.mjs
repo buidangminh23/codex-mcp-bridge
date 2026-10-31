@@ -1699,7 +1699,7 @@ describe("native tools pipe protocol", () => {
           assert.equal(client.socketPath, native.socketPath);
         } finally {
           client.close();
-          assert.equal(client.socketPath, native.socketPath);
+          assert.equal(client.socketPath, options.socketPath ?? null);
         }
       }
     } finally {
@@ -1719,6 +1719,83 @@ describe("native tools pipe protocol", () => {
     } finally {
       client.close();
       await native.close();
+    }
+  });
+
+  it("discards a stale inherited pipe before discovering a replacement", async () => {
+    let discoveries = 0;
+    const stale = tempSocket();
+    const native = await nativePipe((request, socket) => socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true } })));
+    const client = new NativeToolsClient({
+      env: { CODEX_APP_TOOLS_PIPE_PATH: stale },
+      resolveSocketPath: async () => { discoveries += 1; return native.socketPath; },
+    });
+    try {
+      await assert.rejects(() => client.connect(), { code: "NATIVE_PIPE_UNAVAILABLE" });
+      assert.equal(discoveries, 0);
+      assert.equal(client.socketPath, null);
+      assert.deepEqual(await client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "later request" }), { success: true });
+      assert.equal(discoveries, 1);
+      assert.equal(client.socketPath, native.socketPath);
+      assert.equal(client.env.CODEX_APP_TOOLS_PIPE_PATH, stale);
+    } finally {
+      client.close();
+      await native.close();
+    }
+  });
+
+  it("does not redirect an explicitly pinned pipe after its connection fails", async () => {
+    const stale = tempSocket();
+    const native = await nativePipe(() => assert.fail("an explicitly pinned client must not use a replacement"));
+    const client = new NativeToolsClient({
+      socketPath: stale,
+      env: { CODEX_APP_TOOLS_PIPE_PATH: native.socketPath },
+      resolveSocketPath: async () => assert.fail("an explicitly pinned client must not rediscover"),
+    });
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await assert.rejects(() => client.connect(), { code: "NATIVE_PIPE_UNAVAILABLE" });
+        assert.equal(client.socketPath, stale);
+      }
+      assert.equal(native.connectionCount, 0);
+    } finally {
+      client.close();
+      await native.close();
+    }
+  });
+
+  it("recovers an inherited connection without replaying an unconfirmed dispatch", async () => {
+    const originalMessages = [];
+    const replacementMessages = [];
+    const first = await nativePipe((request, socket) => {
+      originalMessages.push(request.params.arguments.prompt);
+      socket.destroy();
+    });
+    const second = await nativePipe((request, socket) => {
+      replacementMessages.push(request.params.arguments.prompt);
+      socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true } }));
+    });
+    let discoveries = 0;
+    const client = new NativeToolsClient({
+      env: { CODEX_APP_TOOLS_PIPE_PATH: first.socketPath },
+      resolveSocketPath: async () => { discoveries += 1; return second.socketPath; },
+    });
+    try {
+      await assert.rejects(() => client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "uncertain original" }), { code: "NATIVE_DELIVERY_UNCONFIRMED" });
+      assert.equal(client.socketPath, null);
+      assert.equal(discoveries, 0);
+      assert.deepEqual(replacementMessages, []);
+      await client.dispatch({ executorThreadId: "executor", targetThreadId: "target", message: "separate later message" });
+      assert.deepEqual(originalMessages, ["uncertain original"]);
+      assert.deepEqual(replacementMessages, ["separate later message"]);
+      assert.equal(discoveries, 1);
+      assert.equal(first.connectionCount, 1);
+      assert.equal(second.connectionCount, 1);
+      assert.equal(client.pending.size, 0);
+    } finally {
+      client.close();
+      await first.close();
+      await second.close();
     }
   });
 
@@ -2202,14 +2279,18 @@ describe("companion under a real MCP client", () => {
     let stderr = "";
     transport.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-12000); });
     let native;
-    let nativeRequests = 0;
+    const nativeRequests = [];
     try {
       await client.connect(transport);
       const catalog = await client.listTools();
       assert.ok(catalog.tools.some((tool) => tool.name === "remote_codex"));
       const unavailable = await client.callTool({ name: "native_relay_status", arguments: {} });
       assert.match(unavailable.content[0].text, /not listening/);
-      native = await nativePipe(() => { nativeRequests += 1; }, nativeSocket);
+      native = await nativePipe((request, socket) => {
+        nativeRequests.push(request.params.tool);
+        assert.equal(request.params.tool, "list_projects", "startup status must only read project metadata");
+        socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true, structuredContent: { projects: [] } } }));
+      }, nativeSocket);
       let status;
       const deadline = Date.now() + (process.platform === "win32" ? 30000 : 3000);
       do {
@@ -2217,7 +2298,9 @@ describe("companion under a real MCP client", () => {
         status = await client.callTool({ name: "native_relay_status", arguments: {} });
       } while (status.content[0].text.includes("not listening") && Date.now() < deadline);
       assert.doesNotMatch(status.content[0].text, /not listening/, stderr);
-      assert.equal(nativeRequests, 0, "startup recovery must not dispatch a user message");
+      assert.ok(nativeRequests.length > 0);
+      assert.ok(nativeRequests.every((operation) => operation === "list_projects"), "startup recovery must not dispatch a user message");
+      assert.equal(status.structuredContent.nativeDispatch.ready, true);
     } finally {
       await client.close();
       await native?.close();

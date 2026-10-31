@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import { it } from "node:test";
 
-import { RelaySocketServer, createNativeRelayLifecycle, createNativeScopeAuthorizer, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
+import { probeRelayDispatch, RelaySocketServer, createNativeRelayLifecycle, createNativeScopeAuthorizer, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
 import { NativeDesktopRelay, responseTooLargeError, MAX_RESPONSE_FRAME_BYTES } from "../src/native-relay.mjs";
 import { createReloadControl, exitWhenClientCloses } from "../src/reload-control.mjs";
 
@@ -313,4 +313,33 @@ it("rejects over-limit bytes from an older companion response reader", async (t)
     assert.ok(error.bytes > MAX_RESPONSE_FRAME_BYTES);
     return true;
   });
+});
+
+it("verifies the shared relay through a read-only native operation", async t => {
+  const socketPath = fixture(t);
+  let healthy = true;
+  const calls = [];
+  const server = new RelaySocketServer({ ...relayOptions(socketPath), dispatchDesktop: async args => {
+    calls.push(args.operation);
+    if (!healthy) throw new Error("shared owner native dispatch unavailable");
+    return { success: true, structuredContent: { projects: [] } };
+  } });
+  await server.start();
+  t.after(async () => { server.stop(); await server.closed; });
+  const relay = new NativeDesktopRelay({ socketPath, env: {} });
+  const options = { relay, accounts: () => ({}) };
+  assert.equal((await probeRelayDispatch(options)).ready, true);
+  healthy = false;
+  const probe = await probeRelayDispatch(options);
+  assert.equal(probe.ready, false);
+  assert.match(probe.reason, /shared owner native dispatch unavailable/);
+  assert.deepEqual(calls, ["list_projects", "list_projects"]);
+});
+
+it("does not report readiness from a connected relay with invalid or rejected dispatch", async () => {
+  for (const requestDesktop of [async () => ({ result: { success: true } }), async () => { throw new Error("native host rejected dispatch"); }]) {
+    const probe = await probeRelayDispatch({ accounts: () => ({}), relay: { requestDesktop } });
+    assert.equal(probe.ready, false);
+    assert.ok(probe.reason);
+  }
 });

@@ -37,11 +37,11 @@ import { captureProjectScope } from "./project-scope.mjs";
 import { DesktopReplyReceipts } from "./desktop-reply-receipts.mjs";
 import { registerDesktopReadTools } from "./desktop-read-tools.mjs";
 import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
-import { createRelayWake, relayKeeperEnabled, relayWakeStateFile, startRelayKeeper } from "./relay-wake.mjs";
+import { createRelayWake } from "./relay-wake.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.25.1";
+const VERSION = "1.25.2";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -76,7 +76,7 @@ const desktopTasksEnabled = desktopTasksConfigured();
 const runtime = createRuntimeState({ configuration: desktopTasksConfigured });
 const desktopOperation = new AsyncLocalStorage();
 const replyReceipts = new DesktopReplyReceipts();
-const relayWake = createRelayWake({ senderCwd: () => desktopOperation.getStore()?.caller?.cwd ?? null, stateFile: relayWakeStateFile(), log });
+const relayWake = createRelayWake({ log });
 const desktopTasks = new DesktopTaskDelivery({ security, beforeRequest: beforeDesktopRequest, accountContext: () => desktopOperation.getStore()?.accounts, senderContext: () => desktopOperation.getStore()?.caller, wakeRelay: relayWake });
 
 async function assertDesktopOperation(context, { verifyProcess = false } = {}) {
@@ -1097,7 +1097,6 @@ registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-if (desktopTasksEnabled && relayKeeperEnabled()) startRelayKeeper({ wake: relayWake, socketPath: () => desktopTasks.relay.accountSocketPath, log });
 let shutdownPromise;
 const shutdown = () => shutdownPromise ??= (async () => {
   client?.close();

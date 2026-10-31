@@ -107,7 +107,7 @@ describe("Codex Desktop links on Windows", () => {
   it("opens a task through Start-Process so a successful launch is not reported as a failure", async () => {
     const threadId = "01a15bb7-0f83-7e60-9e06-08b4be53c66a";
     let call;
-    const url = await openThreadInCodexApp(threadId, { activate: false, platform: "win32", env: { SystemRoot: String.raw`C:\Windows` }, run: async (...args) => { call = args; } });
+    const url = await openThreadInCodexApp(threadId, { activate: true, platform: "win32", env: { SystemRoot: String.raw`C:\Windows` }, run: async (...args) => { call = args; } });
     assert.equal(url, codexThreadUrl(threadId));
     assert.equal(call[0], String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
     assert.equal(call[1].at(-2), "-EncodedCommand");
@@ -678,3 +678,9 @@ it("percent-encodes the thread id before opening a codex:// link", async () => {
   assert.equal(calls.length, 1);
   await assert.rejects(openThreadInCodexApp("", { platform: "win32", run: async () => {} }), /thread id is required/);
 });
+
+ it("refuses silent Windows navigation without launching a URI or changing focus", async () => {
+   await assert.rejects(openThreadInCodexApp("task", {
+     activate: false, platform: "win32", run: async () => assert.fail("must not launch Windows navigation"),
+   }), { code: "BACKGROUND_NAVIGATION_UNAVAILABLE" });
+ });

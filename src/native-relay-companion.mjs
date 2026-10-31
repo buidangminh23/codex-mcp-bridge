@@ -14,6 +14,7 @@ import {
   responseTooLargeError,
   NATIVE_DISPATCH_METHOD,
   NativeToolsClient,
+  NativeDesktopRelay,
   NativeRelayError,
   RELAY_PROTOCOL_VERSION,
   ACCOUNT_RELAY_PROTOCOL_VERSION,
@@ -28,7 +29,7 @@ import {
 } from "./native-relay.mjs";
 import { IS_WINDOWS, PLATFORM_LABEL } from "./platform.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
-import { assertAccountIdentity } from "./bridge-account-context.mjs";
+import { accountIdentity, assertAccountIdentity, readBridgeAccounts } from "./bridge-account-context.mjs";
 import { createReloadControl, drainPendingAccepts, exitWhenClientCloses } from "./reload-control.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
 import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
@@ -42,7 +43,7 @@ import { remoteCodexSocketPath, remoteNativeAdapter, remoteRequestResponse } fro
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.25.1";
+const VERSION = "1.25.2";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent, details) {
@@ -865,6 +866,20 @@ export function createNativeRelayLifecycle({ nativeTools, relays, log: logFn = (
   };
 }
 
+export async function probeRelayDispatch({ env = process.env, timeoutMs = 3000, accounts = readBridgeAccounts, relay = new NativeDesktopRelay({ env, socketPath: desktopTaskSocketPath(env), accountSocketPath: accountRelaySocketPath(env) }) } = {}) {
+  try {
+    const accountContext = accountIdentity(accounts());
+    const response = await relay.requestDesktop("list_projects", {}, {
+      timeoutMs,
+      ...(accountContext ? { accountContext, beforeSend: () => assertAccountIdentity(accountContext) } : {}),
+    });
+    if (!Array.isArray(response?.result?.projects)) throw new Error("Native Desktop did not return a project list");
+    return { ready: true, checkedAt: new Date().toISOString(), scope: "shared-relay-native-dispatch" };
+  } catch (error) {
+    return { ready: false, checkedAt: new Date().toISOString(), scope: "shared-relay-native-dispatch", code: error.code ?? "NATIVE_HEALTH_CHECK_FAILED", reason: error.message };
+  }
+}
+
 export function createRelayServers({ nativeTools, env = process.env, signalExit = true, log: logFn = () => {} }) {
   const hardened = hardenedBridgeEnabled(env);
   if (hardened && !desktopTasksConfigured(env)) throw new Error("CODEX_BRIDGE_HARDENED=1 requires CODEX_BRIDGE_DESKTOP_TASKS=1; legacy relay listeners are disabled");
@@ -938,8 +953,9 @@ if (invokedDirectly) {
       } catch (err) {
         executor = err.message;
       }
+      const nativeDispatch = listening ? await probeRelayDispatch() : { ready: false, reason: "Relay transport is not listening" };
       return {
-        structuredContent: { runtime: runtime.status() },
+        structuredContent: { runtime: runtime.status(), nativeDispatch },
         content: [
           {
             type: "text",
@@ -953,6 +969,7 @@ if (invokedDirectly) {
               `remote Codex:   ${remoteRelay.socketPath} (${await remoteRelay.isListening() ? "listening" : "not listening"})`,
               `executor:       ${executor}`,
               `dispatch:       ${process.env.CODEX_NATIVE_RELAY_METHOD ?? NATIVE_DISPATCH_METHOD}`,
+              `native dispatch: ${nativeDispatch.ready ? "verified (read-only list_projects)" : `unavailable (${nativeDispatch.reason})`}`,
               `native pipe:    ${nativeTools.socketPath ?? "unavailable (requires Codex Desktop)"}`,
             ].join("\n"),
           },

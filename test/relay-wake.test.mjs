@@ -315,8 +315,12 @@ describe("relay keeper", () => {
     keeper.stop();
     assert.equal(await keeper.tick(), null);
     assert.deepEqual(scheduled.slice(2), [["clear", "timeout"], ["clear", "interval"]]);
-    assert.equal(relayKeeperEnabled({}, "win32"), true);
+    assert.equal(relayKeeperEnabled({}, "win32"), false);
+    assert.equal(relayKeeperEnabled({ CODEX_BRIDGE_RELAY_KEEPER: "1" }, "win32"), true);
+    assert.equal(relayKeeperEnabled({ CODEX_BRIDGE_RELAY_KEEPER: "on" }, "win32"), true);
+    assert.equal(relayKeeperEnabled({ CODEX_BRIDGE_RELAY_KEEPER: "1", CODEX_BRIDGE_RELAY_WAKE: "0" }, "win32"), false);
     assert.equal(relayKeeperEnabled({ CODEX_BRIDGE_RELAY_KEEPER: "0" }, "win32"), false);
+    assert.equal(relayKeeperEnabled({}, "darwin"), true);
     assert.equal(relayKeeperEnabled({ CODEX_BRIDGE_RELAY_WAKE: "0" }, "darwin"), false);
     assert.equal(relayKeeperEnabled({}, "linux"), false);
   });

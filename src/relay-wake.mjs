@@ -49,7 +49,9 @@ function sameProject(senderCwd, taskCwd) {
 export function relayKeeperEnabled(env = process.env, platform = process.platform) {
   const value = (env.CODEX_BRIDGE_RELAY_KEEPER ?? "").toLowerCase();
   if (["0", "off", "false"].includes(value)) return false;
-  return relayWakeEnabled(env, platform);
+  if (!relayWakeEnabled(env, platform)) return false;
+  if (platform === "win32") return ["1", "on", "true"].includes(value);
+  return true;
 }
 
 export function relayWakeStateFile(env = process.env) {

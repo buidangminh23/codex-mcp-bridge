@@ -4,6 +4,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.25.1] - 2026-10-31
+
+### Fixed
+
+- On Windows, Codex Desktop no longer jumps to the front and switches to another task on its own. The background relay keeper opened `codex://threads/<id>` whenever the native relay was missing, and Windows always activates the app for that link, so the window was pulled forward about once a minute while the relay stayed down. The keeper is now off by default on Windows; set `CODEX_BRIDGE_RELAY_KEEPER=1` to turn it back on. macOS is unchanged because it opens the link in the background.
+
+### Verification and limitations
+
+- Focused regressions cover the Windows default, the explicit opt-in and the wake opt-out taking precedence.
+- A request that needs the relay while it is missing still opens a Codex task on Windows, which brings the app to the front once for that request.
+
 ## [1.25.0] - 2026-10-30
 
 ### Added

@@ -2279,14 +2279,18 @@ describe("companion under a real MCP client", () => {
     let stderr = "";
     transport.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-12000); });
     let native;
-    let nativeRequests = 0;
+    const nativeRequests = [];
     try {
       await client.connect(transport);
       const catalog = await client.listTools();
       assert.ok(catalog.tools.some((tool) => tool.name === "remote_codex"));
       const unavailable = await client.callTool({ name: "native_relay_status", arguments: {} });
       assert.match(unavailable.content[0].text, /not listening/);
-      native = await nativePipe(() => { nativeRequests += 1; }, nativeSocket);
+      native = await nativePipe((request, socket) => {
+        nativeRequests.push(request.params.tool);
+        assert.equal(request.params.tool, "list_projects", "startup status must only read project metadata");
+        socket.write(nativeFrame({ jsonrpc: "2.0", id: request.id, result: { success: true, structuredContent: { projects: [] } } }));
+      }, nativeSocket);
       let status;
       const deadline = Date.now() + (process.platform === "win32" ? 30000 : 3000);
       do {
@@ -2294,7 +2298,9 @@ describe("companion under a real MCP client", () => {
         status = await client.callTool({ name: "native_relay_status", arguments: {} });
       } while (status.content[0].text.includes("not listening") && Date.now() < deadline);
       assert.doesNotMatch(status.content[0].text, /not listening/, stderr);
-      assert.equal(nativeRequests, 0, "startup recovery must not dispatch a user message");
+      assert.ok(nativeRequests.length > 0);
+      assert.ok(nativeRequests.every((operation) => operation === "list_projects"), "startup recovery must not dispatch a user message");
+      assert.equal(status.structuredContent.nativeDispatch.ready, true);
     } finally {
       await client.close();
       await native?.close();

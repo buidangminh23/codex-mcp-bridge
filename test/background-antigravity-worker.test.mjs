@@ -136,6 +136,7 @@ test("runs a fresh hidden CLI with literal input and isolated relay identity", a
   assert.equal(result.deliveryState, "sent");
   assert.equal(result.sent, true);
   assert.equal(result.relayToolsVerified, true);
+  assert.equal(result.relayToolDiscovery, "explicit-tools");
   assert.equal(f.events.filter((event) => event.type === "accepted").length, 1);
   assert.equal(f.child.exited, true);
   assert.equal(f.child.kills, 0);
@@ -161,13 +162,43 @@ test("waits for init and verifies all advertised relay tools before writing", as
   assert.equal(f.events.some((event) => event.type === "accepted"), false);
 });
 
+test("AGY 1.4.9 native MCP dispatcher catalog permits work without claiming individual relay tools", async (t) => {
+  const f = fixture(t, { init: false });
+  const pending = f.run();
+  assert.equal(f.child.writes.length, 0);
+  f.child.init({ init: { cwd: f.cwd, permission_mode: "request-review", tools: ["ask_permission", "call_mcp_tool", "run_command", "view_file", "write_to_file"] } });
+  await new Promise(setImmediate);
+  assert.equal(f.child.writes.length, 1);
+  assert.deepEqual(f.events, [{ type: "session", sessionId: SESSION_ID }]);
+  f.child.accept();
+  f.child.result();
+  const result = await pending;
+  assert.equal(result.relayToolsVerified, false);
+  assert.equal(result.relayToolDiscovery, "mcp-dispatcher");
+  assert.equal(result.deliveryState, "sent");
+  assert.equal(f.child.exited, true);
+});
+
+test("advertised catalogs without the native dispatcher or every relay tool remain blocked", async (t) => {
+  for (const tools of [[], ["run_command"], ["mcp__other__call_mcp_tool"], ["call-mcp-tool"], ["mcp__worker-relay__worker_status", "run_command"]]) {
+    const f = fixture(t, { init: false });
+    const pending = assert.rejects(f.run(), { code: "ANTIGRAVITY_RELAY_TOOLS_MISSING", phase: "relay", deliveryState: "not_sent", sent: false });
+    f.child.init({ init: { cwd: f.cwd, permission_mode: "request-review", tools } });
+    await pending;
+    assert.equal(f.child.writes.length, 0);
+    assert.equal(f.events.some((event) => event.type === "accepted"), false);
+  }
+});
+
 test("older init without tool advertisement does not claim verified relay tools", async (t) => {
   const f = fixture(t, { init: false });
   const pending = f.run();
   f.child.init({ init: { cwd: f.cwd, permission_mode: "request-review" } });
   await new Promise(setImmediate);
   f.child.result();
-  assert.equal((await pending).relayToolsVerified, false);
+  const result = await pending;
+  assert.equal(result.relayToolsVerified, false);
+  assert.equal(result.relayToolDiscovery, "unadvertised");
 });
 
 test("rejects resume and invalid relay grants before starting a process", async (t) => {

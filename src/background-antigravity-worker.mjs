@@ -37,16 +37,15 @@ function classifyDiagnostic(value) {
   return null;
 }
 
-function relayToolsAvailable(tools) {
-  if (tools === undefined) return false;
+function discoverRelayTools(tools) {
+  if (tools === undefined) return { relayToolsVerified: false, relayToolDiscovery: "unadvertised" };
   if (!Array.isArray(tools) || tools.length > 4096 || tools.some((name) => typeof name !== "string" || !name || name.length > 256)) {
     throw failure("ANTIGRAVITY_WORKER_PROTOCOL_ERROR", "Antigravity CLI advertised an invalid tool list.", "startup");
   }
   const names = new Set(tools.map((name) => name.replace(/[-_:/\.]+/g, "_")));
-  if (!RELAY_TOOLS.every((name) => names.has(name) || names.has(`worker_relay_${name}`) || names.has(`mcp_worker_relay_${name}`))) {
-    throw failure("ANTIGRAVITY_RELAY_TOOLS_MISSING", "Antigravity CLI did not advertise all required worker-relay tools. Inspect the CLI MCP configuration.", "relay");
-  }
-  return true;
+  if (RELAY_TOOLS.every((name) => names.has(name) || names.has(`worker_relay_${name}`) || names.has(`mcp_worker_relay_${name}`))) return { relayToolsVerified: true, relayToolDiscovery: "explicit-tools" };
+  if (tools.includes("call_mcp_tool")) return { relayToolsVerified: false, relayToolDiscovery: "mcp-dispatcher" };
+  throw failure("ANTIGRAVITY_RELAY_TOOLS_MISSING", "Antigravity CLI advertised neither its native MCP dispatcher nor all required worker-relay tools. Inspect the CLI MCP configuration.", "relay");
 }
 
 function workerEnvironment(env, relayMcp, requestId) {
@@ -158,7 +157,7 @@ export async function runAntigravityWorker({ executable, cwd, prompt, requestId,
     if (signal?.aborted) throw failure("ANTIGRAVITY_WORKER_ABORTED", "The Antigravity worker was canceled before dispatch.", "cancellation");
     const started = await observe(session.start());
     if (diagnosticFailure()) throw diagnosticFailure();
-    const relayToolsVerified = relayToolsAvailable(initialized?.tools);
+    const relayTools = discoverRelayTools(initialized?.tools);
     notify({ type: "session", sessionId: started.conversationId });
     await observe(Promise.all(observers));
     if (observerFailed) throw failure("ANTIGRAVITY_WORKER_OBSERVER_FAILED", "The Antigravity worker could not record its session event.", "observation");
@@ -172,7 +171,7 @@ export async function runAntigravityWorker({ executable, cwd, prompt, requestId,
     if (observerFailed) throw failure("ANTIGRAVITY_WORKER_OBSERVER_FAILED", "The Antigravity worker could not record its acceptance event.", "observation", deliveryState());
     if (diagnosticFailure()) throw diagnosticFailure();
     if (result.status !== "SUCCESS" || result.error) throw failure("ANTIGRAVITY_WORKER_TURN_FAILED", "Antigravity CLI returned an unsuccessful background turn. Inspect the existing worker receipt.", "execution", deliveryState());
-    return { output: result.response, sessionId: result.conversation_id, ...(sessionId ? { workerSessionId: sessionId } : {}), deliveryState: "sent", sent: true, authenticated: true, relayToolsVerified };
+    return { output: result.response, sessionId: result.conversation_id, ...(sessionId ? { workerSessionId: sessionId } : {}), deliveryState: "sent", sent: true, authenticated: true, ...relayTools };
   } catch (error) {
     const state = deliveryState();
     if (/^ANTIGRAVITY_[A-Z_]+$/.test(error?.code ?? "")) finalError = failure(error.code, error.message, error.phase, state);

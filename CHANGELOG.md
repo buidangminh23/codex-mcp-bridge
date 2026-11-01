@@ -4,6 +4,22 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.1] - 2026-11-01
+
+### Upgrade
+
+Update the package and reapply all managed client and background-service settings with the same command:
+
+```sh
+npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+```
+
+Use `npm.cmd` in Windows PowerShell. Setup does not open apps or chats.
+
+### Fixed
+
+- Read-only background-service checks validate the installed runtime environment. A normal terminal no longer reports a healthy service as unconfigured merely because npm added temporary entries to `PATH` during installation. Package, startup ownership and running-runtime identity checks remain in place.
+
 ## [1.26.0] - 2026-11-01
 
 ### Upgrade

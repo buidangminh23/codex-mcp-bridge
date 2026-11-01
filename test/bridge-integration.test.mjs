@@ -206,7 +206,8 @@ describe("Desktop task MCP integration", () => {
       const turnRead = await client.callTool({ name: "read_codex_thread", arguments: { threadId: "task", turnId: "turn" } });
       assert.equal(turnRead.isError, true);
       assert.equal(turnRead.structuredContent.operation, undefined);
-      assert.match(turnRead.content.at(-1).text, /^Retry read_codex_thread with the same turnId; do not resend the original message\.$/);
+      assert.ok(turnRead.content.some(({ text }) => /^Retry read_codex_thread with the same turnId; do not resend the original message\.$/.test(text)));
+      assert.equal(turnRead.structuredContent.diagnostic.deliveryState, "not_applicable");
       const recentRead = await client.callTool({ name: "read_codex_thread", arguments: { threadId: "task" } });
       assert.equal(recentRead.isError, true);
       assert.equal(recentRead.structuredContent.operation, undefined);
@@ -266,20 +267,30 @@ describe("Desktop task MCP integration", () => {
   it("does not tell the agent to keep waiting for a turn that already ended", { timeout: 30000 }, async () => {
     let ended = false;
     await withDesktopReceiptBridge(async ({ operation, arguments: args }, home) => {
-      if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [{ id: "previous-turn", status: "completed" }] };
+      if (operation === "read_thread") return { thread: { id: args.threadId, hostId: "local", cwd: home }, turns: [{ id: ended ? "ended-turn" : "previous-turn", status: ended ? "failed" : "completed" }] };
       if (operation === "send_message_to_thread") return { threadId: args.threadId, status: "accepted" };
       if (operation === "wait_threads") return ended
-        ? { polls: [{ thread: { id: "ended-task", hostId: "local", status: { type: "systemError" } }, latestTurn: { id: "ended-turn", status: "failed" } }] }
+        ? { polls: [{ thread: { id: "ended-task", hostId: "local", status: { type: "idle" } }, latestTurn: { id: "ended-turn", status: "failed", error: { message: "PRIVATE_FAILED_TURN_REPLY" } } }] }
         : { polls: [{ thread: { id: "ended-task", hostId: "local", status: { type: "active" } }, latestTurn: { id: "ended-turn", status: "inProgress" } }] };
       throw new Error(`Unexpected operation ${operation}`);
     }, async ({ client }) => {
-      const sent = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "ended-task", prompt: "Ended work", openInApp: false, timeoutSec: 10 } });
+      const sent = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "ended-task", prompt: "PRIVATE_FAILED_TURN_PROMPT", openInApp: false, timeoutSec: 10 } });
       assert.equal(sent.structuredContent.nextAction, "wait_codex_reply", JSON.stringify(sent));
       ended = true;
       const waited = await client.callTool({ name: "wait_codex_reply", arguments: { deliveryId: sent.structuredContent.deliveryId, timeoutSec: 2 } });
       assert.equal(waited.isError, true, JSON.stringify(waited));
       assert.equal(waited.structuredContent.nextAction, "none");
       assert.doesNotMatch(waited.content.map(({ text }) => text).join("\n"), /retry wait_codex_reply/);
+      assert.match(waited.content[0].text, /PRIVATE_FAILED_TURN_REPLY/);
+      const diagnostic = waited.structuredContent.diagnostic;
+      assert.equal(diagnostic.code, "CODEX_TURN_FAILED");
+      assert.equal(diagnostic.deliveryState, "sent");
+      assert.equal(diagnostic.sent, true);
+      assert.equal(diagnostic.retrySafe, false);
+      assert.equal(diagnostic.ids.deliveryId, sent.structuredContent.deliveryId);
+      const report = waited.content.find(({ text }) => text?.startsWith("Bridge diagnostic ("));
+      assert.ok(report);
+      assert.doesNotMatch(report.text + JSON.stringify(diagnostic), /PRIVATE_FAILED_TURN_PROMPT|PRIVATE_FAILED_TURN_REPLY/);
     });
   });
 
@@ -666,6 +677,9 @@ describe("Desktop task MCP integration", () => {
       const initial = await client.callTool({ name: "start_codex_thread", arguments: args });
       assert.equal(initial.isError, true);
       assert.match(initial.content[0].text, /Do not resend the prompt.*blocks duplicate tasks even after a bridge restart/);
+      assert.equal(initial.structuredContent.diagnostic.deliveryState, "unknown");
+      assert.equal(initial.structuredContent.diagnostic.sent, null);
+      assert.equal(initial.structuredContent.diagnostic.retrySafe, false);
       assert.deepEqual(creationReceipts(home).map((receipt) => receipt.state), ["unknown"]);
       await client.close();
       const restarted = await additionalBridgeProcess({ home, env });
@@ -673,12 +687,41 @@ describe("Desktop task MCP integration", () => {
         const retry = await restarted.client.callTool({ name: "start_codex_thread", arguments: { ...args, prompt: "Original brief with minor edits" } });
         assert.equal(retry.isError, true);
         assert.match(retry.content[0].text, /Native creation remains unconfirmed.*Do not resend/);
+        assert.equal(retry.structuredContent.diagnostic.deliveryState, "unknown");
+        assert.equal(retry.structuredContent.diagnostic.sent, null);
+        assert.equal(retry.structuredContent.diagnostic.retrySafe, false);
+        const report = retry.content.find(({ text }) => text?.startsWith("Bridge diagnostic ("));
+        assert.ok(report);
+        assert.doesNotMatch(report.text + JSON.stringify(retry.structuredContent.diagnostic), /Original brief|minor edits/);
         assert.deepEqual(calls, ["list_projects", "list_projects", "create_thread"]);
         assert.deepEqual(creationReceipts(home).map((receipt) => receipt.state), ["unknown"]);
         assert.equal(server.connections, 0);
       } finally {
         await restarted.client.close();
       }
+    });
+  });
+
+  it("excludes private native creation payloads from the shareable failure report", async () => {
+    const calls = [];
+    await withDesktopReceiptBridge(async ({ operation }, home) => {
+      calls.push(operation);
+      if (operation === "list_projects") return { projects: [{ projectId: "receipt-project", projectKind: "local", hostId: "local", path: home }] };
+      if (operation === "create_thread") return { hostId: "local", status: "outcome-unknown", prompt: "PRIVATE_CREATION_PROMPT", reply: "PRIVATE_CREATION_REPLY" };
+      throw new Error(`Unexpected operation ${operation}`);
+    }, async ({ client, home, server }) => {
+      const result = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home, name: "Unconfirmed fixture", prompt: "PRIVATE_CREATION_PROMPT", openInApp: false } });
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /Desktop creation is not confirmed/);
+      assert.equal(result.structuredContent.diagnostic.deliveryState, "unknown");
+      assert.equal(result.structuredContent.diagnostic.sent, null);
+      assert.equal(result.structuredContent.diagnostic.retrySafe, false);
+      const report = result.content.find(({ text }) => text?.startsWith("Bridge diagnostic ("));
+      assert.ok(report);
+      assert.doesNotMatch(report.text + JSON.stringify(result.structuredContent.diagnostic), /PRIVATE_CREATION_PROMPT|PRIVATE_CREATION_REPLY/);
+      assert.equal(calls.filter((operation) => operation === "create_thread").length, 1);
+      assert.equal(calls.includes("navigate_to_codex_page"), false);
+      assert.equal(server.connections, 0);
     });
   });
 
@@ -715,6 +758,13 @@ describe("Desktop task MCP integration", () => {
           assert.match(text, /deliveryId: [0-9a-f-]{36}/);
           assert.equal(result.structuredContent.threadId, "unassigned-task");
           assert.equal(result.structuredContent.deliveryStatus, "accepted");
+          assert.equal(result.structuredContent.diagnostic.deliveryState, "sent");
+          assert.equal(result.structuredContent.diagnostic.sent, true);
+          assert.equal(result.structuredContent.diagnostic.retrySafe, false);
+          assert.equal(result.structuredContent.diagnostic.ids.requestId, requestId);
+          const report = result.content.find(({ text }) => text?.startsWith("Bridge diagnostic ("));
+          assert.ok(report);
+          assert.doesNotMatch(report.text + JSON.stringify(result.structuredContent.diagnostic), /Original brief/);
           assert.equal(result.structuredContent.nextAction, "wait_codex_reply");
           assert.match(result.structuredContent.deliveryId, /^[0-9a-f-]{36}$/);
           assert.equal(calls.includes("wait_threads"), false);
@@ -812,7 +862,12 @@ describe("Desktop task MCP integration", () => {
         assert.equal(largeRead.isError, true);
         assert.equal(largeRead.structuredContent.error.code, "RESPONSE_TOO_LARGE");
         assert.match(largeRead.content[0].text, /Response requires .*limit is 8388608/);
-        assert.ok(JSON.stringify(largeRead).length < 1024);
+        const { diagnostic, ...structuredContent } = largeRead.structuredContent;
+        const content = largeRead.content.filter(({ text }) => !text?.startsWith("Bridge diagnostic ("));
+        assert.ok(JSON.stringify({ ...largeRead, content, structuredContent }).length < 1024);
+        assert.equal(diagnostic.code, "RESPONSE_TOO_LARGE");
+        assert.equal(diagnostic.deliveryState, "not_applicable");
+        assert.ok(JSON.stringify(largeRead).length < 8192);
       }, async (home) => {
         relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
           calls.push(operation);

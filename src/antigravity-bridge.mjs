@@ -65,7 +65,7 @@ function handoff(prompt, identity) {
   return `[Agent handoff from ${identity.provider} conversation ${identity.id}. Native Antigravity permissions remain in effect.]\n\n${prompt}`;
 }
 
-const server = new McpServer({ name: "antigravity-bridge", version }, { instructions: "Send authorized work to Antigravity Desktop through its native sidecar or to an explicitly created CLI streaming session. Always select the requested surface; never substitute CLI for Desktop. The exact destination directory must match the verified sending conversation. Desktop delivery acceptance is not an agent reply. CLI sessions are bridge-owned headless sessions, not attached interactive terminals. Preserve requestId across retries and read_antigravity_delivery after pending or unknown outcomes; never resend automatically. Native tool approvals remain in force. Do not claim support for Antigravity-origin handoffs into Codex or Claude; this server receives from those hosts." });
+const server = new McpServer({ name: "antigravity-bridge", version }, { instructions: "Send authorized work to Antigravity Desktop through its native sidecar or to an explicitly created CLI streaming session. Always select the requested surface; never substitute CLI for Desktop. The exact destination directory must match the verified sending conversation. Desktop delivery acceptance is not an agent reply. CLI sessions are bridge-owned headless sessions, not attached interactive terminals. Preserve requestId across retries and read_antigravity_delivery after pending or unknown outcomes; never resend automatically. Native tool approvals remain in force. Antigravity Desktop can send authorized handoffs back to existing Codex Desktop tasks and live Claude Desktop Code sessions in the same project through its separate agent-bridge MCP server. From Antigravity, verify agent_bridge_status, discover list_agent_tasks, then use send_to_agent_task and read_agent_delivery. This inbound server does not initiate those outbound calls, and its status does not verify the outbound server's readiness. Antigravity CLI outbound and automatic App reply forwarding are not supported. An unreachable sidecar does not prove that the Antigravity App is closed; inspect its sidecar if the App is already running." });
 
 function register(name, description, inputSchema, readOnly, handler) {
   server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: true, openWorldHint: !readOnly } }, async (args, extra) => {
@@ -74,11 +74,27 @@ function register(name, description, inputSchema, readOnly, handler) {
   });
 }
 
-register("antigravity_bridge_status", "Inspect connection capabilities without sending prompts.", {}, true, async () => {
+register("antigravity_bridge_status", "Inspect native sidecar connectivity and supported inbound/outbound routes without sending prompts. Outbound readiness must be checked with agent_bridge_status inside Antigravity Desktop.", {}, true, async () => {
   let desktop;
   try { desktop = await callAntigravityDesktop({ operation: "status" }, { timeoutMs: 5000 }); }
-  catch { desktop = { available: false, reason: "Open Antigravity with the installed codex-bridge sidecar enabled" }; }
-  return { version, caller: caller ?? "unconfigured", desktop, cli: { transport: "stream-json", activeSessions: sessions.size, permissionPolicy: "native-unchanged", interactiveTerminalAttachment: false } };
+  catch { desktop = { available: false, code: "ANTIGRAVITY_SIDECAR_UNAVAILABLE", reason: "The native Antigravity sidecar could not be reached. This does not prove that the App is closed. Open Antigravity, or inspect its codex-bridge sidecar if the App is already running." }; }
+  return {
+    version,
+    caller: caller ?? "unconfigured",
+    desktop,
+    cli: { transport: "stream-json", activeSessions: sessions.size, permissionPolicy: "native-unchanged", interactiveTerminalAttachment: false },
+    outbound: {
+      supported: true,
+      server: "agent-bridge",
+      surface: "desktop",
+      targets: ["codex-desktop", "claude-desktop-code"],
+      scope: "existing-conversations-in-the-same-project",
+      readiness: "not_checked",
+      statusTool: "agent_bridge_status",
+      cliSupported: false,
+      automaticReplyForwarding: false,
+    },
+  };
 });
 
 register("list_antigravity_conversations", "List native Desktop conversations and bridge-owned CLI sessions in the sending project.", { surface: z.enum(["desktop", "cli"]) }, true, async ({ surface }, extra) => {

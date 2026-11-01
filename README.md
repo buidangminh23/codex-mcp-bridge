@@ -146,7 +146,7 @@ The `agy` CLI must be installed and signed in separately. CLI sessions are start
 
 | Tool | Behavior |
 | --- | --- |
-| `antigravity_bridge_status` | Reports native sidecar connectivity and CLI capabilities. |
+| `antigravity_bridge_status` | Reports native sidecar connectivity, CLI capabilities, and the separate outbound Desktop route. Outbound readiness requires `agent_bridge_status` inside Antigravity. |
 | `list_antigravity_conversations` | Lists the selected surface in the verified sender's exact project directory. |
 | `send_to_antigravity_conversation` | Sends to an exact existing App conversation or a CLI session owned by this bridge. |
 | `start_antigravity_cli_session` | Starts an explicitly authorized CLI streaming session with its initial prompt. |
@@ -160,6 +160,8 @@ The App adapter uses the official [sidecar `agentapi`](https://antigravity.googl
 The installer also registers **agent-bridge inside Antigravity Desktop** in `~/.gemini/config/mcp_config.json`. Reload the App after installation to discover it. From an Antigravity conversation, ask the agent to check `agent_bridge_status`, call `list_agent_tasks` for `codex` or `claude`, then use `send_to_agent_task` with the exact destination ID, project directory, prompt, and a fresh request UUID. Claude destinations also require their native `taskId`. Read `read_agent_delivery` without resending; `read_agent_task` reads the selected Codex task's response or Claude's native task metadata.
 
 Outbound calls verify Antigravity's per-call MCP metadata, Desktop process ancestry, native workspace/project, and effective permission settings. The sender is attributed as Antigravity. Codex keeps its native task settings; Claude's inbound policy and permission-class checks remain in effect. A socket write to Claude is `sent_unconfirmed`, not acceptance or completion. After MCP restart, a saved receipt remains available but live Claude reply tracking may be unavailable; inspect the exact native task before further action.
+
+If a caller says the bridge only supports one-way messaging, reload its `antigravity-bridge` MCP server after updating: older initialization instructions incorrectly denied the separate outbound route. An unavailable inbound sidecar does not prove that the App is closed or that outbound messaging is unsupported. If the App is already running, inspect its `codex-bridge` sidecar; check `agent_bridge_status` from Antigravity to verify outbound readiness independently.
 
 Outbound support targets existing local Codex tasks and live Claude Desktop Code sessions in the same project. Nested Antigravity callers, outbound CLI callers, App conversation creation, and automatic App reply forwarding are not implemented. Windows Desktop is the live verification platform; macOS ancestry has unit coverage and Linux outbound host verification fails closed. The existing Codex↔Claude bridge remains separate. Use `antigravity-mcp-bridge-install --all --remove` to remove only these registrations; delivery receipts are retained.
 

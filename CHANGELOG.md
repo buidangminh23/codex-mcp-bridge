@@ -4,6 +4,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Antigravity inbound MCP instructions now describe the existing outbound `agent-bridge` instead of incorrectly claiming that Antigravity cannot send to Codex or Claude. Status reports distinguish supported Desktop routes from unverified outbound readiness and retain the CLI and automatic-reply-forwarding limits.
+- An unreachable Antigravity sidecar now reports a connectivity problem without assuming the App is closed, and points callers to the sidecar diagnostics when the App is already running.
+
 ## [1.25.2] - 2026-10-31
 
 ### Fixed

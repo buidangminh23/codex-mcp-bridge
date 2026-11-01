@@ -21,7 +21,7 @@ function payload(response) {
   return JSON.parse(response.content[0].text);
 }
 
-async function fixture(t, { caller, verified = false } = {}) {
+async function fixture(t, { caller, verified = false, sidecarAvailable = true } = {}) {
   const home = fs.realpathSync.native(fs.mkdtempSync(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "antigravity-mcp-")));
   const cwd = path.join(home, "project");
   const otherCwd = path.join(home, "other-project");
@@ -55,7 +55,7 @@ async function fixture(t, { caller, verified = false } = {}) {
       socket.end(`${JSON.stringify({ result: { available: true, transport: "native-agentapi", permissionPolicy: "native-unchanged" } })}\n`);
     });
   });
-  await new Promise((resolve, reject) => { sidecar.once("error", reject); sidecar.listen(antigravitySocket(bridgeDirectory), resolve); });
+  if (sidecarAvailable) await new Promise((resolve, reject) => { sidecar.once("error", reject); sidecar.listen(antigravitySocket(bridgeDirectory), resolve); });
   const env = Object.fromEntries(Object.entries(getDefaultEnvironment()).filter(([name]) => !/^(?:CODEX|CLAUDE|ANTHROPIC|MCP_|ANTIGRAVITY)/i.test(name)));
   Object.assign(env, {
     HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"),
@@ -68,7 +68,7 @@ async function fixture(t, { caller, verified = false } = {}) {
   t.after(async () => {
     await client.close();
     for (const socket of sockets) socket.destroy();
-    await new Promise((resolve) => sidecar.close(resolve));
+    if (sidecar.listening) await new Promise((resolve) => sidecar.close(resolve));
     fs.rmSync(home, { recursive: true, force: true });
   });
   await client.connect(transport);
@@ -92,6 +92,43 @@ test("real stdio bridge advertises all tools and reads status without starting a
   assert.equal(status.cli.activeSessions, 0);
   assert.equal(status.cli.interactiveTerminalAttachment, false);
   assert.deepEqual(f.sidecarRequests, [{ operation: "status" }]);
+  assert.deepEqual(f.receipts(), []);
+});
+
+test("inbound clients discover the separate outbound Desktop bridge and its limits", { timeout: 20000 }, async (t) => {
+  const f = await fixture(t);
+  const instructions = f.client.getInstructions();
+  assert.match(instructions, /Antigravity Desktop can send authorized handoffs back to existing Codex Desktop tasks and live Claude Desktop Code sessions in the same project/);
+  for (const name of ["agent-bridge", "agent_bridge_status", "list_agent_tasks", "send_to_agent_task", "read_agent_delivery"]) assert.ok(instructions.includes(name), name);
+  assert.match(instructions, /Antigravity CLI outbound and automatic App reply forwarding are not supported/);
+  assert.doesNotMatch(instructions, /Do not claim support for Antigravity-origin handoffs/);
+  const status = payload(await f.call("antigravity_bridge_status", {}));
+  assert.equal(status.outbound.supported, true);
+  assert.equal(status.outbound.server, "agent-bridge");
+  assert.equal(status.outbound.surface, "desktop");
+  assert.deepEqual(status.outbound.targets, ["codex-desktop", "claude-desktop-code"]);
+  assert.equal(status.outbound.scope, "existing-conversations-in-the-same-project");
+  assert.equal(status.outbound.readiness, "not_checked");
+  assert.equal(status.outbound.statusTool, "agent_bridge_status");
+  assert.equal(status.outbound.cliSupported, false);
+  assert.equal(status.outbound.automaticReplyForwarding, false);
+  assert.deepEqual(f.sidecarRequests, [{ operation: "status" }]);
+  assert.deepEqual(f.receipts(), []);
+});
+
+test("an unreachable sidecar does not imply a closed App or unsupported outbound routing", { timeout: 20000 }, async (t) => {
+  const f = await fixture(t, { sidecarAvailable: false });
+  const response = await f.call("antigravity_bridge_status", {});
+  assert.equal(response.isError, undefined);
+  const status = payload(response);
+  assert.equal(status.desktop.available, false);
+  assert.equal(status.desktop.code, "ANTIGRAVITY_SIDECAR_UNAVAILABLE");
+  assert.match(status.desktop.reason, /does not prove that the App is closed/);
+  assert.match(status.desktop.reason, /inspect its codex-bridge sidecar/);
+  assert.equal(status.outbound.supported, true);
+  assert.equal(status.outbound.readiness, "not_checked");
+  assert.equal(status.cli.activeSessions, 0);
+  assert.deepEqual(f.sidecarRequests, []);
   assert.deepEqual(f.receipts(), []);
 });
 

@@ -5,12 +5,12 @@ handoffs, save the local project in Codex Desktop and open the same directory
 in Claude Desktop's **Code tab**. Run one PowerShell command:
 
 ```powershell
-npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
+npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
 ```
 
 The `--allow-scripts` value permits only this package's setup hook. npm versions
 that block install scripts by default need it; a plain install runs setup only
-when scripts are allowed. Add `--foreground-scripts` to see setup progress. If
+when scripts are allowed. `--foreground-scripts` displays setup progress. If
 npm reports `1 package had install scripts blocked`, run the recommended command
 again or run `codex-bridge-setup.cmd` explicitly.
 
@@ -21,6 +21,15 @@ directory. It also configures native pipe forwarding and bootstraps the relay
 executor. A failed component is reported as incomplete rather than ready. The
 package stays installed when an app configuration step fails, so the setup
 command remains available for repair. npm success alone does not verify setup.
+
+The same command installs the independent worker relay as a hidden per-user
+scheduled task and applies its managed settings on every update. Once the
+selected CLIs are signed in and the project is authorized, `send_to_worker`
+can use separate Claude, Codex and Antigravity workers while Desktop apps are
+closed or frozen. Use `worker-relay.cmd status` to inspect this service and
+`read_worker_delivery` for its durable results and diagnostic reports. It does
+not open apps or resume native chats. CLI authentication is separate from
+Desktop sign-in; existing disabled settings and permission denials remain.
 
 ## Installed entries
 

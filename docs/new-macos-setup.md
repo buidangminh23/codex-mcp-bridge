@@ -12,12 +12,12 @@ under the same macOS user. Save the intended local project in Codex Desktop and
 open it in Claude's Code tab, then run:
 
 ```bash
-npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
+npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
 ```
 
 The script allowance applies only to this package's setup hook. npm versions
 that block install scripts by default need it; a plain install is sufficient
-only when the hook is allowed. Append `--foreground-scripts` to see progress.
+only when the hook is allowed. `--foreground-scripts` displays setup progress.
 If npm reports `1 package had install scripts blocked`, rerun the command above
 or run `codex-bridge-setup` explicitly.
 
@@ -29,6 +29,13 @@ required. Run the install under the account that uses the apps, without `sudo`.
 The package remains installed if an app configuration step fails, preserving
 the setup command for repair. A successful npm exit does not verify that every
 component is configured.
+
+The command also installs an independent per-user LaunchAgent for separate
+Claude, Codex and Antigravity CLI workers and updates its managed settings on
+each release. `worker-relay status` inspects this service. With CLI login and an
+authorized project, `send_to_worker` and `read_worker_delivery` work independently
+of closed or frozen Desktop apps. They do not resume native chats or launch
+Desktop windows. Existing permission denials and disabled choices remain.
 
 | Client | Entry | Route |
 | --- | --- | --- |

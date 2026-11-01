@@ -8,6 +8,7 @@ const caches = new WeakMap();
 const writes = new WeakMap();
 const helper = fileURLToPath(new URL("./background-relay-storage.ps1", import.meta.url));
 const unsafe = () => Object.assign(new Error("Relay storage must be owned by the current user and inaccessible to other users"), { code: "WORKER_STORAGE_UNSAFE", phase: "storage", deliveryState: "not_sent", sent: false });
+const changed = () => Object.assign(new Error("Relay storage kept changing during privacy verification; retry after the current update finishes"), { code: "WORKER_STORAGE_CHANGED", phase: "storage", deliveryState: "not_sent", sent: false });
 
 function targetPath(input) {
   if (typeof input !== "string" || !path.isAbsolute(input) || input.includes("\0")) throw unsafe();
@@ -32,7 +33,7 @@ const sameObject = (left, right) => ["dev", "ino", "birthtimeNs", "uid", "mode"]
 const validReadback = (value, kind) => value?.ownerTrusted === true && value?.allowedPrincipalsOnly === true && value?.currentUserFullControl === true
   && value?.noReparse === true && (kind !== "directory" || value?.protected === true) && value?.kind === kind;
 
-function runWindowsHelper(target, kind, mode, run, input) {
+function runWindowsHelper(target, kind, mode, run, input, timeout = 15000) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
   const windows = process.env.SystemRoot || "C:\\Windows";
   env.PSModulePath = path.win32.join(windows, "System32", "WindowsPowerShell", "v1.0", "Modules");
@@ -40,7 +41,7 @@ function runWindowsHelper(target, kind, mode, run, input) {
     const response = run(path.win32.join(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       ["-NoProfile", "-NonInteractive", "-File", helper, "-LiteralPath", target, "-Kind", kind, "-Mode", mode],
       { env, windowsHide: true, shell: false, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], input,
-        timeout: 15000, maxBuffer: mode === "batch" ? 2 * 1024 * 1024 : 16384, encoding: "utf8" });
+        timeout, maxBuffer: mode === "batch" ? 2 * 1024 * 1024 : 16384, encoding: "utf8" });
     if (response && typeof response === "object" && !Buffer.isBuffer(response) && (response.status ?? response.exitCode ?? 0) !== 0) throw unsafe();
     return JSON.parse(typeof response === "object" && !Buffer.isBuffer(response) ? response.stdout : String(response));
   } catch { throw unsafe(); }
@@ -52,15 +53,21 @@ function windowsPrivacy(target, kind, mode, stat, run) {
   const key = cacheKey(target, kind);
   const previous = cache.get(key);
   if (previous?.identity === identity(stat)) return stat;
-  let result;
-  try { result = runWindowsHelper(target, kind, mode, run); }
-  catch { cache.delete(key); throw unsafe(); }
-  const current = inspectPath(target, kind);
-  if (current.dev !== stat.dev || current.ino !== stat.ino || current.birthtimeNs !== stat.birthtimeNs
-    || mode === "assert" && identity(current) !== identity(stat) || !validReadback(result, kind)) { cache.delete(key); throw unsafe(); }
-  cache.set(key, { identity: identity(current) });
-  if (cache.size > 2048) cache.delete(cache.keys().next().value);
-  return current;
+  const deadline = Date.now() + 15000;
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw changed();
+      const result = runWindowsHelper(target, kind, mode, run, undefined, remaining);
+      const current = inspectPath(target, kind);
+      if (current.dev !== stat.dev || current.ino !== stat.ino || current.birthtimeNs !== stat.birthtimeNs || !validReadback(result, kind)) throw unsafe();
+      if (mode === "assert" && identity(current) !== identity(stat)) { stat = current; continue; }
+      cache.set(key, { identity: identity(current) });
+      if (cache.size > 2048) cache.delete(cache.keys().next().value);
+      return current;
+    }
+    throw changed();
+  } catch (error) { cache.delete(key); throw error; }
 }
 
 function assertPrivacy(target, kind, stat, { platform = process.platform, run = execFileSync } = {}) {

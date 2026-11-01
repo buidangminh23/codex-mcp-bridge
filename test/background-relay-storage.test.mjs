@@ -44,6 +44,14 @@ function posixWriteFixture(t, platform = "darwin") {
   return { ticket, directoryState, fileState, entries, pendingFile };
 }
 
+function privacySnapshotFixture(t) {
+  const directory = path.join(os.tmpdir(), "relay-snapshot-fixture");
+  const state = { dev: 1n, ino: 10n, uid: 1000n, mode: 0o40700n, nlink: 2n, birthtimeNs: 100n, ctimeNs: 200n, mtimeNs: 200n, size: 0n,
+    isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
+  t.mock.method(fs, "lstatSync", target => { assert.equal(target, directory); return { ...state }; });
+  return { directory, state };
+}
+
 test("private storage creates only its directory and verifies files without changing content", t => {
   const root = temporary(t);
   const directory = path.join(root, "relay");
@@ -124,6 +132,52 @@ test("Windows cached validation is invalidated by replacement and metadata chang
   fs.writeFileSync(file, "replacement");
   assertPrivateRelayFile(file, options);
   assert.ok(checks > previous);
+});
+
+test("Windows privacy assertions revalidate directory metadata churn before caching a stable snapshot", t => {
+  const box = privacySnapshotFixture(t);
+  let calls = 0;
+  const run = (command, args, options) => {
+    assert.equal(args[args.indexOf("-Mode") + 1], "assert");
+    assert.ok(options.timeout <= 15000);
+    if (++calls === 1) { box.state.ctimeNs++; box.state.mtimeNs++; }
+    return JSON.stringify(readback("directory"));
+  };
+  const options = { platform: "win32", run };
+  assert.ok(assertPrivateRelayDirectory(box.directory, options).isDirectory());
+  assert.equal(calls, 2);
+  assertPrivateRelayDirectory(box.directory, options);
+  assert.equal(calls, 2);
+});
+
+test("Windows privacy assertions report persistent churn separately and never cache it", t => {
+  const box = privacySnapshotFixture(t);
+  let calls = 0;
+  let changing = true;
+  const run = () => { calls++; if (changing) box.state.ctimeNs++; return JSON.stringify(readback("directory")); };
+  const options = { platform: "win32", run };
+  assert.throws(() => assertPrivateRelayDirectory(box.directory, options), { code: "WORKER_STORAGE_CHANGED", deliveryState: "not_sent" });
+  assert.equal(calls, 3);
+  changing = false;
+  assertPrivateRelayDirectory(box.directory, options);
+  assert.equal(calls, 4);
+});
+
+test("Windows privacy revalidation never tolerates an unsafe ACL or replaced directory", async t => {
+  await t.test("unsafe readback after churn", child => {
+    const box = privacySnapshotFixture(child);
+    let calls = 0;
+    const run = () => { calls++; box.state.ctimeNs++; return JSON.stringify({ ...readback("directory"), allowedPrincipalsOnly: calls === 1 }); };
+    assert.throws(() => assertPrivateRelayDirectory(box.directory, { platform: "win32", run }), { code: "WORKER_STORAGE_UNSAFE" });
+    assert.equal(calls, 2);
+  });
+  await t.test("inode replacement", child => {
+    const box = privacySnapshotFixture(child);
+    let calls = 0;
+    const run = () => { calls++; box.state.ino++; return JSON.stringify(readback("directory")); };
+    assert.throws(() => assertPrivateRelayDirectory(box.directory, { platform: "win32", run }), { code: "WORKER_STORAGE_UNSAFE" });
+    assert.equal(calls, 1);
+  });
 });
 
 test("batch privacy checks use one bounded literal helper request and populate individual caches", t => {

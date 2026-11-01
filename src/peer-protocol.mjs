@@ -235,7 +235,7 @@ export function findClaudeSession(target, { desktopOnly = false, expectedCwd } =
     if (matches.length !== 1) throw new Error(`Desktop-only mode requires an unambiguous sessionId or pid; "${needle}" matches multiple sessions. No message was sent.`);
     const session = matches[0];
     if (session.entrypoint !== "claude-desktop") {
-      throw new Error(`Desktop-only mode refuses Claude session ${session.sessionId ?? session.pid} with entrypoint ${session.entrypoint ?? "unknown"}. Open or reconnect an existing Code session in Claude Desktop for the intended project. Do not launch a replacement CLI session. No message was sent.`);
+      throw Object.assign(new Error(`Desktop-only mode refuses Claude session ${session.sessionId ?? session.pid} with entrypoint ${session.entrypoint ?? "unknown"}. Inspect native session discovery; do not open chats to load a relay or launch a replacement CLI session. No message was sent.`), { code: "CLAUDE_DESKTOP_TASK_UNVERIFIED", sent: false });
     }
     if (expectedCwd !== undefined) assertClaudeSessionCwd(session, expectedCwd);
     return session;
@@ -268,13 +268,13 @@ export function assertClaudeSessionCwd(session, expectedCwd) {
 }
 
 export function assertClaudeSessionProcess(session) {
-  const changed = "The live Claude process identity is missing or changed. No message was sent; reopen the existing Desktop task and inspect its session again.";
-  if (!session?.alive || typeof session.processStart !== "string" || !session.processStart) throw new Error(changed);
+  const changed = "The live Claude process identity is missing or changed. No message was sent; inspect list_claude_sessions without opening an app or chat.";
+  if (!session?.alive || typeof session.processStart !== "string" || !session.processStart) throw Object.assign(new Error(changed), { code: "CLAUDE_PROCESS_IDENTITY_CHANGED", sent: false });
   const current = readProcessStart(session.pid);
   if (current === null) {
-    throw new Error("The live Claude process identity could not be read, so this send was refused rather than sent unverified. That failure is not itself evidence the session changed; inspect the existing Desktop task before retrying.");
+    throw Object.assign(new Error("The live Claude process identity could not be read, so this send was refused rather than sent unverified. That failure is not itself evidence the session changed; inspect native session discovery before retrying."), { code: "CLAUDE_PROCESS_IDENTITY_UNAVAILABLE", sent: false });
   }
-  if (current !== session.processStart) throw new Error(changed);
+  if (current !== session.processStart) throw Object.assign(new Error(changed), { code: "CLAUDE_PROCESS_IDENTITY_CHANGED", sent: false });
 }
 
 /**
@@ -1050,6 +1050,7 @@ export class PeerEndpoint {
           + "Inspect read_claude_delivery and wait for Claude's outstanding replies. Changing waitSec or starting another bridge must not be used to bypass a pending message.",
         );
         error.code = "PEER_REPLY_PENDING";
+        error.sent = false;
         throw error;
       }
       const since = Date.now();
@@ -1076,8 +1077,9 @@ export class PeerEndpoint {
         }
       } catch (err) {
         const sent = this.sentMessages.get(msgId);
-        if (sent) sent.error = err.message;
+        if (sent) { sent.error = err.message; sent.errorCode = err.code ?? "CLAUDE_PEER_SEND_FAILED"; }
         if (!err.deliveryUncertain) {
+          err.sent = false;
           this.#removePendingReply(targetSocket, msgId);
           if (sent) sent.failed = true;
         }
@@ -1160,6 +1162,7 @@ export class PeerEndpoint {
       msgId,
       status: sent.reply ? "reply_received" : sent.failed ? "send_failed" : delivery?.status ?? "sent_unconfirmed",
       reason: delivery?.reason ?? sent.error ?? null,
+      ...(sent.errorCode || delivery?.reasonCode ? { reasonCode: sent.errorCode ?? delivery.reasonCode } : {}),
       sentAt: sent.sentAt,
       sessionId: session?.sessionId ?? null,
       cwd: session?.cwd ?? null,

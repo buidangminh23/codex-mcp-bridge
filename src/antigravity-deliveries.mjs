@@ -2,8 +2,18 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ensureBridgeDirectory } from "./antigravity-ipc.mjs";
+import { bridgeDiagnostic } from "./recipient-preflight.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function antigravityDeliveryError(record) {
+  if (!record || !UUID.test(record.requestId) || !["failed", "unknown"].includes(record.status)) return null;
+  return Object.assign(new Error(record.reason ?? "The original Antigravity delivery did not complete successfully"), {
+    code: record.diagnostic?.code ?? (record.status === "unknown" ? "ANTIGRAVITY_DELIVERY_UNKNOWN" : "ANTIGRAVITY_DELIVERY_FAILED"),
+    deliveryState: record.diagnostic?.deliveryState ?? "unknown",
+    diagnostic: record.diagnostic,
+  });
+}
 
 export class AntigravityDeliveries {
   constructor(directory) {
@@ -39,7 +49,11 @@ export class AntigravityDeliveries {
       record = JSON.parse(buffer.subarray(0, bytes).toString("utf8"));
     } finally { fs.closeSync(descriptor); }
     if (record.requestId !== requestId) throw new Error("Delivery identity mismatch");
-    if (record.status === "pending" && !this.active.has(requestId)) return { ...record, status: "unknown", reason: "This process cannot observe the original worker. Inspect the exact destination; do not resend." };
+    if (record.status === "pending" && !this.active.has(requestId)) {
+      const error = Object.assign(new Error("This process cannot observe the original worker. Inspect the original delivery receipt; do not resend or open a chat to load the relay."), { code: "ANTIGRAVITY_WORKER_UNAVAILABLE", phase: "receipt", deliveryState: "unknown" });
+      const diagnostic = bridgeDiagnostic(error, { component: "antigravity-deliveries", operation: record.operation ?? "send", requestId, conversationId: record.conversationId });
+      return { ...record, status: "unknown", reason: diagnostic.reason, diagnostic };
+    }
     return record;
   }
 
@@ -56,28 +70,38 @@ export class AntigravityDeliveries {
     fs.renameSync(temporary, this.file(record.requestId));
   }
 
-  async dispatch(request, operation) {
+  async dispatch(request, operation, diagnosticOptions = {}) {
     const { requestId, ...identity } = request;
     const digest = crypto.createHash("sha256").update(JSON.stringify(identity)).digest("hex");
     const existing = this.read(requestId);
     if (existing) {
-      if (existing.digest !== digest) throw new Error("requestId was already used for a different delivery");
+      if (existing.digest !== digest) throw Object.assign(new Error("requestId was already used for a different delivery; inspect the original receipt before further action"), { code: "ANTIGRAVITY_REQUEST_ID_CONFLICT", phase: "validation", deliveryState: "not_sent" });
       return existing;
     }
-    const record = { requestId, digest, status: "pending", cwd: request.cwd, sender: request.sender, conversationId: request.conversationId ?? null, surface: request.surface, createdAt: new Date().toISOString() };
+    const record = { requestId, digest, status: "pending", operation: diagnosticOptions.operation ?? "send", cwd: request.cwd, sender: request.sender, conversationId: request.conversationId ?? null, surface: request.surface, createdAt: new Date().toISOString() };
+    const diagnose = (error) => bridgeDiagnostic(error, { component: "antigravity-deliveries", operation: record.operation, ...diagnosticOptions, requestId, conversationId: record.conversationId, msgId: error.msgId });
     try { fs.writeFileSync(this.file(requestId), JSON.stringify(record), { flag: "wx", mode: 0o600 }); }
     catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      throw new Error("Delivery is owned by another process. Inspect requestId; do not resend.");
+      if (error.code !== "EEXIST") {
+        error.deliveryState = "not_sent";
+        error.phase = "receipt";
+        throw error;
+      }
+      throw Object.assign(new Error("Delivery is owned by another process. Inspect requestId; do not resend."), { code: "ANTIGRAVITY_DELIVERY_IN_PROGRESS", phase: "receipt", deliveryState: "unknown" });
     }
     this.active.add(requestId);
     void Promise.resolve().then(operation).then((result) => {
       record.status = ["accepted", "sent_unconfirmed", "held", "refused"].includes(result?.status) ? result.status : result?.status && result.status !== "SUCCESS" ? "failed" : "completed";
       record.result = result;
       record.conversationId = result?.conversationId ?? result?.conversation_id ?? record.conversationId;
+      if (record.status === "failed") {
+        record.diagnostic = diagnose(Object.assign(new Error(typeof result.error === "string" ? result.error : "The native Antigravity delivery failed"), { code: result.status, deliveryState: result.deliveryState, sent: result.sent }));
+        record.reason = record.diagnostic.reason;
+      }
     }, (error) => {
-      record.status = ["not_sent", "not-sent"].includes(error.deliveryState) ? "failed" : "unknown";
-      record.reason = error.message;
+      record.diagnostic = diagnose(error);
+      record.status = record.diagnostic.deliveryState === "not_sent" ? "failed" : "unknown";
+      record.reason = record.diagnostic.reason;
       if (typeof error.msgId === "string" && UUID.test(error.msgId)) record.result = { msgId: error.msgId, completed: false };
       if (error.accountContext) record.result = { ...record.result, accountContext: error.accountContext };
     }).finally(() => {

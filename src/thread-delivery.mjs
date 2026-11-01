@@ -9,6 +9,7 @@ import { captureCodexRolloutWatermark, inspectCodexNativeTurn, readCodexNativeTu
 import { captureProjectScope, recheckProjectScope } from "./project-scope.mjs";
 import { isRolloutChangedDuringRead } from "./rollout-segments.mjs";
 import { requireClaudeSenderContext } from "./claude-sender-context.mjs";
+import { bridgeDiagnostic } from "./recipient-preflight.mjs";
 
 /**
  * Which backend puts a message into a Codex thread.
@@ -74,7 +75,7 @@ export function matchDesktopProject(projects, cwd, { canonicalize = realpathSync
   return matches[0];
 }
 
-export const RELAY_DOWN_GUIDANCE = "The Codex Desktop native relay is not listening after waiting for silent recovery. Its Desktop-owned supervisor restarts crashed relay workers without replaying requests. If Desktop has not loaded the relay MCP, reconnect it in a regular project task; automatic recovery never opens a task or window. Do not open the internal Native Relay executor task.";
+export const RELAY_DOWN_GUIDANCE = "The Codex Desktop native relay is not listening after waiting for silent recovery. Its Desktop-owned supervisor restarts crashed relay workers without replaying requests. An unloaded native host cannot be cold-started by this bridge. Inspect codex_bridge_status and include its diagnostic in a report. Never open an app or an old, new, empty or failed chat to load a relay.";
 
 function relayUnreachable(error) {
   return error?.code === "RELAY_UNREACHABLE" && error.sent === false;
@@ -196,13 +197,17 @@ export class DesktopTaskDelivery {
   async status() {
     const accountContext = this.accountContext?.();
     const socketPath = this.relay.status?.({ accountContext })?.socketPath ?? this.relay.socketPath;
-    if (this.accountContext && !accountContext) return { available: false, socketPath, reason: "The current Claude and Codex accounts could not both be verified. Finish signing in and inspect the account diagnostics before sending work." };
+    if (this.accountContext && !accountContext) {
+      const reason = "The current Claude and Codex accounts could not both be verified. Finish signing in and inspect the account diagnostics before sending work.";
+      return { available: false, socketPath, code: "BRIDGE_ACCOUNT_UNVERIFIED", reason, diagnostic: bridgeDiagnostic(new Error(reason), { component: "codex-bridge", operation: "codex_bridge_status", code: "BRIDGE_ACCOUNT_UNVERIFIED", readOnly: true }) };
+    }
     try {
       const response = await this.request("list_projects", {});
       if (!Array.isArray(response?.projects)) throw new Error("Desktop returned no project list");
       return { available: true, socketPath, localProjects: response.projects.filter((project) => project.projectKind === "local" && project.hostId === "local").length };
     } catch (err) {
-      return { available: false, socketPath, reason: err.message };
+      const diagnostic = bridgeDiagnostic(err, { component: "codex-bridge", operation: "codex_bridge_status", readOnly: true });
+      return { available: false, socketPath, code: diagnostic.code, reason: err.message, diagnostic };
     }
   }
 
@@ -336,11 +341,11 @@ export class DesktopTaskDelivery {
         const confirmedId = response?.threadId ?? response?.conversationId;
         threadId = confirmedId;
         if (!threadId && (response?.status === "outcome-unknown" || response?.firstTurn?.status === "outcome-unknown")) threadId = response?.clientThreadId;
-        if (typeof confirmedId !== "string" || !confirmedId.trim() || response?.status === "outcome-unknown" || response.hostId !== "local") throw new Error(`Desktop creation is not confirmed: ${JSON.stringify(response)}`);
+        if (typeof confirmedId !== "string" || !confirmedId.trim() || response?.status === "outcome-unknown" || response.hostId !== "local") throw Object.assign(new Error("Desktop creation is not confirmed; inspect the original native receipt."), { code: "CODEX_CREATION_UNCONFIRMED", deliveryState: "unknown", phase: "creation" });
         await this.receipts.write(identity.key, { ...receipt, state: "known", threadId });
         creationConfirmed = true;
         this.security.registerThread(threadId);
-        if (response.firstTurn && response.firstTurn.status !== "accepted") throw new Error(`Desktop created task ${threadId}; its first turn reports ${response.firstTurn.status ?? "an unconfirmed state"}: ${JSON.stringify(response)}`);
+        if (response.firstTurn && response.firstTurn.status !== "accepted") throw Object.assign(new Error(`Desktop created task ${threadId}; its first turn reports ${["failed", "waitingOnApproval", "waitingOnUserInput", "outcome-unknown"].includes(response.firstTurn.status) ? response.firstTurn.status : "an unconfirmed state"}. Inspect the original native receipt.`), { code: "CODEX_FIRST_TURN_NOT_ACCEPTED", deliveryState: "sent", phase: "first_turn" });
         const created = { threadId, name, cwd, projectId: project.projectId, projectName: project.label, backend: NATIVE_BACKEND };
         const delivered = { ...created, previousTurnId: null, deliveryStatus: "accepted", responseObservation: {
             operation: "create_thread", threadId, previousTurnId: null, expectedCwd: cwd,

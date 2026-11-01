@@ -1,6 +1,6 @@
 import { RELAY_DOWN_GUIDANCE } from "./thread-delivery.mjs";
 
-export function bridgeReadiness({ sender, scope, targetCwd, nativeAvailable = true, verifyTargetProject }) {
+export function bridgeReadiness({ sender, scope, targetCwd, nativeAvailable = true, nativeDiagnostic, verifyTargetProject }) {
   const issues = [];
   if (sender?.status !== "verified") issues.push({ code: "SENDER_UNVERIFIED", detail: sender?.reason ?? "No current Code session identity", action: "Load the user-level Claude Code bridge entry in this existing task; a shared Desktop entry cannot identify the caller. Run the Code registration check, then reload the affected client." });
   const projectPolicy = scope?.status?.(sender?.status === "verified" ? sender.cwd : undefined) ?? null;
@@ -20,6 +20,6 @@ export function bridgeReadiness({ sender, scope, targetCwd, nativeAvailable = tr
       issues.push({ code: error.code ?? "PROJECT_SCOPE_UNVERIFIED", detail: error.message, action: "Select a destination in the verified sender's project. A project grant does not authorize cross-project delivery." });
     }
   }
-  if (!nativeAvailable) issues.push({ code: "RELAY_UNAVAILABLE", action: RELAY_DOWN_GUIDANCE });
+  if (!nativeAvailable) issues.push({ code: nativeDiagnostic?.code ?? "RELAY_UNAVAILABLE", detail: nativeDiagnostic?.reason, action: RELAY_DOWN_GUIDANCE, ...(nativeDiagnostic ? { diagnostic: nativeDiagnostic } : {}) });
   return { ready: issues.length === 0, readyScope: "transport-identity-and-project", hostToolPermission: "evaluated-by-client-at-call-time", sender, projectPolicy, target, issues };
 }

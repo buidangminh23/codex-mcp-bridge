@@ -53,7 +53,7 @@ function initialBridgeEntry(entry, root, label) {
   }
 }
 
-export function planInitialCodeRegistration({ code, desktop, root, node, environment = {}, name = "codex-bridge" }) {
+export function planInitialCodeRegistration({ code, desktop, root, node, environment = {}, name = "codex-bridge", setup = false }) {
   configurationObject(code, "Claude Code configuration");
   configurationObject(desktop, "Claude Desktop configuration");
   configurationObject(environment, "Bridge environment");
@@ -75,6 +75,7 @@ export function planInitialCodeRegistration({ code, desktop, root, node, environ
     for (const key of scopeKeys) delete defaults[key];
   }
   const values = { ...defaults, ...source?.env };
+  if (setup) values.CODEX_BRIDGE_OPEN_IN_APP = "0";
   if (defaults.CODEX_BIN && source?.env?.CODEX_BIN && path.isAbsolute(source.env.CODEX_BIN)) {
     try { fs.lstatSync(source.env.CODEX_BIN); }
     catch (error) {

@@ -25,7 +25,7 @@ import { removeRelayFile } from "../src/native-relay-files.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.25.2";
+const VERSION = "1.25.3";
 const root = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const entry = path.join(root, "src", "mcp-supervisor.mjs");
 const entryArgs = ["native-relay-companion.mjs"];
@@ -136,5 +136,5 @@ if (process.argv.includes("--desktop-tasks")) {
   writeRelayConfig({ ...readRelayConfig(), desktopTasks: true });
   console.log("Desktop task creation enabled: exact saved local projects, immediate visibility, Codex Desktop permissions.");
 }
-console.log("One-time step: after active Codex work finishes, quit and reopen Codex Desktop once so it starts the supervisor. Then call native_relay_status in an existing task: it must report \"automatic reload: current\" with a supervisor pid. Later compatible installed updates reload automatically when the relay is idle.");
+console.log("Native relay configuration saved. Running MCP processes were not restarted; native_relay_status reports whether a Desktop-owned relay is loaded and current. Existing compatible supervisors reload installed source when idle, but saved configuration does not prove the running process has loaded new settings. This installer does not start Codex Desktop or open conversations.");
 console.log("remove: node scripts/install-native-relay.mjs --remove");

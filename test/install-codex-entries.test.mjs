@@ -120,7 +120,10 @@ it("retargets a directly registered native relay to the supervisor without dropp
   assert.equal(after.replace(relay, ""), LIVE.replace(section(LIVE, "codex-native-relay"), ""));
   assert.equal(box.calls().some((call) => call[1] === "add"), false);
   assert.match(result.stdout, /retargeted in place/);
-  assert.match(result.stdout, /quit and reopen Codex Desktop once/);
+  assert.match(result.stdout, /Native relay configuration saved/);
+  assert.match(result.stdout, /native_relay_status reports whether a Desktop-owned relay is loaded and current/);
+  assert.match(result.stdout, /This installer does not start Codex Desktop or open conversations/);
+  assert.doesNotMatch(result.stdout, /quit and reopen Codex Desktop once/);
 });
 
 it("retargets a directly registered claude-bridge to the supervisor and keeps its environment and comments", { skip, timeout: 180000 }, async (t) => {

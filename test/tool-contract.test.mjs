@@ -248,7 +248,7 @@ describe("Claude message receipts", () => {
           for (const invalid of [undefined, "false"]) {
             const invalidMeta = { "x-codex-turn-metadata": { ...meta["x-codex-turn-metadata"], auto_review_enabled: invalid } };
             const refused = await client.callTool({ name: "send_to_claude_session", arguments: { target: "receipt-session", message: "Invalid review evidence", expectedCwd: home, expectedTaskId: desktopTaskId, waitSec: 0 }, _meta: invalidMeta });
-            assert.equal(refused.structuredContent.preflight.sent, false);
+            assert.equal(refused.structuredContent?.preflight?.sent, false, refused.content?.[0]?.text);
             assert.equal(count, 0);
           }
           assert.equal(status.structuredContent.sender.threadId, callerId);
@@ -861,7 +861,9 @@ describe("agent prompt guidance", async () => {
       assert.match(text, /never fall back to submitting the prompt through the UI/);
     }
     assert.match(claude.instructions, /already-live session is sent directly without opening a composer/);
-    assert.match(claude.instructions, /send_to_claude_session with target auto.*bridge reopen that saved task/);
+    assert.match(claude.instructions, /target auto.*without opening an app or chat/);
+    assert.match(claude.instructions, /CLAUDE_SESSION_NOT_READY.*sent false/);
+    assert.match(claude.instructions, /Never open an app or an old, new, empty or failed chat to load a relay/);
     assert.match(send.inputSchema.properties.expectedTaskId.description, /list_claude_sessions.*returned title and cwd.*No UI interaction is required/);
     assert.doesNotMatch(send.inputSchema.properties.expectedTaskId.description, /verify its title in the app/);
   });

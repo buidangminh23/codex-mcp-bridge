@@ -151,6 +151,27 @@ test("first-install update preserves custom environment, permission fields, rout
   assert.equal(plan.entry.env.CODEX_BRIDGE_THREAD_POLICY, undefined);
 });
 
+test("comprehensive setup migrates window-opening settings without changing restrictions or custom registrations", () => {
+  const prior = { ...entry(), disabled: true, permissions: { allow: [] }, env: {
+    CUSTOM_TOKEN: "private", CODEX_BRIDGE_OPEN_IN_APP: "1", CODEX_BRIDGE_ALLOWED_ROOTS: "narrow",
+    CODEX_BRIDGE_SANDBOX: "read-only", CODEX_BRIDGE_APPROVAL: "deny", CODEX_BRIDGE_DESKTOP_TASKS: "0",
+  } };
+  const code = { mcpServers: { "codex-bridge": prior, custom: { command: "custom", args: ["keep"] } },
+    projects: { project: { mcpServers: { "codex-bridge": prior } } } };
+  const before = structuredClone(code);
+  assert.equal(initialPlan({ code }).entry.env.CODEX_BRIDGE_OPEN_IN_APP, "1");
+  const plan = initialPlan({ code, setup: true, environment: { CODEX_BRIDGE_OPEN_IN_APP: "1" } });
+  assert.deepEqual(code, before);
+  assert.deepEqual(plan.entry.env, { ...prior.env, CODEX_BRIDGE_OPEN_IN_APP: "0" });
+  assert.equal(plan.entry.disabled, true);
+  assert.deepEqual(plan.entry.permissions, prior.permissions);
+  assert.deepEqual(plan.code.mcpServers.custom, code.mcpServers.custom);
+  assert.deepEqual(plan.code.projects, code.projects);
+  assert.match(plan.notices[0], /override.*preserved/);
+  assert.deepEqual(initialPlan({ code: plan.code, setup: true, environment: {} }).changes, []);
+  assert.equal(initialPlan({ setup: true }).entry.env.CODEX_BRIDGE_OPEN_IN_APP, "0");
+});
+
 test("first-install update retargets known package installations and refuses an unrelated or customized command", () => {
   const old = { ...entry(), args: [path.resolve("old/codex-mcp-bridge/src/index.mjs")] };
   assert.deepEqual(initialPlan({ code: { mcpServers: { "codex-bridge": old } } }).entry.args, [path.resolve("src/mcp-supervisor.mjs"), "index.mjs"]);
@@ -274,6 +295,29 @@ test("--install backs up exact input before fixing shared-name shadowing and doe
   const backupFor = (file) => path.join(path.dirname(file), fs.readdirSync(path.dirname(file)).find((name) => name.includes(".backup-")));
   assert.equal(fs.readFileSync(backupFor(fixture.codeFile), "utf8"), originalCode);
   assert.equal(fs.readFileSync(backupFor(fixture.desktopFile), "utf8"), originalDesktop);
+});
+
+test("--install --setup applies silent settings to existing registrations and preserves unrelated data", (t) => {
+  const fixture = initialSandbox(t);
+  fs.mkdirSync(path.dirname(fixture.codeFile), { recursive: true });
+  const previous = { preferences: { keep: true }, mcpServers: { "codex-bridge": {
+    ...entry(), disabled: true, env: { CUSTOM_TOKEN: "do-not-print-this", CODEX_BRIDGE_OPEN_IN_APP: "1",
+      CODEX_BRIDGE_SANDBOX: "read-only", CODEX_BRIDGE_ALLOWED_ROOTS: "narrow" },
+  } } };
+  fs.writeFileSync(fixture.codeFile, JSON.stringify(previous));
+  const child = fixture.run("--setup");
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(JSON.parse(child.stdout).liveVerified, false);
+  assert.doesNotMatch(child.stdout, /do-not-print-this/);
+  const saved = JSON.parse(fs.readFileSync(fixture.codeFile, "utf8"));
+  assert.deepEqual(saved.preferences, previous.preferences);
+  assert.equal(saved.mcpServers["codex-bridge"].disabled, true);
+  assert.equal(saved.mcpServers["codex-bridge"].env.CODEX_BRIDGE_OPEN_IN_APP, "0");
+  assert.equal(saved.mcpServers["codex-bridge"].env.CODEX_BRIDGE_SANDBOX, "read-only");
+  assert.equal(saved.mcpServers["codex-bridge"].env.CODEX_BRIDGE_ALLOWED_ROOTS, "narrow");
+  const repeated = fixture.run("--setup");
+  assert.equal(repeated.status, 0, repeated.stderr);
+  assert.equal(JSON.parse(repeated.stdout).writtenFiles, 0);
 });
 
 test("--install leaves both files untouched when a shared rename collision or malformed JSON is found", (t) => {

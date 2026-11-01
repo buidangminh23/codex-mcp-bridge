@@ -29,7 +29,7 @@ async function fixture(t, outcomes = {}) {
   t.after(async () => { await client.close(); await bridge.close(); fs.rmSync(directory, { recursive: true, force: true }); });
   const call = async (name, args = {}) => {
     const response = await client.callTool({ name, arguments: args });
-    return { ...JSON.parse(response.content[0].text), isError: response.isError };
+    return { ...JSON.parse(response.content[0].text), isError: response.isError, structuredContent: response.structuredContent, reports: response.content.slice(1).map((item) => item.text).join("\n") };
   };
   const request = { target: "codex", conversationId: crypto.randomUUID(), requestId: crypto.randomUUID(), cwd: directory, prompt: "Fixture only" };
   return { client, call, request, identity, directory, calls, change: (value) => { current = value; }, beforeDispatch: (value) => { beforeDispatch = value; } };
@@ -39,6 +39,11 @@ test("outbound MCP advertises native tools and rejects missing caller before tar
   const f = await fixture(t);
   assert.deepEqual((await f.client.listTools()).tools.map((x) => x.name).sort(), ["agent_bridge_status", "list_agent_tasks", "send_to_agent_task", "read_agent_delivery", "read_agent_task"].sort());
   f.change({ status: "unverified", reason: "Missing native metadata" });
+  const status = await f.call("agent_bridge_status");
+  assert.equal(status.isError, true);
+  assert.equal(status.structuredContent.diagnostic.code, "ANTIGRAVITY_SENDER_UNVERIFIED");
+  assert.equal(status.structuredContent.diagnostic.deliveryState, "not_applicable");
+  assert.match(f.client.getInstructions(), /Never use Computer Use, open an old chat/);
   for (const [name, args] of [["list_agent_tasks", { target: "codex" }], ["send_to_agent_task", f.request], ["read_agent_delivery", { requestId: f.request.requestId }], ["read_agent_task", { target: "codex", conversationId: f.request.conversationId }]]) {
     assert.equal((await f.call(name, args)).isError, true);
   }
@@ -70,7 +75,16 @@ test("outbound rejects cross-project and changing native permissions before deli
   f.change(f.identity);
   const receipt = await f.call("read_agent_delivery", { requestId: f.request.requestId });
   assert.equal(receipt.status, "failed");
+  assert.equal(receipt.isError, true);
+  assert.equal(receipt.structuredContent.diagnostic.code, "ANTIGRAVITY_SENDER_CHANGED");
+  assert.equal(receipt.structuredContent.diagnostic.deliveryState, "not_sent");
+  assert.equal(receipt.structuredContent.diagnostic.sent, false);
+  assert.deepEqual(receipt.structuredContent.diagnostic.causeCodes, receipt.diagnostic.causeCodes);
+  assert.match(receipt.reports, /Bridge diagnostic/);
   assert.match(receipt.reason, /permissions changed/);
+  const repeated = await f.call("send_to_agent_task", f.request);
+  assert.equal(repeated.isError, true);
+  assert.equal(repeated.structuredContent.diagnostic.reportId, receipt.structuredContent.diagnostic.reportId);
   assert.deepEqual(f.calls, []);
 });
 
@@ -84,7 +98,7 @@ test("outbound receipt recovery preserves durable state only for an unavailable 
   await f.call("send_to_agent_task", request);
   await new Promise(setImmediate);
   const receipt = await f.call("read_agent_delivery", { requestId: request.requestId });
-  assert.notEqual(receipt.isError, true);
+  assert.equal(receipt.isError, true);
   assert.equal(receipt.requestId, request.requestId);
   assert.equal(receipt.status, "sent_unconfirmed");
   assert.equal(receipt.result.msgId, msgId);
@@ -92,9 +106,42 @@ test("outbound receipt recovery preserves durable state only for an unavailable 
   assert.equal(receipt.nativeReceipt, null);
   assert.match(receipt.recovery, /do not resend/);
   assert.match(receipt.receiptError, /unavailable/);
+  assert.equal(receipt.structuredContent.diagnostic.code, "ANTIGRAVITY_NATIVE_RECEIPT_UNAVAILABLE");
+  assert.equal(receipt.structuredContent.diagnostic.deliveryState, "not_applicable");
+  assert.equal(receipt.structuredContent.diagnostic.ids.msgId, msgId);
   assert.equal(f.calls[1].msgId, msgId);
   await f.call("send_to_agent_task", request);
   assert.equal(f.calls.filter((call) => call.prompt).length, 1);
+});
+
+test("uncertain outbound failures remain reportable and are never resent or disclosed to another sender", async (t) => {
+  const f = await fixture(t, {
+    send: () => { throw Object.assign(new Error("Native send failed; token=PRIVATE_TOKEN; https://private.example/path"), { code: "EPIPE", phase: "dispatch", deliveryState: "unknown", stdout: "PRIVATE_STDOUT" }); },
+  });
+  f.request.prompt = "PRIVATE_PROMPT";
+  await f.call("send_to_agent_task", f.request);
+  await new Promise(setImmediate);
+  const receipt = await f.call("read_agent_delivery", { requestId: f.request.requestId });
+  assert.equal(receipt.isError, true);
+  assert.equal(receipt.status, "unknown");
+  assert.equal(receipt.structuredContent.diagnostic.code, "EPIPE");
+  assert.equal(receipt.structuredContent.diagnostic.deliveryState, "unknown");
+  assert.equal(receipt.structuredContent.diagnostic.sent, null);
+  assert.equal(receipt.structuredContent.diagnostic.retrySafe, false);
+  assert.equal(receipt.structuredContent.diagnostic.ids.requestId, f.request.requestId);
+  assert.equal(receipt.structuredContent.diagnostic.ids.conversationId, f.request.conversationId);
+  assert.doesNotMatch(receipt.reports + JSON.stringify(receipt.structuredContent), /PRIVATE_|private\.example/);
+  const repeated = await f.call("send_to_agent_task", f.request);
+  assert.equal(repeated.isError, true);
+  assert.equal(repeated.structuredContent.diagnostic.reportId, receipt.structuredContent.diagnostic.reportId);
+  assert.equal(f.calls.length, 1);
+  f.change({ ...f.identity, id: crypto.randomUUID() });
+  const denied = await f.call("read_agent_delivery", { requestId: f.request.requestId });
+  assert.equal(denied.isError, true);
+  assert.equal(denied.structuredContent.diagnostic.code, "ANTIGRAVITY_RECEIPT_OWNER_MISMATCH");
+  assert.notEqual(denied.structuredContent.diagnostic.reportId, receipt.structuredContent.diagnostic.reportId);
+  assert.equal(denied.diagnostic, undefined);
+  assert.equal(denied.result, undefined);
 });
 
 test("outbound receipt reads propagate native ownership and account errors without recovery", async (t) => {

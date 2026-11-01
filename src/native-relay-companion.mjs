@@ -43,7 +43,7 @@ import { remoteCodexSocketPath, remoteNativeAdapter, remoteRequestResponse } fro
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.25.2";
+const VERSION = "1.25.3";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent, details) {
@@ -344,6 +344,9 @@ async function handleDesktopRequest(payload, { dispatchDesktop, resolveExecutor,
     const authorization = strict ? await authorize(request) : null;
     if (payload.operation === "send_message_to_thread" && payload.arguments.threadId === executorThreadId) {
       return errorResponse("RELAY_BAD_REQUEST", "The relay executor cannot receive its own relayed message");
+    }
+    if (payload.operation === "navigate_to_codex_page" && payload.arguments.threadId === executorThreadId) {
+      return errorResponse("RELAY_BAD_REQUEST", "The internal relay executor has no user conversation to open");
     }
     // Reserve before dispatch. A disconnected caller must not discard a late
     // result, and even identical duplicate writes must not dispatch twice.

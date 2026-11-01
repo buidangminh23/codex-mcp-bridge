@@ -313,8 +313,19 @@ it("recovers a crashed native relay on its original MCP connection without repla
   const api = await connect(t, fixture, { CODEX_BRIDGE_RECOVERY_DELAY_MS: "200" });
   const before = await api.call();
   const status = () => api.call().catch(error => ({ error: error.message }));
-  await assert.rejects(api.call("crash", { value: "uncertain" }), /not retried/);
-  await assert.rejects(api.call("add", { value: "must-not-send" }), /recovery is pending.*not sent/);
+  await assert.rejects(api.call("crash", { value: "uncertain" }), (error) => {
+    assert.match(error.message, /not retried/);
+    assert.equal(error.data.diagnostic.code, "MCP_WORKER_EXITED");
+    assert.equal(error.data.diagnostic.deliveryState, "unknown");
+    assert.equal(error.data.diagnostic.retrySafe, false);
+    return true;
+  });
+  await assert.rejects(api.call("add", { value: "must-not-send" }), (error) => {
+    assert.match(error.message, /recovery is pending.*not sent/);
+    assert.equal(error.data.diagnostic.code, "MCP_WORKER_UNAVAILABLE");
+    assert.equal(error.data.diagnostic.deliveryState, "not_sent");
+    return true;
+  });
   const after = await eventually(status, value => value.structuredContent?.autoReload.recoveries === 1, api.stderr);
   assert.equal(after.structuredContent.autoReload.supervisorPid, before.structuredContent.autoReload.supervisorPid);
   assert.notEqual(after.structuredContent.autoReload.workerPid, before.structuredContent.autoReload.workerPid);

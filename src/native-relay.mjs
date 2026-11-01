@@ -254,6 +254,9 @@ export function validateDesktopOperation(operation, args) {
 
 export function nativeDesktopOperationParams({ executorThreadId, operation, arguments: args }) {
   validateDesktopOperation(operation, args);
+  if (operation === "navigate_to_codex_page" && args.threadId === executorThreadId) {
+    throw new NativeRelayError("The internal relay executor has no user conversation to open", "RELAY_BAD_REQUEST");
+  }
   return {
     arguments: args,
     callerSource: "codex",
@@ -774,7 +777,8 @@ export function nativeRelayStatus(env = process.env) {
       enabled: false,
       mode,
       socketPath,
-      reason: `no companion socket at ${socketPath}. Install the native relay if it is missing. Codex Desktop runs codex-native-relay only while a task has its MCP servers loaded: open any regular project task (not the internal Native Relay executor task) and send it a turn or reconnect its MCP servers, then retry.`,
+      code: "RELAY_UNREACHABLE",
+      reason: `The native relay endpoint is unavailable at ${socketPath}. Its Desktop-owned host may be unloaded or disconnected; socket absence alone cannot distinguish these causes. Silent worker recovery requires a running native supervisor. Do not open or create chats to load the relay; include the bridge diagnostic in a report.`,
     };
   }
   return { enabled: true, mode, socketPath, reason: null };

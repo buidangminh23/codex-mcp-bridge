@@ -9,11 +9,12 @@ import { readClaudeSenderContext, requireClaudeSenderContext, stopProcessInspect
 import { readClaudeAccountContext } from "./desktop-account-context.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { antigravityBridgeDirectory, callAntigravityDesktop } from "./antigravity-ipc.mjs";
-import { AntigravityDeliveries } from "./antigravity-deliveries.mjs";
+import { AntigravityDeliveries, antigravityDeliveryError } from "./antigravity-deliveries.mjs";
 import { AntigravityCliSession } from "./antigravity-cli.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { NativeDesktopRelay, desktopTaskSocketPath, accountRelaySocketPath } from "./native-relay.mjs";
 import { requireBridgeAccounts, readBridgeAccounts, assertAccountIdentity } from "./bridge-account-context.mjs";
+import { bridgeDiagnostic, withBridgeDiagnostic, preflightFailure } from "./recipient-preflight.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -28,7 +29,7 @@ const senderRelay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath()
 const result = (value) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }] });
 const schema = { requestId: z.string().uuid(), cwd: z.string().min(1), prompt: z.string().min(1).max(65536) };
 
-async function sender(extra) {
+async function identifySender(extra) {
   if (caller === "codex") {
     const context = await resolveCodexSenderContext(extra?._meta, { inspectDesktopTask: async (threadId) => {
       const accounts = requireBridgeAccounts(readBridgeAccounts());
@@ -46,17 +47,34 @@ async function sender(extra) {
   throw new Error("Install this bridge for Codex or Claude; unknown callers cannot read conversations or send work");
 }
 
+async function sender(extra) {
+  try { return await identifySender(extra); }
+  catch (error) {
+    error.code ??= "ANTIGRAVITY_SENDER_UNVERIFIED";
+    error.phase ??= "sender";
+    error.deliveryState = "not_sent";
+    throw error;
+  }
+}
+
 function sameCwd(expected, actual) {
-  if (!path.isAbsolute(expected) || !path.isAbsolute(actual)) throw new Error("Expected an absolute project directory");
-  const left = fs.realpathSync.native(expected);
-  const right = fs.realpathSync.native(actual);
-  if (path.relative(left, right)) throw new Error("Antigravity destination must match the verified sender's project directory");
-  rootPolicy.assert(left, "Antigravity project");
-  return left;
+  try {
+    if (!path.isAbsolute(expected) || !path.isAbsolute(actual)) throw new Error("Expected an absolute project directory");
+    const left = fs.realpathSync.native(expected);
+    const right = fs.realpathSync.native(actual);
+    if (path.relative(left, right)) throw new Error("Antigravity destination must match the verified sender's project directory");
+    rootPolicy.assert(left, "Antigravity project");
+    return left;
+  } catch (error) {
+    error.code ??= "ANTIGRAVITY_PROJECT_SCOPE_INVALID";
+    error.phase ??= "scope";
+    error.deliveryState = "not_sent";
+    throw error;
+  }
 }
 
 function owns(record, identity) {
-  if (!record || record.sender?.provider !== identity.provider || record.sender?.id !== identity.id) throw new Error("Delivery does not belong to this sending conversation");
+  if (!record || record.sender?.provider !== identity.provider || record.sender?.id !== identity.id) throw preflightFailure("ANTIGRAVITY_RECEIPT_OWNER_MISMATCH", "Delivery does not belong to this sending conversation");
   sameCwd(identity.cwd, record.cwd);
   return record;
 }
@@ -65,20 +83,49 @@ function handoff(prompt, identity) {
   return `[Agent handoff from ${identity.provider} conversation ${identity.id}. Native Antigravity permissions remain in effect.]\n\n${prompt}`;
 }
 
-const server = new McpServer({ name: "antigravity-bridge", version }, { instructions: "Send authorized work to Antigravity Desktop through its native sidecar or to an explicitly created CLI streaming session. Always select the requested surface; never substitute CLI for Desktop. The exact destination directory must match the verified sending conversation. Desktop delivery acceptance is not an agent reply. CLI sessions are bridge-owned headless sessions, not attached interactive terminals. Preserve requestId across retries and read_antigravity_delivery after pending or unknown outcomes; never resend automatically. Native tool approvals remain in force. Do not claim support for Antigravity-origin handoffs into Codex or Claude; this server receives from those hosts." });
+const server = new McpServer({ name: "antigravity-bridge", version }, { instructions: "Send authorized work to Antigravity Desktop through its native sidecar or to an explicitly created CLI streaming session. Always select the requested surface; never substitute CLI for Desktop. The exact destination directory must match the verified sending conversation. Desktop delivery acceptance is not an agent reply. CLI sessions are bridge-owned headless sessions, not attached interactive terminals. Preserve requestId across retries and read_antigravity_delivery after pending or unknown outcomes; never resend automatically. Native tool approvals remain in force. Antigravity Desktop can send authorized handoffs back to existing Codex Desktop tasks and live Claude Desktop Code sessions in the same project through its separate agent-bridge MCP server. From Antigravity, verify agent_bridge_status, discover list_agent_tasks, then use send_to_agent_task and read_agent_delivery. This inbound server does not initiate those outbound calls, and its status does not verify the outbound server's readiness. Antigravity CLI outbound and automatic App reply forwarding are not supported. An unreachable sidecar does not prove that the Antigravity App is closed; report its diagnostic and inspect sidecar configuration. Never use Computer Use, open an old chat, or create an empty, new, or error chat to load or recover a relay." });
 
 function register(name, description, inputSchema, readOnly, handler) {
   server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: true, openWorldHint: !readOnly } }, async (args, extra) => {
-    try { return result(await handler(args, extra)); }
-    catch (error) { return { ...result({ error: error.message, deliveryState: error.deliveryState ?? "not_sent" }), isError: true }; }
+    const options = { component: "antigravity-bridge", operation: name, requestId: args.requestId, conversationId: args.conversationId, readOnly };
+    try {
+      const value = await handler(args, extra);
+      const failure = antigravityDeliveryError(value);
+      if (failure) return withBridgeDiagnostic({ ...result(value), isError: true }, failure, { ...options, readOnly: false, msgId: value.result?.msgId });
+      if (value?.desktop?.available === false) return withBridgeDiagnostic({ ...result(value), isError: true }, { diagnostic: value.desktop.diagnostic }, options);
+      return result(value);
+    } catch (error) {
+      const diagnostic = bridgeDiagnostic(error, options);
+      return withBridgeDiagnostic({ ...result({ error: diagnostic.reason, code: diagnostic.code, deliveryState: error.deliveryState ?? diagnostic.deliveryState }), isError: true }, { diagnostic }, options);
+    }
   });
 }
 
-register("antigravity_bridge_status", "Inspect connection capabilities without sending prompts.", {}, true, async () => {
+register("antigravity_bridge_status", "Inspect native sidecar connectivity and supported inbound/outbound routes without sending prompts. Outbound readiness must be checked with agent_bridge_status inside Antigravity Desktop.", {}, true, async () => {
   let desktop;
   try { desktop = await callAntigravityDesktop({ operation: "status" }, { timeoutMs: 5000 }); }
-  catch { desktop = { available: false, reason: "Open Antigravity with the installed codex-bridge sidecar enabled" }; }
-  return { version, caller: caller ?? "unconfigured", desktop, cli: { transport: "stream-json", activeSessions: sessions.size, permissionPolicy: "native-unchanged", interactiveTerminalAttachment: false } };
+  catch (cause) {
+    const error = Object.assign(new Error("The native Antigravity sidecar could not be reached. This does not prove that the App is closed. Inspect its codex-bridge sidecar configuration and include the diagnostic in the report; do not open a chat to load the relay."), { code: "ANTIGRAVITY_SIDECAR_UNAVAILABLE", phase: cause.phase ?? "connect", cause });
+    const diagnostic = bridgeDiagnostic(error, { component: "antigravity-bridge", operation: "antigravity_bridge_status", readOnly: true });
+    desktop = { available: false, code: diagnostic.code, reason: diagnostic.reason, diagnostic };
+  }
+  return {
+    version,
+    caller: caller ?? "unconfigured",
+    desktop,
+    cli: { transport: "stream-json", activeSessions: sessions.size, permissionPolicy: "native-unchanged", interactiveTerminalAttachment: false },
+    outbound: {
+      supported: true,
+      server: "agent-bridge",
+      surface: "desktop",
+      targets: ["codex-desktop", "claude-desktop-code"],
+      scope: "existing-conversations-in-the-same-project",
+      readiness: "not_checked",
+      statusTool: "agent_bridge_status",
+      cliSupported: false,
+      automaticReplyForwarding: false,
+    },
+  };
 });
 
 register("list_antigravity_conversations", "List native Desktop conversations and bridge-owned CLI sessions in the sending project.", { surface: z.enum(["desktop", "cli"]) }, true, async ({ surface }, extra) => {
@@ -94,28 +141,29 @@ register("send_to_antigravity_conversation", "Send one authorized prompt to an e
   const identity = await sender(extra);
   const cwd = sameCwd(identity.cwd, args.cwd);
   const prompt = handoff(args.prompt, identity);
-  if (args.surface === "desktop" && (prompt.length > 30000 || prompt.includes("\0"))) throw new Error("Desktop handoff must fit within 30000 characters and contain no NUL");
+  if (args.surface === "desktop" && (prompt.length > 30000 || prompt.includes("\0"))) throw preflightFailure("ANTIGRAVITY_PROMPT_INVALID", "Desktop handoff must fit within 30000 characters and contain no NUL");
   if (args.surface === "desktop") return callAntigravityDesktop({ operation: "send", ...args, cwd, prompt, sender: identity });
   const entry = sessions.get(args.conversationId);
-  if (!entry || entry.sender.id !== identity.id || entry.sender.provider !== identity.provider) throw new Error("CLI session is not owned by this sender and bridge process");
+  if (!entry || entry.sender.id !== identity.id || entry.sender.provider !== identity.provider) throw preflightFailure("ANTIGRAVITY_SESSION_OWNER_MISMATCH", "CLI session is not owned by this sender and bridge process");
   sameCwd(cwd, entry.session.read().cwd);
   return deliveries.dispatch({ ...args, cwd, sender: identity, prompt }, async () => {
     const current = await sender(extra);
     sameCwd(cwd, current.cwd);
-    if (current.id !== identity.id) throw Object.assign(new Error("Sender changed before delivery"), { deliveryState: "not_sent" });
+    if (current.id !== identity.id) throw preflightFailure("ANTIGRAVITY_SENDER_CHANGED", "Sender changed before delivery");
     return entry.session.send(prompt);
-  });
+  }, { component: "antigravity-bridge", operation: "send_to_antigravity_conversation" });
 });
 
 register("start_antigravity_cli_session", "Create a new bridge-owned Antigravity CLI streaming session for explicitly authorized new work; sends the initial prompt and returns a durable delivery receipt.", schema, false, async (args, extra) => {
   const identity = await sender(extra);
   const cwd = sameCwd(identity.cwd, args.cwd);
-  if (sessions.size + startingSessions >= 4) throw new Error("At most four CLI sessions may be open in one bridge");
+  if (sessions.size + startingSessions >= 4) throw preflightFailure("ANTIGRAVITY_SESSION_CAPACITY", "At most four CLI sessions may be open in one bridge");
   return deliveries.dispatch({ ...args, cwd, sender: identity, surface: "cli" }, async () => {
-    if (sessions.size + startingSessions >= 4) throw Object.assign(new Error("CLI session capacity reached"), { deliveryState: "not_sent" });
+    if (sessions.size + startingSessions >= 4) throw preflightFailure("ANTIGRAVITY_SESSION_CAPACITY", "CLI session capacity reached");
     startingSessions++;
     let reserved = true;
     let session;
+    let sending = false;
     try {
       const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(?:CODEX_|CLAUDE|ANTHROPIC_|MCP_)/i.test(name)));
       session = new AntigravityCliSession({ cwd, env });
@@ -126,9 +174,15 @@ register("start_antigravity_cli_session", "Create a new bridge-owned Antigravity
       reserved = false;
       const current = await sender(extra);
       sameCwd(cwd, current.cwd);
-      if (current.id !== identity.id) throw Object.assign(new Error("Sender changed before delivery"), { deliveryState: "not_sent" });
+      if (current.id !== identity.id) throw preflightFailure("ANTIGRAVITY_SENDER_CHANGED", "Sender changed before delivery");
+      sending = true;
       return await session.send(handoff(args.prompt, identity));
     } catch (error) {
+      if (!sending) {
+        error.code ??= "ANTIGRAVITY_CLI_START_FAILED";
+        error.phase ??= "startup";
+        error.deliveryState = "not_sent";
+      }
       if (error.deliveryState !== "unknown") {
         for (const [id, entry] of sessions) if (entry.session === session) sessions.delete(id);
         await session?.close();
@@ -137,7 +191,7 @@ register("start_antigravity_cli_session", "Create a new bridge-owned Antigravity
     } finally {
       if (reserved) startingSessions--;
     }
-  });
+  }, { component: "antigravity-bridge", operation: "start_antigravity_cli_session" });
 });
 
 register("read_antigravity_delivery", "Read the original receipt without resending. Desktop accepted means the native API accepted it, not that the agent completed a turn.", { surface: z.enum(["desktop", "cli"]), requestId: z.string().uuid() }, true, async (args, extra) => {
@@ -149,9 +203,9 @@ register("read_antigravity_delivery", "Read the original receipt without resendi
 register("close_antigravity_cli_session", "Close an idle bridge-owned CLI session belonging to the caller.", { conversationId: z.string().uuid() }, false, async ({ conversationId }, extra) => {
   const identity = await sender(extra);
   const entry = sessions.get(conversationId);
-  if (!entry || entry.sender.id !== identity.id || entry.sender.provider !== identity.provider) throw new Error("CLI session is not owned by this sender");
+  if (!entry || entry.sender.id !== identity.id || entry.sender.provider !== identity.provider) throw preflightFailure("ANTIGRAVITY_SESSION_OWNER_MISMATCH", "CLI session is not owned by this sender");
   sameCwd(identity.cwd, entry.session.read().cwd);
-  if (["running", "starting"].includes(entry.session.read().status)) throw new Error("Wait for the active CLI delivery before closing");
+  if (["running", "starting"].includes(entry.session.read().status)) throw preflightFailure("ANTIGRAVITY_SESSION_BUSY", "Wait for the active CLI delivery before closing");
   const closed = await entry.session.close();
   if (closed.status !== "closing") sessions.delete(conversationId);
   return { closed: closed.status !== "closing", conversationId, status: closed.status };

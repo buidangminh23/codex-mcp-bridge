@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { antigravitySocket, callAntigravityDesktop, serveAntigravityDesktop } from "../src/antigravity-ipc.mjs";
+import { bridgeDiagnostic } from "../src/recipient-preflight.mjs";
 
 const FRAME_LIMIT = 2 * 1024 * 1024;
 
@@ -38,10 +40,15 @@ test("private desktop IPC preserves results, delivery uncertainty and frame boun
   const service = await serveAntigravityDesktop(async (request) => {
     calls++;
     if (request.operation === "echo") return { received: request.value };
-    if (request.operation === "preflight") throw Object.assign(new Error("Recipient is busy"), { deliveryState: "not_sent" });
+    if (request.operation === "preflight") throw Object.assign(new Error("Recipient is busy"), { code: "ANTIGRAVITY_CONVERSATION_BUSY", phase: "preflight", deliveryState: "not_sent" });
     if (request.operation === "uncertain") throw new Error("Native connection disappeared");
+    if (request.operation === "private-failure") {
+      const error = Object.assign(new Error("Native request failed; token=PRIVATE_TOKEN; C:\\private\\file; https://private.example/path"), { code: "ANTIGRAVITY_NATIVE_FAILED", phase: "dispatch", deliveryState: "unknown", stdout: "PRIVATE_STDOUT", stderr: "PRIVATE_STDERR" });
+      error.diagnostic = bridgeDiagnostic(error, { component: "native-fixture", operation: "send", requestId: request.requestId });
+      throw error;
+    }
     if (request.operation === "oversized-response") return "x".repeat(FRAME_LIMIT);
-    if (request.operation === "disconnect") return new Promise(() => {});
+    if (["disconnect", "timeout"].includes(request.operation)) return new Promise(() => {});
     throw new Error("Unexpected operation");
   }, { directory });
   t.after(() => service.close());
@@ -54,7 +61,15 @@ test("private desktop IPC preserves results, delivery uncertainty and frame boun
   });
 
   await t.test("a handler's verified not-sent outcome survives IPC", async () => {
-    await assert.rejects(call({ operation: "preflight" }), (error) => error.message === "Recipient is busy" && error.deliveryState === "not_sent");
+    await assert.rejects(call({ operation: "preflight" }), (error) => {
+      assert.equal(error.message, "Recipient is busy");
+      assert.equal(error.deliveryState, "not_sent");
+      assert.equal(error.code, "ANTIGRAVITY_CONVERSATION_BUSY");
+      assert.equal(error.diagnostic.code, error.code);
+      assert.equal(error.diagnostic.phase, "preflight");
+      assert.equal(error.diagnostic.sent, false);
+      return true;
+    });
   });
 
   await t.test("an unclassified post-write handler error remains unknown", async () => {
@@ -86,6 +101,44 @@ test("private desktop IPC preserves results, delivery uncertainty and frame boun
 
   await t.test("connection failure before writing is definitely not sent", async () => {
     await assert.rejects(callAntigravityDesktop({ operation: "echo" }, { directory: path.join(directory, "absent"), timeoutMs: 3000 }), (error) => error.deliveryState === "not_sent" && ["ENOENT", "ECONNREFUSED"].includes(error.code));
+  });
+
+  await t.test("timeouts before connection are not sent and never write", async (t) => {
+    let writes = 0;
+    const socket = Object.assign(new EventEmitter(), { destroy() {}, write() { writes++; } });
+    t.mock.method(net, "createConnection", () => socket);
+    await assert.rejects(callAntigravityDesktop({ operation: "send" }, { directory, timeoutMs: 10 }), (error) => {
+      assert.equal(error.code, "ANTIGRAVITY_IPC_TIMEOUT");
+      assert.equal(error.deliveryState, "not_sent");
+      assert.equal(error.diagnostic.phase, "connect");
+      assert.equal(error.diagnostic.sent, false);
+      return true;
+    });
+    assert.equal(writes, 0);
+  });
+
+  await t.test("timeouts after writing remain uncertain", async () => {
+    await assert.rejects(callAntigravityDesktop({ operation: "timeout" }, { directory, timeoutMs: 30 }), (error) => {
+      assert.equal(error.code, "ANTIGRAVITY_IPC_TIMEOUT");
+      assert.equal(error.deliveryState, "unknown");
+      assert.equal(error.diagnostic.phase, "dispatch");
+      assert.equal(error.diagnostic.sent, null);
+      assert.equal(error.diagnostic.retrySafe, false);
+      return true;
+    });
+  });
+
+  await t.test("native error diagnostics survive IPC without subprocess output or credentials", async () => {
+    const requestId = "16b17ca4-f18c-4c89-aa02-42ecac0a6ce9";
+    await assert.rejects(call({ operation: "private-failure", requestId, prompt: "PRIVATE_PROMPT" }), (error) => {
+      assert.equal(error.code, "ANTIGRAVITY_NATIVE_FAILED");
+      assert.equal(error.diagnostic.component, "native-fixture");
+      assert.equal(error.diagnostic.operation, "send");
+      assert.equal(error.diagnostic.ids.requestId, requestId);
+      assert.match(error.diagnostic.reportId, /^[a-f0-9-]{36}$/);
+      assert.doesNotMatch(JSON.stringify({ message: error.message, diagnostic: error.diagnostic }), /PRIVATE_|private\.example|C:\\\\private/i);
+      return true;
+    });
   });
 
   await t.test("a second Unix sidecar cannot steal a live socket", { skip: process.platform === "win32" }, async () => {

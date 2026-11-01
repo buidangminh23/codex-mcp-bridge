@@ -224,7 +224,7 @@ describe("claude desktop installer", () => {
     );
     assert.equal(env.CODEX_BRIDGE_ALLOWED_ROOTS, "*");
     assert.equal(env.CODEX_BRIDGE_SANDBOX, "workspace-write");
-    assert.equal(env.CODEX_BRIDGE_OPEN_IN_APP, process.platform === "win32" ? "1" : "0");
+    assert.equal(env.CODEX_BRIDGE_OPEN_IN_APP, "0");
     assert.equal(env.CODEX_BRIDGE_RELEASE_AFTER_TURN, process.platform === "win32" ? "1" : "0");
     assert.equal(env.CODEX_BIN, codexStub);
   });
@@ -499,6 +499,45 @@ describe("claude desktop installer", () => {
     const changed = install({ config, args, env: { CODEX_BRIDGE_AUTOSTART: "1" } }).mcpServers["codex-bridge-desktop"];
     assert.equal(changed.env.CODEX_BRIDGE_AUTOSTART, "1");
     assert.equal(changed.env.CODEX_BRIDGE_ALLOWED_ROOTS, "/limited");
+  });
+
+  it("comprehensive setup migrates historical window-opening settings while preserving access and custom data", () => {
+    const original = { preferences: { keep: true, menuBarEnabled: false }, mcpServers: {
+      "codex-bridge-desktop": { command: process.execPath, args: [path.join(root, "src", "index.mjs")],
+        disabled: true, permissions: { allow: ["codex_bridge_status"] }, env: {
+          CODEX_BRIDGE_OPEN_IN_APP: "1", CODEX_BRIDGE_ALLOWED_ROOTS: "/limited", CODEX_BRIDGE_THREAD_POLICY: "owned",
+          CODEX_BRIDGE_APPROVAL: "deny", CODEX_BRIDGE_SANDBOX: "read-only", CODEX_BRIDGE_DESKTOP_TASKS: "1",
+          CODEX_BRIDGE_AUTOSTART: "0", CUSTOM_TOKEN: "do-not-print",
+        } },
+      custom: { command: "custom", args: ["keep"] },
+    } };
+    const config = configWith(original);
+    const args = ["--entry-name", "codex-bridge-desktop", "--quiet", "--setup"];
+    const output = installOutput({ config, args, env: { CODEX_BRIDGE_OPEN_IN_APP: "1" } });
+    assert.doesNotMatch(output, /do-not-print|CUSTOM_TOKEN/);
+    assert.equal(JSON.parse(output).liveVerified, false);
+    const saved = JSON.parse(fs.readFileSync(config, "utf8"));
+    const stored = saved.mcpServers["codex-bridge-desktop"];
+    assert.equal(stored.env.CODEX_BRIDGE_OPEN_IN_APP, "0");
+    for (const [key, value] of Object.entries(original.mcpServers["codex-bridge-desktop"].env)) {
+      if (key !== "CODEX_BRIDGE_OPEN_IN_APP") assert.equal(stored.env[key], value);
+    }
+    assert.equal(stored.disabled, true);
+    assert.deepEqual(stored.permissions, original.mcpServers["codex-bridge-desktop"].permissions);
+    assert.deepEqual(saved.preferences, { ...original.preferences, menuBarEnabled: true });
+    assert.deepEqual(saved.mcpServers.custom, original.mcpServers.custom);
+    assert.equal(JSON.parse(installOutput({ config, args })).changed, false);
+    const explicit = install({ config, args: args.filter((arg) => arg !== "--setup"), env: { CODEX_BRIDGE_OPEN_IN_APP: "1" } });
+    assert.equal(explicit.mcpServers["codex-bridge-desktop"].env.CODEX_BRIDGE_OPEN_IN_APP, "1");
+  });
+
+  it("comprehensive setup refuses malformed native preferences before modifying registrations", () => {
+    for (const preferences of [null, [], "invalid"]) {
+      const original = { preferences, mcpServers: { other: { command: "keep" } } };
+      const config = configWith(original);
+      assert.throws(() => install({ config, args: ["--entry-name", "codex-bridge-desktop", "--quiet", "--setup"] }), /preferences must be a JSON object/);
+      assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), original);
+    }
   });
 
   it("refuses invalid requested names or conflicting shared entries without touching configuration", () => {

@@ -1,11 +1,76 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 
-import { assertRecipientClass, preflightFailure } from "../src/recipient-preflight.mjs";
+import { assertRecipientClass, preflightFailure, bridgeDiagnostic, withBridgeDiagnostic } from "../src/recipient-preflight.mjs";
 
 const desktop = (permissionMode, permissionClass) => ({ status: "matched", title: "Exact task", permissionMode, permissionClass });
 const sender = (mode) => ({ status: "verified", mode });
 const code = (fn) => { try { fn(); return null; } catch (error) { return error.preflight ?? error; } };
+
+it("reports exact bridge and transport codes with safe correlation identifiers", () => {
+  const cause = Object.assign(new Error("Connection refused"), { code: "ECONNREFUSED" });
+  const error = Object.assign(new Error("Native relay is unavailable", { cause }), { code: "RELAY_UNREACHABLE", sent: false });
+  const requestId = "94fcf128-7244-4dba-a046-0941c1bc05fa";
+  const result = withBridgeDiagnostic({ isError: true, content: [] }, error, { component: "codex-bridge", operation: "send_to_codex_thread", requestId });
+  const diagnostic = result.structuredContent.diagnostic;
+  assert.equal(diagnostic.code, "RELAY_UNREACHABLE");
+  assert.deepEqual(diagnostic.causeCodes, ["ECONNREFUSED"]);
+  assert.equal(diagnostic.sent, false);
+  assert.equal(diagnostic.deliveryState, "not_sent");
+  assert.equal(diagnostic.ids.requestId, requestId);
+  assert.match(result.content[0].text, /RELAY_UNREACHABLE.*codex-bridge/);
+  assert.match(result.content[0].text, /ECONNREFUSED/);
+  assert.match(result.content[0].text, /Do not open or create chats/);
+});
+
+it("keeps uncertain delivery and the original report stable across receipt reads", () => {
+  const diagnostic = bridgeDiagnostic(Object.assign(new Error("Disconnected after write"), { code: "RELAY_DISCONNECTED", deliveryUncertain: true }), { component: "codex-bridge" });
+  assert.equal(diagnostic.deliveryState, "unknown");
+  assert.equal(diagnostic.sent, null);
+  assert.equal(diagnostic.retrySafe, false);
+  const result = withBridgeDiagnostic({ content: [], structuredContent: { diagnostic } }, null, { operation: "read_agent_delivery", readOnly: true });
+  assert.equal(result.structuredContent.diagnostic.reportId, diagnostic.reportId);
+  assert.equal(result.structuredContent.diagnostic.timestamp, diagnostic.timestamp);
+  assert.equal(result.structuredContent.diagnostic.deliveryState, "unknown");
+  const repeated = withBridgeDiagnostic(result, null);
+  assert.equal(repeated.content.length, 1);
+  assert.equal(repeated.structuredContent.diagnostic.reportId, diagnostic.reportId);
+  assert.equal(bridgeDiagnostic(new Error("Unexpected error")).deliveryState, "unknown");
+});
+
+it("redacts credentials, account addresses and private paths from report blocks", () => {
+  const error = new Error('Failed https://user:secret@example.invalid/request?token=fixture-url-secret; Authorization: Bearer fixture-bearer; token=fixture-token; user@example.invalid; "C:\\Users\\Fixture Person\\private\\data.json"; /tmp/fixture/private/file');
+  const diagnostic = bridgeDiagnostic(error, { requestId: "not-a-valid-id", prompt: "private prompt", token: "private token" });
+  const text = JSON.stringify(diagnostic);
+  for (const value of ["fixture-url-secret", "fixture-bearer", "fixture-token", "Fixture Person", "user@example.invalid", "/tmp/fixture", "private prompt", "private token"]) assert.equal(text.includes(value), false, value);
+  assert.deepEqual(diagnostic.ids, {});
+});
+
+it("bounds malformed and cyclic error causes and does not mistake diagnostics for sends", () => {
+  const error = Object.assign(new Error("Read failed"), { code: "READ_FAILED" });
+  error.cause = error;
+  const diagnostic = bridgeDiagnostic(error, { readOnly: true });
+  assert.equal(diagnostic.deliveryState, "not_applicable");
+  assert.equal(diagnostic.sent, null);
+  assert.deepEqual(diagnostic.causeCodes, []);
+  assert.doesNotThrow(() => bridgeDiagnostic({ diagnostic: { ...diagnostic, causeCodes: "malformed" } }));
+});
+
+it("retains safe sender identity stage and cause codes without copying metadata", () => {
+  const error = Object.assign(new Error("Sender verification failed"), { code: "CLAUDE_SENDER_CONTEXT_UNVERIFIED", sent: false, diagnostic: { stage: "task_metadata", code: "METADATA_CHANGED", account: "private account" } });
+  const result = bridgeDiagnostic(error);
+  assert.equal(result.code, "CLAUDE_SENDER_CONTEXT_UNVERIFIED");
+  assert.equal(result.phase, "task_metadata");
+  assert.deepEqual(result.causeCodes, ["METADATA_CHANGED"]);
+  assert.equal(JSON.stringify(result).includes("private account"), false);
+});
+
+it("omits native response bodies from shareable error reasons", () => {
+  const result = bridgeDiagnostic(new Error('Creation uncertain: {"prompt":"private request","reply":"private reply"}'));
+  assert.equal(JSON.stringify(result).includes("private request"), false);
+  assert.equal(JSON.stringify(result).includes("private reply"), false);
+  assert.match(result.reason, /structured details omitted/);
+});
 
 it("shapes a preflight failure as a blocked, unsent receipt", () => {
   const error = preflightFailure("X", "Why.");

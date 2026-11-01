@@ -39,26 +39,28 @@ function blocked(callback, code) {
 }
 
 describe("Claude Desktop session rediscovery", () => {
-  it("reopens only the exact dormant task and resolves its new live process", async () => {
+  it("rediscovers a newly available exact endpoint without opening an app or task", async () => {
     const { args, sessions } = fixture();
-    let opened = 0;
     const task = { taskId: "task-a", fileTaskId: "task-a", isArchived: false, cwd: project };
-    const result = await recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, { listTasks: async () => [task], listSessions: async () => sessions, beforeOpen: async () => {}, open: async (taskId) => { assert.equal(taskId, "task-a"); opened++; } });
+    const result = await recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, { listTasks: async () => [task], listSessions: async () => sessions, beforeInspect: async () => {}, open: async () => assert.fail("must not open") });
     assert.equal(result.session.sessionId, "cli-a");
-    assert.equal(opened, 1);
   });
 
-  it("reports reconnecting without sending or selecting another saved task", async () => {
+  it("reports an unavailable native endpoint without opening or selecting another task", async () => {
     const { args } = fixture();
     const task = { taskId: "task-a", fileTaskId: "task-a", isArchived: false, cwd: project };
-    const deps = { listTasks: async () => [task], listSessions: async () => [], beforeOpen: async () => {}, open: async () => {}, timeoutMs: 0 };
-    const result = await recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, deps);
-    assert.equal(result.recovery.status, "awaiting_session");
-    assert.equal(result.recovery.sent, false);
+    const deps = { listTasks: async () => [task], listSessions: async () => [], beforeInspect: async () => {}, open: async () => assert.fail("must not open") };
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, deps), (error) => {
+      assert.equal(error.code, "CLAUDE_SESSION_NOT_READY");
+      assert.equal(error.sent, false);
+      assert.equal(error.deliveryState, "not_sent");
+      assert.match(error.message, /no supported silent cold-start API/);
+      return true;
+    });
     for (const tasks of [[], [task, task], [{ ...task, isArchived: true }], [{ ...task, fileTaskId: "other" }]]) {
       await assert.rejects(recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, { ...deps, listTasks: async () => tasks, open: async () => assert.fail("must not open") }), (error) => error.preflight?.code === "CLAUDE_DESKTOP_TASK_UNVERIFIED");
     }
-    await assert.rejects(recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, { ...deps, beforeOpen: async () => { throw new Error("Sender changed"); }, open: async () => assert.fail("must not open") }), /Sender changed/);
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, { ...deps, beforeInspect: async () => { throw new Error("Sender changed"); }, open: async () => assert.fail("must not open") }), /Sender changed/);
   });
   it("follows A to B to A without reusing the other account's lingering process", () => {
     const { args } = fixture();

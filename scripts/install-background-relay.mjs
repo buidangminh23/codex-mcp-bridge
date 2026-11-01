@@ -42,11 +42,20 @@ try {
   } else {
     $relayDefinition = $relayTask.Definition
     $relayAction = $relayDefinition.Actions.Item(1)
+    $relayPrincipalId = [string]$relayDefinition.Principal.UserId
+    $relayPrincipalSid = $null
+    try {
+      if ($relayPrincipalId -match '^S-\d+(?:-\d+)+$') {
+        $relayPrincipalSid = [Security.Principal.SecurityIdentifier]::new($relayPrincipalId).Value
+      } else {
+        $relayPrincipalSid = [Security.Principal.NTAccount]::new($relayPrincipalId).Translate([Security.Principal.SecurityIdentifier]).Value
+      }
+    } catch {}
     @{ exists = $true; user = $relayUser; enabled = [bool]$relayTask.Enabled; state = [int]$relayTask.State;
        description = [string]$relayDefinition.RegistrationInfo.Description;
        command = [string]$relayAction.Path; arguments = [string]$relayAction.Arguments;
        actions = [int]$relayDefinition.Actions.Count; logonType = [int]$relayDefinition.Principal.LogonType;
-       principalId = [string]$relayDefinition.Principal.UserId; userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
+       principalId = $relayPrincipalId; principalSid = $relayPrincipalSid; userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
        runLevel = [int]$relayDefinition.Principal.RunLevel; hidden = [bool]$relayDefinition.Settings.Hidden;
        executionTimeLimit = [string]$relayDefinition.Settings.ExecutionTimeLimit;
        multipleInstances = [int]$relayDefinition.Settings.MultipleInstances } | ConvertTo-Json -Compress
@@ -159,7 +168,8 @@ async function installWindows(context) {
   };
   let current = await task("query");
   if (current.exists && current.description !== RELAY_SERVICE_OWNER) throw installFailure("SERVICE_CONFIGURATION_CONFLICT");
-  const sameUser = (value) => typeof value.principalId === "string" && [value.user, value.userSid].some((identity) => typeof identity === "string" && identity.toLowerCase() === value.principalId.toLowerCase());
+  const sameUser = (value) => typeof value.principalSid === "string" && /^S-\d+(?:-\d+)+$/i.test(value.principalSid)
+    && typeof value.userSid === "string" && value.principalSid.toLowerCase() === value.userSid.toLowerCase();
   if (current.exists && !sameUser(current)) throw installFailure("SERVICE_CONFIGURATION_CONFLICT");
   const enabled = config.enabled && (!current.exists || current.enabled === true);
   const matches = (value) => value.exists && value.description === RELAY_SERVICE_OWNER && value.command.toLowerCase() === command.toLowerCase()

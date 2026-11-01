@@ -38,7 +38,7 @@ function fixture(t, platform = "win32") {
         state.xml = request.xml;
         state.task = { exists: true, user: "TEST\\User", description: text("Description"), command: text("Command"), arguments: text("Arguments"),
           enabled: /<Settings>[\s\S]*?<Enabled>true<\/Enabled>/.test(request.xml), state: state.task.state ?? 3,
-          principalId: "TEST\\User", userSid: "S-1-5-21-1",
+          principalId: "TEST\\User", principalSid: "S-1-5-21-1", userSid: "S-1-5-21-1",
           actions: 1, logonType: 3, runLevel: 0, hidden: true, executionTimeLimit: "PT0S", multipleInstances: 2 };
       }
       if (request.action === "start") { state.task.state = 4; running(); }
@@ -99,6 +99,34 @@ test("Windows preserves a disabled task and never restarts an already running se
   assert.equal(result.liveVerified, false);
   assert.match(result.notice, /intentionally disabled/);
   assert.equal(f.calls.some(({ options }) => JSON.parse(options.input).action === "start"), false);
+});
+
+test("Windows verifies normalized principal names using their resolved SID", async (t) => {
+  const f = fixture(t);
+  const result = await f.install({ run: async (...args) => {
+    const response = await f.options.run(...args);
+    if (JSON.parse(args[2].input).action === "register") f.state.task.principalId = "User";
+    return response;
+  } });
+  assert.equal(result.configured, true);
+  assert.equal(result.ready, true);
+  assert.equal(result.started, true);
+  f.calls.length = 0;
+  assert.equal((await f.install({ check: true })).configured, true);
+  assert.deepEqual(f.calls.map(({ options }) => JSON.parse(options.input).action), ["query"]);
+  const script = Buffer.from(f.calls[0].args.at(-1), "base64").toString("utf16le");
+  assert.match(script, /NTAccount\]::new\(\$relayPrincipalId\)\.Translate\(\[Security\.Principal\.SecurityIdentifier\]\)/);
+});
+
+test("Windows rejects foreign or unresolved principal SIDs despite matching account text", async (t) => {
+  const f = fixture(t);
+  await f.install();
+  for (const principalSid of ["S-1-5-21-2", null, ""]) {
+    f.state.task.principalSid = principalSid;
+    f.calls.length = 0;
+    assert.equal((await f.install()).code, "SERVICE_CONFIGURATION_CONFLICT");
+    assert.deepEqual(f.calls.map(({ options }) => JSON.parse(options.input).action), ["query"]);
+  }
 });
 
 test("Windows refuses foreign registrations and failed readback", async (t) => {

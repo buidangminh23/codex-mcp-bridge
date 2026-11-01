@@ -26,7 +26,9 @@ function inspectPath(target, kind, missing = false) {
 
 const identity = stat => [stat.dev, stat.ino, stat.birthtimeNs, stat.ctimeNs, stat.mtimeNs, stat.size, stat.mode, stat.nlink].join(":");
 const cacheKey = (target, kind) => `${kind}:${target.toLowerCase()}`;
-const sameObject = (left, right) => ["dev", "ino", "birthtimeNs", "uid", "mode", "nlink"].every(key => left[key] === right[key]);
+const sameNode = (left, right) => left.dev === right.dev && left.ino === right.ino;
+const sameObject = (left, right) => ["dev", "ino", "birthtimeNs", "uid", "mode"].every(key => left[key] === right[key])
+  && (left.isDirectory() && right.isDirectory() || left.nlink === right.nlink);
 const validReadback = (value, kind) => value?.ownerTrusted === true && value?.allowedPrincipalsOnly === true && value?.currentUserFullControl === true
   && value?.noReparse === true && (kind !== "directory" || value?.protected === true) && value?.kind === kind;
 
@@ -176,15 +178,16 @@ export function finishPrivateRelayWrite(ticket) {
   try {
     const directory = inspectPath(pending.directory, "directory");
     const file = inspectPath(pending.file, "file");
-    if (!sameObject(pending.before, directory) || !sameObject(pending.created, file) || pending.created.size !== file.size
-      || pending.created.mtimeNs !== file.mtimeNs || fs.existsSync(pending.temporary)) throw unsafe();
+    if (pending.created.size !== file.size || fs.existsSync(pending.temporary)) throw unsafe();
     if (pending.platform === "win32") {
+      if (!sameObject(pending.before, directory) || !sameObject(pending.created, file) || pending.created.mtimeNs !== file.mtimeNs) throw unsafe();
       const cache = caches.get(pending.run);
       if (cache?.get(cacheKey(pending.directory, "directory"))?.identity !== identity(pending.before)) throw unsafe();
       cache.set(cacheKey(pending.directory, "directory"), { identity: identity(directory) });
       cache.set(cacheKey(pending.file, "file"), { identity: identity(file) });
       if (cache.size > 2048) cache.delete(cache.keys().next().value);
     } else {
+      if (!sameNode(pending.before, directory) || !sameNode(pending.created, file)) throw unsafe();
       assertPrivacy(pending.directory, "directory", directory, pending);
       assertPrivacy(pending.file, "file", file, pending);
     }

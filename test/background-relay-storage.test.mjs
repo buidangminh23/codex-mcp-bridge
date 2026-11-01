@@ -14,6 +14,36 @@ function temporary(t) {
   return root;
 }
 
+function posixWriteFixture(t, platform = "darwin") {
+  const directory = path.join(os.tmpdir(), "relay-posix-fixture");
+  const file = path.join(directory, "receipt.json");
+  const pendingFile = path.join(directory, ".receipt.json.fixture.tmp");
+  const stat = (kind, ino) => ({ dev: 1n, ino, uid: 1000n, mode: kind === "directory" ? 0o40700n : 0o100600n,
+    nlink: kind === "directory" ? 2n : 1n, birthtimeNs: 100n, ctimeNs: 200n, mtimeNs: 200n, size: kind === "file" ? 7n : 0n,
+    isDirectory: () => kind === "directory", isFile: () => kind === "file", isSymbolicLink: () => false });
+  const directoryState = stat("directory", 10n);
+  const fileState = stat("file", 11n);
+  const entries = new Map([[directory, directoryState]]);
+  const previousUid = Object.getOwnPropertyDescriptor(process, "getuid");
+  Object.defineProperty(process, "getuid", { configurable: true, writable: true, value: () => 1000 });
+  t.after(() => { if (previousUid) Object.defineProperty(process, "getuid", previousUid); else delete process.getuid; });
+  t.mock.method(fs, "mkdirSync", () => {});
+  t.mock.method(fs, "lstatSync", target => { const value = entries.get(target); if (!value) throw Object.assign(new Error("Missing"), { code: "ENOENT" }); return { ...value }; });
+  t.mock.method(fs, "openSync", () => 10);
+  t.mock.method(fs, "closeSync", () => {});
+  t.mock.method(fs, "fstatSync", descriptor => ({ ...(descriptor === 10 ? directoryState : fileState) }));
+  t.mock.method(fs, "existsSync", target => entries.has(target));
+  const ticket = beginPrivateRelayWrite(file, { platform, run: (command, args) => JSON.stringify(readback(args[args.indexOf("-Kind") + 1])) });
+  entries.set(pendingFile, fileState);
+  bindPrivateRelayWrite(ticket, pendingFile, 11);
+  entries.delete(pendingFile);
+  entries.set(file, fileState);
+  directoryState.nlink = 3n;
+  directoryState.ctimeNs++;
+  directoryState.mtimeNs++;
+  return { ticket, directoryState, fileState, entries, pendingFile };
+}
+
 test("private storage creates only its directory and verifies files without changing content", t => {
   const root = temporary(t);
   const directory = path.join(root, "relay");
@@ -225,6 +255,36 @@ test("an aborted or mismatched owned write cannot bless a foreign replacement", 
   const abandoned = beginPrivateRelayWrite(file, options);
   abortPrivateRelayWrite(abandoned);
   assert.throws(() => finishPrivateRelayWrite(abandoned), { code: "WORKER_STORAGE_UNSAFE" });
+});
+
+test("POSIX atomic creation accepts changed directory link metadata with stable inode and private permissions", t => {
+  const box = posixWriteFixture(t);
+  finishPrivateRelayWrite(box.ticket);
+});
+
+test("Windows cache attestation also permits directory link metadata changes on a simulated host", t => {
+  const box = posixWriteFixture(t, "win32");
+  finishPrivateRelayWrite(box.ticket);
+});
+
+test("POSIX atomic completion still rejects changed inode ownership permissions and file links", async t => {
+  for (const [name, mutate] of [
+    ["directory inode", box => box.directoryState.ino++],
+    ["file inode", box => box.fileState.ino++],
+    ["file device", box => box.fileState.dev++],
+    ["directory owner", box => box.directoryState.uid++],
+    ["file owner", box => box.fileState.uid++],
+    ["directory mode", box => { box.directoryState.mode = 0o40755n; }],
+    ["file mode", box => { box.fileState.mode = 0o100644n; }],
+    ["file links", box => { box.fileState.nlink = 2n; }],
+    ["file symlink", box => { box.fileState.isSymbolicLink = () => true; }],
+    ["file size", box => box.fileState.size++],
+    ["temporary remains", box => box.entries.set(box.pendingFile, box.fileState)],
+  ]) await t.test(name, child => {
+    const box = posixWriteFixture(child);
+    mutate(box);
+    assert.throws(() => finishPrivateRelayWrite(box.ticket), { code: "WORKER_STORAGE_UNSAFE" });
+  });
 });
 
 test("Windows real owned writes avoid repeated PowerShell launches", { skip: process.platform !== "win32" }, t => {

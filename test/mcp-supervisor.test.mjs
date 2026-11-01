@@ -9,7 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { ListRootsRequestSchema, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createReleaseSnapshot, sourceRevision } from "../src/release-snapshot.mjs";
 import { supervisorInterval } from "../src/mcp-supervisor.mjs";
 import { createProcessReaper, processAlive, waitForExit } from "./helpers/process-reaper.mjs";
@@ -24,6 +24,7 @@ import { ResponseSnapshots } from ${JSON.stringify(new URL("../src/response-pref
 const snapshots = new ResponseSnapshots();
 const VERSION = 'A';
 const ENTRY = process.env.TEST_ENTRY;
+const STATUS = ENTRY === 'antigravity-bridge.mjs' ? 'antigravity_bridge_status' : ENTRY === 'antigravity-outbound-bridge.mjs' ? 'agent_bridge_status' : 'codex_bridge_status';
 const desktopMode = desktopTasksConfigured();
 let records = [];
 let pending = false;
@@ -44,7 +45,7 @@ readline.createInterface({input: process.stdin}).on('line', async line => {
   try {
     let result;
     if (msg.method === 'initialize') result = {protocolVersion:msg.params.protocolVersion,capabilities:{tools:{listChanged:true}},serverInfo:{name:'fixture',version:VERSION}};
-    else if (msg.method === 'tools/list') result = {tools:[{name:'codex_bridge_status',description:VERSION === 'CHANGED_CATALOG' ? 'Changed tools' : 'Read test worker',inputSchema:{type:'object'}}]};
+    else if (msg.method === 'tools/list') result = {tools:[{name:STATUS,description:VERSION === 'CHANGED_CATALOG' ? 'Changed tools' : 'Read test worker',inputSchema:{type:'object'}}]};
     else if (msg.method === 'ping') result = {};
     else result = await control.run(async () => {
       const name = msg.params.name;
@@ -109,7 +110,8 @@ async function connect(t, fixture, extraEnv = {}) {
   });
   await client.connect(transport);
   reaper.track(transport.pid);
-  const call = async (name = "codex_bridge_status", args = {}, meta) => {
+  const statusTool = fixture.entry === "antigravity-bridge.mjs" ? "antigravity_bridge_status" : fixture.entry === "antigravity-outbound-bridge.mjs" ? "agent_bridge_status" : "codex_bridge_status";
+  const call = async (name = statusTool, args = {}, meta) => {
     const result = await client.callTool({name, arguments: args, ...(meta ? {_meta:meta} : {})});
     reaper.track(result.structuredContent?.autoReload?.supervisorPid, result.structuredContent?.autoReload?.workerPid);
     return result;
@@ -152,7 +154,7 @@ for (const value of ["Infinity", "4294967296"]) {
   });
 }
 
-for (const entry of ["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs"]) {
+for (const entry of ["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs", "antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs"]) {
   it(`reloads ${entry} on the same MCP connection and retains completed state`, async t => {
     const fixture = installation(t, entry);
     const api = await connect(t, fixture);
@@ -168,6 +170,37 @@ for (const entry of ["index.mjs", "claude-bridge.mjs", "native-relay-companion.m
     const reverse = await api.call("reverse", {}, {"test/caller":"preserved"});
     assert.deepEqual(reverse.structuredContent.roots.roots, [{uri:"file:///test-project"}]);
     assert.equal(reverse.structuredContent.meta["test/caller"], "preserved");
+  });
+}
+
+for (const entry of ["antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs"]) {
+  it(`recovers ${entry} after a dispatched write without replay and refreshes its tool catalog`, async t => {
+    const fixture = installation(t, entry);
+    const api = await connect(t, fixture, { CODEX_BRIDGE_RECOVERY_DELAY_MS: "600", CODEX_BRIDGE_DESKTOP_TASKS: "0" });
+    let catalogChanges = 0;
+    api.client.setNotificationHandler(ToolListChangedNotificationSchema, () => { catalogChanges++; });
+    const before = await api.call();
+    assert.equal(before.structuredContent.autoReload.routingConfiguration, null);
+    assert.equal(before.structuredContent.autoReload.availableRoutingConfiguration, null);
+    await assert.rejects(api.call("crash", { value: "uncertain" }), (error) => {
+      assert.equal(error.data.diagnostic.deliveryState, "unknown");
+      assert.equal(error.data.diagnostic.sent, null);
+      assert.equal(error.data.diagnostic.retrySafe, false);
+      return true;
+    });
+    fixture.update("CHANGED_CATALOG");
+    await assert.rejects(api.call("add", { value: "must-not-send" }), (error) => {
+      assert.equal(error.data.diagnostic.deliveryState, "not_sent");
+      return true;
+    });
+    const after = await eventually(() => api.call().catch(error => ({ error: error.message })), value => value.structuredContent?.autoReload.recoveries === 1, api.stderr);
+    assert.equal(after.structuredContent.autoReload.supervisorPid, before.structuredContent.autoReload.supervisorPid);
+    assert.notEqual(after.structuredContent.autoReload.workerPid, before.structuredContent.autoReload.workerPid);
+    assert.equal(after.structuredContent.autoReload.routingConfiguration, null);
+    assert.equal(catalogChanges, 1);
+    assert.equal((await api.client.listTools()).tools[0].description, "Changed tools");
+    assert.equal(fs.readFileSync(fixture.ledger, "utf8"), "uncertain\n");
+    assert.deepEqual(after.structuredContent.records, []);
   });
 }
 
@@ -542,15 +575,16 @@ it("resolves cache parent aliases before launching an immutable worker", t => {
   assert.equal(snapshot.directory.startsWith(fs.realpathSync.native(parent) + path.sep), true);
 });
 
-const REAL_ENTRIES = [["index.mjs", "codex_bridge_status"], ["claude-bridge.mjs", "claude_bridge_status"], ["native-relay-companion.mjs", "native_relay_status"]];
+const REAL_ENTRIES = [["index.mjs", "codex_bridge_status"], ["claude-bridge.mjs", "claude_bridge_status"], ["native-relay-companion.mjs", "native_relay_status"], ["antigravity-bridge.mjs", "antigravity_bridge_status"], ["antigravity-outbound-bridge.mjs", "agent_bridge_status"]];
 
-async function realWorker(t, entry) {
+async function realWorker(t, entry, { prepare, env = {} } = {}) {
   const fixture = installation(t, entry);
   // Node 24.13.0 on Windows can abort in cpSync with a Unicode checkout path.
   // Await the async copy before preparing or starting the same real fixture.
   await fs.promises.cp(path.join(repository, "src"), path.join(fixture.root, "src"), {recursive:true});
   fs.copyFileSync(path.join(repository,"package.json"),path.join(fixture.root,"package.json"));
   await fs.promises.cp(path.join(repository,"node_modules"),path.join(fixture.root,"node_modules"),{recursive:true});
+  await prepare?.(fixture);
   const prefix = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\codex-native-relay-supervisor-${randomUUID()}` : path.join("/tmp",`supervisor-${randomUUID()}.sock`);
   const sockets = new Set();
   const native = net.createServer(socket => { sockets.add(socket); socket.on("close",()=>sockets.delete(socket)); });
@@ -564,6 +598,7 @@ async function realWorker(t, entry) {
     HOME: fixture.root, USERPROFILE: fixture.root, CODEX_HOME: path.join(fixture.root,".codex"), APPDATA:path.join(fixture.root,"Roaming"),
     LOCALAPPDATA:path.join(fixture.root,"Local"), CODEX_BRIDGE_AUTOSTART:"0", CODEX_BRIDGE_DESKTOP_TASKS:"0",
     CODEX_APP_SERVER_URL:"ws://127.0.0.1:9", CODEX_NATIVE_RELAY_SOCKET:`${prefix}-relay`, CODEX_APP_TOOLS_PIPE_PATH:prefix,
+    ANTIGRAVITY_CLI_BIN: path.join(fixture.root, "never-launch.exe"), ...env,
   }) };
 }
 
@@ -576,10 +611,76 @@ for (const [entry, statusName] of REAL_ENTRIES) {
     const after=await eventually(()=>api.call(statusName),value=>value.structuredContent?.autoReload?.reloads === 1,api.stderr);
     assert.equal(after.structuredContent.autoReload.supervisorPid,before.structuredContent.autoReload.supervisorPid);
     assert.notEqual(after.structuredContent.autoReload.workerPid,before.structuredContent.autoReload.workerPid);
-    assert.equal(after.structuredContent.runtime.current,true);
+    if (entry.startsWith("antigravity")) assert.equal(after.structuredContent.autoReload.routingConfiguration, null);
+    else assert.equal(after.structuredContent.runtime.current,true);
     if (entry === "native-relay-companion.mjs") assert.match(after.content[0].text, /account relay:.*\(protocol 2, listening\)/);
   });
 }
+
+it("retains open Antigravity CLI pipes across updates and reads crashed deliveries without replay", { timeout: 180000 }, async t => {
+  const threadId = randomUUID();
+  const turnId = randomUUID();
+  const conversationId = randomUUID();
+  const metadata = { "x-codex-turn-metadata": { thread_id: threadId, turn_id: turnId, thread_source: "user", auto_review_enabled: false, node_repl_auto_review_required: false } };
+  const { fixture, api } = await realWorker(t, "antigravity-bridge.mjs", {
+    env: { ANTIGRAVITY_BRIDGE_CALLER: "codex", TEST_CLI_SESSION_ID: conversationId, CODEX_BRIDGE_RECOVERY_DELAY_MS: "100" },
+    prepare(fixture) {
+      const directory = path.join(fixture.root, ".codex", "sessions", "2026", "11", "01");
+      fs.mkdirSync(directory, { recursive: true });
+      const records = [
+        { type: "session_meta", payload: { id: threadId, originator: "Codex Desktop", source: "vscode", cwd: fixture.root } },
+        { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+        { type: "turn_context", payload: { turn_id: turnId, cwd: fixture.root, approval_policy: "never", approvals_reviewer: "user", permission_profile: { type: "disabled" }, sandbox_policy: { type: "danger-full-access" } } },
+      ];
+      fs.writeFileSync(path.join(directory, `rollout-2026-11-01T00-00-00-${threadId}.jsonl`), records.map(record => JSON.stringify(record)).join("\n") + "\n");
+      const entry = path.join(fixture.root, "src", fixture.entry);
+      const source = fs.readFileSync(entry, "utf8");
+      const expected = 'import { AntigravityCliSession } from "./antigravity-cli.mjs";';
+      assert.ok(source.includes(expected));
+      fs.writeFileSync(entry, source.replace(expected, `
+        class AntigravityCliSession {
+          constructor({cwd}) { this.cwd = cwd; this.status = 'new'; }
+          read() { return {conversationId:process.env.TEST_CLI_SESSION_ID,cwd:this.cwd,status:this.status}; }
+          async start() { this.status = 'idle'; return this.read(); }
+          async send() {
+            this.status = 'running'; fs.appendFileSync(process.env.TEST_LEDGER, 'sent\\n');
+            while (fs.existsSync(path.join(this.cwd, 'hold-cli'))) await new Promise(resolve => setTimeout(resolve, 30));
+            this.status = 'idle'; return {status:'SUCCESS',conversationId:process.env.TEST_CLI_SESSION_ID,response:'fixture reply'};
+          }
+          async close() { this.status = 'closed'; return this.read(); }
+        }
+      `));
+    },
+  });
+  const request = { requestId: randomUUID(), cwd: fixture.root, prompt: "Fixture only; no real CLI is available" };
+  const read = requestId => api.call("read_antigravity_delivery", { surface: "cli", requestId }, metadata);
+  await api.call("start_antigravity_cli_session", request, metadata);
+  await eventually(() => read(request.requestId), value => JSON.parse(value.content[0].text).status === "completed");
+  const before = await api.call();
+  fs.appendFileSync(path.join(fixture.root, "src", fixture.entry), "\n");
+  const deferred = await eventually(api.call, value => value.structuredContent.autoReload.reason?.includes("cannot migrate"), api.stderr);
+  assert.equal(deferred.structuredContent.autoReload.workerPid, before.structuredContent.autoReload.workerPid);
+  assert.equal(JSON.parse(deferred.content[0].text).cli.activeSessions, 1);
+  await api.call("close_antigravity_cli_session", { conversationId }, metadata);
+  await eventually(api.call, value => value.structuredContent.autoReload.reloads === 1, api.stderr);
+  assert.equal(JSON.parse((await read(request.requestId)).content[0].text).result.response, "fixture reply");
+  await api.call("start_antigravity_cli_session", request, metadata);
+  assert.equal(fs.readFileSync(fixture.ledger, "utf8"), "sent\n");
+  fs.writeFileSync(path.join(fixture.root, "hold-cli"), "1");
+  const uncertain = { ...request, requestId: randomUUID() };
+  await api.call("start_antigravity_cli_session", uncertain, metadata);
+  await eventually(() => fs.readFileSync(fixture.ledger, "utf8"), value => value === "sent\nsent\n");
+  const active = await api.call();
+  process.kill(active.structuredContent.autoReload.workerPid, "SIGKILL");
+  await eventually(() => api.call().catch(error => ({ error: error.message })), value => value.structuredContent?.autoReload.recoveries === 1, api.stderr);
+  const original = await read(uncertain.requestId);
+  assert.equal(JSON.parse(original.content[0].text).status, "unknown");
+  assert.equal(original.structuredContent.diagnostic.deliveryState, "unknown");
+  assert.equal(original.structuredContent.diagnostic.retrySafe, false);
+  const repeated = await api.call("start_antigravity_cli_session", uncertain, metadata);
+  assert.equal(JSON.parse(repeated.content[0].text).status, "unknown");
+  assert.equal(fs.readFileSync(fixture.ledger, "utf8"), "sent\nsent\n");
+});
 
 for (const [entry, statusName] of REAL_ENTRIES) {
   it(`exits the real ${entry} worker on its own when its supervisor is killed`, {timeout:180000}, async t => {

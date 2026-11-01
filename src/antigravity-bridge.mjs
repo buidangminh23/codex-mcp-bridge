@@ -15,6 +15,7 @@ import { exitForVersionRequest } from "./cli-version.mjs";
 import { NativeDesktopRelay, desktopTaskSocketPath, accountRelaySocketPath } from "./native-relay.mjs";
 import { requireBridgeAccounts, readBridgeAccounts, assertAccountIdentity } from "./bridge-account-context.mjs";
 import { bridgeDiagnostic, withBridgeDiagnostic, preflightFailure } from "./recipient-preflight.mjs";
+import { createReloadControl, exitWhenClientCloses } from "./reload-control.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -28,6 +29,19 @@ const caller = process.env.ANTIGRAVITY_BRIDGE_CALLER;
 const senderRelay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath(), accountSocketPath: accountRelaySocketPath() });
 const result = (value) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }] });
 const schema = { requestId: z.string().uuid(), cwd: z.string().min(1), prompt: z.string().min(1).max(65536) };
+const reloadReason = () => startingSessions ? "Antigravity CLI sessions are still starting"
+  : deliveries.active.size ? "Antigravity deliveries are still active"
+    : sessions.size ? "Open Antigravity CLI sessions retain process pipes and cannot migrate" : null;
+const reload = createReloadControl({
+  entry: "antigravity-bridge.mjs",
+  inspect: reloadReason,
+  exportState: () => ({ caller: caller ?? null, directory }),
+  restore: (state) => {
+    if (state.caller !== (caller ?? null) || typeof state.directory !== "string" || path.relative(state.directory, directory)) {
+      throw new Error("Antigravity caller or durable receipt directory changed during reload");
+    }
+  },
+});
 
 async function identifySender(extra) {
   if (caller === "codex") {
@@ -89,7 +103,7 @@ function register(name, description, inputSchema, readOnly, handler) {
   server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: true, openWorldHint: !readOnly } }, async (args, extra) => {
     const options = { component: "antigravity-bridge", operation: name, requestId: args.requestId, conversationId: args.conversationId, readOnly };
     try {
-      const value = await handler(args, extra);
+      const value = await reload.run(() => handler(args, extra));
       const failure = antigravityDeliveryError(value);
       if (failure) return withBridgeDiagnostic({ ...result(value), isError: true }, failure, { ...options, readOnly: false, msgId: value.result?.msgId });
       if (value?.desktop?.available === false) return withBridgeDiagnostic({ ...result(value), isError: true }, { diagnostic: value.desktop.diagnostic }, options);
@@ -219,6 +233,7 @@ async function stop() {
   await stopProcessInspectors();
   await server.close();
 }
-for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void stop(); });
-process.stdin.once("end", () => { void stop(); });
 await server.connect(new StdioServerTransport());
+const shutdown = exitWhenClientCloses({ busy: () => startingSessions || deliveries.active.size ? "Antigravity deliveries are still active" : null, stop });
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void shutdown.close(signal); });
+reload.listen();

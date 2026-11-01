@@ -10,18 +10,24 @@ import { createAntigravityOutboundBridge } from "../src/antigravity-outbound-bri
 import { AntigravityDeliveries } from "../src/antigravity-deliveries.mjs";
 
 async function fixture(t, outcomes = {}) {
-  const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "antigravity-outbound-")));
-  const identity = { status: "verified", provider: "antigravity", id: crypto.randomUUID(), cwd: directory, mode: "bypass", permissionFingerprint: "initial" };
+  const directory = outcomes.directory ?? fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "antigravity-outbound-")));
+  const identity = outcomes.identity ?? { status: "verified", provider: "antigravity", id: crypto.randomUUID(), cwd: directory, mode: "bypass", permissionFingerprint: "initial" };
   let current = identity;
   const calls = [];
   let beforeDispatch;
+  const lifecycle = { activated: 0, quiesced: 0, restored: null };
   const targets = {
     list: async (request) => { await request.beforeSend(); calls.push(request); return [{ conversationId: "fixture-task" }]; },
     send: async (request) => { await beforeDispatch?.(); await request.beforeSend(); calls.push(request); return outcomes.send ? outcomes.send(request) : { status: "accepted", conversationId: request.conversationId }; },
     read: async (request) => { await request.beforeSend(); calls.push(request); return outcomes.read ? outcomes.read(request) : { status: "idle" }; },
+    reloadReason: () => null,
+    quiesce: async () => { lifecycle.quiesced++; },
+    exportReloadState: () => ({ receiptIds: ["fixture"] }),
+    restoreReloadState: (state) => { lifecycle.restored = state; },
+    activate: async () => { lifecycle.activated++; },
     close: async () => {},
   };
-  const bridge = createAntigravityOutboundBridge({ targets, resolveSender: async () => structuredClone(current), deliveries: new AntigravityDeliveries(path.join(directory, "receipts")), rootPolicy: { assert() {} } });
+  const bridge = createAntigravityOutboundBridge({ targets, resolveSender: async () => structuredClone(current), deliveries: new AntigravityDeliveries(path.join(directory, "receipts")), rootPolicy: { assert() {} }, env: { CODEX_BRIDGE_WORKER: "1", CODEX_BRIDGE_STAGED: outcomes.staged ? "1" : "0" }, channel: { send() {}, on() {} } });
   const client = new Client({ name: "test", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await bridge.server.connect(a);
@@ -32,18 +38,20 @@ async function fixture(t, outcomes = {}) {
     return { ...JSON.parse(response.content[0].text), isError: response.isError, structuredContent: response.structuredContent, reports: response.content.slice(1).map((item) => item.text).join("\n") };
   };
   const request = { target: "codex", conversationId: crypto.randomUUID(), requestId: crypto.randomUUID(), cwd: directory, prompt: "Fixture only" };
-  return { client, call, request, identity, directory, calls, change: (value) => { current = value; }, beforeDispatch: (value) => { beforeDispatch = value; } };
+  return { client, call, request, identity, directory, calls, bridge, lifecycle, change: (value) => { current = value; }, beforeDispatch: (value) => { beforeDispatch = value; } };
 }
 
 test("outbound MCP advertises native tools and rejects missing caller before target access", async (t) => {
   const f = await fixture(t);
-  assert.deepEqual((await f.client.listTools()).tools.map((x) => x.name).sort(), ["agent_bridge_status", "list_agent_tasks", "send_to_agent_task", "read_agent_delivery", "read_agent_task"].sort());
+  assert.deepEqual((await f.client.listTools()).tools.map((x) => x.name).sort(), ["agent_bridge_status", "list_agent_tasks", "send_to_agent_task", "read_agent_delivery", "read_agent_task", "worker_status", "list_workers", "send_to_worker", "read_worker_delivery"].sort());
   f.change({ status: "unverified", reason: "Missing native metadata" });
   const status = await f.call("agent_bridge_status");
   assert.equal(status.isError, true);
   assert.equal(status.structuredContent.diagnostic.code, "ANTIGRAVITY_SENDER_UNVERIFIED");
   assert.equal(status.structuredContent.diagnostic.deliveryState, "not_applicable");
   assert.match(f.client.getInstructions(), /Never use Computer Use, open an old chat/);
+  assert.match(f.client.getInstructions(), /separate background CLI workers/);
+  assert.match(f.client.getInstructions(), /Never replay an uncertain native send through a worker/);
   for (const [name, args] of [["list_agent_tasks", { target: "codex" }], ["send_to_agent_task", f.request], ["read_agent_delivery", { requestId: f.request.requestId }], ["read_agent_task", { target: "codex", conversationId: f.request.conversationId }]]) {
     assert.equal((await f.call(name, args)).isError, true);
   }
@@ -165,4 +173,40 @@ test("outbound receipt reads propagate native ownership and account errors witho
       assert.equal(receipt.result, undefined);
     });
   }
+});
+
+test("outbound reload waits for dispatch, transfers state and reads durable receipts without replay", async (t) => {
+  let finish;
+  const previous = await fixture(t, { send: () => new Promise((resolve) => { finish = resolve; }) });
+  await previous.call("send_to_agent_task", previous.request);
+  await new Promise(setImmediate);
+  assert.equal(previous.bridge.reload.inspect().reloadable, false);
+  await assert.rejects(previous.bridge.reload.control("quiesce"), /deliveries are still active/);
+  finish({ status: "accepted" });
+  await new Promise(setImmediate);
+  const { state } = await previous.bridge.reload.control("quiesce");
+  assert.equal(previous.lifecycle.quiesced, 1);
+  const blocked = await previous.call("send_to_agent_task", { ...previous.request, requestId: crypto.randomUUID() });
+  assert.equal(blocked.isError, true);
+  assert.match(blocked.error, /quiesced/);
+  assert.equal(blocked.structuredContent.diagnostic.deliveryState, "not_sent");
+  const background = await previous.client.callTool({ name: "worker_status", arguments: {} });
+  assert.equal(background.isError, true);
+  assert.match(background.content[0].text, /quiesced/);
+  assert.equal(background.structuredContent.diagnostic.code, "MCP_WORKER_QUIESCED");
+  const next = await fixture(t, { directory: previous.directory, identity: previous.identity, staged: true });
+  assert.equal((await next.call("agent_bridge_status")).isError, true);
+  await assert.rejects(next.bridge.reload.control("restore", { ...state, payload: { ...state.payload, directory: os.tmpdir() } }), /directory changed/);
+  await next.bridge.reload.control("restore", state);
+  assert.deepEqual(next.lifecycle.restored, { receiptIds: ["fixture"] });
+  assert.equal(next.lifecycle.activated, 0);
+  await next.bridge.reload.control("activate");
+  assert.equal(next.lifecycle.activated, 1);
+  const receipt = await next.call("read_agent_delivery", { requestId: previous.request.requestId });
+  assert.equal(receipt.status, "accepted");
+  assert.equal((await next.call("send_to_agent_task", previous.request)).status, "accepted");
+  assert.equal(previous.calls.length, 1);
+  assert.deepEqual(next.calls, []);
+  await previous.bridge.reload.control("resume");
+  assert.equal(previous.lifecycle.activated, 1);
 });

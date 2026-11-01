@@ -26,7 +26,7 @@ export async function drainPendingAccepts(turns = 3) {
 }
 
 export function createReloadControl({ entry, inspect = () => null, quiesce = () => {}, exportState = () => ({}), restore = () => {}, activate = () => {}, resume = activate, env = process.env, channel = process } = {}) {
-  if (!["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs"].includes(entry)) throw new Error("Invalid reload entry point");
+  if (!["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs", "antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs"].includes(entry)) throw new Error("Invalid reload entry point");
   const enabled = env.CODEX_BRIDGE_WORKER === "1" && typeof channel.send === "function";
   let phase = enabled && env.CODEX_BRIDGE_STAGED === "1" ? "staged" : "active";
   let active = 0;
@@ -83,7 +83,7 @@ export function createReloadControl({ entry, inspect = () => null, quiesce = () 
     inspect: status,
     defer(reason) { deferred ??= String(reason); },
     async run(handler) {
-      if (phase !== "active") throw new Error(`Bridge worker is ${phase}; no tool operation was started`);
+      if (phase !== "active") throw Object.assign(new Error(`Bridge worker is ${phase}; no tool operation was started`), { code: "MCP_WORKER_QUIESCED", phase: "lifecycle", deliveryState: "not_sent", sent: false });
       active += 1;
       try { return await handler(); }
       finally { active -= 1; }

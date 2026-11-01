@@ -10,7 +10,8 @@ import { CLIENT_CLOSE_DRAIN_MS, CLIENT_CLOSE_STOP_MS } from "./reload-control.mj
 import { withBridgeDiagnostic } from "./recipient-preflight.mjs";
 
 const WORKER_NODE = stableInstallPath(process.execPath);
-const ENTRIES = new Set(["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs"]);
+const ENTRIES = new Set(["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs", "antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs"]);
+const ANTIGRAVITY_ENTRIES = new Set(["antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs"]);
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_QUEUE = 256;
 const RETIRE_GRACE_MS = 6000;
@@ -151,7 +152,7 @@ class Worker {
 }
 
 export async function runSupervisor(entry, options = {}) {
-  if (!ENTRIES.has(entry)) throw new Error("Expected index.mjs, claude-bridge.mjs, or native-relay-companion.mjs");
+  if (!ENTRIES.has(entry)) throw new Error(`Expected one of: ${[...ENTRIES].join(", ")}`);
   const installRoot = stableInstallPath(fs.realpathSync.native(options.root ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")));
   const currentRoot = () => fs.realpathSync.native(installRoot);
   const root = currentRoot();
@@ -162,7 +163,8 @@ export async function runSupervisor(entry, options = {}) {
   const log = (message) => process.stderr.write(`[bridge-supervisor] ${message}\n`);
   const output = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
   const env = { ...process.env, CODEX_BRIDGE_SOURCE_ROOT: installRoot };
-  const routingConfiguration = () => entry === "native-relay-companion.mjs" ? null : desktopTasksConfigured(env);
+  const recoverable = entry === "native-relay-companion.mjs" || ANTIGRAVITY_ENTRIES.has(entry);
+  const routingConfiguration = () => recoverable ? null : desktopTasksConfigured(env);
   if (entry === "native-relay-companion.mjs" && !env.CODEX_APP_TOOLS_PIPE_PATH) {
     const { resolveNativeToolsPipePath } = await import("./native-relay.mjs");
     const pipe = await resolveNativeToolsPipePath();
@@ -192,7 +194,7 @@ export async function runSupervisor(entry, options = {}) {
   let activeSince = Date.now();
   const recoveryDelayMs = Math.min(30000, supervisorInterval(env.CODEX_BRIDGE_RECOVERY_DELAY_MS, 1000));
   const recoveryLimit = 5;
-  const canRecover = () => entry === "native-relay-companion.mjs" && ready && initializeResult && initializeCatalog;
+  const canRecover = () => recoverable && ready && initializeResult && initializeCatalog;
   const scheduleRecovery = () => {
     if (recoveryAttempts >= recoveryLimit) return;
     recoveryAt = Date.now() + Math.min(30000, recoveryDelayMs * 2 ** recoveryAttempts);
@@ -226,14 +228,14 @@ export async function runSupervisor(entry, options = {}) {
       const respond = async () => {
         if (pending.method === "initialize" && !message.error) {
           initializeResult = message.result;
-          if (entry === "native-relay-companion.mjs") {
+          if (recoverable) {
             initializeCatalog = await worker.rpc("tools/list", {});
-            if (!Array.isArray(initializeCatalog.tools) || !initializeCatalog.tools.length || initializeCatalog.nextCursor) throw new Error("The native relay tool catalog is incomplete");
+            if (!Array.isArray(initializeCatalog.tools) || !initializeCatalog.tools.length || initializeCatalog.nextCursor) throw new Error("The bridge tool catalog is incomplete");
           }
           await worker.control("activate");
           ready = true;
         }
-        if (message.result && ["codex_bridge_status", "claude_bridge_status", "native_relay_status"].includes(pending.tool)) {
+        if (message.result && ["codex_bridge_status", "claude_bridge_status", "native_relay_status", "antigravity_bridge_status", "agent_bridge_status"].includes(pending.tool)) {
           message.result.structuredContent = { ...message.result.structuredContent, autoReload: diagnostics() };
           message.result.content = [...(message.result.content ?? []), { type: "text", text: `automatic reload: ${diagnostics().state}\nsupervisor pid: ${process.pid}\nworker pid: ${worker.process.pid}\nreload count: ${reloads}\nrecovery count: ${recoveries}${reason ? `\nreload detail: ${reason}` : ""}` }];
         }
@@ -293,19 +295,23 @@ export async function runSupervisor(entry, options = {}) {
         }
         candidate.write({ jsonrpc: "2.0", method: "notifications/initialized" });
         const catalog = await candidate.rpc("tools/list", {});
-        if (JSON.stringify(catalog) !== JSON.stringify(initializeCatalog)) throw new Error("The replacement tool catalog requires an explicit client reconnect");
+        if (!Array.isArray(catalog.tools) || !catalog.tools.length || catalog.nextCursor) throw new Error("The replacement tool catalog is incomplete");
+        const catalogChanged = JSON.stringify(catalog) !== JSON.stringify(initializeCatalog);
+        if (catalogChanged && (!ANTIGRAVITY_ENTRIES.has(entry) || initializeResult.capabilities?.tools?.listChanged !== true)) throw new Error("The replacement tool catalog requires an explicit client reconnect");
         await candidate.control("activate");
         if (stopping || candidate.closed) throw new Error("The relay replacement stopped before activation completed");
         active = candidate;
         candidate = null;
+        initializeCatalog = catalog;
         activeSince = Date.now();
         failure = null;
         reason = null;
         recoveries++;
-        log(`recovered native relay worker after exit; recovery ${recoveries}, no requests replayed`);
+        if (catalogChanged) output({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+        log(`recovered ${entry} worker after exit; recovery ${recoveries}, no requests replayed`);
         schedulePrune();
       } catch (error) {
-        failure = `Native relay recovery failed: ${error.message}; no requests were replayed`;
+        failure = `Bridge worker recovery failed: ${error.message}; no requests were replayed`;
         if (candidate) {
           try {
             await candidate.stop();
@@ -402,7 +408,7 @@ export async function runSupervisor(entry, options = {}) {
       }
       return;
     }
-    if (failure) { if (hasId(message)) output(errorMessage(message.id, `${failure}${canRecover() && recoveryAttempts < recoveryLimit ? "; native relay recovery is pending, this request was not sent" : ""}`, { operation: message.params?.name ?? message.method, deliveryState: "not_sent" })); return; }
+    if (failure) { if (hasId(message)) output(errorMessage(message.id, `${failure}${canRecover() && recoveryAttempts < recoveryLimit ? "; bridge worker recovery is pending, this request was not sent" : ""}`, { operation: message.params?.name ?? message.method, deliveryState: "not_sent" })); return; }
     if (switching || !active) {
       const bytes = queue.reduce((size, queued) => size + Buffer.byteLength(JSON.stringify(queued)), 0);
       if (queue.length >= MAX_QUEUE || bytes + Buffer.byteLength(JSON.stringify(message)) > MAX_FRAME_BYTES) { if (hasId(message)) output(errorMessage(message.id, "Reload request queue is full; no operation was dispatched", { code: "MCP_QUEUE_FULL", operation: message.params?.name ?? message.method, deliveryState: "not_sent" })); return; }

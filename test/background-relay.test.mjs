@@ -288,6 +288,9 @@ test("unready providers are blocked except explicitly unverified Antigravity aut
   const status = await deferred.call("status");
   assert.equal(status.workers.find(worker => worker.agent === "antigravity").ready, false);
   assert.equal(status.workers.find(worker => worker.agent === "antigravity").authenticated, null);
+  assert.equal(status.workers.find(worker => worker.agent === "antigravity").canAcceptWork, true);
+  assert.equal(status.workers.find(worker => worker.agent === "antigravity").readiness, "authentication-unverified");
+  assert.equal(status.workers.find(worker => worker.agent === "antigravity").diagnostic, null);
   deferred.runs[0].finish();
   assert.equal((await deferred.wait(created.requestId)).status, "completed");
 });

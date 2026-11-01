@@ -23,7 +23,7 @@ export function registerBackgroundTools(register, { env = process.env, call = ca
         requestId: args.requestId, readOnly: readOnly && method !== "read" });
     }
   });
-  tool("worker_status", "Inspect the independent background relay, CLI readiness and recent diagnostic reports. Desktop apps may be closed or frozen. Transport readiness is separate from each CLI's authentication/model readiness.", {}, true, "status");
+  tool("worker_status", "Inspect the independent background relay, CLI readiness and recent diagnostic reports. Desktop apps may be closed or frozen. Transport readiness is separate from each CLI's authentication/model readiness. authentication-unverified with canAcceptWork=true is informational: that CLI lacks an auth probe and may run authorized work. Do not call it an authentication failure; report actual job failures from their receipts.", {}, true, "status");
   tool("list_workers", "List independently identified CLI workers and this caller's background task receipts. These are separate from Desktop chats; never use a native chat ID as a worker destination.", {}, true, "list");
   tool("send_to_worker", "Queue explicitly authorized work to a separate background CLI worker in an explicitly selected, authorized project. This does not address, open or resume any Desktop chat. Generate requestId once and keep it for retries; an uncertain result must be inspected with read_worker_delivery, never resent under another ID. Use worker-relay tools for subsequent cross-agent delegation. Work continues independently when Desktop apps close or freeze.", {
     agent: z.enum(["codex", "claude", "antigravity"]).describe("The separate CLI agent that will perform this authorized task."),

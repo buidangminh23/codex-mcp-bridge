@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../src/install-paths.mjs";
 import { backgroundAdapters } from "../src/background-relay.mjs";
-import { BACKGROUND_AGENTS, configureRelay, readRelayConfiguration, relayFailure } from "../src/background-relay-config.mjs";
+import { BACKGROUND_AGENTS, canStartBackgroundWorker, configureRelay, readRelayConfiguration, relayFailure } from "../src/background-relay-config.mjs";
 import { configureBackgroundWorkerMcp } from "../src/background-relay-registration.mjs";
 import { installBackgroundRelay } from "./install-background-relay.mjs";
 import { diagnosticText, withBridgeDiagnostic } from "../src/recipient-preflight.mjs";
@@ -37,7 +37,8 @@ export async function setupBackgroundRelay({ env = process.env, platform = proce
   return { configured: mcp.configured === true && installed.configured === true, enabled: config.enabled,
     liveVerified: installed.liveVerified === true, transportReady: installed.ready === true,
     desktopRequired: false, opensApps: false, opensChats: false, notices,
-    workerReadiness: readiness.map(({ agent, available, authenticated, ready, version, code }) => ({ agent, available, authenticated, ready, version, code })),
+    workerReadiness: readiness.map(({ agent, available, authenticated, ready, version, code }) => ({ agent, available, authenticated, ready, version, code,
+      canAcceptWork: config.enabled && config.providers[agent].enabled && canStartBackgroundWorker(agent, { available, authenticated, ready, code }) })),
     permissions: { blocked: mcp.blocked === true, ...(mcp.code ? { code: mcp.code } : {}) },
     service: { configured: installed.configured, started: installed.started, activationPending: installed.activationPending, code: installed.code, version: installed.version } };
 }

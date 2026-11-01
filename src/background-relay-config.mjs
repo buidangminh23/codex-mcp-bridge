@@ -10,6 +10,11 @@ export const BACKGROUND_AGENTS = Object.freeze(["codex", "claude", "antigravity"
 export const BACKGROUND_TOOLS = Object.freeze(["worker_status", "list_workers", "send_to_worker", "read_worker_delivery"]);
 export const RELAY_UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
+export function canStartBackgroundWorker(agent, readiness) {
+  return readiness.available === true && readiness.authenticated !== false && (readiness.ready === true
+    || agent === "antigravity" && readiness.authenticated === null && /AUTH_UNVERIFIED$/.test(readiness.code ?? ""));
+}
+
 export function relayFailure(code, message, deliveryState = "not_sent", phase = "preflight") {
   return Object.assign(new Error(message), { code, phase, deliveryState, sent: deliveryState === "not_sent" ? false : deliveryState === "sent" ? true : null });
 }

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { bridgeDiagnostic } from "./recipient-preflight.mjs";
 import { createProjectScope, readRegularConfigFile } from "./project-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
-import { BACKGROUND_AGENTS, RELAY_UUID, privateRelayDirectory, relayFailure, writeRelayJson } from "./background-relay-config.mjs";
+import { BACKGROUND_AGENTS, RELAY_UUID, canStartBackgroundWorker, privateRelayDirectory, relayFailure, writeRelayJson } from "./background-relay-config.mjs";
 import { RELAY_FRAME_LIMIT, RELAY_REPLY_LIMIT, validRelayHello, relayChallenge, verifyRelayOperation, relayResponse } from "./background-relay-protocol.mjs";
 import { assertPrivateRelayFile, assertPrivateRelayFiles } from "./background-relay-storage.mjs";
 
@@ -98,14 +98,17 @@ export class BackgroundRelay {
     if (this.refreshing) return this.refreshing;
     this.refreshing = Promise.all(BACKGROUND_AGENTS.map(async agent => {
       const provider = this.config.providers[agent];
-      if (!provider.enabled) { this.health.set(agent, { agent, available: false, ready: false, authenticated: null, code: "WORKER_DISABLED", checkedAt: this.now() }); return; }
+      if (!provider.enabled) { this.health.set(agent, { agent, available: false, ready: false, canAcceptWork: false, readiness: "disabled", authenticated: null, code: "WORKER_DISABLED", checkedAt: this.now() }); return; }
       try {
         const result = await this.adapters[agent].inspect({ env: this.env, executable: provider.executable ?? undefined });
+        const canAcceptWork = canStartBackgroundWorker(agent, result);
         this.health.set(agent, { agent, available: result.available === true, ready: result.ready === true,
+          canAcceptWork, readiness: result.ready === true ? "ready" : canAcceptWork ? "authentication-unverified" : "blocked",
+          lastSuccessfulAt: this.health.get(agent)?.lastSuccessfulAt ?? null,
           authenticated: result.authenticated ?? null, version: result.version ?? null,
-          code: result.code ?? null, checkedAt: this.now(), diagnostic: result.ready !== true && result.reason ? bridgeDiagnostic(relayFailure(result.code ?? "WORKER_NOT_READY", result.reason), { component: `background-${agent}`, operation: "worker_status", readOnly: true }) : null });
+          code: result.code ?? null, checkedAt: this.now(), diagnostic: !canAcceptWork && result.reason ? bridgeDiagnostic(relayFailure(result.code ?? "WORKER_NOT_READY", result.reason), { component: `background-${agent}`, operation: "worker_status", readOnly: true }) : null });
       } catch (error) {
-        this.health.set(agent, { agent, available: false, ready: false, authenticated: null, code: error.code ?? "WORKER_INSPECTION_FAILED", checkedAt: this.now(),
+        this.health.set(agent, { agent, available: false, ready: false, canAcceptWork: false, readiness: "blocked", authenticated: null, code: error.code ?? "WORKER_INSPECTION_FAILED", checkedAt: this.now(),
           diagnostic: bridgeDiagnostic(error, { component: `background-${agent}`, operation: "worker_status", readOnly: true }) });
       }
     })).finally(() => { this.refreshing = null; });
@@ -219,8 +222,7 @@ export class BackgroundRelay {
       this.persist(job);
       const provider = this.config.providers[job.agent];
       const readiness = await this.adapters[job.agent].inspect({ env: this.env, executable: provider.executable ?? undefined });
-      const unverifiedAuth = job.agent === "antigravity" && readiness.authenticated === null && /AUTH_UNVERIFIED$/.test(readiness.code ?? "");
-      if (!readiness.available || readiness.authenticated === false || readiness.ready !== true && !unverifiedAuth) throw relayFailure(readiness.code ?? "WORKER_NOT_READY", readiness.reason ?? "The requested CLI worker is not ready");
+      if (!canStartBackgroundWorker(job.agent, readiness)) throw relayFailure(readiness.code ?? "WORKER_NOT_READY", readiness.reason ?? "The requested CLI worker is not ready");
       try { this.scope.recheck(job.binding); }
       catch (cause) { throw Object.assign(relayFailure("WORKER_PROJECT_REVOKED", "The worker project was revoked before dispatch"), { cause }); }
       const capability = { token: randomBytes(32).toString("base64url"), requestId: job.requestId, rootId: job.rootId, binding: job.binding, agent: job.agent };
@@ -252,7 +254,7 @@ export class BackgroundRelay {
       job.output = output.slice(0, 256 * 1024);
       job.outputTruncated = output.length > job.output.length;
       if (RELAY_UUID.test(result.sessionId ?? "")) job.sessionId = result.sessionId;
-      this.health.set(job.agent, { agent: job.agent, available: true, authenticated: true, ready: true, checkedAt: this.now(), evidence: "completed-background-job" });
+      this.health.set(job.agent, { agent: job.agent, available: true, authenticated: true, ready: true, canAcceptWork: true, readiness: "ready", lastSuccessfulAt: this.now(), checkedAt: this.now(), evidence: "completed-background-job" });
     } catch (error) {
       const rawState = error.deliveryState ?? (job.deliveryState === "not_sent" ? "not_sent" : "unknown");
       const state = rawState === "not-sent" ? "not_sent" : ["not_sent", "sent", "unknown"].includes(rawState) ? rawState : "unknown";

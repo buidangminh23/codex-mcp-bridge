@@ -89,6 +89,23 @@ test("foreign canonical-name collisions fail before either file changes", (t) =>
   }
 });
 
+test("an owned relay entry registered with another installed Node executable is kept", (t) => {
+  const f = fixture(t);
+  const other = path.join(f.directory, "other-node", process.platform === "win32" ? "node.exe" : "node");
+  fs.mkdirSync(path.dirname(other));
+  fs.writeFileSync(other, "");
+  f.write("mcp", { mcpServers: { "worker-relay": { command: other, args: [path.join(f.root, "src", "background-relay-mcp.mjs")] } } });
+  const before = fs.readFileSync(f.files.mcp, "utf8");
+  assert.equal(f.configure().configured, true);
+  assert.equal(fs.readFileSync(f.files.mcp, "utf8"), before);
+  assert.equal(f.configure({ check: true }).configured, true);
+  for (const command of [path.join(f.directory, "other-node", "bun.exe"), path.join(f.directory, "missing", "node.exe"), "node"]) {
+    if (command.endsWith("bun.exe")) fs.writeFileSync(command, "");
+    f.write("mcp", { mcpServers: { "worker-relay": { command, args: [path.join(f.root, "src", "background-relay-mcp.mjs")] } } });
+    assert.throws(() => f.configure(), { code: "WORKER_MCP_COLLISION" });
+  }
+});
+
 test("an existing relay entry with an embedded capability is preserved and rejected", (t) => {
   const f = fixture(t);
   f.configure();

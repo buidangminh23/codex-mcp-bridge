@@ -129,6 +129,42 @@ test("standalone jobs complete with absent native hosts and scrub native IPC env
   assert.equal(JSON.stringify(status).includes(run.relayMcp.env.AGENT_RELAY_TOKEN), false);
 });
 
+test("all background agents complete while a native host accepts connections without replying", async t => {
+  const sockets = new Set();
+  let connections = 0;
+  const host = net.createServer(socket => {
+    connections++;
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise((resolve, reject) => {
+    host.once("error", reject);
+    host.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => host.close(resolve));
+  });
+  const endpoint = `http://127.0.0.1:${host.address().port}`;
+  const probe = net.createConnection({ port: host.address().port, host: "127.0.0.1" });
+  probe.on("error", () => {});
+  t.after(() => probe.destroy());
+  await until(() => connections === 1);
+  const box = await fixture(t, { env: { CODEX_APP_SERVER_URL: endpoint, CLAUDE_BRIDGE_URL: endpoint,
+    CODEX_APP_TOOLS_PIPE_PATH: "unresponsive-native-host" } });
+  for (const agent of BACKGROUND_AGENTS) {
+    const request = await box.send({ agent });
+    assert.equal((await box.wait(request.requestId)).status, "completed");
+  }
+  assert.equal(connections, 1);
+  assert.equal(probe.destroyed, false);
+  for (const run of box.runs) {
+    assert.equal(run.env.CODEX_APP_SERVER_URL, undefined);
+    assert.equal(run.env.CLAUDE_BRIDGE_URL, undefined);
+    assert.equal(run.env.CODEX_APP_TOOLS_PIPE_PATH, undefined);
+  }
+});
+
 test("wrong master credentials and incomplete worker credentials fail closed", async (t) => {
   const box = await fixture(t);
   await assert.rejects(box.call("status", {}, { token: "wrong" }), { code: "WORKER_IDENTITY_INVALID", deliveryState: "not_sent" });
@@ -343,7 +379,7 @@ test("restart preserves uncertain work and resumes only receipts that were still
 test("malformed durable receipts fail visibly without replacing their evidence", async (t) => {
   const box = await fixture(t, { initialize: false });
   const file = path.join(box.config.paths.jobs, `${randomUUID()}.json`);
-  fs.writeFileSync(file, "malformed receipt");
+  fs.writeFileSync(file, "malformed receipt", { mode: 0o600 });
   await assert.rejects(box.relay.initialize(), { code: "WORKER_RECEIPT_INVALID" });
   assert.equal(fs.readFileSync(file, "utf8"), "malformed receipt");
 });

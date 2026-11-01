@@ -8,8 +8,9 @@ npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- 
 ```
 
 In Windows PowerShell use `npm.cmd`. npm fetches the latest updater into its
-cache with setup disabled there. The updater migrates an owned legacy service
-away from the global package directory when needed, waits for active work to
+cache with setup disabled there. The updater moves an owned legacy service to
+newer code using private relay storage as its working directory when needed,
+temporarily using the downloaded updater package. It waits for active work to
 drain, then installs its exact resolved version globally with the setup hook
 enabled. It verifies the global installation and managed settings. No second
 installation command is required. It does not open apps or chats or kill

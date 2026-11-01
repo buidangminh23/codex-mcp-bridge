@@ -18,9 +18,11 @@ No second installation or setup command is required.
 
 An older Windows background service can keep the global npm package directory
 locked as its working directory. Before replacing the package, the updater
-migrates only this package's owned legacy service to private relay storage when
-needed. It waits for active work to drain and the replacement transport to become
-ready, without killing processes or opening apps or chats. If that migration
+moves only this package's owned legacy service to newer code using private relay
+storage as its working directory when needed. The temporary runtime points to
+the downloaded updater package. It waits for active work to drain and the
+replacement transport to become ready, without killing processes or opening
+apps or chats. If that migration
 remains pending, `UPDATE_RELAY_PENDING` leaves jobs and receipts intact; rerun
 the same command after the active work finishes. Deliberately disabled services
 remain disabled and are not reported as ready.

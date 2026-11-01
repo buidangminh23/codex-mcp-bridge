@@ -50,6 +50,8 @@ export class AntigravityCliSession {
     this.env = { ...(options.env ?? process.env) };
     this.binary = resolveAntigravityCliBinary({ binary: options.binary, env: this.env });
     this.spawn = options.spawn ?? spawnProcess;
+    this.onEvent = options.onEvent;
+    this.onStderr = options.onStderr;
     this.requestedConversationId = options.conversationId ?? null;
     if (this.requestedConversationId !== null && !UUID.test(this.requestedConversationId)) throw new Error("Invalid Antigravity conversation ID");
     this.startupTimeoutMs = positive(options.startupTimeoutMs, 30000, "startupTimeoutMs");
@@ -102,7 +104,11 @@ export class AntigravityCliSession {
       this.child.stdin.on("error", () => this.fail(failure("Antigravity CLI input pipe failed", "STDIN_ERROR", this.pending ? "unknown" : this.deliveryState)));
       this.child.stdout.on("error", () => this.fail(failure("Antigravity CLI output pipe failed", "STDOUT_ERROR", this.pending ? "unknown" : this.deliveryState)));
       this.child.stderr.on("error", () => this.fail(failure("Antigravity CLI diagnostic pipe failed", "STDERR_ERROR", this.pending ? "unknown" : this.deliveryState)));
-      this.child.stderr.resume();
+      if (this.onStderr) this.child.stderr.on("data", (chunk) => {
+        try { this.onStderr(chunk); }
+        catch { this.fail(failure("Antigravity CLI diagnostic observer failed", "OBSERVER_ERROR", this.pending ? "unknown" : this.deliveryState)); }
+      });
+      else this.child.stderr.resume();
       this.child.stdout.on("data", (chunk) => this.consume(chunk));
       this.child.on("close", (code, signal) => {
         this.exited = true;
@@ -147,6 +153,7 @@ export class AntigravityCliSession {
       this.conversationId = event.conversation_id;
       this.permissionMode = event.init.permission_mode;
       this.status = "idle";
+      this.onEvent?.(structuredClone(event));
       clearTimeout(this.startTimer);
       this.startResolve(this.read());
       this.startResolve = null;
@@ -154,11 +161,15 @@ export class AntigravityCliSession {
       return;
     }
     if (!this.conversationId) throw new Error("Invalid Antigravity event");
-    if (event.event !== "result") return;
+    if (event.event !== "result") {
+      this.onEvent?.(structuredClone(event));
+      return;
+    }
     const result = event.result;
     if (!this.awaitingResult || !result || result.conversation_id !== this.conversationId
         || typeof result.status !== "string" || !/^[A-Z][A-Z_]{0,127}$/.test(result.status)
         || typeof result.response !== "string" || result.error !== undefined && typeof result.error !== "string") throw new Error("Invalid Antigravity event");
+    this.onEvent?.(structuredClone(event));
     this.lastResult = { conversation_id: result.conversation_id, status: result.status, response: result.response, ...(result.error === undefined ? {} : { error: result.error }) };
     this.awaitingResult = false;
     this.deliveryState = "completed";

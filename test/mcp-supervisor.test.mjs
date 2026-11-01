@@ -94,9 +94,10 @@ async function connect(t, fixture, extraEnv = {}) {
   const env = {
     ...process.env, CODEX_BRIDGE_RUNTIME_CACHE: path.join(fixture.root, "cache"), CODEX_BRIDGE_RELOAD_POLL_MS: "100",
     CODEX_BRIDGE_RELOAD_SETTLE_MS: "100", TEST_ENTRY: fixture.entry, TEST_LEDGER: fixture.ledger,
-    CODEX_HOME: path.join(fixture.root, ".codex"),
+    HOME: fixture.root, USERPROFILE: fixture.root, APPDATA: path.join(fixture.root, "Roaming"), LOCALAPPDATA: path.join(fixture.root, "Local"),
+    CODEX_HOME: path.join(fixture.root, ".codex"), XDG_CONFIG_HOME: path.join(fixture.root, ".config"), AGENT_RELAY_DIRECTORY: path.join(fixture.root, "background-relay"),
   };
-  delete env.CODEX_BRIDGE_DESKTOP_TASKS;
+  for (const name of ["CODEX_BRIDGE_DESKTOP_TASKS", "AGENT_RELAY_TOKEN", "AGENT_RELAY_WORKER_ID", "AGENT_RELAY_ENDPOINT", "AGENT_RELAY_REQUEST_ID"]) delete env[name];
   Object.assign(env, extraEnv);
   const transport = new StdioClientTransport({ command: fixture.node ?? process.execPath, args: [fixture.launcher], env, stderr: "pipe" });
   let stderr = "";

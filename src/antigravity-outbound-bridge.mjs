@@ -41,7 +41,7 @@ export function createAntigravityOutboundBridge({ resolveSender = resolveAntigra
     catch (error) {
       return withBridgeDiagnostic({ isError: true, content: [] }, error, { component: "agent-bridge", operation: name, requestId: args.requestId, readOnly: config.annotations?.readOnlyHint === true });
     }
-  }));
+  }), { env });
 
   function scope(expected, actual) {
     try {

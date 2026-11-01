@@ -27,7 +27,7 @@ async function fixture(t, outcomes = {}) {
     activate: async () => { lifecycle.activated++; },
     close: async () => {},
   };
-  const bridge = createAntigravityOutboundBridge({ targets, resolveSender: async () => structuredClone(current), deliveries: new AntigravityDeliveries(path.join(directory, "receipts")), rootPolicy: { assert() {} }, env: { CODEX_BRIDGE_WORKER: "1", CODEX_BRIDGE_STAGED: outcomes.staged ? "1" : "0" }, channel: { send() {}, on() {} } });
+  const bridge = createAntigravityOutboundBridge({ targets, resolveSender: async () => structuredClone(current), deliveries: new AntigravityDeliveries(path.join(directory, "receipts")), rootPolicy: { assert() {} }, env: { HOME: directory, USERPROFILE: directory, AGENT_RELAY_DIRECTORY: path.join(directory, "background-relay"), CODEX_BRIDGE_WORKER: "1", CODEX_BRIDGE_STAGED: outcomes.staged ? "1" : "0" }, channel: { send() {}, on() {} } });
   const client = new Client({ name: "test", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await bridge.server.connect(a);
@@ -56,6 +56,15 @@ test("outbound MCP advertises native tools and rejects missing caller before tar
     assert.equal((await f.call(name, args)).isError, true);
   }
   assert.deepEqual(f.calls, []);
+});
+
+test("background tools use the fixture environment instead of the live service configuration", async (t) => {
+  const f = await fixture(t);
+  const result = await f.client.callTool({ name: "worker_status", arguments: {} });
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.diagnostic.code, "WORKER_RELAY_NOT_CONFIGURED");
+  assert.deepEqual(f.calls, []);
+  assert.equal(fs.existsSync(path.join(f.directory, "background-relay")), false);
 });
 
 test("outbound delivery is idempotent, preserves authorship, and scopes receipt ownership", async (t) => {

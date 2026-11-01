@@ -18,7 +18,7 @@ import { bridgeDiagnostic, withBridgeDiagnostic, preflightFailure } from "./reci
 import { createReloadControl, exitWhenClientCloses } from "./reload-control.mjs";
 
 const { version } = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-const result = (value) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }] });
+const result = (value) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }], ...(value && typeof value === "object" && !Array.isArray(value) ? { structuredContent: value } : {}) });
 const targetSchema = { target: z.enum(["codex", "claude"]) };
 const taskSchema = { ...targetSchema, conversationId: z.string().uuid(), taskId: z.string().min(1).max(256).optional() };
 

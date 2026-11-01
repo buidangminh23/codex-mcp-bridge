@@ -27,7 +27,7 @@ const sessions = new Map();
 let startingSessions = 0;
 const caller = process.env.ANTIGRAVITY_BRIDGE_CALLER;
 const senderRelay = new NativeDesktopRelay({ socketPath: desktopTaskSocketPath(), accountSocketPath: accountRelaySocketPath() });
-const result = (value) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }] });
+const result = (value) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }], ...(value && typeof value === "object" && !Array.isArray(value) ? { structuredContent: value } : {}) });
 const schema = { requestId: z.string().uuid(), cwd: z.string().min(1), prompt: z.string().min(1).max(65536) };
 const reloadReason = () => startingSessions ? "Antigravity CLI sessions are still starting"
   : deliveries.active.size ? "Antigravity deliveries are still active"

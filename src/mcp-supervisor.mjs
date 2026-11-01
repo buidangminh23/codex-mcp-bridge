@@ -236,7 +236,8 @@ export async function runSupervisor(entry, options = {}) {
           ready = true;
         }
         if (message.result && ["codex_bridge_status", "claude_bridge_status", "native_relay_status", "antigravity_bridge_status", "agent_bridge_status"].includes(pending.tool)) {
-          message.result.structuredContent = { ...message.result.structuredContent, autoReload: diagnostics() };
+          const structured = message.result.structuredContent;
+          if (structured && typeof structured === "object" && !Array.isArray(structured)) message.result.structuredContent = { ...structured, autoReload: diagnostics() };
           message.result.content = [...(message.result.content ?? []), { type: "text", text: `automatic reload: ${diagnostics().state}\nsupervisor pid: ${process.pid}\nworker pid: ${worker.process.pid}\nreload count: ${reloads}\nrecovery count: ${recoveries}${reason ? `\nreload detail: ${reason}` : ""}` }];
         }
         output({ ...message, id: pending.id });

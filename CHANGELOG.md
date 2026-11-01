@@ -4,6 +4,21 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.3] - 2026-11-01
+
+### Fixed
+
+- `antigravity_bridge_status` and `agent_bridge_status` now return their full status (version, caller, Desktop sidecar availability, CLI and outbound routes) as structured content. Previously the supervisor attached only its `autoReload` block as structured content, so clients that render structured content showed the reload state and hid whether the Antigravity sidecar was reachable.
+- The supervisor no longer creates structured content for a status result that has none; it adds `autoReload` only to an existing structured object and always appends the reload summary to the text content.
+
+### Upgrade
+
+```sh
+npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
+```
+
+Reconnect the `antigravity-bridge` MCP server in each open client after updating; the running supervisor keeps its old code until it restarts.
+
 ## [1.26.2] - 2026-11-01
 
 ### Upgrade

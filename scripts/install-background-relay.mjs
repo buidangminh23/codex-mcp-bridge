@@ -12,6 +12,7 @@ import { isMainModule, stableNodeBin } from "../src/install-paths.mjs";
 import { readRegularConfigFile } from "../src/project-policy.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const RUNTIME_ENVIRONMENT_KEYS = ["HOME", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"];
 const TASK_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
 $relayRequest = [Console]::In.ReadToEnd() | ConvertFrom-Json
 try {
@@ -178,7 +179,7 @@ function taskXml({ command, args, user, enabled }) {
 
 function savedEnvironment(env, config) {
   const result = { AGENT_RELAY_DIRECTORY: config.paths.root, AGENT_RELAY_SERVICE_OWNER: RELAY_SERVICE_OWNER };
-  for (const name of ["HOME", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"]) {
+  for (const name of RUNTIME_ENVIRONMENT_KEYS) {
     if (typeof env[name] === "string" && env[name] && !/[\u0000-\u001f\u007f]/.test(env[name])) result[name] = env[name];
   }
   return result;
@@ -359,25 +360,33 @@ export async function installBackgroundRelay({ env = process.env, platform = pro
       return { status: result?.status ?? result?.exitCode ?? 0, stdout: String(result?.stdout ?? "") };
     };
     const runtimeFile = path.join(config.paths.root, "service-runtime.json");
-    const desiredRuntime = { schemaVersion: 1, owner: RELAY_SERVICE_OWNER, packageRoot: root, nodeExecutable: node, packageVersion,
-      environment: Object.fromEntries(Object.entries(savedEnvironment(env, config)).filter(([name]) => !name.startsWith("AGENT_RELAY_"))) };
-    const expectedRuntimeId = relayServiceRuntimeId(desiredRuntime);
     const readRuntime = () => {
       const raw = readRegularConfigFile(runtimeFile, { missing: true, maxBytes: 64 * 1024 });
       if (raw === null) return null;
       let value;
       try { value = JSON.parse(raw); } catch { throw installFailure("SERVICE_RUNTIME_INVALID"); }
       if (value?.schemaVersion !== 1 || value.owner !== RELAY_SERVICE_OWNER) throw installFailure("SERVICE_CONFIGURATION_CONFLICT");
+      if (value.environment !== undefined && (!value.environment || typeof value.environment !== "object" || Array.isArray(value.environment)
+          || Object.entries(value.environment).some(([name, entry]) => !RUNTIME_ENVIRONMENT_KEYS.includes(name)
+            || typeof entry !== "string" || !entry || /[\u0000-\u001f\u007f]/.test(entry)))) throw installFailure("SERVICE_RUNTIME_INVALID");
       return value;
     };
     const previousRuntime = readRuntime();
+    const installedEnv = check && previousRuntime ? {
+      ...Object.fromEntries(Object.entries(env).filter(([name]) => !RUNTIME_ENVIRONMENT_KEYS.includes(name))),
+      ...previousRuntime.environment,
+    } : env;
+    const desiredRuntime = { schemaVersion: 1, owner: RELAY_SERVICE_OWNER, packageRoot: root, nodeExecutable: node, packageVersion,
+      environment: check && previousRuntime ? previousRuntime.environment ?? {}
+        : Object.fromEntries(Object.entries(savedEnvironment(env, config)).filter(([name]) => !name.startsWith("AGENT_RELAY_"))) };
+    const expectedRuntimeId = relayServiceRuntimeId(desiredRuntime);
     const runtimeChanged = JSON.stringify(previousRuntime) !== JSON.stringify(desiredRuntime);
     const prepareRuntime = async () => {
       if (JSON.stringify(readRuntime()) !== JSON.stringify(previousRuntime)) throw installFailure("SERVICE_CONFIGURATION_CHANGED");
       if (runtimeChanged) writeRelayJson(runtimeFile, desiredRuntime);
       if (JSON.stringify(readRuntime()) !== JSON.stringify(desiredRuntime)) throw installFailure("SERVICE_READBACK_FAILED");
     };
-    const context = { env, config, root, node, service, label, invoke, mutate: !dryRun && !check, uid, nativeRun: run === execute, prepareRuntime };
+    const context = { env: installedEnv, config, root, node, service, label, invoke, mutate: !dryRun && !check, uid, nativeRun: run === execute, prepareRuntime };
     const installed = await ({ win32: installWindows, darwin: installMac, linux: installLinux })[platform](context);
     installed.configured = installed.configured && JSON.stringify(readRuntime()) === JSON.stringify(desiredRuntime);
     const result = { ...base, ...installed, dryRun, deliveryEnabled: installed.enabled, liveVerified: false,

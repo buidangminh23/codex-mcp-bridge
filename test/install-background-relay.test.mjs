@@ -159,6 +159,76 @@ test("dry-run and check do not register or start tasks", async (t) => {
   assert.deepEqual(f.calls.map(({ options }) => JSON.parse(options.input).action), ["query"]);
 });
 
+test("checks use the installed environment across startup backends without writing caller changes", async (t) => {
+  for (const platform of ["win32", "darwin", "linux"]) {
+    const f = fixture(t, platform);
+    const normalPath = process.env.PATH || path.dirname(process.execPath);
+    f.env.PATH = `${path.join(f.directory, "npm", "node_modules", ".bin")}${path.delimiter}${normalPath}`;
+    f.env.CODEX_HOME = path.join(f.directory, "custom-codex");
+    f.env.CLAUDE_CONFIG_DIR = path.join(f.directory, "custom-claude");
+    assert.equal((await f.install()).ready, true);
+    const snapshot = () => Object.fromEntries(fs.readdirSync(f.directory, { recursive: true }).sort()
+      .filter((name) => fs.lstatSync(path.join(f.directory, name)).isFile())
+      .map((name) => [name, fs.readFileSync(path.join(f.directory, name), "utf8")]));
+    const before = snapshot();
+    const callerEnv = { ...f.env, PATH: normalPath, HOME: path.join(f.directory, "caller-home"),
+      XDG_CONFIG_HOME: path.join(f.directory, "caller-config"), CODEX_HOME: path.join(f.directory, "caller-codex"),
+      CLAUDE_CONFIG_DIR: path.join(f.directory, "caller-claude") };
+    f.calls.length = 0;
+    const checked = await f.install({ check: true, env: callerEnv });
+    assert.equal(checked.configured, true, platform);
+    assert.equal(checked.liveVerified, true, platform);
+    assert.equal(checked.ready, true, platform);
+    assert.equal(checked.runtimeChanged, false, platform);
+    assert.equal(checked.activationPending, false, platform);
+    assert.deepEqual(snapshot(), before, platform);
+    assert.deepEqual(f.calls.map(({ args, options }) => platform === "win32" ? JSON.parse(options.input).action : args[platform === "linux" ? 1 : 0]),
+      platform === "win32" ? ["query"] : platform === "darwin" ? ["print-disabled", "print"] : ["show"]);
+    f.env.PATH = normalPath;
+    assert.equal((await f.install()).configured, true);
+    const saved = JSON.parse(fs.readFileSync(path.join(f.config.paths.root, "service-runtime.json"), "utf8"));
+    assert.equal(saved.environment.PATH, normalPath);
+    assert.equal(saved.environment.CODEX_HOME, f.env.CODEX_HOME);
+  }
+});
+
+test("checks reject malformed installed environments without changing saved state", async (t) => {
+  const f = fixture(t);
+  await f.install();
+  const file = path.join(f.config.paths.root, "service-runtime.json");
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  for (const environment of [null, [], "invalid", { UNMANAGED: SECRET }, { PATH: 7 }, { PATH: "" }, { PATH: "unsafe\npath" }]) {
+    const raw = JSON.stringify({ ...saved, environment });
+    fs.writeFileSync(file, raw);
+    f.calls.length = 0;
+    const result = await f.install({ check: true });
+    assert.equal(result.code, "SERVICE_RUNTIME_INVALID");
+    assert.equal(result.liveVerified, false);
+    assert.equal(f.calls.length, 0);
+    assert.equal(fs.readFileSync(file, "utf8"), raw);
+  }
+});
+
+test("installed-environment checks still detect changed runtime and startup ownership", async (t) => {
+  const f = fixture(t);
+  await f.install();
+  const file = path.join(f.config.paths.root, "service-runtime.json");
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  for (const changed of [{ packageRoot: path.join(f.directory, "other-package") },
+    { nodeExecutable: path.join(f.directory, "other-node") }, { packageVersion: "0.0.0" }]) {
+    const raw = JSON.stringify({ ...saved, ...changed });
+    fs.writeFileSync(file, raw);
+    const result = await f.install({ check: true });
+    assert.equal(result.configured, false);
+    assert.equal(result.liveVerified, false);
+    assert.equal(result.runtimeChanged, true);
+    assert.equal(fs.readFileSync(file, "utf8"), raw);
+  }
+  fs.writeFileSync(file, JSON.stringify(saved));
+  f.state.task.description = "foreign-owner";
+  assert.equal((await f.install({ check: true })).code, "SERVICE_CONFIGURATION_CONFLICT");
+});
+
 test("saved configuration and live transport readiness are reported separately", async (t) => {
   const f = fixture(t);
   const result = await f.install({ health: async () => { throw new Error(SECRET); } });

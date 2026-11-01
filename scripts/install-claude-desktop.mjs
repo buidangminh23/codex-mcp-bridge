@@ -168,7 +168,7 @@ cfg.mcpServers[entryName] = {
      */
     CODEX_BRIDGE_THREAD_POLICY: settled("CODEX_BRIDGE_THREAD_POLICY", "roots"),
     CODEX_BRIDGE_SANDBOX: fullAccess ? "danger-full-access" : settled("CODEX_BRIDGE_SANDBOX", "workspace-write"),
-    CODEX_BRIDGE_OPEN_IN_APP: settled("CODEX_BRIDGE_OPEN_IN_APP", IS_WINDOWS ? "1" : "0"),
+    CODEX_BRIDGE_OPEN_IN_APP: settled("CODEX_BRIDGE_OPEN_IN_APP", "0"),
     CODEX_BRIDGE_RELEASE_AFTER_TURN: settled("CODEX_BRIDGE_RELEASE_AFTER_TURN", IS_WINDOWS ? "1" : "0"),
     ...(desktopMode !== undefined ? { CODEX_BRIDGE_DESKTOP_TASKS: desktopMode } : {}),
     CODEX_BRIDGE_AUTOSTART: desktopEnabled ? "0" : settled("CODEX_BRIDGE_AUTOSTART", "1"),

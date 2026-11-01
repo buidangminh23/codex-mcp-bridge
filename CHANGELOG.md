@@ -6,6 +6,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Fixed
 
+- Normal Codex task creation and delivery no longer navigate or activate the Desktop window by default, including on Windows. Explicit `openInApp: true` or `CODEX_BRIDGE_OPEN_IN_APP=1` remains available. Fresh installs use the silent default and preserve existing explicit configuration.
+- The native relay refuses navigation to its internal executor, which has no user conversation history and must not be opened as a task.
 - Antigravity inbound MCP instructions now describe the existing outbound `agent-bridge` instead of incorrectly claiming that Antigravity cannot send to Codex or Claude. Status reports distinguish supported Desktop routes from unverified outbound readiness and retain the CLI and automatic-reply-forwarding limits.
 - An unreachable Antigravity sidecar now reports a connectivity problem without assuming the App is closed, and points callers to the sidecar diagnostics when the App is already running.
 

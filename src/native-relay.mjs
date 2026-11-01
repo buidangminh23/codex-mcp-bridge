@@ -254,6 +254,9 @@ export function validateDesktopOperation(operation, args) {
 
 export function nativeDesktopOperationParams({ executorThreadId, operation, arguments: args }) {
   validateDesktopOperation(operation, args);
+  if (operation === "navigate_to_codex_page" && args.threadId === executorThreadId) {
+    throw new NativeRelayError("The internal relay executor has no user conversation to open", "RELAY_BAD_REQUEST");
+  }
   return {
     arguments: args,
     callerSource: "codex",

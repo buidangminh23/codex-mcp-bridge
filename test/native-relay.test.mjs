@@ -144,6 +144,10 @@ describe("Desktop project task delivery", () => {
     assert.equal(result.ok, false);
     const invalid = await handleRelayRequest({ v: 1, operation: "list_projects", arguments: {}, targetThreadId: "other" }, options);
     assert.equal(invalid.ok, false);
+    const navigation = await handleRelayRequest({ v: 1, operation: "navigate_to_codex_page", arguments: { threadId: "relay-thread" } }, options);
+    assert.equal(navigation.ok, false);
+    assert.match(navigation.error.message, /internal relay executor/);
+    assert.throws(() => nativeDesktopOperationParams({ executorThreadId: "relay-thread", operation: "navigate_to_codex_page", arguments: { threadId: "relay-thread" } }), /internal relay executor/);
     assert.equal(count, 0);
   });
 

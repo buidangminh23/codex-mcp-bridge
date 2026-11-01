@@ -178,7 +178,7 @@ async function withDesktopReceiptBridge(dispatch, run) {
     await withBridge(() => { throw new Error("Desktop receipt operations must not reach an external app-server"); }, run, async (home) => {
       relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async (request) => ({ success: true, contentItems: [{ type: "inputText", text: JSON.stringify(await dispatch(request, home)) }] }) });
       await relay.start();
-      return { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: socketPath, CODEX_APP_SERVER_URL: "invalid-unused-legacy-endpoint" };
+      return { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: socketPath, CODEX_APP_SERVER_URL: "invalid-unused-legacy-endpoint", CODEX_BRIDGE_OPEN_IN_APP: "" };
     });
   } finally {
     relay?.stop();
@@ -244,9 +244,10 @@ describe("Desktop task MCP integration", () => {
       }
       throw new Error(`Unexpected operation ${operation}`);
     }, async ({ client, desktopFixture }) => {
-      const sent = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "original-task", prompt: "Original work", openInApp: false, timeoutSec: 10 } });
+      const sent = await client.callTool({ name: "send_to_codex_thread", arguments: { threadId: "original-task", prompt: "Original work", timeoutSec: 10 } });
       assert.equal(sent.isError, undefined, JSON.stringify(sent));
       assert.equal(sent.structuredContent.nextAction, "wait_codex_reply");
+      assert.equal(calls.includes("navigate_to_codex_page"), false);
       const sends = calls.filter((operation) => operation === "send_message_to_thread").length;
       changeAccount = () => desktopFixture.setAccount(CLAUDE_ACCOUNT_B);
       const polls = calls.filter((operation) => operation === "wait_threads").length;
@@ -906,24 +907,25 @@ describe("Desktop task MCP integration", () => {
     }
   });
 
-  it("creates, assigns, opens, and withholds an uncorroborated latest-message reply", async () => {
+  for (const openInApp of [undefined, true]) it(`creates a Desktop task ${openInApp ? "with explicit navigation" : "without implicit navigation"} and withholds an uncorroborated reply`, async () => {
     const calls = [];
     let relay;
     const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
     const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-task-${randomUUID()}` : path.join(socketRoot, "d.sock");
     try {
       await withBridge(() => { throw new Error("Native delivery must not call the external app-server"); }, async ({ client, home }) => {
-        const result = await client.callTool({ name: "delegate_to_codex", arguments: { cwd: home, prompt: "Task", name: "Visible task", openInApp: true } });
+        const result = await client.callTool({ name: "delegate_to_codex", arguments: { cwd: home, prompt: "Task", name: "Fixture task", ...(openInApp === undefined ? {} : { openInApp }) } });
         assert.equal(result.isError, undefined, JSON.stringify({ content: result.content, calls: calls.map(([operation]) => operation) }));
         assert.match(result.content[0].text, /projectId: project-id/);
-        assert.match(result.content[0].text, /opened in Codex Desktop while/);
+        if (openInApp) assert.match(result.content[0].text, /opened in Codex Desktop while/);
+        else assert.doesNotMatch(result.content[0].text, /opened in Codex Desktop/);
         assert.match(result.content[0].text, /response observation: unavailable/);
         assert.doesNotMatch(result.content[0].text, /COMPLETE/);
-        assert.deepEqual(calls.map(([op]) => op), ["list_projects", "list_projects", "create_thread", "read_thread", "read_thread", "read_thread", "navigate_to_codex_page", "wait_threads", "read_thread", "read_thread"]);
+        assert.deepEqual(calls.map(([op]) => op), ["list_projects", "list_projects", "create_thread", "read_thread", ...(openInApp ? ["read_thread", "read_thread", "navigate_to_codex_page"] : []), "wait_threads", "read_thread", "read_thread"]);
         const empty = await client.callTool({ name: "start_codex_thread", arguments: { cwd: home } });
         assert.equal(empty.isError, true);
         assert.match(empty.content[0].text, /No task was created/);
-        assert.equal(calls.length, 10);
+        assert.equal(calls.length, openInApp ? 10 : 7);
       }, async (home) => {
         relay = fixtureRelayServer({ home, socketPath, resolveExecutor: () => ({ threadId: "executor" }), dispatchDesktop: async ({ operation, arguments: args }) => {
           calls.push([operation, args]);
@@ -937,7 +939,7 @@ describe("Desktop task MCP integration", () => {
           return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
         } });
         await relay.start();
-        return { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: socketPath };
+        return { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_NATIVE_RELAY_SOCKET: socketPath, CODEX_BRIDGE_OPEN_IN_APP: "" };
       });
     } finally {
       relay?.stop();

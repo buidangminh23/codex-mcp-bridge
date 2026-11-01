@@ -52,9 +52,7 @@ const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
  */
 const DEFAULT_MODEL = process.env.CODEX_BRIDGE_MODEL || null;
 const DEFAULT_EFFORT = process.env.CODEX_BRIDGE_EFFORT || null;
-const DEFAULT_OPEN_IN_APP = process.env.CODEX_BRIDGE_OPEN_IN_APP
-  ? process.env.CODEX_BRIDGE_OPEN_IN_APP === "1"
-  : IS_WINDOWS;
+const DEFAULT_OPEN_IN_APP = process.env.CODEX_BRIDGE_OPEN_IN_APP === "1";
 const DEFAULT_RELEASE_AFTER_TURN = process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN
   ? process.env.CODEX_BRIDGE_RELEASE_AFTER_TURN === "1"
   : IS_WINDOWS;
@@ -550,7 +548,7 @@ registerTool(
       openInApp: z
         .boolean()
         .optional()
-        .describe("Show the task in Codex Desktop; native tasks open immediately while running"),
+        .describe("Explicitly show the task in Codex Desktop while it runs. Default is false unless CODEX_BRIDGE_OPEN_IN_APP=1; normal delivery does not navigate or focus a window."),
       releaseAfterTurn: z
         .boolean()
         .optional()
@@ -648,7 +646,7 @@ registerTool(
       openInApp: z
         .boolean()
         .optional()
-        .describe("Open the thread in Codex Desktop on Windows or macOS so a human can watch it live"),
+        .describe("Explicitly open the thread in Codex Desktop so a human can watch it live. Default is false unless CODEX_BRIDGE_OPEN_IN_APP=1; normal delivery does not navigate or focus a window."),
       releaseAfterTurn: z
         .boolean()
         .optional()

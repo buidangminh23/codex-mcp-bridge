@@ -669,6 +669,8 @@ For a repeatable failure, capture the app/OS/Node versions, the version reported
 
 ### Relay unavailable, stale pipe, or an active writer
 
+Normal task creation and delivery run without navigating or focusing Codex Desktop. Use `openInApp: true` only when the user wants to see the target task. `CODEX_BRIDGE_OPEN_IN_APP=1` explicitly enables automatic navigation; set it to `0` in older installations that still carry that setting. The internal relay executor is not a user conversation and cannot be opened through the bridge.
+
 **Symptoms:** `RELAY_UNAVAILABLE`, `connect ENOENT`, a missing native relay socket, or `thread ... already has an active writer`.
 
 Native Desktop handoffs require Codex Desktop to be installed, signed in and open on Windows/macOS. The app runs `codex-native-relay` while a regular task has its MCP servers loaded. Recovery never navigates to a task, launches a window, or activates Codex. The Desktop-owned supervisor restarts crashed native relay workers with bounded exponential backoff; pending requests fail without replay, and later requests use the recovered worker. Inherited native pipe hints are rediscovered through the original Desktop process ancestry when they become stale. Requests that never reached the relay wait up to 20 seconds, within their original deadline, for its transport to recover. `CODEX_BRIDGE_RELAY_WAKE=0` disables that wait; the retired `CODEX_BRIDGE_RELAY_KEEPER` flag cannot enable UI navigation.

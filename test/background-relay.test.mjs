@@ -438,6 +438,6 @@ test("client transport keeps failed connect and interrupted authentication unsen
   const dropping = net.createServer(socket => { socket.once("data", () => socket.destroy()); socket.on("error", () => {}); });
   await new Promise((resolve, reject) => { dropping.once("error", reject); dropping.listen(box.config.endpoint, resolve); });
   t.after(() => new Promise(resolve => dropping.close(resolve)));
-  await assert.rejects(callBackgroundRelay("send", { requestId: randomUUID() }, { connection }), { code: "WORKER_RELAY_INTERRUPTED", deliveryState: "not_sent", sent: false });
-  await assert.rejects(callBackgroundRelay("status", {}, { connection }), { code: "WORKER_RELAY_INTERRUPTED", deliveryState: "not_sent" });
+  await assert.rejects(callBackgroundRelay("send", { requestId: randomUUID() }, { connection, timeoutMs: 100 }), { code: "WORKER_RELAY_TIMEOUT", deliveryState: "not_sent", sent: false });
+  await assert.rejects(callBackgroundRelay("status", {}, { connection, timeoutMs: 100 }), { code: "WORKER_RELAY_TIMEOUT", deliveryState: "not_sent" });
 });

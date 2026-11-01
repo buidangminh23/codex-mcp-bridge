@@ -95,7 +95,8 @@ function workerInput({ executable, cwd, prompt, requestId, sessionId, env, relay
   childEnv.CLAUDE_CODE_STARTUP_FAILURE_RESULTS = "1";
   const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--session-id", sessionId,
     "--no-session-persistence", "--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: { "worker-relay": { command: relayMcp.command, args: relayMcp.args } } }),
-    "--permission-prompts", "none", "--no-chrome", "--allowedTools", TOOLS.map((name) => `mcp__worker-relay__${name}`).join(",")];
+    "--permission-prompts", "none", "--no-chrome", "--settings", JSON.stringify({ disableAllHooks: true }),
+    "--allowedTools", TOOLS.map((name) => `mcp__worker-relay__${name}`).join(",")];
   const frame = `${JSON.stringify({ type: "user", uuid: requestId, session_id: sessionId, message: { role: "user", content: prompt }, parent_tool_use_id: null, client_composed: true, priority: "later" })}\n`;
   if (Buffer.byteLength(frame) > FRAME_LIMIT) throw failure("CLAUDE_WORKER_INVALID_PROMPT", "The encoded worker prompt exceeds its size limit.", "preflight");
   return { binary, directory, childEnv, args, frame };

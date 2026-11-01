@@ -120,6 +120,7 @@ test("worker launches privately with ephemeral state and exact relay-only tool g
   assert.ok(args.includes("--no-session-persistence"));
   assert.ok(args.includes("--strict-mcp-config"));
   assert.ok(args.includes("--no-chrome"));
+  assert.deepEqual(JSON.parse(args[args.indexOf("--settings") + 1]), { disableAllHooks: true });
   assert.equal(args[args.indexOf("--permission-prompts") + 1], "none");
   assert.equal(args.some((arg) => ["--desktop", "--bg", "--resume", "--continue", "--bare", "--permission-mode", "--dangerously-skip-permissions"].includes(arg)), false);
   assert.equal(args.join(" ").includes(TOKEN), false);
@@ -129,6 +130,31 @@ test("worker launches privately with ephemeral state and exact relay-only tool g
   assert.deepEqual(JSON.parse(box.child.writes[0]), { type: "user", uuid: REQUEST, session_id: SESSION, message: { role: "user", content: box.settings.prompt }, parent_tool_use_id: null, client_composed: true, priority: "later" });
   box.child.result();
   assert.equal((await result).output, "completed");
+});
+
+test("hook suppression is process-local while authentication and permission files remain intact", async (t) => {
+  const box = fixture(t);
+  const configDirectory = path.join(box.cwd, "user-settings");
+  const projectDirectory = path.join(box.cwd, ".claude");
+  fs.mkdirSync(configDirectory);
+  fs.mkdirSync(projectDirectory);
+  const userSettings = JSON.stringify({ disableAllHooks: false, permissions: { deny: ["Bash(rm:*)"] }, hooks: { SessionStart: [{ hooks: [{ type: "command", command: "fixture-native-gui-hook" }] }] } });
+  const projectSettings = JSON.stringify({ disableAllHooks: false, permissions: { ask: ["Write"] } });
+  const credential = JSON.stringify({ fixtureCredential: TOKEN });
+  const files = [[path.join(configDirectory, "settings.json"), userSettings], [path.join(projectDirectory, "settings.json"), projectSettings], [path.join(configDirectory, ".credentials.json"), credential]];
+  for (const [file, content] of files) fs.writeFileSync(file, content);
+  box.settings.env.CLAUDE_CONFIG_DIR = configDirectory;
+  const pending = box.run();
+  await new Promise(setImmediate);
+  const { args, options } = box.launches[0];
+  assert.equal(options.env.CLAUDE_CONFIG_DIR, configDirectory);
+  assert.equal(args.filter(arg => arg === "--settings").length, 1);
+  assert.deepEqual(JSON.parse(args[args.indexOf("--settings") + 1]), { disableAllHooks: true });
+  assert.equal(args.includes("--setting-sources"), false);
+  assert.equal(args.includes("--bare"), false);
+  box.child.result();
+  await pending;
+  for (const [file, content] of files) assert.equal(fs.readFileSync(file, "utf8"), content);
 });
 
 test("init reports the session but only correlated replay proves acceptance", async (t) => {

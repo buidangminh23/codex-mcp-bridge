@@ -10,6 +10,7 @@ import path from "node:path";
 export async function runBackgroundDaemon({ env = process.env, exit = code => process.exit(code) } = {}) {
   const config = readRelayConfiguration({ env });
   if (!config.enabled) throw relayFailure("WORKER_RELAY_DISABLED", "The independent background relay is disabled");
+  const configuration = JSON.stringify(config);
   const root = fileURLToPath(new URL("..", import.meta.url));
   const revision = sourceRevision(root);
   const relay = new BackgroundRelay({ config, env, adapters: await backgroundAdapters() });
@@ -35,7 +36,7 @@ export async function runBackgroundDaemon({ env = process.env, exit = code => pr
   const poll = setInterval(() => {
     if (stopping) return;
     try {
-      if (requestedExit === null && (sourceRevision(root) !== revision || !readRelayConfiguration({ env }).enabled)) requestStop(75);
+      if (requestedExit === null && (sourceRevision(root) !== revision || JSON.stringify(readRelayConfiguration({ env })) !== configuration)) requestStop(75);
       if (!relay.accepting && requestedExit === null) requestedExit = 75;
       if (requestedExit !== null && relay.active.size === 0) void stop(requestedExit);
     } catch (error) {

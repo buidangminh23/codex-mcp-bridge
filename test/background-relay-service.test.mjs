@@ -21,7 +21,7 @@ function fixture(options = {}) {
   const settings = {
     root: process.cwd(),
     env: { HOME: "user-home", CODEX_HOME: "preserved-auth-home", AGENT_RELAY_TOKEN: SECRET,
-      AGENT_RELAY_WORKER_ID: "parent-worker", CODEX_APP_TOOLS_PIPE_PATH: "desktop-pipe", CODEX_THREAD_ID: "desktop-thread" },
+      AGENT_RELAY_WORKER_ID: "parent-worker", AGENT_RELAY_RUNTIME_ID: "stale-runtime", CODEX_APP_TOOLS_PIPE_PATH: "desktop-pipe", CODEX_THREAD_ID: "desktop-thread" },
     signal: controller.signal,
     readConfig: () => config,
     acquireLock: () => ({ acquired: true, release: () => { releases++; } }),
@@ -60,6 +60,8 @@ test("supervises only its daemon with hidden process settings and no Desktop ide
   assert.equal(call.settings.env.CODEX_HOME, "preserved-auth-home");
   assert.equal(call.settings.env.AGENT_RELAY_TOKEN, undefined);
   assert.equal(call.settings.env.AGENT_RELAY_WORKER_ID, undefined);
+  assert.match(call.settings.env.AGENT_RELAY_RUNTIME_ID, /^[a-f0-9]{64}$/);
+  assert.equal(call.settings.env.AGENT_RELAY_RUNTIME_ID, f.writes.find(({ value }) => value.status === "running").value.runtimeId);
   assert.equal(call.settings.env.CODEX_APP_TOOLS_PIPE_PATH, undefined);
   assert.equal(call.settings.env.CODEX_THREAD_ID, undefined);
   assert.equal(JSON.stringify(call.args).includes(SECRET), false);
@@ -82,6 +84,38 @@ test("handles spawn failures without replaying or retaining raw errors", async (
   await f.run();
   const diagnostic = f.writes.find(({ file }) => file.endsWith("last-service-error.json")).value;
   assert.equal(diagnostic.code, "DAEMON_START_FAILED");
+  assert.equal(JSON.stringify(f.writes).includes(SECRET), false);
+});
+
+test("retains only bounded technical fields from structured daemon stderr diagnostics", async () => {
+  const f = fixture({ onSpawn: (child) => {
+    const frame = JSON.stringify({ diagnostic: { schemaVersion: 1, component: "background-relay", operation: "startup",
+      code: "EACCES", causeCodes: ["WORKER_STORAGE_UNSAFE", SECRET, "EACCES"], phase: "storage", deliveryState: "not_sent",
+      sent: true, reason: SECRET, stack: SECRET, ids: { requestId: SECRET }, extra: SECRET } });
+    child.stderr.write(`\n${frame.slice(0, 47)}`);
+    child.stderr.write(`${frame.slice(47)}\n`);
+    child.stderr.write(JSON.stringify({ diagnostic: { schemaVersion: 1, component: "background-relay", code: SECRET } }));
+    child.emit("close", 1);
+  } });
+  await f.run();
+  const diagnostic = f.writes.find(({ file }) => file.endsWith("last-service-error.json")).value;
+  assert.equal(diagnostic.code, "DAEMON_EXITED");
+  assert.deepEqual(diagnostic.daemonDiagnostic, { schemaVersion: 1, component: "background-relay", code: "EACCES",
+    causeCodes: ["WORKER_STORAGE_UNSAFE"], operation: "startup", phase: "storage", deliveryState: "not_sent", sent: false });
+  assert.equal(JSON.stringify(f.writes).includes(SECRET), false);
+});
+
+test("bounds daemon stderr collection and discards unstructured or oversized content", async () => {
+  const f = fixture({ onSpawn: (child) => {
+    child.stderr.write(`\n${SECRET.repeat(8192)}\n`);
+    child.stderr.write(`${JSON.stringify({ diagnostic: { schemaVersion: 1, component: "background-relay", code: "EACCES" } })}\n`);
+    child.emit("close", 1);
+  } });
+  await f.run();
+  const diagnostic = f.writes.find(({ file }) => file.endsWith("last-service-error.json")).value;
+  assert.equal(diagnostic.code, "DAEMON_EXITED");
+  assert.equal(diagnostic.daemonDiagnostic, undefined);
+  assert.equal(diagnostic.daemonDiagnosticTruncated, true);
   assert.equal(JSON.stringify(f.writes).includes(SECRET), false);
 });
 

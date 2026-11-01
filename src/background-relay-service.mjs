@@ -14,6 +14,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE = fileURLToPath(import.meta.url);
 const sourceHash = () => createHash("sha256").update(fs.readFileSync(SOURCE)).digest("hex");
 const SOURCE_HASH = sourceHash();
+const DIAGNOSTIC_LIMIT = 64 * 1024;
 const MESSAGES = {
   SERVICE_CONFIG_INVALID: "The background relay configuration could not be loaded",
   SERVICE_STORAGE_UNSAFE: "Background relay service storage could not be verified",
@@ -28,6 +29,20 @@ const MESSAGES = {
 
 function serviceFailure(code) {
   return Object.assign(new Error(MESSAGES[code]), { code });
+}
+
+function daemonDiagnostic(line) {
+  if (Buffer.byteLength(line) > 8192) return null;
+  let value;
+  try { value = JSON.parse(line)?.diagnostic; } catch { return null; }
+  const validCode = (code) => typeof code === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(code);
+  if (value?.schemaVersion !== 1 || value.component !== "background-relay" || !validCode(value.code)) return null;
+  const deliveryState = ["not_sent", "sent", "unknown", "not_applicable"].includes(value.deliveryState) ? value.deliveryState : "unknown";
+  return { schemaVersion: 1, component: "background-relay", code: value.code,
+    causeCodes: Array.isArray(value.causeCodes) ? [...new Set(value.causeCodes.filter(validCode))].filter((code) => code !== value.code).slice(0, 8) : [],
+    operation: ["startup", "watch_update"].includes(value.operation) ? value.operation : "startup",
+    phase: ["startup", "preflight", "inspection", "configuration", "storage", "transport", "relay", "delivery"].includes(value.phase) ? value.phase : "startup",
+    deliveryState, sent: deliveryState === "not_sent" ? false : deliveryState === "sent" ? true : null };
 }
 
 function alive(pid) {
@@ -154,21 +169,41 @@ export async function runBackgroundRelayService({ env = process.env, platform = 
         state("reloading");
         return { status: "reload", moduleFile: path.join(runtime.packageRoot, "src", "background-relay-service.mjs") };
       }
-      const childEnv = { ...serviceEnvironment(env, config.paths.root), ...runtime.environment };
-      const started = now();
       const runtimeId = relayServiceRuntimeId(runtime);
+      const childEnv = { ...serviceEnvironment(env, config.paths.root), ...runtime.environment, AGENT_RELAY_RUNTIME_ID: runtimeId };
+      const started = now();
       state("starting", { consecutiveFailures: failures, runtimeId });
       const outcome = await new Promise((resolve) => {
         let child;
         let settled = false;
         let checking = false;
         let poll;
+        let diagnostic = null;
+        let stderr = "";
+        let stderrBytes = 0;
+        let stderrTruncated = false;
+        const captureDiagnostic = (chunk) => {
+          if (settled) return;
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          const remaining = DIAGNOSTIC_LIMIT - stderrBytes;
+          if (bytes.length > remaining) stderrTruncated = true;
+          if (remaining <= 0) return;
+          const bounded = bytes.subarray(0, remaining);
+          stderrBytes += bounded.length;
+          stderr += bounded.toString("utf8");
+          let newline;
+          while ((newline = stderr.indexOf("\n")) >= 0) {
+            diagnostic = daemonDiagnostic(stderr.slice(0, newline)) ?? diagnostic;
+            stderr = stderr.slice(newline + 1);
+          }
+        };
         const finish = (value) => {
           if (settled) return;
           settled = true;
           clearInterval(poll);
           signal?.removeEventListener("abort", stop);
-          resolve(value);
+          diagnostic = daemonDiagnostic(stderr) ?? diagnostic;
+          resolve({ ...value, ...(diagnostic ? { diagnostic } : {}), ...(stderrTruncated ? { stderrTruncated: true } : {}) });
         };
         const stop = () => { try { child?.kill("SIGTERM"); } catch {} };
         signal?.addEventListener("abort", stop, { once: true });
@@ -177,7 +212,7 @@ export async function runBackgroundRelayService({ env = process.env, platform = 
             cwd: root, env: childEnv, windowsHide: true, shell: false, stdio: ["ignore", "ignore", "pipe"],
           });
           child.stderr?.on("error", () => {});
-          child.stderr?.resume();
+          child.stderr?.on("data", captureDiagnostic);
           child.on("spawn", () => {
             if (signal?.aborted) return stop();
             try { state("running", { daemonPid: Number.isSafeInteger(child.pid) ? child.pid : null, consecutiveFailures: failures, runtimeId }); }
@@ -215,7 +250,9 @@ export async function runBackgroundRelayService({ env = process.env, platform = 
       failures = now() - started >= 60000 ? 1 : failures + 1;
       const delay = Math.min(30000, 500 * 2 ** Math.min(failures - 1, 10));
       const code = outcome.failure ?? "DAEMON_EXITED";
-      record(code, { daemonExitCode: outcome.code, consecutiveFailures: failures, restartDelayMs: delay });
+      record(code, { daemonExitCode: outcome.code, consecutiveFailures: failures, restartDelayMs: delay,
+        ...(outcome.diagnostic ? { daemonDiagnostic: outcome.diagnostic } : {}),
+        ...(outcome.stderrTruncated ? { daemonDiagnosticTruncated: true } : {}) });
       state("restarting", { code, consecutiveFailures: failures, restartDelayMs: delay });
       await sleep(delay, signal);
     }

@@ -289,6 +289,7 @@ export async function installBackgroundRelay({ env = process.env, platform = pro
     const runtimeFile = path.join(config.paths.root, "service-runtime.json");
     const desiredRuntime = { schemaVersion: 1, owner: RELAY_SERVICE_OWNER, packageRoot: root, nodeExecutable: node, packageVersion,
       environment: Object.fromEntries(Object.entries(savedEnvironment(env, config)).filter(([name]) => !name.startsWith("AGENT_RELAY_"))) };
+    const expectedRuntimeId = relayServiceRuntimeId(desiredRuntime);
     const readRuntime = () => {
       const raw = readRegularConfigFile(runtimeFile, { missing: true, maxBytes: 64 * 1024 });
       if (raw === null) return null;
@@ -323,9 +324,9 @@ export async function installBackgroundRelay({ env = process.env, platform = pro
             && Number.isSafeInteger(status.pid) && status.pid > 0 && serviceState?.owner === RELAY_SERVICE_OWNER
             && serviceState.status === "running" && serviceState.daemonPid === status.pid;
         if (owned && typeof status.version === "string" && /^[A-Za-z0-9.+_-]{1,96}$/.test(status.version)) result.version = status.version;
-        if (owned && (serviceState.runtimeId !== relayServiceRuntimeId(desiredRuntime) || status.version !== packageVersion)) result.activationPending = true;
-        if (owned && serviceState.runtimeId === relayServiceRuntimeId(desiredRuntime) && status.version === packageVersion) {
-          return { ...result, liveVerified: true, ready: status.accepting === true, pid: status.pid,
+        if (owned && (serviceState.runtimeId !== expectedRuntimeId || status.runtimeId !== expectedRuntimeId || status.version !== packageVersion)) result.activationPending = true;
+        if (owned && serviceState.runtimeId === expectedRuntimeId && status.runtimeId === expectedRuntimeId && status.version === packageVersion) {
+          return { ...result, activationPending: false, liveVerified: true, ready: status.accepting === true, pid: status.pid,
             version: typeof status.version === "string" && /^[A-Za-z0-9.+_-]{1,96}$/.test(status.version) ? status.version : null,
             ...(status.accepting === true ? {} : { code: "SERVICE_DRAINING", notice: "The relay is finishing existing work before accepting new jobs" }) };
         }

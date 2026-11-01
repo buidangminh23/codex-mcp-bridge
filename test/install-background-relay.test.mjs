@@ -29,6 +29,7 @@ function fixture(t, platform = "win32") {
     linux: { LoadState: "not-found", UnitFileState: "", ActiveState: "inactive", FragmentPath: "" } };
   const running = () => fs.writeFileSync(path.join(config.paths.root, "service-status.json"), JSON.stringify({ owner: RELAY_SERVICE_OWNER,
     status: "running", daemonPid: healthy.pid, runtimeId: relayServiceRuntimeId(JSON.parse(fs.readFileSync(path.join(config.paths.root, "service-runtime.json")))) }));
+  const status = () => ({ ...healthy, runtimeId: JSON.parse(fs.readFileSync(path.join(config.paths.root, "service-status.json"))).runtimeId });
   const run = async (command, args, options) => {
     calls.push({ command, args, options });
     if (platform === "win32") {
@@ -62,8 +63,9 @@ function fixture(t, platform = "win32") {
     if (args[1] === "start") { state.linux.ActiveState = "active"; running(); }
     return { status: 0, stdout: "" };
   };
-  const options = { env, platform, root, run, uid: 501, health: async () => { healthCalls++; return healthy; }, sleep: async () => {}, pollAttempts: 2 };
+  const options = { env, platform, root, run, uid: 501, health: async () => { healthCalls++; return status(); }, sleep: async () => {}, pollAttempts: 2 };
   return { directory, config, root, env, calls, state, options, healthCalls: () => healthCalls,
+    status,
     install: (extra = {}) => installBackgroundRelay({ ...options, ...extra }) };
 }
 
@@ -297,6 +299,20 @@ test("health must belong to the owned runtime and uses local configuration authe
   assert.notEqual(connection.token, SECRET);
 });
 
+test("health rejects a missing or stale daemon runtime identity despite matching supervisor metadata", async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.install()).liveVerified, true);
+  f.calls.length = 0;
+  for (const runtimeId of [undefined, "0".repeat(64)]) {
+    const result = await f.install({ check: true, health: async () => ({ ...f.status(), runtimeId }) });
+    assert.equal(result.liveVerified, false);
+    assert.equal(result.ready, false);
+    assert.equal(result.activationPending, true);
+    assert.equal(result.code, "SERVICE_UPDATE_PENDING");
+  }
+  assert.ok(f.calls.every(({ options }) => JSON.parse(options.input).action === "query"));
+});
+
 test("same-path package updates remain pending until the owned daemon reports the new version", async (t) => {
   const f = fixture(t);
   await f.install();
@@ -318,8 +334,9 @@ test("same-path package updates remain pending until the owned daemon reports th
   const oldProcess = await f.install({ check: true });
   assert.equal(oldProcess.liveVerified, false);
   assert.equal(oldProcess.code, "SERVICE_UPDATE_PENDING");
-  const current = await f.install({ check: true, health: async () => ({ ...healthy, version: nextVersion }) });
+  const current = await f.install({ check: true, health: async () => ({ ...f.status(), version: nextVersion }) });
   assert.equal(current.liveVerified, true);
   assert.equal(current.ready, true);
+  assert.equal(current.activationPending, false);
   assert.equal(current.version, nextVersion);
 });

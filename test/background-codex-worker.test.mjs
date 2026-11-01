@@ -154,6 +154,7 @@ test("isolates native and plugin MCPs without changing auth or policy and sends 
   assert.ok(args.includes("mcp_servers.codex-native-relay.enabled=false"));
   assert.ok(args.includes("mcp_servers.disabled-server.enabled=false"));
   assert.ok(args.includes("mcp_servers.worker-relay.required=true"));
+  assert.ok(args.includes("mcp_servers.worker-relay.tool_timeout_sec=90"));
   assert.ok(args.includes('mcp_servers.worker-relay.enabled_tools=["worker_status","list_workers","send_to_worker","read_worker_delivery"]'));
   assert.deepEqual(args.slice(-8), ["exec", "--json", "--ephemeral", "--color", "never", "-C", process.cwd(), "-"]);
   assert.equal(args.some((arg) => /sandbox|approval|ignore-user-config|resume|thread-source/.test(arg)), false);

@@ -171,7 +171,7 @@ async function isolatedArgs(executable, settings, relayMcp) {
     required: true,
     enabled_tools: MCP_TOOLS,
     startup_timeout_sec: 30,
-    tool_timeout_sec: 60,
+    tool_timeout_sec: 90,
   };
   for (const [name, value] of Object.entries(config)) overrides.push("-c", `mcp_servers.worker-relay.${name}=${JSON.stringify(value)}`);
   const args = [...ISOLATION_FLAGS, ...overrides];

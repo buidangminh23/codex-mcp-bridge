@@ -99,8 +99,9 @@ function assertEntry(entry, worker, root, { caller } = {}) {
   const expected = worker === "index.mjs" || worker === "claude-bridge.mjs" || worker === "native-relay-companion.mjs"
     ? [path.join(root, "src", "mcp-supervisor.mjs"), worker] : [path.join(root, "src", worker)];
   if (JSON.stringify(args) !== JSON.stringify(expected)) throw new Error("MCP entry points to a different installation or unsupported launcher");
-  if (entry.enabled === false || entry.disabled === true) throw new Error("MCP entry is disabled; the saved choice was preserved");
   if (caller && entry.env?.ANTIGRAVITY_BRIDGE_CALLER !== caller) throw new Error("Antigravity caller registration is missing or conflicting");
+  if (entry.enabled === false || entry.disabled === true) return { deliveryEnabled: false,
+    notices: ["This MCP registration is intentionally disabled. Its saved choice was preserved; delivery through this connector is disabled."] };
 }
 
 export function checkSetup({ env = process.env, platform = process.platform, root = ROOT, run = execute, resolve = resolveCodexBin } = {}) {
@@ -119,8 +120,9 @@ export function checkSetup({ env = process.env, platform = process.platform, roo
       const item = inventory?.find((server) => server.name === name);
       if (!item) throw new Error("MCP registration is missing");
       const entry = JSON.parse(run(codex, ["mcp", "get", name, "--json"], setupEnvironment(env, paths, codex), 30000));
-      assertEntry({ ...entry.transport, enabled: entry.enabled }, worker, root, name === "antigravity-bridge" ? { caller: "codex" } : {});
+      const details = assertEntry({ ...entry.transport, enabled: entry.enabled }, worker, root, name === "antigravity-bridge" ? { caller: "codex" } : {});
       if (name === "codex-native-relay" && !entry.transport.env_vars?.includes("CODEX_APP_TOOLS_PIPE_PATH")) throw new Error("Native pipe forwarding is missing");
+      return details;
     }, components);
   }
   for (const [label, file, name, worker, caller] of [
@@ -130,21 +132,26 @@ export function checkSetup({ env = process.env, platform = process.platform, roo
     ["Antigravity / agent-bridge", path.join(paths.gemini, "mcp_config.json"), "agent-bridge", "antigravity-outbound-bridge.mjs"],
   ]) configurationCheck(label, () => {
     const entry = readJson(file)?.mcpServers?.[name];
-    assertEntry(entry, worker, root, { caller });
+    const details = assertEntry(entry, worker, root, { caller });
     if (worker === "index.mjs" && entry.env?.CODEX_BRIDGE_OPEN_IN_APP === "1") {
       throw new Error("Managed bridge settings still allow opening Codex Desktop. Run codex-bridge-setup to apply the current silent configuration.");
     }
     if (name === "codex-bridge-desktop" && entry.env?.CODEX_BRIDGE_DESKTOP_TASKS === "1") {
-      return { nativeCodeOnly: true, sharedChatDelivery: "unsupported",
-        notices: ["The saved native Code-only policy was preserved. Ordinary Claude Desktop Chat cannot deliver through this connector; native delivery uses the registered Claude Desktop Code connector and remains unverified by setup."] };
+      return { ...details, nativeCodeOnly: true, sharedChatDelivery: "unsupported",
+        notices: [...(details?.notices ?? []), "The saved native Code-only policy was preserved. Ordinary Claude Desktop Chat cannot deliver through this connector; native delivery uses the registered Claude Desktop Code connector and remains unverified by setup."] };
     }
+    return details;
   }, components);
   configurationCheck("Claude Desktop / background preference", () => {
     if (readJson(paths.desktop)?.preferences?.menuBarEnabled !== true) throw new Error("The managed Claude background preference is not enabled. Run codex-bridge-setup to apply it; live activation is verified separately.");
   }, components);
   configurationCheck("Antigravity / codex-bridge sidecar", () => {
-    assertEntry(readJson(path.join(paths.gemini, "sidecars", "codex-bridge", "sidecar.json")), "antigravity-sidecar.mjs", root);
-    if (readJson(path.join(paths.gemini, "config.json"))?.sidecars?.["codex-bridge"]?.enabled !== true) throw new Error("Antigravity sidecar is not enabled");
+    const details = assertEntry(readJson(path.join(paths.gemini, "sidecars", "codex-bridge", "sidecar.json")), "antigravity-sidecar.mjs", root);
+    const enabled = readJson(path.join(paths.gemini, "config.json"))?.sidecars?.["codex-bridge"]?.enabled;
+    if (typeof enabled !== "boolean") throw new Error("Antigravity sidecar enabled setting is missing or invalid");
+    if (!enabled) return { deliveryEnabled: false,
+      notices: [...(details?.notices ?? []), "The Antigravity bridge sidecar is intentionally disabled. Its saved choice was preserved; native Desktop delivery through this sidecar is disabled."] };
+    return details;
   }, components);
   if (native) configurationCheck("Native relay executor", () => {
     const relay = readJson(path.join(paths.codex, "native-relay.json"));

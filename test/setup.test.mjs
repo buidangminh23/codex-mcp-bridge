@@ -161,7 +161,7 @@ test("a failed Claude registration cannot be reported as successful or overwritt
   assert.ok(!setup.calls.some((call) => /install-(claude-desktop|antigravity-bridge)/.test(call.args[0])));
 });
 
-test("read-only verification detects missing bootstrap and disabled servers", (t) => {
+test("read-only verification distinguishes missing bootstrap from a disabled registration", (t) => {
   const setup = fixture(t);
   runSetup({ ...setup, args: ["--no-download"], platform: "win32", root });
   setup.write(path.join(setup.paths.codex, "native-relay.json"), {});
@@ -170,8 +170,73 @@ test("read-only verification detects missing bootstrap and disabled servers", (t
   const result = checkSetup({ ...setup, platform: "win32", root });
   assert.equal(result.configured, false);
   assert.ok(result.components.some((item) => /executor/.test(item.name) && item.status === "incomplete"));
-  assert.ok(result.components.some((item) => /disabled/.test(item.detail ?? "")));
+  const disabled = result.components.find((item) => item.name === "Codex / claude-bridge");
+  assert.equal(disabled.status, "configured");
+  assert.equal(disabled.deliveryEnabled, false);
+  assert.ok(disabled.notices.some((notice) => /intentionally disabled/.test(notice)));
   assert.ok(setup.calls.every((call) => call.args[0] === "mcp" && ["list", "get"].includes(call.args[1])));
+});
+
+test("global updates preserve disabled delivery choices as configured restrictions instead of installation failures", (t) => {
+  const setup = fixture(t);
+  const run = (command, args, env) => {
+    const output = setup.run(command, args, env);
+    if (path.basename(args[0]) === "install-antigravity-bridge.mjs") {
+      setup.inventory.get("claude-bridge").enabled = false;
+      const code = JSON.parse(fs.readFileSync(setup.paths.code, "utf8"));
+      code.mcpServers["codex-bridge"].disabled = true;
+      setup.write(setup.paths.code, code);
+      const desktop = JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8"));
+      desktop.mcpServers["codex-bridge-desktop"].disabled = true;
+      desktop.mcpServers["codex-bridge-desktop"].env = { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_AUTOSTART: "0" };
+      setup.write(setup.paths.desktop, desktop);
+      setup.write(path.join(setup.paths.gemini, "config.json"), { sidecars: { "codex-bridge": { enabled: false } } });
+    }
+    return output;
+  };
+  const result = runSetup({ ...setup, run, args: ["--postinstall", "--no-download"], platform: "win32", root });
+  assert.equal(result.configured, true);
+  assert.equal(result.liveVerified, false);
+  for (const name of ["Codex / claude-bridge", "Claude Code / codex-bridge", "Claude Desktop / codex-bridge-desktop", "Antigravity / codex-bridge sidecar"]) {
+    const component = result.verification.find((item) => item.name === name);
+    assert.equal(component.status, "configured");
+    assert.equal(component.deliveryEnabled, false);
+    assert.ok(component.notices.some((notice) => /intentionally disabled/.test(notice)));
+  }
+  const desktop = result.verification.find((item) => item.name === "Claude Desktop / codex-bridge-desktop");
+  assert.equal(desktop.nativeCodeOnly, true);
+  assert.equal(desktop.sharedChatDelivery, "unsupported");
+  const output = [];
+  printSetup(result, { output: (line) => output.push(line) });
+  assert.equal(output.filter((line) => /intentionally disabled/.test(line)).length, 4);
+  assert.equal(setup.inventory.get("claude-bridge").enabled, false);
+  assert.equal(JSON.parse(fs.readFileSync(setup.paths.code, "utf8")).mcpServers["codex-bridge"].disabled, true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(setup.paths.gemini, "config.json"), "utf8")).sidecars["codex-bridge"].enabled, false);
+});
+
+test("disabled registrations still require valid commands, workers, caller identities and native pipe forwarding", (t) => {
+  const setup = fixture(t);
+  runSetup({ ...setup, args: ["--no-download"], platform: "win32", root });
+  const relay = setup.inventory.get("codex-native-relay");
+  relay.enabled = false;
+  relay.transport.env_vars = [];
+  const antigravity = setup.inventory.get("antigravity-bridge");
+  antigravity.enabled = false;
+  antigravity.transport.env.ANTIGRAVITY_BRIDGE_CALLER = "claude";
+  const code = JSON.parse(fs.readFileSync(setup.paths.code, "utf8"));
+  code.mcpServers["codex-bridge"].disabled = true;
+  code.mcpServers["codex-bridge"].args = ["custom.mjs"];
+  setup.write(setup.paths.code, code);
+  const desktop = JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8"));
+  desktop.mcpServers["codex-bridge-desktop"].disabled = true;
+  desktop.mcpServers["codex-bridge-desktop"].command = path.join(setup.home, "missing-node.exe");
+  setup.write(setup.paths.desktop, desktop);
+  setup.write(path.join(setup.paths.gemini, "config.json"), { sidecars: { "codex-bridge": { enabled: "false" } } });
+  const result = checkSetup({ ...setup, platform: "win32", root });
+  assert.equal(result.configured, false);
+  for (const pattern of [/Native pipe forwarding/, /caller registration/, /unsupported launcher/, /command is missing/, /enabled setting is missing or invalid/]) {
+    assert.ok(result.components.some((item) => item.status === "incomplete" && pattern.test(item.detail)), String(pattern));
+  }
 });
 
 test("verification distinguishes native-only shared registration from unsupported Desktop Chat delivery", (t) => {

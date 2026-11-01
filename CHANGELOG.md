@@ -4,6 +4,22 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.2] - 2026-11-01
+
+### Upgrade
+
+Update the package and all managed client and background-service settings together:
+
+```sh
+npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+```
+
+Use `npm.cmd` in Windows PowerShell. Setup does not open apps or chats.
+
+### Fixed
+
+- Run the background service and daemon from private relay storage instead of the npm installation directory. Windows no longer locks the installed package as a running process's working directory, allowing package replacement during updates. Worker jobs continue using their explicitly authorized project directories.
+
 ## [1.26.1] - 2026-11-01
 
 ### Upgrade

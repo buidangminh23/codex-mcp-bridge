@@ -384,16 +384,16 @@ test("private IPC serves independently while callers disconnect and native endpo
   await box.wait(secondId);
   assert.equal((await callBackgroundRelay("read", { requestId: secondId }, { connection })).status, "completed");
   assert.equal(nativeConnections, 0);
-  await assert.rejects(callBackgroundRelay("status", {}, { connection: { ...connection, token: "incorrect" } }), (error) => error.code === "WORKER_IDENTITY_INVALID" && error.diagnostic?.code === "WORKER_IDENTITY_INVALID");
+  await assert.rejects(callBackgroundRelay("status", {}, { connection: { ...connection, token: "incorrect" } }), { code: "WORKER_RELAY_AUTH_FAILED", deliveryState: "not_sent" });
 });
 
-test("client transport distinguishes failed connect from a lost post-send receipt", async (t) => {
+test("client transport keeps failed connect and interrupted authentication unsent", async (t) => {
   const box = await fixture(t);
   const connection = { endpoint: box.config.endpoint, token: box.config.token, workerId: null };
   await assert.rejects(callBackgroundRelay("send", {}, { connection, connect() { throw new Error("unavailable"); } }), { code: "WORKER_RELAY_UNAVAILABLE", deliveryState: "not_sent" });
   const dropping = net.createServer(socket => { socket.once("data", () => socket.destroy()); socket.on("error", () => {}); });
   await new Promise((resolve, reject) => { dropping.once("error", reject); dropping.listen(box.config.endpoint, resolve); });
   t.after(() => new Promise(resolve => dropping.close(resolve)));
-  await assert.rejects(callBackgroundRelay("send", { requestId: randomUUID() }, { connection }), { code: "WORKER_RELAY_INTERRUPTED", deliveryState: "unknown", sent: null });
+  await assert.rejects(callBackgroundRelay("send", { requestId: randomUUID() }, { connection }), { code: "WORKER_RELAY_INTERRUPTED", deliveryState: "not_sent", sent: false });
   await assert.rejects(callBackgroundRelay("status", {}, { connection }), { code: "WORKER_RELAY_INTERRUPTED", deliveryState: "not_sent" });
 });

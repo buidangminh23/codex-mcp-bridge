@@ -690,6 +690,8 @@ Use native session discovery and peer delivery from the Codex task:
 
 If no eligible session appears, open the intended Claude **Code** task in the same project and check sign-in, data-root selection and sender status. A new ordinary Chat window or unrelated CLI session does not establish that native recipient. [1.25.0](CHANGELOG.md#1250---2026-10-30) clarifies the tool instructions to use this route; it cannot guarantee every model follows them. External Computer Use typing/clicking is not a delivery fallback for an already-open session.
 
+Antigravity's `list_agent_tasks` also reports verified dormant Claude tasks with `status: "dormant"` and `recoverable: true`. Sending to the returned session and native task IDs reopens that exact task and waits for its native session to reconnect before delivering. Read-only discovery never opens the application. Archived tasks, changed accounts, mismatched directories and uncertain sends remain blocked; a recovery timeout does not mean a message was sent.
+
 `PEER_REPLY_PENDING` protects an earlier unresolved message. A `held` receipt, `CLAUDE_RECIPIENT_INBOUND_POLICY`, or `CLAUDE_RECIPIENT_CLASS_MISMATCH` identifies an actual recipient policy/permission boundary. Inspect the original receipt and task; resolve the stated policy through the user's intended host settings. Installing a newer bridge does not authorize changing permissions. An `interrupted` bridge-status notification ends observation only: it is not Claude's answer, does not cancel background work, and does not make retrying the original action safe.
 
 ### Normal startup output labelled as an error

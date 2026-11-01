@@ -3,10 +3,11 @@ import path from "node:path";
 import { NativeDesktopRelay, desktopTaskSocketPath, accountRelaySocketPath } from "./native-relay.mjs";
 import { readBridgeAccounts, requireBridgeAccounts, assertAccountIdentity } from "./bridge-account-context.mjs";
 import { PeerEndpoint, listClaudeSessions, assertClaudeSessionProcess } from "./peer-protocol.mjs";
-import { readClaudeDesktopContext } from "./claude-desktop-context.mjs";
+import { readClaudeDesktopContext, readClaudeDesktopTasks } from "./claude-desktop-context.mjs";
 import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
 import { assertRecipientClass } from "./recipient-preflight.mjs";
-import { sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
+import { recoverClaudeDesktopSession, sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
+import { openClaudeCodeComposer } from "./platform.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
 
@@ -42,6 +43,8 @@ export function createAntigravityOutboundTargets(options = {}) {
   const readAccounts = options.readAccounts ?? readBridgeAccounts;
   const assertAccounts = options.assertAccounts ?? ((identity) => assertAccountIdentity(identity, readAccounts()));
   const listSessions = options.listSessions ?? listClaudeSessions;
+  const listTasks = options.listTasks ?? ((account) => readClaudeDesktopTasks({ account }));
+  const openTask = options.openTask ?? ((taskId) => openClaudeCodeComposer(`claude://code/continue?session=${encodeURIComponent(taskId)}`));
   const readContext = options.readContext ?? ((session, account) => readClaudeDesktopContext(session, { account }));
   const readInbound = options.readInbound ?? readClaudeInboundPolicy;
   const assertProcess = options.assertProcess ?? assertClaudeSessionProcess;
@@ -122,6 +125,31 @@ export function createAntigravityOutboundTargets(options = {}) {
     return { ...session, desktop, inbound: readInbound(session.cwd) };
   }
 
+  function savedClaudeTask(context, tasks, sessionId, taskId) {
+    if (!Array.isArray(tasks) || tasks.length > 8192) throw blocked("Saved Claude Desktop tasks cannot be verified");
+    const matches = tasks.filter((task) => task.taskId === taskId);
+    const task = matches[0];
+    if (matches.length !== 1 || typeof taskId !== "string" || !taskId.startsWith("local_") || !UUID.test(taskId.slice(6)) || task.fileTaskId !== taskId || task.isArchived !== false
+        || !UUID.test(sessionId ?? "") || task.cliSessionId !== sessionId || !sameDirectory(captureDirectory(task.cwd).path, context.cwd)
+        || typeof task.title !== "string" || !task.title.trim() || task.title.length > 1024 || /[\u0000-\u001f\u007f]/u.test(task.title)) throw blocked("Exact saved Claude Desktop task and session identity cannot be verified");
+    return { target: "claude", sessionId, taskId, cwd: context.cwd, title: task.title, status: "dormant", recoverable: true };
+  }
+
+  async function recoverClaudeRecipient(context, sessionId, taskId) {
+    if (listSessions().some((session) => session.sessionId === sessionId && session.alive)) return claudeRecipient(context, sessionId, taskId);
+    savedClaudeTask(context, await listTasks(context.accounts.claude), sessionId, taskId);
+    await context.check();
+    const resolved = await recoverClaudeDesktopSession({
+      target: "auto", expectedCwd: context.cwd, expectedTaskId: taskId, sessions: listSessions(), account: context.accounts.claude, readContext,
+    }, {
+      listTasks: () => listTasks(context.accounts.claude), listSessions, open: openTask, beforeOpen: context.check,
+      timeoutMs: options.recoveryTimeoutMs ?? 15000,
+    });
+    await context.check();
+    if (!resolved.session) throw Object.assign(blocked(resolved.recovery.reason), { code: "CLAUDE_SESSION_NOT_READY", recovery: resolved.recovery });
+    return claudeRecipient(context, resolved.session.sessionId, taskId);
+  }
+
   async function list({ target, sender, beforeSend } = {}) {
     const context = operation(sender, beforeSend);
     await context.check();
@@ -148,8 +176,14 @@ export function createAntigravityOutboundTargets(options = {}) {
       try {
         const desktop = readContext(session, context.accounts.claude);
         const verified = claudeRecipient(context, session.sessionId, desktop?.taskId);
-        rows.push({ target: "claude", sessionId: verified.sessionId, taskId: verified.desktop.taskId, cwd: context.cwd, title: verified.desktop.title ?? null, permissionClass: verified.desktop.permissionClass ?? null, inboundPolicy: verified.inbound?.value ?? null });
+        rows.push({ target: "claude", sessionId: verified.sessionId, taskId: verified.desktop.taskId, cwd: context.cwd, title: verified.desktop.title ?? null, permissionClass: verified.desktop.permissionClass ?? null, inboundPolicy: verified.inbound?.value ?? null, status: "ready" });
       } catch {}
+    }
+    const tasks = await listTasks(context.accounts.claude);
+    if (!Array.isArray(tasks) || tasks.length > 8192) throw blocked("Saved Claude Desktop tasks cannot be verified");
+    for (const task of tasks) {
+      if (rows.some((row) => row.taskId === task.taskId) || listSessions().some((session) => session.sessionId === task.cliSessionId && session.alive)) continue;
+      try { rows.push(savedClaudeTask(context, tasks, task.cliSessionId, task.taskId)); } catch {}
     }
     await context.check();
     return rows;
@@ -178,7 +212,7 @@ export function createAntigravityOutboundTargets(options = {}) {
       }
     }
     if (target !== "claude") throw blocked("Target must be codex or claude");
-    const recipient = claudeRecipient(context, sessionId, taskId);
+    const recipient = await recoverClaudeRecipient(context, sessionId, taskId);
     assertRecipientClass(recipient, context.identity);
     if (!peer) peer = peerFactory({ name: `antigravity-${process.pid}`, cwd: context.cwd, signalExit: false, env, protectSocket: protectCurrentUserPipe });
     await peer.start();
@@ -189,7 +223,7 @@ export function createAntigravityOutboundTargets(options = {}) {
         recipient: { permissionMode: recipient.desktop.permissionMode ?? null, permissionClass: recipient.desktop.permissionClass ?? null, inboundPolicy: recipient.inbound?.value ?? null },
         beforeSend: async () => {
           await context.check();
-          const current = claudeRecipient(context, sessionId, taskId);
+          const current = claudeRecipient(context, recipient.sessionId, taskId);
           if (!sameClaudeDesktopRecipient(recipient, current)) throw blocked("Claude session process or socket changed before delivery");
           assertRecipientClass(current, context.identity);
           await context.check();
@@ -198,7 +232,7 @@ export function createAntigravityOutboundTargets(options = {}) {
       msgId = outcome.msgId;
       receipts.set(msgId, { sender: context.identity, accountContext: context.accountContext, cwd: context.cwd });
       await context.check();
-      return { target, sessionId, taskId, cwd: context.cwd, msgId, status: outcome.delivery?.status ?? "sent_unconfirmed", completed: false, accountContext: context.accountContext };
+      return { target, sessionId: recipient.sessionId, taskId, cwd: context.cwd, msgId, status: outcome.delivery?.status ?? "sent_unconfirmed", completed: false, accountContext: context.accountContext };
     } catch (error) {
       if (error.msgId) receipts.set(error.msgId, { sender: context.identity, accountContext: context.accountContext, cwd: context.cwd });
       if (msgId) error.msgId = msgId;
@@ -221,6 +255,11 @@ export function createAntigravityOutboundTargets(options = {}) {
     }
     if (target !== undefined && target !== "claude") throw blocked("Target must be codex or claude");
     if (msgId === undefined) {
+      if (!listSessions().some((session) => session.sessionId === sessionId && session.alive)) {
+        const task = savedClaudeTask(context, await listTasks(context.accounts.claude), sessionId, taskId);
+        await context.check();
+        return task;
+      }
       const recipient = claudeRecipient(context, sessionId, taskId);
       await context.check();
       return { target: "claude", sessionId, taskId, cwd: context.cwd, title: recipient.desktop.title ?? null, permissionClass: recipient.desktop.permissionClass ?? null, inboundPolicy: recipient.inbound?.value ?? null };

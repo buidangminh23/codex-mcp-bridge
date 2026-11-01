@@ -42,6 +42,9 @@ function fixture(t) {
       if (state.accountChanged) throw new Error("Account changed");
     },
     listSessions: () => state.sessions,
+    listTasks: () => state.tasks ?? [],
+    openTask: async (taskId) => { state.opened = taskId; await state.onOpen?.(); },
+    recoveryTimeoutMs: 0,
     readContext: () => desktop,
     readInbound: () => inbound,
     assertProcess(candidate) { assert.equal(candidate.processStart, "fixture-start"); },
@@ -169,6 +172,81 @@ test("Claude uses Antigravity peer identity, native sender mode and no Codex rep
   assert.equal(call.options.transcriptSession.sessionId, f.session.sessionId);
   const read = await f.backend.read({ target: "claude", msgId: receipt.msgId, sender: f.sender });
   assert.equal(read.reply, "fixture reply");
+});
+
+function dormantTask(f) {
+  f.desktop.taskId = `local_${crypto.randomUUID()}`;
+  const task = { taskId: f.desktop.taskId, fileTaskId: f.desktop.taskId, cliSessionId: f.session.sessionId, cwd: f.cwd, title: "Saved Claude task", isArchived: false };
+  f.state.tasks = [task];
+  f.state.sessions = [];
+  return task;
+}
+
+test("dormant Claude discovery and reads do not start the app or send work", async (t) => {
+  const f = fixture(t);
+  dormantTask(f);
+  const rows = await f.backend.list({ target: "claude", sender: f.sender });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "dormant");
+  assert.equal(rows[0].recoverable, true);
+  const read = await f.backend.read({ target: "claude", sessionId: f.session.sessionId, taskId: f.desktop.taskId, sender: f.sender });
+  assert.equal(read.status, "dormant");
+  assert.equal(f.state.opened, undefined);
+  assert.equal(f.state.peerCalls.length, 0);
+});
+
+test("dormant Claude delivery reopens the exact native task and binds its new session", async (t) => {
+  const f = fixture(t);
+  const task = dormantTask(f);
+  const resumed = { ...f.session, sessionId: crypto.randomUUID(), pid: 902, socket: "resumed-socket" };
+  f.state.onOpen = () => { task.cliSessionId = resumed.sessionId; f.state.sessions = [resumed]; };
+  const receipt = await f.claudeSend();
+  assert.equal(f.state.opened, task.taskId);
+  assert.equal(receipt.sessionId, resumed.sessionId);
+  assert.equal(f.state.peerCalls.length, 1);
+  assert.equal(f.state.peerCalls[0].socket, resumed.socket);
+  assert.equal(f.state.peerCalls[0].options.transcriptSession.sessionId, resumed.sessionId);
+});
+
+test("dormant recovery rejects stale identity, archived, foreign and duplicate tasks before opening", async (t) => {
+  for (const mutate of [
+    (f, task) => { task.cliSessionId = crypto.randomUUID(); },
+    (f, task) => { task.isArchived = true; },
+    (f, task) => { task.cwd = f.other; },
+    (f, task) => { f.state.tasks.push({ ...task }); },
+    (f) => { f.state.accountChanged = true; },
+  ]) {
+    const f = fixture(t);
+    const task = dormantTask(f);
+    mutate(f, task);
+    await assert.rejects(f.claudeSend());
+    assert.equal(f.state.opened, undefined);
+    assert.equal(f.state.peerCalls.length, 0);
+  }
+});
+
+test("dormant recovery preserves native permission and account checks after the app opens", async (t) => {
+  for (const mutate of [
+    (f) => { f.inbound.value = "hold"; },
+    (f) => { f.desktop.permissionClass = "bypass"; },
+    (f) => { f.state.accountChanged = true; },
+    (f) => { f.state.tasks[0].isArchived = true; },
+  ]) {
+    const f = fixture(t);
+    dormantTask(f);
+    f.state.onOpen = () => { f.state.sessions = [f.session]; mutate(f); };
+    await assert.rejects(f.claudeSend());
+    assert.equal(f.state.opened, f.desktop.taskId);
+    assert.equal(f.state.peerCalls.length, 0);
+  }
+});
+
+test("dormant recovery reports no delivery when the native session does not reconnect", async (t) => {
+  const f = fixture(t);
+  dormantTask(f);
+  await assert.rejects(f.claudeSend(), { code: "CLAUDE_SESSION_NOT_READY", deliveryState: "not_sent" });
+  assert.equal(f.state.peerCalls.length, 0);
+  assert.equal(f.state.peerStarted, 0);
 });
 
 test("Claude blocks native inbound hold/refuse and cross-class delivery without changing policy", async (t) => {

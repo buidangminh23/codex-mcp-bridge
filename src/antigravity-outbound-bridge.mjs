@@ -57,12 +57,12 @@ export function createAntigravityOutboundBridge({ resolveSender = resolveAntigra
     return { version, sender: identity, metadataFields, targets: ["codex-desktop", "claude-desktop"], permissions: "native-unchanged", createsConversations: false };
   });
 
-  register("list_agent_tasks", "List exact existing native tasks in this Antigravity conversation's project before selecting a destination.", targetSchema, true, async (args, extra) => {
+  register("list_agent_tasks", "List exact existing native tasks in this Antigravity conversation's project before selecting a destination. Claude tasks distinguish ready sessions from dormant saved tasks that can be reopened on delivery.", targetSchema, true, async (args, extra) => {
     const identity = await sender(extra);
     return targets.list({ ...args, sender: identity, beforeSend: recheck(identity, extra) });
   });
 
-  register("send_to_agent_task", "Continue an exact existing Codex or Claude Desktop task with authorized work. Preserve requestId across retries; inspect the durable receipt.", { ...taskSchema, requestId: z.string().uuid(), cwd: z.string().min(1), prompt: z.string().min(1).max(30000) }, false, async (args, extra) => {
+  register("send_to_agent_task", "Continue an exact existing Codex or Claude Desktop task with authorized work. A verified dormant Claude task is reopened and revalidated before delivery; native permissions remain unchanged. Preserve requestId across retries; inspect the durable receipt.", { ...taskSchema, requestId: z.string().uuid(), cwd: z.string().min(1), prompt: z.string().min(1).max(30000) }, false, async (args, extra) => {
     const identity = await sender(extra);
     const cwd = scope(identity.cwd, args.cwd);
     if (args.prompt.includes("\0")) throw new Error("Prompt must not contain NUL");

@@ -18,6 +18,7 @@ function fixture(t, platform = "win32") {
   const root = path.join(directory, "package space");
   fs.mkdirSync(path.join(root, "src"), { recursive: true });
   fs.mkdirSync(path.join(root, "scripts"));
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: healthy.version }));
   for (const file of ["src/background-relay-service.mjs", "src/background-relay-daemon.mjs", "scripts/background-relay-hidden.vbs"]) fs.writeFileSync(path.join(root, file), "fixture");
   const env = { ...process.env, HOME: directory, USERPROFILE: directory, XDG_CONFIG_HOME: path.join(directory, "config"),
     AGENT_RELAY_DIRECTORY: path.join(directory, "relay"), AGENT_RELAY_TOKEN: SECRET, OPENAI_API_KEY: SECRET };
@@ -242,6 +243,7 @@ test("updates the desired package root while leaving an active service untouched
   const next = path.join(f.directory, "global-npm-package");
   fs.mkdirSync(path.join(next, "src"), { recursive: true });
   fs.mkdirSync(path.join(next, "scripts"));
+  fs.writeFileSync(path.join(next, "package.json"), JSON.stringify({ version: healthy.version }));
   for (const file of ["src/background-relay-service.mjs", "src/background-relay-daemon.mjs", "scripts/background-relay-hidden.vbs"]) fs.writeFileSync(path.join(next, file), "new fixture");
   f.calls.length = 0;
   const result = await f.install({ root: next });
@@ -265,4 +267,31 @@ test("health must belong to the owned runtime and uses local configuration authe
   assert.equal(connection.workerId, null);
   assert.equal(connection.token, f.config.token);
   assert.notEqual(connection.token, SECRET);
+});
+
+test("same-path package updates remain pending until the owned daemon reports the new version", async (t) => {
+  const f = fixture(t);
+  await f.install();
+  const nextVersion = "1.25.4";
+  fs.writeFileSync(path.join(f.root, "package.json"), JSON.stringify({ version: nextVersion }));
+  f.calls.length = 0;
+  const pending = await f.install();
+  assert.equal(pending.configured, true);
+  assert.equal(pending.expectedVersion, nextVersion);
+  assert.equal(pending.version, healthy.version);
+  assert.equal(pending.liveVerified, false);
+  assert.equal(pending.activationPending, true);
+  assert.equal(pending.code, "SERVICE_UPDATE_PENDING");
+  assert.equal(f.calls.some(({ options }) => JSON.parse(options.input).action !== "query"), false);
+  const runtime = JSON.parse(fs.readFileSync(path.join(f.config.paths.root, "service-runtime.json")));
+  assert.equal(runtime.packageVersion, nextVersion);
+  fs.writeFileSync(path.join(f.config.paths.root, "service-status.json"), JSON.stringify({ owner: RELAY_SERVICE_OWNER,
+    status: "running", daemonPid: healthy.pid, runtimeId: relayServiceRuntimeId(runtime) }));
+  const oldProcess = await f.install({ check: true });
+  assert.equal(oldProcess.liveVerified, false);
+  assert.equal(oldProcess.code, "SERVICE_UPDATE_PENDING");
+  const current = await f.install({ check: true, health: async () => ({ ...healthy, version: nextVersion }) });
+  assert.equal(current.liveVerified, true);
+  assert.equal(current.ready, true);
+  assert.equal(current.version, nextVersion);
 });

@@ -265,6 +265,10 @@ export async function installBackgroundRelay({ env = process.env, platform = pro
     const node = stableNodeBin(env);
     const service = path.join(root, "src", "background-relay-service.mjs");
     if (!path.isAbsolute(root) || !fs.existsSync(service) || !fs.existsSync(path.join(root, "src", "background-relay-daemon.mjs"))) throw installFailure("SERVICE_RUNTIME_MISSING");
+    let packageVersion;
+    try { packageVersion = JSON.parse(readRegularConfigFile(path.join(root, "package.json"), { maxBytes: 128 * 1024 })).version; }
+    catch { throw installFailure("SERVICE_RUNTIME_INVALID"); }
+    if (typeof packageVersion !== "string" || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?$/.test(packageVersion) || packageVersion.length > 96) throw installFailure("SERVICE_RUNTIME_INVALID");
     if ([root, config.paths.root, node].some((value) => /[\u0000-\u001f\u007f]/.test(value))) throw installFailure("SERVICE_LAUNCH_PATH_UNSUPPORTED");
     const hash = createHash("sha256").update(platform === "win32" ? config.paths.root.toLowerCase() : config.paths.root).digest("hex").slice(0, 12);
     const label = platform === "win32" ? `MinhSpark Agent Relay ${hash}` : `com.minhspark.agent-relay.${hash}`;
@@ -273,7 +277,7 @@ export async function installBackgroundRelay({ env = process.env, platform = pro
       return { status: result?.status ?? result?.exitCode ?? 0, stdout: String(result?.stdout ?? "") };
     };
     const runtimeFile = path.join(config.paths.root, "service-runtime.json");
-    const desiredRuntime = { schemaVersion: 1, owner: RELAY_SERVICE_OWNER, packageRoot: root, nodeExecutable: node,
+    const desiredRuntime = { schemaVersion: 1, owner: RELAY_SERVICE_OWNER, packageRoot: root, nodeExecutable: node, packageVersion,
       environment: Object.fromEntries(Object.entries(savedEnvironment(env, config)).filter(([name]) => !name.startsWith("AGENT_RELAY_"))) };
     const readRuntime = () => {
       const raw = readRegularConfigFile(runtimeFile, { missing: true, maxBytes: 64 * 1024 });
@@ -294,7 +298,7 @@ export async function installBackgroundRelay({ env = process.env, platform = pro
     const installed = await ({ win32: installWindows, darwin: installMac, linux: installLinux })[platform](context);
     installed.configured = installed.configured && JSON.stringify(readRuntime()) === JSON.stringify(desiredRuntime);
     const result = { ...base, ...installed, dryRun, deliveryEnabled: installed.enabled, liveVerified: false,
-      runtimeChanged, activationPending: installed.activationPending === true || runtimeChanged && previousRuntime !== null };
+      expectedVersion: packageVersion, runtimeChanged, activationPending: installed.activationPending === true || runtimeChanged && previousRuntime !== null };
     if (!installed.enabled) {
       result.notice = config.enabled ? "User startup is intentionally disabled; the installer preserved that choice" : "Background relay is intentionally disabled in its configuration";
       return result;
@@ -305,10 +309,12 @@ export async function installBackgroundRelay({ env = process.env, platform = pro
       try {
         const status = await health("status", {}, { env, connection: { endpoint: config.endpoint, token: config.token, workerId: null }, timeoutMs: 1000 });
         const serviceState = JSON.parse(readRegularConfigFile(path.join(config.paths.root, "service-status.json"), { maxBytes: 64 * 1024 }));
-        if (status?.schemaVersion === 1 && status.transportReady === true && status.desktopRequired === false
+        const owned = status?.schemaVersion === 1 && status.transportReady === true && status.desktopRequired === false
             && Number.isSafeInteger(status.pid) && status.pid > 0 && serviceState?.owner === RELAY_SERVICE_OWNER
-            && serviceState.status === "running" && serviceState.daemonPid === status.pid
-            && serviceState.runtimeId === relayServiceRuntimeId(desiredRuntime)) {
+            && serviceState.status === "running" && serviceState.daemonPid === status.pid;
+        if (owned && typeof status.version === "string" && /^[A-Za-z0-9.+_-]{1,96}$/.test(status.version)) result.version = status.version;
+        if (owned && (serviceState.runtimeId !== relayServiceRuntimeId(desiredRuntime) || status.version !== packageVersion)) result.activationPending = true;
+        if (owned && serviceState.runtimeId === relayServiceRuntimeId(desiredRuntime) && status.version === packageVersion) {
           return { ...result, liveVerified: true, ready: status.accepting === true, pid: status.pid,
             version: typeof status.version === "string" && /^[A-Za-z0-9.+_-]{1,96}$/.test(status.version) ? status.version : null,
             ...(status.accepting === true ? {} : { code: "SERVICE_DRAINING", notice: "The relay is finishing existing work before accepting new jobs" }) };

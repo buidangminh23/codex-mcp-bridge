@@ -48,7 +48,7 @@ function processIdentity(pid) {
 }
 
 export function relayServiceRuntimeId(runtime) {
-  return createHash("sha256").update(JSON.stringify([runtime.packageRoot, runtime.nodeExecutable, runtime.environment ?? {}])).digest("hex");
+  return createHash("sha256").update(JSON.stringify([runtime.packageRoot, runtime.nodeExecutable, runtime.packageVersion ?? null, runtime.environment ?? {}])).digest("hex");
 }
 
 export function readRelayServiceRuntime(directory, { root = ROOT, nodeExecutable = stableNodeBin() } = {}) {
@@ -59,6 +59,7 @@ export function readRelayServiceRuntime(directory, { root = ROOT, nodeExecutable
   let value;
   try { value = JSON.parse(text); } catch { throw serviceFailure("SERVICE_RUNTIME_INVALID"); }
   if (value?.schemaVersion !== 1 || value.owner !== RELAY_SERVICE_OWNER
+      || value.packageVersion !== undefined && (typeof value.packageVersion !== "string" || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?$/.test(value.packageVersion) || value.packageVersion.length > 96)
       || ![value.packageRoot, value.nodeExecutable].every((entry) => typeof entry === "string" && path.isAbsolute(entry) && !/[\u0000-\u001f\u007f]/.test(entry))
       || value.environment !== undefined && (!value.environment || typeof value.environment !== "object" || Array.isArray(value.environment)
         || Object.entries(value.environment).some(([name, entry]) => !["HOME", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"].includes(name)
@@ -186,8 +187,7 @@ export async function runBackgroundRelayService({ env = process.env, platform = 
               checking = true;
               try {
                 const desired = readRuntime(config.paths.root, { root, nodeExecutable: stableNodeBin(env) });
-                if (desired.packageRoot !== runtime.packageRoot || desired.nodeExecutable !== runtime.nodeExecutable
-                    || JSON.stringify(desired.environment) !== JSON.stringify(runtime.environment) || changed()) {
+                if (relayServiceRuntimeId(desired) !== runtimeId || changed()) {
                   await callRelay("drain", {}, { env: childEnv, connection: { endpoint: config.endpoint, token: config.token, workerId: null }, timeoutMs: 1000 });
                 }
               } catch {

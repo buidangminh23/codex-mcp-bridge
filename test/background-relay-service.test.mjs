@@ -176,3 +176,30 @@ test("owned runtime metadata cannot persist credentials or change arbitrary envi
     packageRoot: process.cwd(), nodeExecutable: process.execPath, environment: { OPENAI_API_KEY: SECRET } }));
   assert.throws(() => readRelayServiceRuntime(directory), { code: "SERVICE_RUNTIME_INVALID" });
 });
+
+test("a same-path version update drains the current daemon and records a new runtime identity", async () => {
+  let version = "1.25.3";
+  let drains = 0;
+  const f = fixture({
+    cycles: 2,
+    settings: {
+      watchIntervalMs: 5,
+      readRuntime: () => ({ packageRoot: process.cwd(), nodeExecutable: process.execPath, packageVersion: version }),
+      callRelay: async (method) => {
+        assert.equal(method, "drain");
+        drains++;
+        f.calls[0].child.emit("close", 75);
+      },
+    },
+    onSpawn: (child, count) => {
+      if (count === 1) version = "1.25.4";
+      else child.emit("close", 75);
+    },
+  });
+  await f.run();
+  assert.equal(drains, 1);
+  assert.equal(f.calls.length, 2);
+  const running = f.writes.filter(({ value }) => value.status === "running");
+  assert.notEqual(running[0].value.runtimeId, running[1].value.runtimeId);
+  assert.ok(f.calls.every(({ child }) => child.stoppedWith === undefined));
+});

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -48,6 +49,7 @@ function fixture(options = {}) {
 }
 
 test("supervises only its daemon with hidden process settings and no Desktop identity", async () => {
+  const originalCwd = process.cwd();
   const f = fixture();
   const result = await f.run();
   assert.equal(result.status, "stopped");
@@ -56,6 +58,8 @@ test("supervises only its daemon with hidden process settings and no Desktop ide
   assert.deepEqual(call.args, [path.join(process.cwd(), "src", "background-relay-daemon.mjs")]);
   assert.equal(call.settings.shell, false);
   assert.equal(call.settings.windowsHide, true);
+  assert.equal(call.settings.cwd, f.config.paths.root);
+  assert.equal(process.cwd(), originalCwd);
   assert.equal(call.settings.env.AGENT_RELAY_DIRECTORY, f.config.paths.root);
   assert.equal(call.settings.env.CODEX_HOME, "preserved-auth-home");
   assert.equal(call.settings.env.AGENT_RELAY_TOKEN, undefined);
@@ -67,6 +71,84 @@ test("supervises only its daemon with hidden process settings and no Desktop ide
   assert.equal(JSON.stringify(call.args).includes(SECRET), false);
   assert.equal(JSON.stringify(f.writes).includes(SECRET), false);
   assert.equal(f.releases(), 1);
+});
+
+test("Windows package replacement succeeds while the daemon runs from its state directory", { skip: process.platform !== "win32", timeout: 20000 }, async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-package-update-"));
+  const root = path.join(directory, "package");
+  const renamed = path.join(directory, "package-old");
+  const state = path.join(directory, "state");
+  const ready = path.join(state, "ready.json");
+  fs.mkdirSync(path.join(root, "src"), { recursive: true });
+  fs.mkdirSync(state);
+  const daemon = path.join(root, "src", "background-relay-daemon.mjs");
+  fs.writeFileSync(daemon, 'import fs from "node:fs"; import path from "node:path"; fs.writeFileSync(path.join(process.env.AGENT_RELAY_DIRECTORY, "ready.json"), JSON.stringify({ pid: process.pid, cwd: process.cwd() })); setInterval(() => { if (fs.existsSync(path.join(process.env.AGENT_RELAY_DIRECTORY, "stop"))) process.exit(0); }, 20);');
+  const children = [];
+  const controller = new AbortController();
+  let running;
+  const stop = async (child) => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const closed = new Promise((resolve) => child.once("close", resolve));
+    child.kill();
+    await closed;
+  };
+  t.after(async () => {
+    if (fs.existsSync(state)) fs.writeFileSync(path.join(state, "stop"), "");
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Promise.all(children.map(stop));
+    if (running) await running;
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  const launch = (executable, args, options) => {
+    const child = spawn(executable, args, options);
+    children.push(child);
+    child.on("error", () => {});
+    return child;
+  };
+  const waitReady = async (child, samePid = true) => {
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(ready)) {
+      assert.equal(child.exitCode, null, "Dummy daemon exited before readiness");
+      assert.ok(Date.now() < deadline, "Dummy daemon readiness timed out");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const result = JSON.parse(fs.readFileSync(ready, "utf8"));
+    if (samePid) assert.equal(result.pid, child.pid);
+    return result;
+  };
+  const env = { AGENT_RELAY_DIRECTORY: state };
+  const baseline = launch(process.execPath, [daemon], { cwd: root, env, shell: false, windowsHide: true, stdio: "ignore" });
+  await waitReady(baseline);
+  assert.throws(() => fs.renameSync(root, renamed), { code: "EBUSY" });
+  await stop(baseline);
+  fs.unlinkSync(ready);
+  let child;
+  running = runBackgroundRelayService({ root, env, signal: controller.signal,
+    readConfig: () => ({ enabled: true, paths: { root: state } }),
+    acquireLock: () => ({ acquired: true, release() {} }), writeState() {}, changed: () => false,
+    readRuntime: () => ({ packageRoot: root, nodeExecutable: process.execPath }),
+    spawn: (executable, args, options) => { child = launch(executable, args, options); return child; } });
+  assert.equal(path.relative((await waitReady(child)).cwd, state), "");
+  fs.renameSync(root, renamed);
+  assert.equal(fs.existsSync(path.join(renamed, "src", "background-relay-daemon.mjs")), true);
+  assert.equal(child.exitCode, null);
+  assert.doesNotThrow(() => process.kill(child.pid, 0));
+  controller.abort();
+  assert.equal((await running).status, "stopped");
+  fs.renameSync(renamed, root);
+  fs.unlinkSync(ready);
+  const launcher = path.join(root, "background-relay-hidden.vbs");
+  fs.copyFileSync(new URL("../scripts/background-relay-hidden.vbs", import.meta.url), launcher);
+  const wrapped = launch(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "wscript.exe"),
+    ["//B", "//Nologo", launcher, process.execPath, daemon, state], { cwd: root, env, windowsHide: true, shell: false, stdio: "ignore" });
+  assert.equal(path.relative((await waitReady(wrapped, false)).cwd, state), "");
+  fs.renameSync(root, renamed);
+  assert.equal(wrapped.exitCode, null);
+  const closed = new Promise((resolve) => wrapped.once("close", resolve));
+  fs.writeFileSync(path.join(state, "stop"), "");
+  await closed;
+  assert.equal(wrapped.exitCode, 0);
 });
 
 test("backs off consecutive crashes with a bounded delay and durable static diagnostics", async () => {

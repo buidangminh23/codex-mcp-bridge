@@ -1,6 +1,6 @@
 param([Parameter(Mandatory)][string]$PipeName,[Parameter(Mandatory)][uint32]$ServerPid)
 $ErrorActionPreference='Stop'
-if($PipeName -notmatch '^LOCAL\\(?:codex-native-relay|codex-bridge|cc-msg)-[A-Za-z0-9_.-]+$'){throw 'Refusing a pipe outside the bridge-owned namespace.'}
+if($PipeName -notmatch '^LOCAL\\(?:(?:codex-native-relay|codex-bridge|cc-msg)-[A-Za-z0-9_.-]+|minhspark-agent-relay-[a-f0-9]{24})$'){throw 'Refusing a pipe outside the bridge-owned namespace.'}
 Add-Type @'
 using System;
 using System.ComponentModel;

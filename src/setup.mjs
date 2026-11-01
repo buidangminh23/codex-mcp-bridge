@@ -46,12 +46,21 @@ function execute(command, args, env, timeout = 120000) {
   const result = spawnSync(command, args, { env, encoding: "utf8", windowsHide: true, shell: false, timeout,
     maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   if (result.error || result.status !== 0) {
-    const lines = String(result.stderr || "").split(/\r?\n/).filter((line) => /^Error:|^(?:Expected|Refusing|Invalid|Unknown|Shared|Claude|Codex|Configuration|The existing|Missing|Unsafe)/.test(line)
-      && !/Command failed|--env|password|secret|token|authorization/i.test(line));
-    const detail = lines.slice(0, 3).join(" ") || result.error?.code || `exit ${result.status}`;
-    throw new Error(`${path.basename(command)} ${path.basename(args[0] ?? "")}: ${detail}`);
+    throw setupProcessFailure(command, args, result);
   }
   return result.stdout || "";
+}
+
+export function setupProcessFailure(command, args, result) {
+  let structured;
+  try { structured = JSON.parse(String(result.stdout || "")); } catch {}
+  const validCode = value => typeof value === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(value);
+  const codes = [structured?.code, structured?.service?.code, structured?.permissions?.code, structured?.diagnostic?.code,
+    ...String(result.stderr || "").split(/\r?\n/).map(line => /^([A-Z][A-Z0-9_]{0,79}) \| /.exec(line)?.[1])].filter(validCode);
+  const lines = String(result.stderr || "").split(/\r?\n/).filter(line => /^Error:|^(?:Expected|Refusing|Invalid|Unknown|Shared|Claude|Codex|Configuration|The existing|Missing|Unsafe)/.test(line)
+    && !/Command failed|--env|password|secret|token|authorization/i.test(line));
+  const detail = [...new Set(codes)].join(", ") || lines.slice(0, 3).join(" ") || result.error?.code || `exit ${result.status}`;
+  return Object.assign(new Error(`${path.basename(command)} ${path.basename(args[0] ?? "")}: ${detail}`), codes[0] ? { code: codes[0] } : {});
 }
 
 function usableBinary(binary, platform) {
@@ -83,7 +92,7 @@ export function ensureSetupCodex({ env, paths, platform, download = true, run = 
 }
 
 export function setupEnvironment(env, paths, codex) {
-  const result = Object.fromEntries(Object.entries(env).filter(([name]) => !/^(?:CODEX_BRIDGE_|CLAUDE_BRIDGE_|CODEX_NATIVE_RELAY_|CODEX_RELAY_ID$|CODEX_THREAD_ID$|CODEX_APP_TOOLS_PIPE_PATH$)/.test(name)));
+  const result = Object.fromEntries(Object.entries(env).filter(([name]) => !/^(?:CODEX_BRIDGE_|CLAUDE_BRIDGE_|CODEX_NATIVE_RELAY_|CODEX_RELAY_ID$|CODEX_THREAD_ID$|CODEX_APP_TOOLS_PIPE_PATH$|AGENT_RELAY_(?:TOKEN|WORKER_ID|REQUEST_ID|ENDPOINT)$)/.test(name)));
   return { ...result, HOME: paths.home, USERPROFILE: paths.home, CODEX_HOME: paths.codex,
     CLAUDE_DESKTOP_CONFIG: paths.desktop, CODEX_EXE: codex, CODEX_BIN: codex };
 }
@@ -96,7 +105,7 @@ function configurationCheck(label, check, components) {
 function assertEntry(entry, worker, root, { caller } = {}) {
   if (!entry || typeof entry.command !== "string" || !fs.existsSync(entry.command)) throw new Error("MCP command is missing or unavailable");
   const args = entry.args ?? [];
-  const expected = worker === "index.mjs" || worker === "claude-bridge.mjs" || worker === "native-relay-companion.mjs"
+  const expected = ["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs", "antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs"].includes(worker)
     ? [path.join(root, "src", "mcp-supervisor.mjs"), worker] : [path.join(root, "src", worker)];
   if (JSON.stringify(args) !== JSON.stringify(expected)) throw new Error("MCP entry points to a different installation or unsupported launcher");
   if (caller && entry.env?.ANTIGRAVITY_BRIDGE_CALLER !== caller) throw new Error("Antigravity caller registration is missing or conflicting");
@@ -160,17 +169,22 @@ export function checkSetup({ env = process.env, platform = process.platform, roo
   configurationCheck("Claude registration names", () => {
     if (readJson(paths.desktop)?.mcpServers?.["codex-bridge"]) throw new Error("Shared codex-bridge shadows the Claude Code registration");
   }, components);
+  configurationCheck("Independent background relay", () => {
+    const details = JSON.parse(run(process.execPath, [path.join(root, "scripts", "setup-background-relay.mjs"), "--check", "--json"], setupEnvironment(env, paths, codex), 90000));
+    if (details.configured !== true) throw new Error("Independent worker relay configuration is incomplete");
+    return { liveVerified: details.liveVerified === true, transportReady: details.transportReady === true, notices: details.notices ?? [] };
+  }, components);
   return { configured: components.every((item) => item.status === "configured"), liveVerified: false, components };
 }
 
 export function runSetup({ args = [], env = process.env, platform = process.platform, root = ROOT, run = execute, resolve = resolveCodexBin } = {}) {
   const options = setupArguments(args);
-  if (options.help) return { help: "Usage: codex-bridge-setup [--check|--dry-run] [--json] [--no-download]\nUpdate the package and apply managed settings with: npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge\nGlobal npm installation configures Claude Desktop, Claude Code, Codex and Antigravity automatically. CODEX_BRIDGE_SKIP_SETUP=1 opts out. Saved configuration and loaded app connections are verified separately." };
+  if (options.help) return { help: "Usage: codex-bridge-setup [--check|--dry-run] [--json] [--no-download]\nUpdate the package and apply managed settings with: npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts\nGlobal npm installation configures Claude Desktop, Claude Code, Codex, Antigravity and the independent worker relay automatically. CODEX_BRIDGE_SKIP_SETUP=1 opts out. Saved configuration, background relay health and loaded native app connections are verified separately." };
   if (options.postinstall && !automaticSetupEnabled(env)) return { skipped: true, reason: "Automatic configuration runs only for a global npm install; use codex-bridge-setup for manual setup." };
   if (options.check) return checkSetup({ env, platform, root, run, resolve });
   const native = platform === "win32" || platform === "darwin";
   const paths = setupPaths(env, platform);
-  const planned = ["Claude Code / codex-bridge", "Claude Desktop / codex-bridge-desktop", ...(native ? ["Codex / codex-native-relay and executor"] : []), "Codex / claude-bridge", "Antigravity / all components"];
+  const planned = ["Claude Code / codex-bridge", "Claude Desktop / codex-bridge-desktop", ...(native ? ["Codex / codex-native-relay and executor"] : []), "Codex / claude-bridge", "Antigravity / all components", "Independent background relay"];
   if (options.dryRun) return { dryRun: true, configured: false, liveVerified: false, components: planned.map((name) => ({ name, status: "planned" })), files: [paths.code, paths.desktop, path.join(paths.codex, "config.toml"), paths.gemini] };
   if (env.SUDO_USER && env.SUDO_USER !== "root" && typeof process.getuid === "function" && process.getuid() === 0) throw new Error("Run the global install without sudo in the account that runs the apps; setup will not write another account's configuration.");
   const runtime = ensureSetupCodex({ env, paths, platform, download: !options.noDownload, run, resolve });
@@ -184,6 +198,7 @@ export function runSetup({ args = [], env = process.env, platform = process.plat
       try { details = JSON.parse(output); } catch {}
       const notices = details.notices ?? [];
       components.push({ name, status: "configured", ...(notices.length ? { notices } : {}),
+        ...(typeof details.liveVerified === "boolean" ? { liveVerified: details.liveVerified, transportReady: details.transportReady === true } : {}),
         ...(details.backgroundPreference ? { backgroundPreference: details.backgroundPreference } : {}) });
       return true;
     } catch (error) { components.push({ name, status: "incomplete", detail: error.message }); return false; }
@@ -198,13 +213,15 @@ export function runSetup({ args = [], env = process.env, platform = process.plat
   }
   install("Codex / claude-bridge", "install-codex-mcp.mjs", ["--setup"]);
   if (code) install("Antigravity / all components", "install-antigravity-bridge.mjs", ["--all", "--setup"]);
+  install("Independent background relay", "setup-background-relay.mjs", ["--json"]);
   const inspection = checkSetup({ env: base, platform, root, run, resolve: () => runtime.binary });
   return { configured: components.every((item) => item.status === "configured") && inspection.configured, liveVerified: false,
     cliInstalled: runtime.installed, components, verification: inspection.components,
     nextActions: ["Running MCP processes may still hold earlier settings. Setup does not start apps or open conversations.",
       "Existing compatible supervisors reload installed source when idle; configuration changes are not proof of loaded-process readiness.",
       "Native delivery uses the same saved project and signed-in accounts in Claude Desktop Code and Codex Desktop.",
-      "codex_bridge_status, native_relay_status and agent_bridge_status report live readiness separately from this configuration check."] };
+      "codex_bridge_status, native_relay_status and agent_bridge_status report native readiness separately from this configuration check.",
+      "worker_status or worker-relay status reports the independent service and CLI workers, which do not require a responsive Desktop host."] };
 }
 
 export function printSetup(result, { json = false, output = console.log } = {}) {

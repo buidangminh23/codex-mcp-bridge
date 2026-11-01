@@ -20,17 +20,24 @@ function fixture(t) {
   const desktop = { status: "matched", taskId: crypto.randomUUID(), title: "Fixture Claude", cwd, accountFingerprint: accounts.claude.fingerprint, permissionClass: "prompting", permissionMode: "default" };
   const inbound = { value: null, source: null };
   const state = { projects: [project], threads: [thread], sessions: [session], readThread: null, beforeNative: null, afterNative: null, beforePeer: null, accountChanged: false, peerCalls: [], nativeCalls: [], peerStarted: 0, peerSettings: null, stopped: false };
+  const peerMessages = new Map();
   const peer = {
     async start() { state.peerStarted++; },
     async sendAndWait(socket, text, options) {
       await state.beforePeer?.();
       await options.beforeSend();
       state.peerCalls.push({ socket, text, options });
+      peerMessages.set("fixture-message", { targetSocket: socket, sentAt: 1, reply: { text: "fixture reply", inReplyTo: "fixture-message" } });
       if (state.peerError) throw state.peerError;
       await state.afterPeer?.();
       return { msgId: "fixture-message" };
     },
     readDelivery(msgId) { return { msgId, status: "reply_received", reply: "fixture reply" }; },
+    reloadReason() { return state.peerBusy ?? null; },
+    async quiesce() { if (state.peerBusy) throw new Error(state.peerBusy); state.quiesced = true; },
+    exportReloadState() { return { name: "fixture-peer", messageSequence: 0, inbox: [], sentMessages: [...peerMessages], deliveryReceipts: [] }; },
+    restoreReloadState(value) { state.restoredPeer = structuredClone(value); for (const [id, record] of value.sentMessages) peerMessages.set(id, record); },
+    async resume() { state.resumed = true; },
     stop() { state.stopped = true; },
     closed: Promise.resolve(),
   };
@@ -345,5 +352,60 @@ test("uncertain Claude delivery retains original account binding and native mess
       msgId: "fixture-message",
       accountContext: { codex: f.accounts.codex.fingerprint, claude: f.accounts.claude.fingerprint },
     });
+  }
+});
+
+test("quiescent target reload preserves native receipts, sender scope and account binding without resending", async (t) => {
+  const previous = fixture(t);
+  await previous.claudeSend();
+  previous.state.peerBusy = "An original Claude reply is pending";
+  assert.match(previous.backend.reloadReason(), /pending/);
+  await assert.rejects(previous.backend.quiesce(), /pending/);
+  previous.state.peerBusy = null;
+  await previous.backend.quiesce();
+  await assert.rejects(previous.codexSend(), /quiesced/);
+  const state = previous.backend.exportReloadState();
+  assert.deepEqual(state.receipts[0][1].sender, previous.sender);
+  assert.deepEqual(state.receipts[0][1].accountContext, { codex: previous.accounts.codex.fingerprint, claude: previous.accounts.claude.fingerprint });
+  const next = fixture(t);
+  next.backend.restoreReloadState(state);
+  assert.equal(next.state.peerStarted, 0);
+  assert.equal(next.state.resumed, undefined);
+  await next.backend.activate();
+  assert.equal(next.state.resumed, true);
+  assert.deepEqual(next.state.restoredPeer, state.peer.state);
+  const receipt = await next.backend.read({ target: "claude", msgId: "fixture-message", sender: previous.sender });
+  assert.equal(receipt.reply, "fixture reply");
+  const id = crypto.randomUUID();
+  await assert.rejects(next.backend.read({ target: "claude", msgId: "fixture-message", sender: { ...previous.sender, id, conversationId: id } }), /does not belong/);
+  next.state.accountChanged = true;
+  await assert.rejects(next.backend.read({ target: "claude", msgId: "fixture-message", sender: previous.sender }), /Account changed/);
+  assert.equal(next.state.peerCalls.length, 0);
+  assert.equal(next.state.nativeCalls.length, 0);
+  assert.equal(previous.state.peerCalls.length, 1);
+  assert.throws(() => next.backend.restoreReloadState(state), /empty targets/);
+  await previous.backend.activate();
+  assert.equal(previous.state.resumed, true);
+});
+
+test("target reload rejects missing or mismatched receipt ownership before starting a peer", async (t) => {
+  const previous = fixture(t);
+  await previous.claudeSend();
+  await previous.backend.quiesce();
+  const exported = previous.backend.exportReloadState();
+  for (const mutate of [
+    (state) => { state.receipts[0][1].sender.provider = "claude"; },
+    (state) => { state.receipts[0][1].cwd = previous.other; },
+    (state) => { state.receipts[0][1].accountContext = {}; },
+    (state) => { state.receipts.push(state.receipts[0]); },
+    (state) => { state.peer = null; },
+    (state) => { state.peer.state.sentMessages[0][0] = "foreign"; },
+  ]) {
+    const next = fixture(t);
+    const state = structuredClone(exported);
+    mutate(state);
+    assert.throws(() => next.backend.restoreReloadState(state));
+    assert.equal(next.state.peerStarted, 0);
+    assert.equal(next.state.peerCalls.length, 0);
   }
 });

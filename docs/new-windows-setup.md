@@ -1,16 +1,17 @@
 # Windows setup and initial permissions
 
-Install Node.js 22.13+ and sign in to the apps you intend to use. For native
-handoffs, save the local project in Codex Desktop and open the same directory
-in Claude Desktop's **Code tab**. Run one PowerShell command:
+Install Node.js 22.13+. Native handoffs use signed-in Desktop apps and the same
+local project saved in Codex Desktop and Claude Desktop's **Code tab**.
+Independent background work uses separately authenticated provider CLIs and
+does not require the Desktop apps to be open. Run one PowerShell command:
 
 ```powershell
-npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
+npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
 ```
 
 The `--allow-scripts` value permits only this package's setup hook. npm versions
 that block install scripts by default need it; a plain install runs setup only
-when scripts are allowed. Add `--foreground-scripts` to see setup progress. If
+when scripts are allowed. `--foreground-scripts` displays setup progress. If
 npm reports `1 package had install scripts blocked`, run the recommended command
 again or run `codex-bridge-setup.cmd` explicitly.
 
@@ -22,6 +23,27 @@ executor. A failed component is reported as incomplete rather than ready. The
 package stays installed when an app configuration step fails, so the setup
 command remains available for repair. npm success alone does not verify setup.
 
+The same command installs the independent worker relay as a hidden per-user
+scheduled task and applies its managed settings on every update. It registers
+worker communication and adds only the four Antigravity relay tool grants;
+existing disabled settings, permission denials and unrelated settings remain.
+Install Claude Code and `agy` separately when those workers are needed; setup
+supplies a missing Codex CLI. CLI authentication is separate from Desktop sign-in.
+
+Once the selected CLIs are authenticated and the project is authorized,
+`send_to_worker` supports all six directions between Claude, Codex and
+Antigravity workers, even while Desktop apps are closed or frozen. The operating
+system and user service must be running; network/provider access, quota and tool
+permissions still apply. A frozen window cannot accept new user input or show
+results until it responds. Use `worker-relay.cmd` in a terminal or another
+responsive MCP client to submit authorized work and read receipts. The relay
+does not open apps or resume native chats.
+
+Use `worker-relay.cmd status` to inspect service and CLI readiness separately,
+and `read_worker_delivery` for durable results and diagnostic reports. Authorize
+a selected project with `bridge-projects.cmd allow-project <absolute-project-path>`
+before sending work if it has no existing grant.
+
 ## Installed entries
 
 | Client | Entry | Purpose |
@@ -32,16 +54,19 @@ command remains available for repair. npm success alone does not verify setup.
 | Claude Desktop shared connectors | `codex-bridge-desktop` | Connect ordinary chat to local Codex app-server sessions |
 | Codex and Claude Code | `antigravity-bridge` | Send to Antigravity App or bridge-owned CLI sessions |
 | Antigravity | `agent-bridge` and `codex-bridge` sidecar | Outbound agent messages and native App connectivity |
+| Independent CLI workers | `worker-relay` | Authorized background jobs and all six worker-to-worker directions |
 
 The shared `codex-bridge-desktop` connector does not establish a native Code
 sender identity. Use the actual Code session for native Codex Desktop work.
 Existing project restrictions, permission modes, and custom settings are
 preserved. Setup does not sign in, grant workspace trust, or close applications.
 
-After active work finishes, open or reconnect the affected apps so they load
-the entries. A conversation refresh may leave the previous MCP process loaded.
-Check `codex_bridge_status` inside the sending Claude Code task,
-`claude_bridge_status` and `native_relay_status` in Codex, and
+Managed MCP supervisors adopt compatible updates when idle. An old direct MCP
+process remains stale until its host reconnects normally; setup does not open
+or create a chat to load it. A conversation refresh may leave the previous
+process loaded. When the tools are available, check `codex_bridge_status` inside
+the sending Claude Code task, `claude_bridge_status` and `native_relay_status`
+in Codex, and
 `agent_bridge_status` in Antigravity. Configuration verification is separate
 from a completed live exchange.
 

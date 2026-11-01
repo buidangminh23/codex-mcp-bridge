@@ -27,10 +27,11 @@ import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
 import { registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
 import { discoverClaudeProject } from "./claude-project-discovery.mjs";
+import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./background-relay-mcp.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.25.3";
+const VERSION = "1.26.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
@@ -328,9 +329,9 @@ const server = new McpServer(
       "list_claude_sessions includes saved tasks, but a saved task is not proof of a live receiving endpoint. target auto with expectedTaskId rediscovers only the exact task without opening an app or chat; an already-live session is sent directly without opening a composer. A dormant task returns CLAUDE_SESSION_NOT_READY with sent false. There is no supported silent cold-start API. For independent new work authorized by the user or standing instructions, use start_claude_session; never use creation to warm a relay. Use trustProject only with explicit or standing authorization to trust that project. " +
       "The sender class follows the verified approval policy; automated review flags are reported but never change it. " +
       "A Desktop recipient whose settings refuse or hold inbound messages, or whose task metadata shows a different permission class without an explicit accept, is refused before sending, because Claude Desktop cannot show the approval dialog. " +
-      "Never launch a CLI session or an external app-server as a substitute. A receipt confirms a reply, not visual verification in the app. " +
+      "Never launch a CLI session or an external app-server as a substitute for an existing Desktop task. A receipt confirms a reply, not visual verification in the app. " +
       "A held receipt does not prove that Desktop exposes an approval button; verify the UI before asking the user to approve. " +
-      AGENT_PROMPT_GUIDANCE,
+      BACKGROUND_WORKER_GUIDANCE + AGENT_PROMPT_GUIDANCE,
   },
 );
 
@@ -345,6 +346,8 @@ function registerTool(name, definition, handler) {
     }) : result;
   });
 }
+
+registerBackgroundTools(registerTool);
 
 registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "codex" }, beforePrepare: async (extra) => {
   runtime.assertCurrent();

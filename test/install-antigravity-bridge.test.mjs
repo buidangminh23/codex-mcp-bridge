@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { after, test } from "node:test";
 import { applyJsonEdits, installerArguments, planAntigravityInstallation, validateCodexExecutable } from "../scripts/install-antigravity-bridge.mjs";
 
@@ -13,6 +13,9 @@ const node = process.execPath;
 const entry = path.join(root, "src", "antigravity-bridge.mjs");
 const sidecarEntry = path.join(root, "src", "antigravity-sidecar.mjs");
 const outboundEntry = path.join(root, "src", "antigravity-outbound-bridge.mjs");
+const supervisorEntry = path.join(root, "src", "mcp-supervisor.mjs");
+const inboundArgs = [supervisorEntry, "antigravity-bridge.mjs"];
+const outboundArgs = [supervisorEntry, "antigravity-outbound-bridge.mjs"];
 let sequence = 0;
 
 after(() => {
@@ -40,7 +43,7 @@ test("plans both client registrations and an app-managed sidecar without writing
   const options = fixture();
   const plan = planAntigravityInstallation(options);
   assert.equal(plan.codex.environment.ANTIGRAVITY_BRIDGE_CALLER, "codex");
-  assert.deepEqual(plan.codex.commandArgs, [entry]);
+  assert.deepEqual(plan.codex.commandArgs, inboundArgs);
   assert.equal(plan.edits.length, 4);
   assert.deepEqual(fs.readdirSync(options.home), []);
   assert.ok(!JSON.stringify(plan).includes("dangerously-skip-permissions"));
@@ -249,8 +252,9 @@ test("CLI setup reports saved background settings separately from live activatio
   const options = fixture();
   const storage = write(options.appData, "Antigravity/app_storage.json", { runInBackground: "false", accountToken: "do-not-print" });
   const script = fileURLToPath(new URL("../scripts/install-antigravity-bridge.mjs", import.meta.url));
-  const output = execFileSync(process.execPath, [script, "--desktop", "--setup"], {
-    env: { ...process.env, HOME: options.home, USERPROFILE: options.home, APPDATA: options.appData },
+  const invocation = `import {runAntigravityInstaller} from ${JSON.stringify(pathToFileURL(script).href)}; runAntigravityInstaller(['--desktop','--setup'],{prepareRuntime:()=>{}});`;
+  const output = execFileSync(process.execPath, ["--input-type=module", "--eval", invocation], {
+    env: { ...process.env, HOME: options.home, USERPROFILE: options.home, APPDATA: options.appData, CODEX_HOME: path.join(options.home, ".codex"), CODEX_BRIDGE_RUNTIME_CACHE: path.join(options.home, "runtime") },
     encoding: "utf8", windowsHide: true, timeout: 15000,
   });
   const result = JSON.parse(output);
@@ -260,6 +264,56 @@ test("CLI setup reports saved background settings separately from live activatio
   assert.equal(result.backgroundPreference.liveVerified, false);
   assert.doesNotMatch(output, /accountToken|do-not-print|reopen|Restart|Reload/);
   assert.deepEqual(read(storage), { runInBackground: "true", accountToken: "do-not-print" });
+});
+
+test("prepares each effective supervised runtime before writing native registrations", () => {
+  const options = fixture();
+  const script = new URL("../scripts/install-antigravity-bridge.mjs", import.meta.url).href;
+  const cache = path.join(options.home, "runtime");
+  const invocation = `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import assert from 'node:assert/strict';
+    import {runAntigravityInstaller} from ${JSON.stringify(script)};
+    const caches=[];
+    runAntigravityInstaller(['--claude','--desktop','--setup'],{prepareRuntime(root,{cache}) {
+      assert.ok(path.isAbsolute(root));
+      assert.equal(fs.existsSync(path.join(process.env.HOME,'.claude.json')),false);
+      assert.equal(fs.existsSync(path.join(process.env.HOME,'.gemini')),false);
+      caches.push(cache);
+    }});
+    console.log(JSON.stringify(caches));
+  `;
+  const output = execFileSync(process.execPath, ["--input-type=module", "--eval", invocation], {
+    env: { ...process.env, HOME: options.home, USERPROFILE: options.home, CLAUDE_CONFIG_DIR: options.home, APPDATA: options.appData, CODEX_BRIDGE_RUNTIME_CACHE: cache },
+    encoding: "utf8", windowsHide: true, timeout: 15000,
+  });
+  assert.deepEqual(JSON.parse(output.trim().split("\n").at(-1)), [cache]);
+  assert.equal(read(path.join(options.home, ".claude.json")).mcpServers["antigravity-bridge"].args[1], "antigravity-bridge.mjs");
+  assert.equal(read(path.join(options.home, ".gemini/config/mcp_config.json")).mcpServers["agent-bridge"].args[1], "antigravity-outbound-bridge.mjs");
+});
+
+test("failed runtime preparation leaves both native configurations untouched", () => {
+  const options = fixture();
+  const script = new URL("../scripts/install-antigravity-bridge.mjs", import.meta.url).href;
+  const invocation = `import {runAntigravityInstaller} from ${JSON.stringify(script)}; runAntigravityInstaller(['--claude','--desktop','--setup'],{prepareRuntime(){throw new Error('fixture preparation failed');}});`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", invocation], {
+    env: { ...process.env, HOME: options.home, USERPROFILE: options.home, CLAUDE_CONFIG_DIR: options.home, APPDATA: options.appData, CODEX_BRIDGE_RUNTIME_CACHE: path.join(options.home, "runtime") },
+    encoding: "utf8", windowsHide: true, timeout: 15000,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /fixture preparation failed/);
+  assert.deepEqual(fs.readdirSync(options.home), []);
+});
+
+test("runtime preparation honors preserved per-entry cache overrides", () => {
+  const options = fixture();
+  const cache = path.join(options.home, "custom-runtime");
+  write(options.home, ".claude.json", { mcpServers: { "antigravity-bridge": { command: node, args: [entry], env: { CODEX_BRIDGE_RUNTIME_CACHE: cache } } } });
+  const codexExisting = { transport: { type: "stdio", command: node, args: [entry], env: { ANTIGRAVITY_BRIDGE_CALLER: "codex", CODEX_BRIDGE_RUNTIME_CACHE: cache } } };
+  const plan = planAntigravityInstallation({ ...options, codexExisting });
+  assert.ok(plan.runtimeCaches.includes(cache));
+  assert.equal(plan.runtimeCaches.length, 2);
 });
 
 test("rejects occupied registration and sidecar names before writing any file", () => {
@@ -303,17 +357,53 @@ test("automatic setup migrates recognized package entries and preserves existing
   const settingsPath = write(options.home, ".gemini/config/config.json", { sidecars: { "codex-bridge": { enabled: false } }, userSettings: { permissions: "ask" } });
   const plan = planAntigravityInstallation({ ...options, setup: true, codexExisting });
   assert.equal(plan.codex.mode, "retarget");
-  assert.deepEqual(plan.codex.commandArgs, [entry]);
+  assert.deepEqual(plan.codex.commandArgs, inboundArgs);
   assert.deepEqual(plan.codex.environment, codexExisting.transport.env);
   assert.deepEqual(codexExisting, originalCodex);
   applyJsonEdits(plan.edits);
-  assert.deepEqual(read(claudePath).mcpServers["antigravity-bridge"], { type: "stdio", command: node, args: [entry], disabled: true, custom: 4, env: { ANTIGRAVITY_BRIDGE_CALLER: "claude", CUSTOM: "yes" } });
-  assert.deepEqual(read(outboundPath).mcpServers["agent-bridge"], { command: node, args: [outboundEntry], disabled: true, timeoutSeconds: 70, env: { CUSTOM: "yes" } });
+  assert.deepEqual(read(claudePath).mcpServers["antigravity-bridge"], { type: "stdio", command: node, args: inboundArgs, disabled: true, custom: 4, env: { ANTIGRAVITY_BRIDGE_CALLER: "claude", CUSTOM: "yes" } });
+  assert.deepEqual(read(outboundPath).mcpServers["agent-bridge"], { command: node, args: outboundArgs, disabled: true, timeoutSeconds: 70, env: { CUSTOM: "yes" } });
   assert.deepEqual(read(definitionPath), { command: node, args: [sidecarEntry], display_name: "Saved name", restart_policy: "never", env: { CUSTOM: "yes" } });
   assert.deepEqual(read(settingsPath), { sidecars: { "codex-bridge": { enabled: false } }, userSettings: { permissions: "ask" } });
   assert.equal(planAntigravityInstallation({ ...options, setup: true, codexExisting }).edits.length, 0);
   for (const mode of [{}, { setup: true, remove: true }]) {
     assert.throws(() => planAntigravityInstallation({ ...options, ...mode, targets: ["codex"], codexExisting }), /different entrypoint/);
+  }
+});
+
+test("managed Antigravity registrations remain idempotent and migrate recognized supervisor paths", () => {
+  const options = fixture();
+  const previous = path.join(options.home, "previous", "codex-mcp-bridge", "src", "mcp-supervisor.mjs");
+  const codexExisting = { disabled_tools: ["start_antigravity_cli_session"], transport: { type: "stdio", command: node, args: [previous, "antigravity-bridge.mjs"], env: { ANTIGRAVITY_BRIDGE_CALLER: "codex" } } };
+  const claudePath = write(options.home, ".claude.json", { mcpServers: { "antigravity-bridge": { command: node, args: [previous, "antigravity-bridge.mjs"], disabled: true } } });
+  const outboundPath = write(options.home, ".gemini/config/mcp_config.json", { mcpServers: { "agent-bridge": { command: node, args: [previous, "antigravity-outbound-bridge.mjs"], disabledTools: ["send_to_agent_task"] }, other: { command: "keep" } } });
+  const plan = planAntigravityInstallation({ ...options, setup: true, codexExisting });
+  assert.deepEqual(plan.codex.commandArgs, inboundArgs);
+  assert.equal(plan.supervisorEntry, supervisorEntry);
+  assert.match(plan.notices.join("\n"), /until the host reconnects normally/);
+  applyJsonEdits(plan.edits);
+  assert.deepEqual(read(claudePath).mcpServers["antigravity-bridge"].args, inboundArgs);
+  assert.equal(read(claudePath).mcpServers["antigravity-bridge"].disabled, true);
+  assert.deepEqual(read(outboundPath).mcpServers["agent-bridge"].args, outboundArgs);
+  assert.deepEqual(read(outboundPath).mcpServers["agent-bridge"].disabledTools, ["send_to_agent_task"]);
+  assert.equal(planAntigravityInstallation({ ...options, setup: true }).edits.length, 0);
+  applyJsonEdits(planAntigravityInstallation({ ...options, targets: ["claude", "desktop"], remove: true }).edits);
+  assert.deepEqual(read(outboundPath).mcpServers, { other: { command: "keep" } });
+});
+
+test("supervised entry collisions fail without touching either native configuration", () => {
+  for (const args of [
+    [supervisorEntry, "index.mjs"],
+    [supervisorEntry, "antigravity-outbound-bridge.mjs"],
+    [supervisorEntry, "antigravity-bridge.mjs", "--extra"],
+    [path.join(sandbox, "foreign", "mcp-supervisor.mjs"), "antigravity-bridge.mjs"],
+  ]) {
+    const options = fixture();
+    const file = write(options.home, ".claude.json", { mcpServers: { "antigravity-bridge": { command: node, args } } });
+    const before = fs.readFileSync(file, "utf8");
+    assert.throws(() => planAntigravityInstallation({ ...options, targets: ["claude", "desktop"], setup: true }), /different entrypoint/);
+    assert.equal(fs.readFileSync(file, "utf8"), before);
+    assert.equal(fs.existsSync(path.join(options.home, ".gemini")), false);
   }
 });
 
@@ -453,7 +543,7 @@ test("desktop installs the native outbound MCP without claiming a foreign caller
   const value = read(config);
   assert.deepEqual(value.custom, { keep: true });
   assert.deepEqual(value.mcpServers.filesystem, { command: "filesystem", args: ["root"] });
-  assert.deepEqual(value.mcpServers["agent-bridge"], { command: node, args: [outboundEntry] });
+  assert.deepEqual(value.mcpServers["agent-bridge"], { command: node, args: outboundArgs });
   assert.equal(fs.existsSync(path.join(options.home, ".gemini/config/mcp.json")), false);
   assert.equal(planAntigravityInstallation({ ...options, targets: ["desktop"] }).edits.length, 0);
 });
@@ -467,10 +557,11 @@ test("outbound updates preserve custom settings and report copied bridges withou
     "claude-bridge": copied,
   } });
   const plan = planAntigravityInstallation({ ...options, targets: ["desktop"] });
-  assert.equal(plan.notices.length, 2);
+  assert.equal(plan.notices.filter((notice) => notice.startsWith("Existing Antigravity MCP entry")).length, 2);
+  assert.ok(plan.notices.some((notice) => notice.includes("until the host reconnects normally")));
   applyJsonEdits(plan.edits);
   const servers = read(config).mcpServers;
-  assert.deepEqual(servers["agent-bridge"], { command: node, args: [outboundEntry], disabled: true, timeoutSeconds: 120, env: { CUSTOM: "keep" } });
+  assert.deepEqual(servers["agent-bridge"], { command: node, args: outboundArgs, disabled: true, timeoutSeconds: 120, env: { CUSTOM: "keep" } });
   assert.deepEqual(servers["codex-bridge"], copied);
   assert.deepEqual(servers["claude-bridge"], copied);
 });

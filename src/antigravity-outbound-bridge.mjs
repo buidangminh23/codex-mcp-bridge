@@ -12,16 +12,36 @@ import { antigravityBridgeDirectory } from "./antigravity-ipc.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { stopProcessInspectors } from "./claude-sender-context.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
+import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./background-relay-mcp.mjs";
 import { assertAccountIdentity } from "./bridge-account-context.mjs";
 import { bridgeDiagnostic, withBridgeDiagnostic, preflightFailure } from "./recipient-preflight.mjs";
+import { createReloadControl, exitWhenClientCloses } from "./reload-control.mjs";
 
 const { version } = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const result = (value) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }] });
 const targetSchema = { target: z.enum(["codex", "claude"]) };
 const taskSchema = { ...targetSchema, conversationId: z.string().uuid(), taskId: z.string().min(1).max(256).optional() };
 
-export function createAntigravityOutboundBridge({ resolveSender = resolveAntigravitySenderContext, targets = createAntigravityOutboundTargets(), deliveries = new AntigravityDeliveries(path.join(antigravityBridgeDirectory(), "outbound-deliveries")), rootPolicy = createHardenedRootPolicy() } = {}) {
-  const server = new McpServer({ name: "agent-bridge", version }, { instructions: "Send user-authorized work FROM the current Antigravity Desktop conversation to an exact existing Codex Desktop task or Claude Desktop Code session in the same project. Use list_agent_tasks first, verify title and identity, then send_to_agent_task with a fresh requestId. Keep requestId after uncertainty and read_agent_delivery; never automatically resend. Native permissions and sender identity are verified on every call. Do not launch a CLI substitute, impersonate Codex/Claude, or change permissions to overcome a rejection. Native acceptance is not task completion; read_agent_task for Codex or read_agent_delivery for a Claude reply. Independent new work requires a separate native conversation; this bridge only continues existing tasks. Never use Computer Use, open an old chat, or create an empty, new, or error chat to load or recover a relay. Report the structured diagnostic when a native relay or session is unavailable. Agent-authored handoffs must be in English and name Antigravity as the author." });
+export function createAntigravityOutboundBridge({ resolveSender = resolveAntigravitySenderContext, targets = createAntigravityOutboundTargets(), deliveries = new AntigravityDeliveries(path.join(antigravityBridgeDirectory(), "outbound-deliveries")), rootPolicy = createHardenedRootPolicy(), env = process.env, channel = process } = {}) {
+  const reload = createReloadControl({
+    entry: "antigravity-outbound-bridge.mjs", env, channel,
+    inspect: () => deliveries.active.size ? "Antigravity outbound deliveries are still active" : targets.reloadReason?.() ?? null,
+    quiesce: () => targets.quiesce(),
+    exportState: () => ({ directory: deliveries.directory, targets: targets.exportReloadState() }),
+    restore: (state) => {
+      if (typeof state.directory !== "string" || path.relative(state.directory, deliveries.directory)) throw new Error("Antigravity durable receipt directory changed during reload");
+      targets.restoreReloadState(state.targets);
+    },
+    activate: () => targets.activate(),
+  });
+  const server = new McpServer({ name: "agent-bridge", version }, { instructions: "Send user-authorized work FROM the current Antigravity Desktop conversation to an exact existing Codex Desktop task or Claude Desktop Code session in the same project. Use list_agent_tasks first, verify title and identity, then send_to_agent_task with a fresh requestId. Keep requestId after uncertainty and read_agent_delivery; never automatically resend. Native permissions and sender identity are verified on every call. Do not launch a CLI substitute for a native task, impersonate Codex/Claude, or change permissions to overcome a rejection. Native acceptance is not task completion; read_agent_task for Codex or read_agent_delivery for a Claude reply. Independent new native work requires a separate native conversation; native handoff tools only continue existing tasks. Never use Computer Use, open an old chat, or create an empty, new, or error chat to load or recover a relay. Report the structured diagnostic when a native relay or session is unavailable. Agent-authored handoffs must be in English and name Antigravity as the author. " + BACKGROUND_WORKER_GUIDANCE });
+
+  registerBackgroundTools((name, config, handler) => server.registerTool(name, config, async (args, extra) => {
+    try { return await reload.run(() => handler(args, extra)); }
+    catch (error) {
+      return withBridgeDiagnostic({ isError: true, content: [] }, error, { component: "agent-bridge", operation: name, requestId: args.requestId, readOnly: config.annotations?.readOnlyHint === true });
+    }
+  }), { env });
 
   function scope(expected, actual) {
     try {
@@ -64,7 +84,7 @@ export function createAntigravityOutboundBridge({ resolveSender = resolveAntigra
     server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: true, openWorldHint: !readOnly } }, async (args, extra) => {
       const options = { component: "agent-bridge", operation: name, requestId: args.requestId, conversationId: args.conversationId, readOnly };
       try {
-        const value = await handler(args, extra);
+        const value = await reload.run(() => handler(args, extra));
         const failure = antigravityDeliveryError(value);
         if (failure) return withBridgeDiagnostic({ ...result(value), isError: true }, failure, { ...options, readOnly: false, msgId: value.result?.msgId });
         if (value?.diagnostic && (value.nativeReceipt === null || value.sender?.status !== "verified")) return withBridgeDiagnostic({ ...result(value), isError: true }, { diagnostic: value.diagnostic }, options);
@@ -123,7 +143,8 @@ export function createAntigravityOutboundBridge({ resolveSender = resolveAntigra
     return targets.read({ ...args, cwd: identity.cwd, sender: identity, ...(args.target === "codex" ? { threadId: args.conversationId } : { sessionId: args.conversationId }), beforeSend: recheck(identity, extra) });
   });
 
-  return { server, close: async () => { await targets.close(); await server.close(); } };
+  reload.listen();
+  return { server, reload, busy: () => deliveries.active.size ? "Antigravity outbound deliveries are still active" : null, close: async () => { await targets.close(); await server.close(); } };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -136,7 +157,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     await bridge.close();
     await stopProcessInspectors();
   };
-  for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void stop(); });
-  process.stdin.once("end", () => { void stop(); });
   await bridge.server.connect(new StdioServerTransport());
+  const shutdown = exitWhenClientCloses({ busy: bridge.busy, stop });
+  for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void shutdown.close(signal); });
 }

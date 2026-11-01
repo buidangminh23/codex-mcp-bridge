@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-const SESSION_VARIABLE = /^(?:CLAUDE|CLAUDECODE|CODEX_|ANTHROPIC_|MCP_)/i;
+const SESSION_VARIABLE = /^(?:CLAUDE|CLAUDECODE|CODEX_|ANTHROPIC_|AGENT_RELAY_|MCP_)/i;
 
 export function hermeticTestEnv(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([name]) => !SESSION_VARIABLE.test(name)));

@@ -1,26 +1,33 @@
 # Project onboarding and shared authorization
 
-The recommended global installation registers the bridges automatically:
+The recommended global installation registers the bridges and configures the
+independent worker relay automatically:
 
 ```sh
-npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
+npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
 ```
 
 In Windows PowerShell use `npm.cmd`. The script allowance authorizes only this
 package's setup hook; npm versions that block install scripts by default need
-it. A plain install runs setup only when the hook is allowed. Append
-`--foreground-scripts` to see progress. If npm prints
+it. A plain install runs setup only when the hook is allowed.
+`--foreground-scripts` displays progress. If npm prints
 `1 package had install scripts blocked`, rerun the recommended command or run
 `codex-bridge-setup` explicitly. The setup creates
 `codex-bridge` for Claude Code and the separate `codex-bridge-desktop` shared
 Claude connector, configures Codex and Antigravity, and initializes the native
-relay on Windows/macOS. See [installation](../README.md#installation).
+relay on Windows/macOS. It also installs the per-user background service and
+worker communication settings, including Antigravity's four scoped relay tool
+grants. See [installation](../README.md#installation).
 
 Setup preserves existing scope and permission choices. Registration does not
 grant workspace trust, authorize cross-project work, or establish a live
 connection. The shared Desktop connector uses local app-server sessions;
 native Codex Desktop handoffs require a verified Claude Code sender in the
-same saved project.
+same saved project. Independent CLI workers require their own provider
+authentication and project authorization; they can communicate while Desktop
+apps are closed or frozen. A frozen UI still cannot accept new user input or
+display results. Use a terminal or another responsive client, subject to the
+[background worker prerequisites](../README.md#independent-background-workers).
 
 `codex-bridge-setup --check` inspects all saved registrations. Use
 `codex-bridge-setup --dry-run` to preview or rerun `codex-bridge-setup` to apply
@@ -31,14 +38,20 @@ If app configuration is incomplete, npm retains the package for repair; its
 success exit alone does not verify setup. Explicit setup and `--check` return
 a nonzero status until the saved configuration passes verification.
 
-## Optional shared project policy
+## Shared project policy
 
-Both bridge directions can read the same optional policy file via
+Native Codex/Claude handoffs can read the same optional policy file via
 `CODEX_BRIDGE_PROJECT_POLICY`. `bridge-projects` defaults to
 `~/.config/GptClaudeBridge/projects.json`. A shared home-directory path avoids
 different AppData views in packaged Windows applications. The policy stores
 canonical directory identities; do not copy it to a new machine as proof of
 authorization there.
+
+Independent background dispatch always requires a matching explicit project
+or parent grant from the shared
+policy; setup preserves grants and revocations rather than authorizing a new
+project. Use `bridge-projects allow-project <absolute-project-path>` for a
+selected project (`bridge-projects.cmd` on Windows), or the source commands below.
 
 ```sh
 node scripts/bridge-projects.mjs allow-project /absolute/projects/example

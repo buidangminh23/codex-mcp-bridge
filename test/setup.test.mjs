@@ -4,9 +4,22 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { automaticSetupEnabled, checkSetup, printSetup, runSetup, setupArguments, setupEnvironment, setupPaths } from "../src/setup.mjs";
+import { automaticSetupEnabled, checkSetup, printSetup, runSetup, setupArguments, setupEnvironment, setupPaths, setupProcessFailure } from "../src/setup.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
+
+test("one-command setup preserves structured service failure codes without copying private output", () => {
+  const service = setupProcessFailure(process.execPath, ["setup-background-relay.mjs"], {
+    status: 1, stdout: JSON.stringify({ configured: false, service: { code: "TASK_SCHEDULER_UNAVAILABLE" }, token: "private-value" }), stderr: "",
+  });
+  assert.equal(service.code, "TASK_SCHEDULER_UNAVAILABLE");
+  assert.match(service.message, /TASK_SCHEDULER_UNAVAILABLE/);
+  assert.doesNotMatch(service.message, /private-value|token/);
+  const diagnostic = setupProcessFailure(process.execPath, ["setup-background-relay.mjs"], { status: 1,
+    stderr: "Bridge diagnostic (include this block in a bug report)\nWORKER_STORAGE_UNSAFE | background-relay / setup\nReason: private account data\n" });
+  assert.equal(diagnostic.code, "WORKER_STORAGE_UNSAFE");
+  assert.doesNotMatch(diagnostic.message, /private account data/);
+});
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-setup-"));
@@ -19,10 +32,13 @@ function fixture(t) {
   const paths = setupPaths(env, "win32");
   const calls = [];
   const inventory = new Map();
+  let backgroundConfigured = false;
   const write = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(value)); };
   const registration = (worker, extra = {}) => ({ command: process.execPath,
     args: [path.join(root, "src", "mcp-supervisor.mjs"), worker], ...extra });
-  const standalone = (worker, caller) => ({ command: process.execPath, args: [path.join(root, "src", worker)], ...(caller ? { env: { ANTIGRAVITY_BRIDGE_CALLER: caller } } : {}) });
+  const standalone = (worker, caller) => ({ command: process.execPath,
+    args: ["antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs"].includes(worker) ? [path.join(root, "src", "mcp-supervisor.mjs"), worker] : [path.join(root, "src", worker)],
+    ...(caller ? { env: { ANTIGRAVITY_BRIDGE_CALLER: caller } } : {}) });
   const run = (command, args, childEnv) => {
     calls.push({ command, args, env: childEnv });
     if (args[0] === "mcp") {
@@ -45,6 +61,9 @@ function fixture(t) {
       write(path.join(paths.gemini, "mcp_config.json"), { mcpServers: { "agent-bridge": standalone("antigravity-outbound-bridge.mjs") } });
       write(path.join(paths.gemini, "sidecars", "codex-bridge", "sidecar.json"), standalone("antigravity-sidecar.mjs"));
       write(path.join(paths.gemini, "config.json"), { sidecars: { "codex-bridge": { enabled: true } } });
+    } else if (name === "setup-background-relay.mjs") {
+      if (!args.includes("--check")) backgroundConfigured = true;
+      return JSON.stringify({ configured: backgroundConfigured, liveVerified: backgroundConfigured, transportReady: backgroundConfigured });
     } else throw new Error(`Unexpected setup script ${name}`);
     return "{}";
   };
@@ -120,10 +139,13 @@ test("global setup initializes all native and Antigravity entries then verifies 
   assert.equal(result.configured, true, JSON.stringify(result));
   assert.equal(result.liveVerified, false);
   const scripts = setup.calls.filter((call) => call.args[0] !== "mcp");
-  assert.deepEqual(scripts.map((call) => path.basename(call.args[0])), ["install-claude-code.mjs", "install-claude-desktop.mjs", "install-native-relay.mjs", "install-codex-mcp.mjs", "install-antigravity-bridge.mjs"]);
+  assert.deepEqual(scripts.map((call) => path.basename(call.args[0])), ["install-claude-code.mjs", "install-claude-desktop.mjs", "install-native-relay.mjs", "install-codex-mcp.mjs", "install-antigravity-bridge.mjs", "setup-background-relay.mjs", "setup-background-relay.mjs"]);
   assert.ok(scripts[2].args.includes("--desktop-tasks"));
   assert.ok(!scripts[2].args.includes("--no-bootstrap"));
-  assert.ok(scripts.every((call) => call.args.includes("--setup")));
+  assert.ok(scripts.slice(0, 5).every((call) => call.args.includes("--setup")));
+  assert.deepEqual(scripts[5].args.slice(1), ["--json"]);
+  assert.deepEqual(scripts[6].args.slice(1), ["--check", "--json"]);
+  assert.equal(result.verification.find(item => item.name === "Independent background relay").liveVerified, true);
   assert.equal(scripts[0].env.CODEX_BRIDGE_AUTOSTART, "0");
   assert.ok(scripts[1].args.includes("codex-bridge-desktop"));
   assert.ok(scripts[4].args.includes("--all"));
@@ -138,7 +160,8 @@ test("global setup initializes all native and Antigravity entries then verifies 
 test("setup help exposes one command for updating the package and applying managed settings", () => {
   const result = runSetup({ args: ["--help"], run: () => assert.fail("must not run") });
   assert.match(result.help, /npm install -g @minhspark\/codex-mcp-bridge@latest --allow-scripts=@minhspark\/codex-mcp-bridge/);
-  assert.match(result.help, /loaded app connections are verified separately/);
+  assert.match(result.help, /background relay health and loaded native app connections are verified separately/);
+  assert.match(result.help, /--foreground-scripts/);
 });
 
 test("an existing relay routing opt-out is not forced back on during reinstall", (t) => {
@@ -174,7 +197,8 @@ test("read-only verification distinguishes missing bootstrap from a disabled reg
   assert.equal(disabled.status, "configured");
   assert.equal(disabled.deliveryEnabled, false);
   assert.ok(disabled.notices.some((notice) => /intentionally disabled/.test(notice)));
-  assert.ok(setup.calls.every((call) => call.args[0] === "mcp" && ["list", "get"].includes(call.args[1])));
+  assert.ok(setup.calls.every((call) => call.args[0] === "mcp" && ["list", "get"].includes(call.args[1])
+    || path.basename(call.args[0]) === "setup-background-relay.mjs" && JSON.stringify(call.args.slice(1)) === JSON.stringify(["--check", "--json"])));
 });
 
 test("global updates preserve disabled delivery choices as configured restrictions instead of installation failures", (t) => {
@@ -295,7 +319,8 @@ test("read-only verification detects historical window-opening settings without 
   const result = checkSetup({ ...setup, platform: "win32", root });
   assert.equal(result.configured, false);
   assert.equal(result.components.filter((item) => /silent configuration/.test(item.detail ?? "")).length, 2);
-  assert.ok(setup.calls.every((call) => call.args[0] === "mcp" && ["list", "get"].includes(call.args[1])));
+  assert.ok(setup.calls.every((call) => call.args[0] === "mcp" && ["list", "get"].includes(call.args[1])
+    || path.basename(call.args[0]) === "setup-background-relay.mjs" && JSON.stringify(call.args.slice(1)) === JSON.stringify(["--check", "--json"])));
   assert.equal(JSON.parse(fs.readFileSync(setup.paths.code, "utf8")).mcpServers["codex-bridge"].env.CODEX_BRIDGE_OPEN_IN_APP, "1");
   assert.equal(JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8")).mcpServers["codex-bridge-desktop"].env.CODEX_BRIDGE_OPEN_IN_APP, "1");
 });

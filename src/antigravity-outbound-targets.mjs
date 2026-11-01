@@ -9,6 +9,7 @@ import { assertRecipientClass } from "./recipient-preflight.mjs";
 import { recoverClaudeDesktopSession, sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
+import { cloneReloadState } from "./reload-control.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -50,10 +51,12 @@ export function createAntigravityOutboundTargets(options = {}) {
   const peerFactory = options.peerFactory ?? ((settings) => new PeerEndpoint(settings));
   const receipts = new Map();
   let peer;
+  let peerCwd;
+  let paused = false;
   let closed = false;
 
   function operation(sender, beforeSend, required = false) {
-    if (closed) throw blocked("Antigravity outbound targets have been closed");
+    if (closed || paused) throw blocked("Antigravity outbound targets are closed or quiesced");
     if (required && typeof beforeSend !== "function") throw blocked("A live Antigravity sender revalidation callback is required");
     const identity = senderIdentity(sender);
     const cwd = captureDirectory(identity.cwd);
@@ -61,7 +64,7 @@ export function createAntigravityOutboundTargets(options = {}) {
     const accounts = readAccounts();
     const accountContext = requireBridgeAccounts(accounts);
     const check = async () => {
-      if (closed) throw blocked("Antigravity outbound targets have been closed");
+      if (closed || paused) throw blocked("Antigravity outbound targets are closed or quiesced");
       assertAccounts(accountContext);
       roots.recheck(root, "Antigravity sender project");
       const current = captureDirectory(identity.cwd);
@@ -210,7 +213,10 @@ export function createAntigravityOutboundTargets(options = {}) {
     if (target !== "claude") throw blocked("Target must be codex or claude");
     const recipient = await recoverClaudeRecipient(context, sessionId, taskId);
     assertRecipientClass(recipient, context.identity);
-    if (!peer) peer = peerFactory({ name: `antigravity-${process.pid}`, cwd: context.cwd, signalExit: false, env, protectSocket: protectCurrentUserPipe });
+    if (!peer) {
+      peerCwd = context.cwd;
+      peer = peerFactory({ name: `antigravity-${process.pid}`, cwd: peerCwd, signalExit: false, env, protectSocket: protectCurrentUserPipe });
+    }
     await peer.start();
     let msgId;
     try {
@@ -275,5 +281,54 @@ export function createAntigravityOutboundTargets(options = {}) {
     await peer?.closed;
   }
 
-  return { list, send, read, close };
+  const reloadReason = () => peer?.reloadReason() ?? null;
+
+  async function quiesce() {
+    const reason = reloadReason();
+    if (reason) throw new Error(reason);
+    paused = true;
+    await peer?.quiesce();
+  }
+
+  function exportReloadState() {
+    if (!paused || reloadReason()) throw new Error("Quiesce Antigravity targets before exporting reload state");
+    return cloneReloadState({ receipts: [...receipts], peer: peer ? { cwd: peerCwd, state: peer.exportReloadState() } : null });
+  }
+
+  function restoreReloadState(input) {
+    if (peer || receipts.size || closed) throw new Error("Antigravity reload state requires empty targets");
+    const state = cloneReloadState(input);
+    if (!state || !Array.isArray(state.receipts) || state.receipts.length > 100000
+      || state.peer !== null && (!state.peer || typeof state.peer.cwd !== "string" || !path.isAbsolute(state.peer.cwd))) {
+      throw new Error("Invalid Antigravity target reload state");
+    }
+    const restored = new Map();
+    for (const pair of state.receipts) {
+      if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || !pair[0] || restored.has(pair[0])) throw new Error("Invalid Antigravity receipt reload record");
+      const record = pair[1];
+      const identity = senderIdentity(record?.sender);
+      if (typeof record.cwd !== "string" || !path.isAbsolute(record.cwd) || typeof identity.cwd !== "string" || !sameDirectory(record.cwd, identity.cwd)
+        || !record.accountContext || typeof record.accountContext.codex !== "string" || !record.accountContext.codex
+        || typeof record.accountContext.claude !== "string" || !record.accountContext.claude) throw new Error("Invalid Antigravity receipt ownership reload record");
+      restored.set(pair[0], { ...record, sender: identity });
+    }
+    if (!state.peer && restored.size) throw new Error("Antigravity receipts require their native peer state");
+    if (state.peer) {
+      const nativeMessages = state.peer.state?.sentMessages;
+      if (!Array.isArray(nativeMessages) || nativeMessages.length !== restored.size || nativeMessages.some(([id]) => !restored.has(id))) throw new Error("Antigravity receipt ownership does not match native peer state");
+      const candidate = peerFactory({ name: `antigravity-${process.pid}`, cwd: state.peer.cwd, signalExit: false, env, protectSocket: protectCurrentUserPipe });
+      candidate.restoreReloadState(state.peer.state);
+      peer = candidate;
+      peerCwd = state.peer.cwd;
+    }
+    for (const [id, record] of restored) receipts.set(id, record);
+  }
+
+  async function activate() {
+    if (closed) throw new Error("Antigravity targets are closed");
+    await peer?.resume();
+    paused = false;
+  }
+
+  return { list, send, read, close, reloadReason, quiesce, exportReloadState, restoreReloadState, activate };
 }

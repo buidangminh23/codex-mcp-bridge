@@ -37,6 +37,18 @@ function darwinFixture() {
   return f;
 }
 
+test("supervisor ancestry preserves the exact native host check on Windows and macOS", async () => {
+  for (const make of [fixture, darwinFixture]) {
+    const f = make();
+    f.ancestry.unshift({ pid: 300, parentPid: 200, processStart: f.deps.platform === "win32" ? "3000" : "Wed Oct 28 10:00:02 2026" });
+    f.images.unshift({ pid: 300, executable: f.deps.platform === "win32" ? "C:\\Program Files\\nodejs\\node.exe" : "/usr/local/bin/node" });
+    f.deps.parentPid = 300;
+    assert.equal((await f.resolve()).status, "verified");
+    f.images[1].executable = f.deps.platform === "win32" ? "C:\\agy\\agy.exe" : "/usr/local/bin/agy";
+    assert.equal((await f.resolve()).status, "unverified");
+  }
+});
+
 test("darwin App ancestry and exact native project verify without optional workspace metadata", async () => {
   const f = darwinFixture();
   const result = await f.resolve();

@@ -120,9 +120,16 @@ function samePath(left, right, platform) {
   catch { return false; }
 }
 
+function nodeLauncher(command, expected, platform) {
+  if (samePath(command, expected, platform)) return true;
+  if (typeof command !== "string" || !path.isAbsolute(command) || command.includes("\0")) return false;
+  if (!(platform === "win32" ? /^node\.exe$/i : /^node$/).test(path.basename(command))) return false;
+  try { return fs.statSync(command).isFile(); } catch { return false; }
+}
+
 function ownedEntry(entry, expected, platform) {
   if (entry === undefined) return;
-  if (!object(entry) || !samePath(entry.command, expected.command, platform)
+  if (!object(entry) || !nodeLauncher(entry.command, expected.command, platform)
       || !Array.isArray(entry.args) || entry.args.length !== 1 || !samePath(entry.args[0], expected.args[0], platform)
       || entry.type !== undefined && entry.type !== "stdio"
       || ["url", "serverUrl", "serverURL", "httpUrl", "headers", "oauth", "authProviderType"].some((key) => Object.hasOwn(entry, key))

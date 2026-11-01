@@ -4,6 +4,18 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.4] - 2026-11-01
+
+### Fixed
+
+- `codex-bridge-update` no longer stops with `UPDATE_SETUP_INCOMPLETE` / `WORKER_MCP_COLLISION` on machines with more than one Node.js installation. The Antigravity `worker-relay` entry is still recognised as the bridge's own when it launches this package's `background-relay-mcp.mjs` through another existing `node` / `node.exe`, matching how every other bridge MCP entry is checked. Entries that use a different script, a non-Node launcher, a missing executable, a URL, headers or embedded environment are still refused and left unchanged.
+
+### Upgrade
+
+```sh
+npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
+```
+
 ## [1.26.3] - 2026-11-01
 
 ### Fixed

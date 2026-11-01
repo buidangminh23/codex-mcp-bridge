@@ -190,6 +190,36 @@ test("newer staged runtimes are never downgraded even when the global package is
   assert.equal(f.calls.some(item => item.kind === "service"), false);
 });
 
+test("a newer updater resumes after a previous update staged an older safe runtime", async t => {
+  const f = fixture(t);
+  f.configured(true);
+  const targetVersion = "1.26.3";
+  const stagedRoot = path.join(f.directory, "previous update cache");
+  f.writePackage(f.root, targetVersion);
+  f.options.readRuntime = () => ({ packageRoot: stagedRoot, packageVersion: VERSION, environment: {} });
+  const run = f.options.run;
+  f.options.run = async (command, args, settings) => {
+    if (args[1] === "install") {
+      f.calls.push({ kind: "command", command, args, settings });
+      f.writePackage(f.globalRoot, targetVersion);
+      return { status: 0, stdout: "" };
+    }
+    return run(command, args, settings);
+  };
+  f.options.installService = async request => {
+    f.calls.push({ kind: "service", request });
+    return { configured: true, enabled: true, liveVerified: true, ready: true, pid: 123,
+      version: request.root === stagedRoot ? VERSION : targetVersion };
+  };
+  const result = await runUpdate(f.options);
+  assert.equal(result.version, targetVersion);
+  assert.equal(result.service.version, targetVersion);
+  assert.equal(result.migrated, false);
+  assert.equal(f.installCalls().length, 1);
+  assert.ok(f.installCalls()[0].args.includes(`${PACKAGE}@${targetVersion}`));
+  assert.deepEqual(f.calls.filter(item => item.kind === "service").map(item => [item.request.root, item.request.check]), [[stagedRoot, true], [f.globalRoot, true]]);
+});
+
 test("npm EBUSY after a successful migration preserves that runtime and reports a safe retry", async t => {
   const f = fixture(t);
   f.configured(true);

@@ -151,7 +151,7 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
     if (runtime.environment !== undefined) childEnv = { ...Object.fromEntries(Object.entries(childEnv).filter(([name]) => !MANAGED_ENV.has(name.toUpperCase()))), ...runtime.environment };
     childEnv.AGENT_RELAY_DIRECTORY = config.paths.root;
   }
-  const awaitService = async (target, mutate, phase) => {
+  const awaitService = async (target, mutate, phase, expectedVersion = version) => {
     const deadline = now() + waitMs;
     let check = !mutate;
     for (;;) {
@@ -163,8 +163,8 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
         if (phase === "migration" && !quiescent(config)) throw Object.assign(failure("UPDATE_RELAY_PENDING", `The disabled relay still has an owned process whose release could not be verified. ${RETRY}`, phase), { pending: true });
         return { enabled: false, ready: false, liveVerified: false };
       }
-      if (service.enabled === true && service.liveVerified === true && service.ready === true && service.version === version
-          && Number.isSafeInteger(service.pid) && service.pid > 0) return { enabled: true, ready: true, liveVerified: true, version, pid: service.pid };
+      if (service.enabled === true && service.liveVerified === true && service.ready === true && service.version === expectedVersion
+          && Number.isSafeInteger(service.pid) && service.pid > 0) return { enabled: true, ready: true, liveVerified: true, version: expectedVersion, pid: service.pid };
       if (now() >= deadline) throw Object.assign(failure("UPDATE_RELAY_PENDING", `The relay is still completing its owned runtime transition. ${RETRY}`, phase), { pending: true });
       await sleep(Math.min(1000, Math.max(1, deadline - now())));
     }
@@ -177,7 +177,7 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
     } else {
       onProgress("Waiting for the legacy relay to finish existing work and activate the update runtime.");
       const staged = runtime.packageVersion && !legacy(runtime.packageVersion) && !newerVersion("1.26.2", runtime.packageVersion);
-      const service = await awaitService(staged ? runtime.packageRoot : root, !staged, "migration");
+      const service = await awaitService(staged ? runtime.packageRoot : root, !staged, "migration", staged ? runtime.packageVersion : version);
       migrated = !staged && service.enabled;
     }
   }

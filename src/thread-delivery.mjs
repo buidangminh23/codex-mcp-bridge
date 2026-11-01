@@ -345,7 +345,7 @@ export class DesktopTaskDelivery {
         await this.receipts.write(identity.key, { ...receipt, state: "known", threadId });
         creationConfirmed = true;
         this.security.registerThread(threadId);
-        if (response.firstTurn && response.firstTurn.status !== "accepted") throw Object.assign(new Error(`Desktop created task ${threadId}; its first turn was not confirmed accepted. Inspect the original native receipt.`), { code: "CODEX_FIRST_TURN_NOT_ACCEPTED", deliveryState: "sent", phase: "first_turn" });
+        if (response.firstTurn && response.firstTurn.status !== "accepted") throw Object.assign(new Error(`Desktop created task ${threadId}; its first turn reports ${["failed", "waitingOnApproval", "waitingOnUserInput", "outcome-unknown"].includes(response.firstTurn.status) ? response.firstTurn.status : "an unconfirmed state"}. Inspect the original native receipt.`), { code: "CODEX_FIRST_TURN_NOT_ACCEPTED", deliveryState: "sent", phase: "first_turn" });
         const created = { threadId, name, cwd, projectId: project.projectId, projectName: project.label, backend: NATIVE_BACKEND };
         const delivered = { ...created, previousTurnId: null, deliveryStatus: "accepted", responseObservation: {
             operation: "create_thread", threadId, previousTurnId: null, expectedCwd: cwd,

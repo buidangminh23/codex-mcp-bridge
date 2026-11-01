@@ -14,11 +14,11 @@ The same single command updates the package, reapplies managed client settings a
 npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
 ```
 
-Use `npm.cmd` in Windows PowerShell. CLI authentication and explicit project grants remain separate from installing configuration; no Desktop credentials are copied and no existing denials are removed.
+Use `npm.cmd` in Windows PowerShell. Setup applies the managed client registrations, background startup and scoped worker communication settings, including Antigravity's four relay tool grants. CLI authentication and explicit project grants remain separate from installing configuration; no Desktop credentials are copied and no existing denials are removed. Setup supplies a missing Codex CLI; Claude Code and `agy` must be installed separately when those workers are needed.
 
 ### Added
 
-- An independent per-user relay and separate Codex, Claude and Antigravity CLI workers. Background jobs and cross-worker messages continue without a responsive Desktop host. Native conversations retain their existing native routing and are never silently replaced by worker sessions.
+- An independent per-user relay and separate Codex, Claude and Antigravity CLI workers, supporting all six worker-to-worker directions. Background jobs and cross-worker messages can continue without a responsive Desktop host. Native conversations retain their existing native routing and are never silently replaced by worker sessions.
 - Durable job receipts, authenticated local transport, same-project delegation, bounded queues and delegation depth, and persistent diagnostic reports. Interrupted sends stay unknown; only proven queued work resumes after daemon restart.
 - Background worker status, discovery, send and receipt tools plus the `worker-relay` command. Service readiness, CLI authentication and model execution evidence are reported separately.
 - Managed background startup and recovery on Windows, macOS and Linux, with hidden Windows launches and idle adoption of updated service code. Setup preserves disabled services and reports pending activation honestly.
@@ -27,6 +27,13 @@ Use `npm.cmd` in Windows PowerShell. CLI authentication and explicit project gra
 
 - Antigravity MCP registrations use managed supervisors so future package updates can replace idle workers without reconnecting the host. Live CLI sessions and unconfirmed deliveries defer reload; crashed operations are never replayed.
 - Worker CLI launches isolate their session identity from native Desktop chats. Claude worker launches suppress optional user/plugin startup hooks without changing authentication or permission policy.
+- Antigravity worker discovery accepts the CLI's native MCP dispatcher when initialization does not enumerate individual server tools. Dispatcher availability is reported separately from verified relay-tool discovery; missing relay tools and permission failures still produce typed diagnostics.
+
+### Validation and limits
+
+- Live Windows checks completed all six directions between Codex, Claude and Antigravity workers with Antigravity CLI 1.4.12. A saturated delegation returned `WORKER_DELEGATION_CAPACITY` with `not_sent` instead of queuing behind waiting workers.
+- Closed or frozen Desktop apps do not host these workers. A frozen UI cannot accept new user input or display results until it responds; a terminal's `worker-relay` command or another responsive MCP client can submit authorized background work and read receipts.
+- Execution still requires a running operating system and per-user service, installed and authenticated provider CLIs, an authorized project, network/provider availability, quota and effective tool permissions. Saved configuration is not a guarantee of readiness or a live verification result on another machine.
 
 ## [1.25.3] - 2026-11-01
 

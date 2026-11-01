@@ -15,15 +15,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge" height="20" alt="license" /></a>
 </p>
 
-Connect **Claude, Codex, and Antigravity** through MCP, keeping work in each agent's own app and preserving native identity and permission checks. Supports Windows, macOS, and Linux; native Desktop integration supports Windows and macOS.
+Connect **Claude, Codex, and Antigravity** through MCP using native Desktop handoffs or independent CLI background workers. Native handoffs preserve each app's conversation identity and permission checks; workers have separate sessions and enforce provider permissions and project authorization. Supports Windows, macOS, and Linux; native Desktop integration supports Windows and macOS.
 
-The optional **Antigravity bridge** sends work both ways between existing Desktop conversations in the same project. Codex and Claude can also start and continue bridge-owned Antigravity CLI streaming sessions. Antigravity App replies remain in the App; outbound calls from Antigravity CLI are not supported. [Setup and current limits](#antigravity-app-and-cli).
+The **background worker relay** supports all six directions between Codex, Claude and Antigravity CLI workers, independently of Desktop responsiveness. The optional **native Antigravity bridge** connects existing Desktop conversations in the same project and offers separate bridge-owned CLI streaming sessions. Native App replies remain in the App. [Background workers](#independent-background-workers) · [Antigravity native and streaming-session limits](#antigravity-app-and-cli).
 
 https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 
 ## Installation
 
-One global npm command installs the package and configures the local Claude, Codex, and Antigravity bridges. Install and sign in to the apps you intend to use first. Setup preserves existing project restrictions and custom settings; it does not sign in, grant workspace trust, change permission modes, or restart running apps.
+One global npm command installs the package, configures the local Claude, Codex and Antigravity bridges, and installs the independent worker relay. Native handoffs require the selected Desktop apps; background work requires the selected provider CLIs and their own authentication. Setup preserves existing project restrictions and custom settings; it does not sign in, grant workspace trust, change permission modes, or restart running apps.
 
 ### Package — npm
 
@@ -43,17 +43,23 @@ Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows P
 
 ### Independent background workers
 
-`worker_status`, `list_workers`, `send_to_worker` and `read_worker_delivery` address separate Codex, Claude and Antigravity CLI workers. They are also available through the `worker-relay` command. The service runs outside Desktop processes, so background jobs and worker-to-worker communication do not depend on a responsive Desktop window. A native handoff still addresses its original native task; an uncertain native send is never silently replayed through a CLI worker.
+`worker_status`, `list_workers`, `send_to_worker` and `read_worker_delivery` address separate Codex, Claude and Antigravity CLI workers. The `worker-relay` command provides status, list, send and receipt-read operations from a terminal. All six worker directions are supported: Codex ↔ Claude, Codex ↔ Antigravity and Claude ↔ Antigravity. A native handoff still addresses its original native task; an uncertain native send is never silently replayed through a CLI worker.
+
+The service and worker processes run independently of Desktop hosts. Submitted background jobs and worker-to-worker communication can continue while those apps are closed or frozen. A frozen window cannot accept new user input or display new results until it responds again. Submit authorized background work or inspect its receipts through `worker-relay` in a terminal or another responsive MCP client; this does not repair or reopen the frozen UI.
+
+The operating system and per-user service must be running, the selected CLI must be installed and authenticated, and the project must be authorized. Provider access, network connectivity, quota and tool permissions still apply. Setup supplies a missing Codex CLI; install Claude Code and `agy` separately when those workers are needed. Sleep, shutdown, a disabled service or a provider failure can prevent execution.
 
 `authentication-unverified` with `canAcceptWork: true` is an informational state for a CLI without a supported authentication probe. It is not an authentication failure. Actual failed jobs have a durable diagnostic receipt. Keep the original request ID when inspecting or retrying an uncertain submission; after a terminal `failed` receipt confirms `not_sent`, fix the reported cause before creating a new authorized request.
 
 The package update configures per-user startup: Task Scheduler on Windows, a LaunchAgent on macOS and a systemd user service on Linux. It starts the service without opening apps or chats, preserves intentional disabled choices, and drains active jobs before adopting updated code. `worker-relay status` reports transport availability, provider authentication checks and recent errors separately. A saved configuration is not proof of live activation or model access.
 
-CLI authentication is separate from Desktop sign-in. Workers use each provider's official credential handling; the bridge does not copy Desktop tokens. Codex and Claude use ephemeral CLI sessions. Antigravity starts a fresh CLI-owned conversation and never resumes a Desktop conversation; its CLI may retain history according to provider behavior. No worker opens or navigates that history.
+CLI authentication is separate from Desktop sign-in. Workers use each provider's official credential handling; the bridge does not copy Desktop tokens. Codex and Claude use ephemeral CLI sessions. Antigravity starts a fresh CLI-owned conversation and never resumes a Desktop conversation; its CLI may retain history according to provider behavior and uses its shared MCP inventory. Setup preserves other MCP entries and effective provider permissions. No worker opens or navigates that history.
 
 Background dispatch uses the existing shared project-policy file. Select a project explicitly with `bridge-projects allow-project <absolute-project-path>` if it is not already authorized; updates preserve grants and revocations. Each child delegation stays in the same canonical project. Existing provider permissions remain enforced, including denials that prevent unattended execution.
 
 Keep the same request UUID for retries and read its durable receipt. Queued work can survive relay restarts; work that might already have reached a worker is marked unknown and is never replayed automatically. Failure reports remain readable after the original window closes, with error/cause codes, delivery certainty and report IDs. Errors from tool calls appear in their Claude/Codex/Antigravity tool results; this package does not create a separate Desktop popup or reopen a chat to show them.
+
+Worker delegation is bounded. `WORKER_DELEGATION_CAPACITY` means the destination has no free execution slot and that delegation was not sent or queued behind waiting workers. Inspect or finish existing delegated work before retrying the same unsent request. Queue and delegation limits are reported explicitly.
 
 `--allow-scripts=@minhspark/codex-mcp-bridge` authorizes only this package's setup hook. npm versions that block install scripts by default need this flag; a plain install works only when the hook is allowed. `--foreground-scripts` displays configuration progress and failures that npm otherwise hides. If npm prints `1 package had install scripts blocked`, rerun the recommended command or run `codex-bridge-setup` explicitly.
 
@@ -65,6 +71,7 @@ Keep the same request UUID for retries and read its durable receipt. Queued work
 | Codex Desktop, Windows/macOS | `codex-native-relay` | Native delivery, pipe forwarding, and relay executor bootstrap |
 | Codex and Claude Code | `antigravity-bridge` | Send to Antigravity App or bridge-owned CLI sessions |
 | Antigravity | `agent-bridge` and `codex-bridge` sidecar | Outbound agent messages and native App connectivity |
+| Independent CLI workers | `worker-relay` | Authorized background jobs and all six worker-to-worker directions |
 
 For native Claude-to-Codex handoffs, use an existing native Claude **Code** session and the same local project saved in Codex Desktop. The shared `codex-bridge-desktop` connector has its own legacy route; it does not establish a native Code sender identity. Setup applies saved configuration without opening or restarting apps. Saved configuration is not proof of a live connection; available supervisors reload compatible workers when idle. Complete [verification](#verify-the-installation) with the tools already available in the actual clients. If a native host is unloaded, report the diagnostic instead of opening chats to load a relay.
 
@@ -113,18 +120,19 @@ Run `codex-bridge-setup` after installing through Homebrew. The installers recor
 | Codex → Claude Desktop Code | Automatic `claude-bridge` registration |
 | Codex / Claude Desktop Code → Antigravity App or CLI | Automatic Antigravity registrations |
 | Antigravity App → Codex / Claude Desktop Code | Automatic outbound registration and sidecar |
+| Codex ↔ Claude ↔ Antigravity CLI workers | Automatic independent relay setup; provider CLIs, authentication and project grants required |
 | Claude Code ↔ Codex inside VS Code | Separate Windows preview registrations below |
 | ChatGPT → paired Codex Desktop | Hosted plugin plus `codex-sites-connector --pair` |
 
 ### Antigravity App and CLI
 
-The global npm setup registers all Antigravity components. Install and sign in to the Antigravity App and/or `agy` CLI to use them. The following commands are optional for selective manual setup or repair:
+The global npm setup registers all Antigravity components, including the independent `worker-relay` MCP entry and its four scoped CLI communication grants. Install and sign in to the Antigravity App for native conversations or the `agy` CLI for CLI work. The following commands configure only the native bridge and its legacy streaming-session tools; use the global setup above to configure the independent worker service as well:
 
 ```bash
 antigravity-mcp-bridge-install --all
 ```
 
-**Windows PowerShell — all components**
+**Windows PowerShell — all native bridge components**
 
 ```powershell
 antigravity-mcp-bridge-install.cmd --all
@@ -154,9 +162,9 @@ antigravity-mcp-bridge-install --desktop
 antigravity-mcp-bridge-install --all --dry-run
 ```
 
-Use `.cmd` for each command on Windows. `--all` includes all three components; the individual commands are alternatives when only some clients are needed. The installer preserves unrelated configuration and native permissions. Reload Codex/Claude to load the new MCP server. Antigravity launches its own sidecar from `~/.gemini/config/sidecars/codex-bridge/sidecar.json`; do not run that sidecar manually or copy authentication environment variables between processes.
+Use `.cmd` for each command on Windows. `--all` includes the Codex, Claude and Antigravity native bridge components; the individual commands are alternatives when only some clients are needed. The installer preserves unrelated configuration and native permissions. Managed MCP supervisors adopt compatible updates when idle; an old direct process remains on its loaded version until the host reconnects normally. No app or chat is opened to force readiness. Antigravity launches its own sidecar from `~/.gemini/config/sidecars/codex-bridge/sidecar.json`; do not run that sidecar manually or copy authentication environment variables between processes.
 
-The `agy` CLI must be installed and signed in separately. CLI sessions are started through the `start_antigravity_cli_session` MCP tool; there is no separate `--cli` installer flag. Set `ANTIGRAVITY_CLI_BIN` to the absolute `agy` executable path in the MCP server environment if automatic discovery cannot find it.
+The `agy` CLI must be installed and signed in separately. The legacy `start_antigravity_cli_session` tool creates streaming sessions owned by the calling bridge process; independent background work instead uses `send_to_worker` with `agent: "antigravity"`. There is no separate `--cli` installer flag. Set `ANTIGRAVITY_CLI_BIN` to the absolute `agy` executable path in the MCP server environment if automatic discovery cannot find it.
 
 | Tool | Behavior |
 | --- | --- |
@@ -167,17 +175,17 @@ The `agy` CLI must be installed and signed in separately. CLI sessions are start
 | `read_antigravity_delivery` | Reads the original receipt without resending. |
 | `close_antigravity_cli_session` | Closes an idle CLI session owned by the sender. |
 
-Generate a new `requestId` UUID for each intentional delivery and reuse it only when inspecting or retrying that same delivery. A pending or unknown receipt must be inspected before further action. Receipts survive process restarts; live CLI processes do not. A CLI timeout retains its conversation identity for inspection. No mode or permission-bypass flag is added; headless tool requests requiring interaction may be denied by Antigravity.
+For these native bridge and legacy streaming-session tools, generate a new `requestId` UUID for each intentional delivery and reuse it only when inspecting or retrying that same delivery. A pending or unknown receipt must be inspected before further action. Receipts survive process restarts; live streaming CLI processes do not. A CLI timeout retains its conversation identity for inspection. No mode or permission-bypass flag is added; headless tool requests requiring interaction may be denied by Antigravity.
 
-The App adapter uses the official [sidecar `agentapi`](https://antigravity.google/docs/sidecars), verifies native workspace metadata, and refuses busy or ambiguous destinations. An App `accepted` receipt confirms native acceptance, not a completed agent reply. Open the exact App conversation to read its response. The CLI adapter uses the official [streaming JSON interface](https://antigravity.google/docs/cli/headless) and returns the agent's final result. It creates bridge-owned headless sessions; it does not attach to an already running interactive terminal. The two surfaces never substitute for one another.
+The App adapter uses the official [sidecar `agentapi`](https://antigravity.google/docs/sidecars), verifies native workspace metadata, and refuses busy or ambiguous destinations. An App `accepted` receipt confirms native acceptance, not a completed agent reply. Its response remains in the exact native App conversation and can be read when that UI is responsive. The CLI adapter uses the official [streaming JSON interface](https://antigravity.google/docs/cli/headless) and returns the agent's final result. It creates bridge-owned headless sessions; it does not attach to an already running interactive terminal. The two surfaces never substitute for one another.
 
-The installer also registers **agent-bridge inside Antigravity Desktop** in `~/.gemini/config/mcp_config.json`. Reload the App after installation to discover it. From an Antigravity conversation, ask the agent to check `agent_bridge_status`, call `list_agent_tasks` for `codex` or `claude`, then use `send_to_agent_task` with the exact destination ID, project directory, prompt, and a fresh request UUID. Claude destinations also require their native `taskId`. Read `read_agent_delivery` without resending; `read_agent_task` reads the selected Codex task's response or Claude's native task metadata.
+The installer also registers **agent-bridge inside Antigravity Desktop** in `~/.gemini/config/mcp_config.json`. Once the host has loaded that registration, use the tools available in the intended Antigravity conversation: check `agent_bridge_status`, call `list_agent_tasks` for `codex` or `claude`, then use `send_to_agent_task` with the exact destination ID, project directory, prompt, and a fresh request UUID. Claude destinations also require their native `taskId`. Read `read_agent_delivery` without resending; `read_agent_task` reads the selected Codex task's response or Claude's native task metadata.
 
-Outbound calls verify Antigravity's per-call MCP metadata, Desktop process ancestry, native workspace/project, and effective permission settings. The sender is attributed as Antigravity. Codex keeps its native task settings; Claude's inbound policy and permission-class checks remain in effect. A socket write to Claude is `sent_unconfirmed`, not acceptance or completion. After MCP restart, a saved receipt remains available but live Claude reply tracking may be unavailable; inspect the exact native task before further action.
+Native outbound calls verify Antigravity's per-call MCP metadata, Desktop process ancestry, native workspace/project, and effective permission settings. The sender is attributed as Antigravity. Codex keeps its native task settings; Claude's inbound policy and permission-class checks remain in effect. A socket write to Claude is `sent_unconfirmed`, not acceptance or completion. After MCP restart, a saved receipt remains available but live Claude reply tracking may be unavailable; inspect the exact native task before further action.
 
-If a caller says the bridge only supports one-way messaging, reload its `antigravity-bridge` MCP server after updating: older initialization instructions incorrectly denied the separate outbound route. An unavailable inbound sidecar does not prove that the App is closed or that outbound messaging is unsupported. If the App is already running, inspect its `codex-bridge` sidecar; check `agent_bridge_status` from Antigravity to verify outbound readiness independently.
+If a caller says the bridge only supports one-way messaging, compare its loaded version with the installed package: older initialization instructions incorrectly denied the separate native outbound route. A managed worker can reload when idle; an old direct MCP process requires a normal host reconnection. An unavailable inbound sidecar does not prove that the App is closed or that outbound messaging is unsupported. Use available `agent_bridge_status` diagnostics to verify the native outbound route independently, and `worker_status` for the independent workers.
 
-Outbound support targets existing local Codex tasks and live Claude Desktop Code sessions in the same project. Nested Antigravity callers, outbound CLI callers, App conversation creation, and automatic App reply forwarding are not implemented. Windows Desktop is the live verification platform; macOS ancestry has unit coverage and Linux outbound host verification fails closed. The existing Codex↔Claude bridge remains separate. Use `antigravity-mcp-bridge-install --all --remove` to remove only these registrations; delivery receipts are retained.
+Native outbound support targets existing local Codex tasks and live Claude Desktop Code sessions in the same project. That route rejects nested Antigravity callers and CLI callers claiming Desktop identity; App conversation creation and automatic App reply forwarding are not implemented. These native limits do not restrict the separately authorized CLI workers, which communicate through `worker-relay` in all six directions. Windows Desktop is the native live verification platform; macOS ancestry has unit coverage and Linux native outbound host verification fails closed. The existing Codex↔Claude native bridge remains separate. Use `antigravity-mcp-bridge-install --all --remove` to remove only the native bridge registrations; independent worker configuration and delivery receipts are retained.
 
 ### Windows (PowerShell)
 
@@ -321,7 +329,7 @@ On Windows and macOS, `codex-native-relay-install` adds this to the relay's entr
 env_vars = ["CODEX_APP_TOOLS_PIPE_PATH"]
 ```
 
-If you register the relay by hand, add the same line and append the variable name if `env_vars` already exists. Only the name is saved, never the temporary pipe path. Restart Codex Desktop after active work finishes so it relaunches the relay.
+If you register the relay by hand, add the same line and append the variable name if `env_vars` already exists. Only the name is saved, never the temporary pipe path. The changed environment takes effect when the native host next reconnects that MCP process; setup does not restart the app or open a chat to force it.
 
 ### Linux / WSL (Bash)
 
@@ -469,6 +477,9 @@ Use the bridge tools already available in the actual clients. Configuration chec
 | Codex Desktop | `native_relay_status` |
 | Codex / Claude Desktop Code with Antigravity installed | `antigravity_bridge_status` |
 | Antigravity App | `agent_bridge_status` |
+| Any configured background relay client | `worker_status` |
+
+For the independent service, `worker-relay status` (`worker-relay.cmd status` on Windows) works from a terminal without a responsive Desktop app. Inspect transport, CLI authentication and recent execution errors separately. A CLI with unverified authentication still needs a successful authorized job before model access is established.
 
 To check CLI registrations without sending work:
 
@@ -479,7 +490,7 @@ claude mcp list
 
 These optional CLI checks require the respective CLI on PATH; the complete setup check can also use its managed Codex CLI. On Windows use `codex.exe mcp list`. An installed skill is listed separately with `npx skills list` (add `-g` for user-wide skills); it is not an MCP registration.
 
-Send a short message and confirm its reply **in both directions**. Registration alone does not prove delivery.
+For an authorized live check, send a short message and confirm its reply on each selected route. Check worker-to-worker routes separately from native conversations; registration alone does not prove delivery.
 
 ## Use
 
@@ -534,10 +545,10 @@ Node.js 22.13+ is required. If a command is missing, open a new terminal and che
 If the package or registrations are missing, use the complete installation command:
 
 ```powershell
-npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
+npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
 ```
 
-On npm 12, `1 package had install scripts blocked` means the setup hook did not run. The scoped `--allow-scripts` flag authorizes this package's hook; it does not enable every package's scripts globally. Add `--foreground-scripts` to see lifecycle progress. A local `npm install`/`npm ci`, `--ignore-scripts`, or `CODEX_BRIDGE_SKIP_SETUP=1` intentionally skips automatic setup.
+On npm 12, `1 package had install scripts blocked` means the setup hook did not run. The scoped `--allow-scripts` flag authorizes this package's hook; it does not enable every package's scripts globally. `--foreground-scripts` displays lifecycle progress. A local `npm install`/`npm ci`, `--ignore-scripts`, or `CODEX_BRIDGE_SKIP_SETUP=1` intentionally skips automatic setup.
 
 For an already-installed package, preview and apply setup explicitly:
 
@@ -638,7 +649,7 @@ codex-bridge-setup.cmd --check
 
 1. Save the original task/delivery IDs and let active work finish before replacing its connection. A pending or uncertain delivery can intentionally defer automatic worker reload.
 2. In the affected Claude **Code** session, open `/mcp`, select `codex-bridge`, and reconnect. In ordinary Chat, inspect the separate `codex-bridge-desktop` connector. Reconnect the relevant Codex MCP entries in their actual task as needed.
-3. If the client cannot reload that connection, open a new Code session in the same saved project to verify the registration. Reopen the app only after active work is safe to stop. A window's **Reload** action may refresh its UI while retaining the old Code process and MCP failure state.
+3. If the client cannot reload that connection, retain its diagnostic until the host reconnects normally. Do not open or create a chat to bootstrap a relay. A window's **Reload** action may refresh its UI while retaining the old Code process and MCP failure state. Separately authorized background work remains available through the independent service when its own prerequisites are satisfied.
 4. Call the status tool from that client and compare its runtime version, registration and sender/relay state. A standalone process answering `initialize`, or printing `ready`, does not verify the app's connection.
 
 An old worker cannot learn a newly written client environment from a disk update alone. Compatible source changes can reload through the supervisor when idle, but changed launchers/environment or a blocked old connection may still require reconnecting. Do not restart active work merely to clear a receipt or make a status indicator green.
@@ -689,7 +700,7 @@ Closing an application window and quitting its native host have different effect
 
 **Symptoms:** `RELAY_UNAVAILABLE`, `connect ENOENT`, a missing native relay socket, or `thread ... already has an active writer`.
 
-Native Desktop handoffs require Codex Desktop to be installed, signed in and open on Windows/macOS. The app runs `codex-native-relay` while a regular task has its MCP servers loaded. Recovery never navigates to a task, launches a window, or activates Codex. The Desktop-owned supervisor restarts crashed native relay workers with bounded exponential backoff; pending requests fail without replay, and later requests use the recovered worker. Inherited native pipe hints are rediscovered through the original Desktop process ancestry when they become stale. Requests that never reached the relay wait up to 20 seconds, within their original deadline, for its transport to recover. `CODEX_BRIDGE_RELAY_WAKE=0` disables that wait; the retired `CODEX_BRIDGE_RELAY_KEEPER` flag cannot enable UI navigation.
+Native Desktop handoffs require Codex Desktop to be installed, signed in and running on Windows/macOS. The app runs `codex-native-relay` while a regular task has its MCP servers loaded. These native-host requirements do not apply to [independent background workers](#independent-background-workers). Recovery never navigates to a task, launches a window, or activates Codex. The Desktop-owned supervisor restarts crashed native relay workers with bounded exponential backoff; pending requests fail without replay, and later requests use the recovered worker. Inherited native pipe hints are rediscovered through the original Desktop process ancestry when they become stale. Requests that never reached the relay wait up to 20 seconds, within their original deadline, for its transport to recover. `CODEX_BRIDGE_RELAY_WAKE=0` disables that wait; the retired `CODEX_BRIDGE_RELAY_KEEPER` flag cannot enable UI navigation.
 
 Use the available `native_relay_status` and `codex_bridge_status` tools without opening a chat to load them. Native status performs a read-only `list_projects` probe and reports native dispatch separately from socket availability. Recovery requires the original Desktop-owned supervisor to remain alive: it cannot cold-start an unloaded native MCP, and it stops when the MCP client closes. After five unsuccessful worker replacements, report the exact diagnostic. Never open an old, new, empty, failed or internal **Native Relay** chat to bootstrap readiness. Rerun setup if registration/executor configuration is missing, and verify [native relay pipe forwarding](#native-relay-pipe-forwarding). Never persist a pipe address copied from a different app process. Worker hot reload cannot replace a running supervisor from an older release; configuration success alone does not prove that process is upgraded.
 

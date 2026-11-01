@@ -1,15 +1,18 @@
 # New macOS setup
 
-Connect Claude Desktop's **Code tab** and Codex Desktop through local MCP
-processes and sockets. Both apps still authenticate with their providers and
-use hosted models; local bridge transport does not mean offline inference.
+Connect native Desktop conversations through local MCP processes and sockets,
+or use independent Claude, Codex and Antigravity CLI workers. Both routes use
+provider authentication and hosted models; local bridge transport does not mean
+offline inference.
 
 ## One-command local installation
 
 The [ChatGPT plugin setup](../README.md#chatgpt-plugin) uses a hosted Sites
-connector. For local Desktop use, install Node.js 22.13+ and sign in to the apps
-under the same macOS user. Save the intended local project in Codex Desktop and
-open it in Claude's Code tab, then run:
+connector. Install Node.js 22.13+ under the macOS account that will use the
+bridges. Native handoffs require signed-in apps and the same local project saved
+in Codex Desktop and Claude's Code tab. Independent background workers use
+separately authenticated provider CLIs and do not require open Desktop apps.
+Run:
 
 ```bash
 npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
@@ -24,18 +27,31 @@ or run `codex-bridge-setup` explicitly.
 Setup registers the local bridges, adds native pipe forwarding, and bootstraps
 the relay executor. It reuses an available Codex CLI or installs a pinned
 official package under `~/.config/GptClaudeBridge/tools` (or
-`XDG_CONFIG_HOME/GptClaudeBridge/tools`). No separate CLI install command is
-required. Run the install under the account that uses the apps, without `sudo`.
+`XDG_CONFIG_HOME/GptClaudeBridge/tools`). No separate Codex CLI install command
+is required. Run the install under the account that uses the apps, without `sudo`.
 The package remains installed if an app configuration step fails, preserving
 the setup command for repair. A successful npm exit does not verify that every
 component is configured.
 
 The command also installs an independent per-user LaunchAgent for separate
 Claude, Codex and Antigravity CLI workers and updates its managed settings on
-each release. `worker-relay status` inspects this service. With CLI login and an
-authorized project, `send_to_worker` and `read_worker_delivery` work independently
-of closed or frozen Desktop apps. They do not resume native chats or launch
-Desktop windows. Existing permission denials and disabled choices remain.
+each release. It registers worker communication and adds only Antigravity's four
+relay tool grants, preserving existing denials, disabled choices and unrelated
+settings. Install Claude Code and `agy` separately when those workers are needed;
+CLI authentication is separate from Desktop sign-in.
+
+With authenticated CLIs and an authorized project, `send_to_worker` supports
+all six worker-to-worker directions independently of closed or frozen Desktop
+apps. The operating system and user service must be running; network/provider
+access, quota and tool permissions still apply. A frozen window cannot accept
+new user input or show results until it responds. Use `worker-relay` in a terminal
+or another responsive MCP client to submit authorized background work and read
+receipts. These workers do not resume native chats or launch Desktop windows.
+
+Use `worker-relay status` to inspect service and CLI readiness separately, and
+`read_worker_delivery` for durable results. Authorize a selected project with
+`bridge-projects allow-project <absolute-project-path>` before sending work if
+it has no existing grant.
 
 | Client | Entry | Route |
 | --- | --- | --- |
@@ -45,22 +61,25 @@ Desktop windows. Existing permission denials and disabled choices remain.
 | Codex | `codex-native-relay` | Native Desktop transport |
 | Codex and Claude Code | `antigravity-bridge` | Antigravity App and bridge-owned CLI sessions |
 | Antigravity | `agent-bridge` and `codex-bridge` sidecar | Outbound messaging and native App connectivity |
+| Independent CLI workers | `worker-relay` | Authorized background jobs and all six worker-to-worker directions |
 
 The shared `codex-bridge-desktop` connector cannot establish a native Code
 sender identity. The native route uses the actual Code session and the same
 saved local Codex project. Setup does not pair the hosted ChatGPT connector.
 
-The relay needs the trusted app-bundled Node runtime selected by setup; do not
-substitute an arbitrary Homebrew/nvm Node. Pipe forwarding saves only the
-`CODEX_APP_TOOLS_PIPE_PATH` variable name, never its temporary value.
+The native Codex relay needs the trusted app-bundled Node runtime selected by
+setup; do not substitute an arbitrary Homebrew/nvm Node. Pipe forwarding saves
+only the `CODEX_APP_TOOLS_PIPE_PATH` variable name, never its temporary value.
 
-Open or reconnect the affected MCP servers in the actual Desktop conversations,
-or restart the app after active work finishes. Setup does not restart or kill
-apps. Check `codex_bridge_status` inside Claude Code, `claude_bridge_status` and
-`native_relay_status` in Codex, and `agent_bridge_status` in Antigravity. Complete
-[installation verification](../README.md#verify-the-installation), including
-a message and reply in each direction. Saved configuration is not a completed
-live exchange or a claim of verification on another Mac.
+Managed MCP supervisors adopt compatible updates when idle. An old direct MCP
+process remains stale until its host reconnects normally; setup does not open
+or create chats, restart apps or interrupt active work to load a relay. When the
+tools are available, check `codex_bridge_status` inside Claude Code,
+`claude_bridge_status` and `native_relay_status` in Codex, and
+`agent_bridge_status` in Antigravity. Follow
+[installation verification](../README.md#verify-the-installation) for each
+selected native or background route. Saved configuration is not a completed live
+exchange or a claim of verification on another Mac.
 
 ## Checks, recovery, and manual alternatives
 

@@ -21,7 +21,7 @@ export function relayPaths(env = process.env, platform = process.platform) {
   const root = path.resolve(directory);
   const hash = createHash("sha256").update(platform === "win32" ? root.toLowerCase() : root).digest("hex").slice(0, 24);
   return { root, config: path.join(root, "config.json"), jobs: path.join(root, "jobs"),
-    endpoint: platform === "win32" ? `\\\\.\\pipe\\minhspark-agent-relay-${hash}` : path.join(root, "relay.sock"),
+    endpoint: platform === "win32" ? `\\\\.\\pipe\\LOCAL\\minhspark-agent-relay-${hash}` : path.join(root, "relay.sock"),
     defaultPolicy: env.CODEX_BRIDGE_PROJECT_POLICY || path.join(home, ".config", "GptClaudeBridge", "projects.json") };
 }
 

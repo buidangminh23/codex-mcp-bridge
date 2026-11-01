@@ -8,7 +8,7 @@ import { createProjectScope, readRegularConfigFile } from "./project-policy.mjs"
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
 import { BACKGROUND_AGENTS, RELAY_UUID, privateRelayDirectory, relayFailure, writeRelayJson } from "./background-relay-config.mjs";
 import { RELAY_FRAME_LIMIT, RELAY_REPLY_LIMIT, validRelayHello, relayChallenge, verifyRelayOperation, relayResponse } from "./background-relay-protocol.mjs";
-import { assertPrivateRelayFile } from "./background-relay-storage.mjs";
+import { assertPrivateRelayFile, assertPrivateRelayFiles } from "./background-relay-storage.mjs";
 
 const { version } = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const terminal = new Set(["completed", "failed", "unknown"]);
@@ -48,6 +48,7 @@ export class BackgroundRelay {
   async initialize() {
     const files = fs.readdirSync(this.config.paths.jobs).filter(name => RELAY_UUID.test(name.replace(/\.json$/, "")) && name.endsWith(".json"));
     if (files.length > this.maxRecords) throw relayFailure("WORKER_STORAGE_LIMIT", "Too many stored worker receipts; inspect and archive completed receipts before starting more work");
+    assertPrivateRelayFiles(files.map(file => path.join(this.config.paths.jobs, file)));
     for (const file of files) {
       let job;
       try {
@@ -102,7 +103,7 @@ export class BackgroundRelay {
         const result = await this.adapters[agent].inspect({ env: this.env, executable: provider.executable ?? undefined });
         this.health.set(agent, { agent, available: result.available === true, ready: result.ready === true,
           authenticated: result.authenticated ?? null, version: result.version ?? null,
-          code: result.code ?? null, checkedAt: this.now(), diagnostic: result.reason ? bridgeDiagnostic(relayFailure(result.code ?? "WORKER_NOT_READY", result.reason), { component: `background-${agent}`, operation: "worker_status", readOnly: true }) : null });
+          code: result.code ?? null, checkedAt: this.now(), diagnostic: result.ready !== true && result.reason ? bridgeDiagnostic(relayFailure(result.code ?? "WORKER_NOT_READY", result.reason), { component: `background-${agent}`, operation: "worker_status", readOnly: true }) : null });
       } catch (error) {
         this.health.set(agent, { agent, available: false, ready: false, authenticated: null, code: error.code ?? "WORKER_INSPECTION_FAILED", checkedAt: this.now(),
           diagnostic: bridgeDiagnostic(error, { component: `background-${agent}`, operation: "worker_status", readOnly: true }) });
@@ -155,7 +156,6 @@ export class BackgroundRelay {
   }
 
   enqueue(actor, params) {
-    if (!this.accepting) throw relayFailure("WORKER_RELAY_DRAINING", "The relay is finishing existing work before an update");
     if (!BACKGROUND_AGENTS.includes(params.agent) || !RELAY_UUID.test(params.requestId ?? "") || typeof params.prompt !== "string" || !params.prompt.trim()
         || Buffer.byteLength(params.prompt) > 256 * 1024 || typeof params.cwd !== "string" || !path.isAbsolute(params.cwd)) {
       throw relayFailure("WORKER_REQUEST_INVALID", "Provide an agent, request UUID, nonempty bounded prompt and absolute project directory");
@@ -174,10 +174,14 @@ export class BackgroundRelay {
       if (!this.canRead(actor, existing) || existing.fingerprint !== fingerprint) throw relayFailure("WORKER_REQUEST_CONFLICT", "This request ID already belongs to a different delivery");
       return this.receipt(existing);
     }
+    if (!this.accepting && actor.kind === "local-client") throw relayFailure("WORKER_RELAY_DRAINING", "The relay is finishing existing work before an update");
     if (!this.config.providers[params.agent].enabled) throw relayFailure("WORKER_DISABLED", "The selected worker is intentionally disabled");
     const parent = actor.kind === "background-worker" ? this.jobs.get(actor.requestId) : null;
     const depth = parent ? parent.depth + 1 : 0;
     if (depth > 4 || parent && [...this.jobs.values()].filter(job => job.rootId === parent.rootId).length >= 16) throw relayFailure("WORKER_DELEGATION_LIMIT", "This worker task has reached its delegation limit");
+    if (parent && (this.active.size >= this.maxConcurrent || [...this.active.values()].filter(item => item.agent === params.agent).length >= 2)) {
+      throw relayFailure("WORKER_DELEGATION_CAPACITY", "The requested worker has no free execution slot. Finish or inspect existing delegated tasks before retrying this unsent request; it was not queued behind waiting parent workers.");
+    }
     if (this.jobs.size >= this.maxRecords || [...this.jobs.values()].filter(job => job.status === "queued").length >= this.maxQueued) throw relayFailure("WORKER_QUEUE_FULL", "The background relay queue or receipt store is full");
     const job = { schemaVersion: 1, requestId: params.requestId, workerId: randomUUID(), logicalSessionId: randomUUID(),
       rootId: parent?.rootId ?? params.requestId, parentRequestId: parent?.requestId ?? null, depth,
@@ -287,9 +291,18 @@ export async function serveBackgroundRelay(relay, { protectPipe = protectCurrent
     } catch (error) { if (error.code !== "ENOENT") throw error; }
   }
   const sockets = new Set();
+  const provisional = new Set();
   let protectedEndpoint = process.platform !== "win32";
   const server = net.createServer(socket => {
-    if (!protectedEndpoint) { socket.destroy(); return; }
+    if (!protectedEndpoint) {
+      if (provisional.size >= 32) { socket.destroy(); return; }
+      provisional.add(socket);
+      socket.once("close", () => provisional.delete(socket));
+      socket.on("error", () => {});
+      socket.setTimeout(15000, () => socket.destroy());
+      return;
+    }
+    if (sockets.size >= 128) { socket.destroy(); return; }
     sockets.add(socket);
     socket.setEncoding("utf8");
     socket.setTimeout(5000, () => socket.destroy());
@@ -342,8 +355,17 @@ export async function serveBackgroundRelay(relay, { protectPipe = protectCurrent
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(endpoint, resolve); });
   try {
-    if (process.platform === "win32") { await protectPipe(endpoint); protectedEndpoint = true; }
+    if (process.platform === "win32") {
+      await protectPipe(endpoint);
+      protectedEndpoint = true;
+      for (const socket of provisional) socket.destroy();
+      provisional.clear();
+    }
     else fs.chmodSync(endpoint, 0o600);
-  } catch (error) { server.close(); throw error; }
+  } catch (cause) {
+    for (const socket of provisional) socket.destroy();
+    await new Promise(resolve => server.close(resolve));
+    throw Object.assign(relayFailure("WORKER_ENDPOINT_PROTECTION_FAILED", "The independent relay endpoint could not verify its local-user access restrictions", "not_sent", "startup"), { cause });
+  }
   return { server, close: () => new Promise(resolve => { for (const socket of sockets) socket.destroy(); server.close(resolve); }) };
 }

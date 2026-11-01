@@ -261,6 +261,12 @@ test("missing authentication fails before dispatch and persists a report readabl
   assert.equal(restored.sent, false);
 });
 
+test("healthy CLI inspection notes are not mislabeled as failure diagnostics", async t => {
+  const box = await fixture(t, { inspect: { codex: async () => ({ available: true, authenticated: true, ready: true, reason: "Model access is not verified" }) } });
+  const status = await box.call("status");
+  assert.equal(status.workers.find(worker => worker.agent === "codex").diagnostic, null);
+});
+
 test("unready providers are blocked except explicitly unverified Antigravity authentication", async (t) => {
   for (const readiness of [
     { agent: "claude", available: true, authenticated: null, code: "CLAUDE_CLI_AUTH_CHECK_FAILED" },
@@ -345,12 +351,50 @@ test("draining refuses new work while finishing queued work already accepted", a
   await until(() => box.runs.length === 1);
   const second = await box.send({ agent: "codex" });
   assert.equal((await box.call("drain")).queued, 1);
+  assert.equal((await box.send({ requestId: first.requestId })).requestId, first.requestId);
+  assert.equal(box.runs.length, 1);
   await assert.rejects(box.send(), { code: "WORKER_RELAY_DRAINING", sent: false });
   box.runs[0].finish();
   await box.wait(first.requestId);
   await until(() => box.runs.length === 2);
   box.runs[1].finish();
   assert.equal((await box.wait(second.requestId)).status, "completed");
+});
+
+test("Windows background relay protects its real pipe before accepting authenticated calls", { skip: process.platform !== "win32" }, async t => {
+  const box = await fixture(t);
+  assert.match(box.config.endpoint, /^\\\\\.\\pipe\\LOCAL\\minhspark-agent-relay-[a-f0-9]{24}$/);
+  const serving = await serveBackgroundRelay(box.relay);
+  t.after(() => serving.close());
+  const status = await callBackgroundRelay("status", {}, { connection: { endpoint: box.config.endpoint, token: box.config.token, workerId: null } });
+  assert.equal(status.transportReady, true);
+  assert.equal(status.desktopRequired, false);
+});
+
+test("cross-agent capacity returns an unsent error instead of deadlocking behind parent workers", async t => {
+  const box = await fixture(t, { hold: true });
+  await box.send({ agent: "codex" });
+  await box.send({ agent: "codex" });
+  await until(() => box.runs.length === 2);
+  await box.send({ agent: "claude" }, box.credentials(box.runs[0]));
+  await box.send({ agent: "claude" }, box.credentials(box.runs[1]));
+  await until(() => box.runs.length === 4);
+  const requestId = randomUUID();
+  await assert.rejects(box.send({ agent: "codex", requestId }, box.credentials(box.runs[2])), { code: "WORKER_DELEGATION_CAPACITY", sent: false });
+  assert.equal(box.relay.jobs.has(requestId), false);
+  assert.equal(box.relay.active.size, 4);
+});
+
+test("idle updates allow bounded children of already active work to complete", async t => {
+  const box = await fixture(t, { hold: true });
+  await box.send({ agent: "codex" });
+  await until(() => box.runs.length === 1);
+  await box.call("drain");
+  const child = await box.send({ agent: "claude" }, box.credentials(box.runs[0]));
+  await until(() => box.runs.length === 2);
+  box.runs[1].finish();
+  assert.equal((await box.wait(child.requestId)).status, "completed");
+  await assert.rejects(box.send(), { code: "WORKER_RELAY_DRAINING" });
 });
 
 test("private IPC serves independently while callers disconnect and native endpoints stay frozen", async (t) => {

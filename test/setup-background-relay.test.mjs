@@ -69,7 +69,7 @@ test("saved custom worker executables reach inspections and survive a package se
   await f.setup();
   for (const call of f.calls.filter(({ type }) => type === "inspect")) assert.equal(call.options.executable, f.config.providers[call.agent].executable);
   const configured = f.calls.find(({ type }) => type === "configure").options;
-  for (const agent of AGENTS) assert.equal(configured.providers[agent].executable, f.config.providers[agent].executable);
+  assert.equal(configured.providers, undefined);
   assert.equal(f.calls.filter(({ type }) => type === "readConfig").length, 1);
 });
 
@@ -101,8 +101,15 @@ test("a missing or signed-out CLI does not prevent the relay service from being 
   assert.ok(result.notices.some((notice) => notice.includes("claude: CLI_UNAVAILABLE")));
   assert.ok(result.notices.some((notice) => notice.includes("antigravity: AUTH_REQUIRED")));
   assert.equal(JSON.stringify(result).includes(SECRET), false);
-  const providers = f.calls.find(({ type }) => type === "configure").options.providers;
-  assert.equal(providers.claude, undefined);
+  assert.equal(f.calls.find(({ type }) => type === "configure").options.providers, undefined);
+});
+
+test("setup keeps automatic CLI discovery instead of pinning a versioned executable path", async () => {
+  const f = fixture();
+  f.state.saved = null;
+  await f.setup();
+  for (const call of f.calls.filter(({ type }) => type === "inspect")) assert.equal(call.options.executable, undefined);
+  assert.equal(f.calls.find(({ type }) => type === "configure").options.providers, undefined);
 });
 
 test("disabled configuration and existing permission restrictions are reported without enabling them", async () => {

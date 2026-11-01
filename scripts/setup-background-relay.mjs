@@ -22,7 +22,7 @@ export async function setupBackgroundRelay({ env = process.env, platform = proce
     catch (error) { return { agent, available: false, authenticated: null, ready: false, code: error.code ?? "WORKER_INSPECTION_FAILED" }; }
   }));
   const config = check ? saved
-    : configure({ env, platform, providers: Object.fromEntries(readiness.filter(item => item.available && item.executable).map(item => [item.agent, { executable: item.executable }])) });
+    : configure({ env, platform });
   if (!config) throw relayFailure("WORKER_RELAY_NOT_CONFIGURED", "The independent relay has not been configured; rerun the package setup command");
   const mcp = registration({ env, platform, root, check });
   const installed = await service({ env, platform, root, check });

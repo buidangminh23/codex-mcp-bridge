@@ -4,6 +4,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.25.3] - 2026-11-01
+
 ### Fixed
 
 - Normal Codex task creation and delivery no longer navigate or activate the Desktop window by default, including on Windows. Explicit `openInApp: true` or `CODEX_BRIDGE_OPEN_IN_APP=1` remains available. Fresh installs use the silent default and preserve existing explicit configuration.
@@ -11,6 +13,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Antigravity can discover dormant Claude Desktop tasks in the same project and recover the exact saved task before delivery. Reconnected sessions are revalidated against the current account, process, directory and native permission policy; failed recovery sends no message.
 - Antigravity inbound MCP instructions now describe the existing outbound `agent-bridge` instead of incorrectly claiming that Antigravity cannot send to Codex or Claude. Status reports distinguish supported Desktop routes from unverified outbound readiness and retain the CLI and automatic-reply-forwarding limits.
 - An unreachable Antigravity sidecar now reports a connectivity problem without assuming the App is closed, and points callers to the sidecar diagnostics when the App is already running.
+
+### Limitations
+
+- Background delivery still requires the native host process and its loaded bridge. Enable Antigravity's native `runInBackground` setting to keep its sidecar alive after closing the last window. Codex's native startup task starts the application in the background, but an unloaded native MCP cannot be cold-started by this bridge.
 
 ## [1.25.2] - 2026-10-31
 

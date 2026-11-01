@@ -4,6 +4,30 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-11-01
+
+### Upgrade
+
+The same single command updates the package, reapplies managed client settings and configures the independent background service:
+
+```sh
+npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+```
+
+Use `npm.cmd` in Windows PowerShell. CLI authentication and explicit project grants remain separate from installing configuration; no Desktop credentials are copied and no existing denials are removed.
+
+### Added
+
+- An independent per-user relay and separate Codex, Claude and Antigravity CLI workers. Background jobs and cross-worker messages continue without a responsive Desktop host. Native conversations retain their existing native routing and are never silently replaced by worker sessions.
+- Durable job receipts, authenticated local transport, same-project delegation, bounded queues and delegation depth, and persistent diagnostic reports. Interrupted sends stay unknown; only proven queued work resumes after daemon restart.
+- Background worker status, discovery, send and receipt tools plus the `worker-relay` command. Service readiness, CLI authentication and model execution evidence are reported separately.
+- Managed background startup and recovery on Windows, macOS and Linux, with hidden Windows launches and idle adoption of updated service code. Setup preserves disabled services and reports pending activation honestly.
+
+### Fixed
+
+- Antigravity MCP registrations use managed supervisors so future package updates can replace idle workers without reconnecting the host. Live CLI sessions and unconfirmed deliveries defer reload; crashed operations are never replayed.
+- Worker CLI launches isolate their session identity from native Desktop chats. Claude worker launches suppress optional user/plugin startup hooks without changing authentication or permission policy.
+
 ## [1.25.3] - 2026-11-01
 
 ### Upgrade

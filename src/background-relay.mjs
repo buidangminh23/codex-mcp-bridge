@@ -7,6 +7,8 @@ import { bridgeDiagnostic } from "./recipient-preflight.mjs";
 import { createProjectScope, readRegularConfigFile } from "./project-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
 import { BACKGROUND_AGENTS, RELAY_UUID, privateRelayDirectory, relayFailure, writeRelayJson } from "./background-relay-config.mjs";
+import { RELAY_FRAME_LIMIT, RELAY_REPLY_LIMIT, validRelayHello, relayChallenge, verifyRelayOperation, relayResponse } from "./background-relay-protocol.mjs";
+import { assertPrivateRelayFile } from "./background-relay-storage.mjs";
 
 const { version } = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const terminal = new Set(["completed", "failed", "unknown"]);
@@ -48,8 +50,15 @@ export class BackgroundRelay {
     if (files.length > this.maxRecords) throw relayFailure("WORKER_STORAGE_LIMIT", "Too many stored worker receipts; inspect and archive completed receipts before starting more work");
     for (const file of files) {
       let job;
-      try { job = JSON.parse(readRegularConfigFile(path.join(this.config.paths.jobs, file), { maxBytes: 4 * 1024 * 1024, label: "Worker receipt" })); }
-      catch { throw relayFailure("WORKER_RECEIPT_INVALID", "A stored worker receipt is malformed; it has not been overwritten"); }
+      try {
+        const receiptFile = path.join(this.config.paths.jobs, file);
+        assertPrivateRelayFile(receiptFile);
+        job = JSON.parse(readRegularConfigFile(receiptFile, { maxBytes: 4 * 1024 * 1024, label: "Worker receipt" }));
+      }
+      catch (error) {
+        if (error.code === "WORKER_STORAGE_UNSAFE") throw error;
+        throw relayFailure("WORKER_RECEIPT_INVALID", "A stored worker receipt is malformed; it has not been overwritten");
+      }
       if (!job || job.schemaVersion !== 1 || !RELAY_UUID.test(job.requestId) || file !== `${job.requestId}.json`
           || !BACKGROUND_AGENTS.includes(job.agent) || !["queued", "running", ...terminal].includes(job.status)
           || typeof job.prompt !== "string" || !job.binding?.path || !RELAY_UUID.test(job.rootId)
@@ -76,6 +85,12 @@ export class BackgroundRelay {
       throw relayFailure("WORKER_IDENTITY_INVALID", "Worker capability is missing, expired, or does not match an active background worker");
     }
     return { kind: "background-worker", id: request.workerId, agent: capability.agent, requestId: capability.requestId, rootId: capability.rootId, binding: capability.binding };
+  }
+
+  transportSecret(workerId) {
+    const token = workerId === null ? this.config.token : this.capabilities.get(workerId)?.token;
+    this.authenticate({ workerId, token });
+    return token;
   }
 
   async refreshHealth() {
@@ -109,7 +124,7 @@ export class BackgroundRelay {
 
   status(actor) {
     const visible = [...this.jobs.values()].filter(job => this.canRead(actor, job));
-    return { schemaVersion: 1, version, pid: process.pid, startedAt: this.startedAt, transportReady: true,
+    return { schemaVersion: 1, version, pid: process.pid, runtimeId: this.env.AGENT_RELAY_RUNTIME_ID ?? null, startedAt: this.startedAt, transportReady: true,
       accepting: this.accepting, desktopRequired: false, opensApps: false, opensChats: false,
       active: this.active.size, queued: visible.filter(job => job.status === "queued").length,
       workers: BACKGROUND_AGENTS.map(agent => this.health.get(agent) ?? { agent, available: null, authenticated: null, ready: false, code: "WORKER_INSPECTION_PENDING" }),
@@ -277,28 +292,52 @@ export async function serveBackgroundRelay(relay, { protectPipe = protectCurrent
     if (!protectedEndpoint) { socket.destroy(); return; }
     sockets.add(socket);
     socket.setEncoding("utf8");
-    socket.setTimeout(70000, () => socket.destroy());
+    socket.setTimeout(5000, () => socket.destroy());
     socket.on("error", () => {});
     socket.on("close", () => sockets.delete(socket));
     let buffer = "";
     let handled = false;
+    let hello;
+    let challenge;
+    let secret;
     socket.on("data", data => {
-      if (handled) return;
+      if (handled) { socket.destroy(); return; }
       buffer += data;
-      if (Buffer.byteLength(buffer) > 1024 * 1024) { socket.destroy(); return; }
+      if (Buffer.byteLength(buffer) > (hello ? RELAY_FRAME_LIMIT : 4096)) { socket.destroy(); return; }
       const end = buffer.indexOf("\n");
       if (end < 0) return;
-      handled = true;
-      let request;
-      try { request = JSON.parse(buffer.slice(0, end)); }
+      if (buffer.slice(end + 1).length) { socket.destroy(); return; }
+      let frame;
+      try { frame = JSON.parse(buffer.slice(0, end)); }
       catch { socket.destroy(); return; }
-      Promise.resolve().then(() => relay.handle(request)).then(result => {
-        if (!socket.destroyed) socket.end(JSON.stringify({ schemaVersion: 1, id: request.id, result }) + "\n");
-      }, error => {
+      buffer = "";
+      if (!hello) {
+        if (!validRelayHello(frame)) { socket.destroy(); return; }
+        try { secret = relay.transportSecret(frame.workerId); }
+        catch { socket.destroy(); return; }
+        hello = frame;
+        challenge = relayChallenge(secret, hello);
+        socket.write(JSON.stringify(challenge) + "\n");
+        return;
+      }
+      if (!verifyRelayOperation(secret, hello, challenge, frame)) { socket.destroy(); return; }
+      handled = true;
+      socket.setTimeout(70000, () => socket.destroy());
+      const request = frame.operation;
+      const send = response => {
+        let wire = JSON.stringify(relayResponse(secret, hello, challenge, response)) + "\n";
+        if (Buffer.byteLength(wire) > RELAY_REPLY_LIMIT) wire = JSON.stringify(relayResponse(secret, hello, challenge, { schemaVersion: 1, id: request.id,
+          error: { code: "WORKER_REPLY_TOO_LARGE", message: "The relay response exceeded its limit", deliveryState: request.method === "send" ? "unknown" : "not_sent", phase: "relay_transport" } })) + "\n";
+        if (!socket.destroyed) socket.end(wire);
+      };
+      Promise.resolve().then(() => {
+        relay.transportSecret(hello.workerId);
+        return relay.handle({ ...request, token: secret });
+      }).then(result => send({ schemaVersion: 1, id: request.id, result }), error => {
         const diagnostic = bridgeDiagnostic(error, { component: "background-relay", operation: request.method, requestId: request.params?.requestId });
-        if (!socket.destroyed) socket.end(JSON.stringify({ schemaVersion: 1, id: request.id, error: { code: diagnostic.code, message: diagnostic.reason,
-          deliveryState: diagnostic.deliveryState, phase: diagnostic.phase, diagnostic } }) + "\n");
-      });
+        send({ schemaVersion: 1, id: request.id, error: { code: diagnostic.code, message: diagnostic.reason,
+          deliveryState: diagnostic.deliveryState, phase: diagnostic.phase, diagnostic } });
+      }).catch(() => socket.destroy());
     });
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(endpoint, resolve); });

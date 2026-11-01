@@ -39,10 +39,12 @@ import { registerDesktopReadTools } from "./desktop-read-tools.mjs";
 import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
 import { createRelayWake } from "./relay-wake.mjs";
 import { withBridgeDiagnostic } from "./recipient-preflight.mjs";
+import { BACKGROUND_TOOLS } from "./background-relay-config.mjs";
+import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./background-relay-mcp.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.25.3";
+const VERSION = "1.26.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -461,7 +463,7 @@ const server = new McpServer(
       "Use send_to_codex_thread only when an existing threadId is intentional; use " +
       "list_codex_threads or read_codex_thread to inspect sessions and codex_bridge_status to inspect wiring. " +
       "When a Desktop send returns nextAction=wait_codex_reply, continue observing with that tool and the returned deliveryId until completion, user input is required, or the user stops the task. Never resend to obtain a reply. Each observation is bounded, and the receipt survives reconnection. " +
-      AGENT_PROMPT_GUIDANCE,
+      BACKGROUND_WORKER_GUIDANCE + AGENT_PROMPT_GUIDANCE,
   },
 );
 
@@ -471,6 +473,7 @@ function registerTool(name, definition, handler) {
     try {
       result = await reload.run(async () => {
       if (!definition.annotations?.readOnlyHint) runtime.assertCurrent();
+      if (BACKGROUND_TOOLS.includes(name)) return handler(...args);
       if (name === "codex_bridge_status") {
         const state = runtime.status();
         if (!state.current) return { ...failure(new Error(`${state.reason}; reconnect this MCP server in the existing task.`)), structuredContent: { runtime: state } };
@@ -521,6 +524,8 @@ function registerTool(name, definition, handler) {
     }) : result;
   });
 }
+
+registerBackgroundTools(registerTool);
 
 registerDesktopReadTools(registerTool, {
   desktopTasksEnabled, desktopTasks, replyReceipts, security, client,

@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readRegularConfigFile } from "./project-policy.mjs";
+import { protectPrivateRelayDirectory, assertPrivateRelayDirectory, assertPrivateRelayFile,
+  beginPrivateRelayWrite, bindPrivateRelayWrite, finishPrivateRelayWrite, abortPrivateRelayWrite } from "./background-relay-storage.mjs";
 
 export const BACKGROUND_AGENTS = Object.freeze(["codex", "claude", "antigravity"]);
 export const BACKGROUND_TOOLS = Object.freeze(["worker_status", "list_workers", "send_to_worker", "read_worker_delivery"]);
@@ -24,32 +26,29 @@ export function relayPaths(env = process.env, platform = process.platform) {
 }
 
 export function privateRelayDirectory(directory) {
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const stat = fs.lstatSync(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw relayFailure("WORKER_STORAGE_UNSAFE", "Relay storage must be a regular private directory");
-  if (process.platform !== "win32") {
-    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) throw relayFailure("WORKER_STORAGE_UNSAFE", "Relay storage belongs to another user");
-    fs.chmodSync(directory, 0o700);
-  }
+  return protectPrivateRelayDirectory(directory);
 }
 
 export function writeRelayJson(file, value) {
   const directory = path.dirname(file);
-  privateRelayDirectory(directory);
-  const existing = readRegularConfigFile(file, { missing: true, maxBytes: 4 * 1024 * 1024, label: "Relay state" });
   const temporary = path.join(directory, `.${path.basename(file)}.${randomUUID()}.tmp`);
   const encoded = JSON.stringify(value, null, 2) + "\n";
   if (Buffer.byteLength(encoded) > 4 * 1024 * 1024) throw relayFailure("WORKER_STORAGE_LIMIT", "Relay state exceeds its storage limit");
+  const ticket = beginPrivateRelayWrite(file);
   let descriptor;
   try {
+    const existing = readRegularConfigFile(file, { missing: true, maxBytes: 4 * 1024 * 1024, label: "Relay state" });
     descriptor = fs.openSync(temporary, "wx", 0o600);
     fs.writeFileSync(descriptor, encoded);
     fs.fsyncSync(descriptor);
+    bindPrivateRelayWrite(ticket, temporary, descriptor);
     fs.closeSync(descriptor);
     descriptor = undefined;
     if (readRegularConfigFile(file, { missing: true, maxBytes: 4 * 1024 * 1024, label: "Relay state" }) !== existing) throw relayFailure("WORKER_CONFIG_CHANGED", "Relay state changed concurrently");
     fs.renameSync(temporary, file);
+    finishPrivateRelayWrite(ticket);
   } finally {
+    abortPrivateRelayWrite(ticket);
     if (descriptor !== undefined) fs.closeSync(descriptor);
     try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
   }
@@ -57,6 +56,10 @@ export function writeRelayJson(file, value) {
 
 export function readRelayConfiguration({ env = process.env, platform = process.platform, missing = false } = {}) {
   const paths = relayPaths(env, platform);
+  try { fs.lstatSync(paths.root); }
+  catch (error) { if (missing && error.code === "ENOENT") return null; throw error; }
+  assertPrivateRelayDirectory(paths.root);
+  if (!assertPrivateRelayFile(paths.config, { missing })) return null;
   const raw = readRegularConfigFile(paths.config, { missing, maxBytes: 64 * 1024, label: "Relay configuration" });
   if (raw === null) return null;
   let config;

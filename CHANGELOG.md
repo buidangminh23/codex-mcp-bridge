@@ -4,6 +4,27 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.2] - 2026-11-01
+
+### Upgrade
+
+Install or update the global package and all managed client and background-service settings with one command, including upgrades from 1.26.0 or 1.26.1:
+
+```sh
+npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
+```
+
+Use `npm.cmd` in Windows PowerShell. npm downloads the latest updater without running setup in its cache; the updater installs that exact resolved version globally with managed setup enabled and verifies the global installation. No second installation command is required.
+
+### Added
+
+- Automatic `codex-bridge-update` orchestration for package replacement, all managed client settings and background-service configuration. Before replacing a Windows installation held by an owned legacy relay, it moves only that service to newer code using private relay storage as its working directory, waits for work to drain and verifies replacement readiness. The temporary runtime points to the downloaded updater package. It reports a pending migration instead of killing processes or interrupting jobs.
+- Preserve disabled services, provider authentication, custom project grants and permission denials throughout the update. Setup does not open apps or chats, and a deliberately disabled service is not reported as ready.
+
+### Fixed
+
+- New background service and daemon launches use private relay storage as their working directory instead of the npm installation directory, preventing those processes from locking the package on Windows. The updater migrates owned legacy instances before package replacement. Worker jobs continue using their explicitly authorized project directories.
+
 ## [1.26.1] - 2026-11-01
 
 ### Upgrade

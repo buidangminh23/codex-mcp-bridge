@@ -12,26 +12,28 @@ connector. Install Node.js 22.13+ under the macOS account that will use the
 bridges. Native handoffs require signed-in apps and the same local project saved
 in Codex Desktop and Claude's Code tab. Independent background workers use
 separately authenticated provider CLIs and do not require open Desktop apps.
-Run:
+Use the same command for a fresh installation and every update:
 
 ```bash
-npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
 ```
 
-The script allowance applies only to this package's setup hook. npm versions
-that block install scripts by default need it; a plain install is sufficient
-only when the hook is allowed. `--foreground-scripts` displays setup progress.
-If npm reports `1 package had install scripts blocked`, rerun the command above
-or run `codex-bridge-setup` explicitly.
+npm downloads the latest updater into its cache. `--ignore-scripts` suppresses
+setup only in that temporary location. The updater installs its exact resolved
+version globally, enables this package's managed setup hook, displays progress
+and verifies the global version and configuration. No second installation or
+setup command is required. Existing disabled choices, authentication and custom
+project grants are preserved; the updater does not open apps or chats or kill
+processes. A pending service migration is reported instead of interrupting work.
 
 Setup registers the local bridges, adds native pipe forwarding, and bootstraps
 the relay executor. It reuses an available Codex CLI or installs a pinned
 official package under `~/.config/GptClaudeBridge/tools` (or
 `XDG_CONFIG_HOME/GptClaudeBridge/tools`). No separate Codex CLI install command
 is required. Run the install under the account that uses the apps, without `sudo`.
-The package remains installed if an app configuration step fails, preserving
-the setup command for repair. A successful npm exit does not verify that every
-component is configured.
+If setup or update exits nonzero, inspect the reported component and installed
+version, correct the cause, and rerun the same updater command. npm can roll back
+package files without restoring settings already written or command shims.
 
 The command also installs an independent per-user LaunchAgent for separate
 Claude, Codex and Antigravity CLI workers and updates its managed settings on
@@ -89,6 +91,7 @@ codex-bridge-setup --dry-run
 codex-bridge-setup
 ```
 
+These are optional configuration-only checks and repairs after installation.
 `--check` inspects registrations; `--dry-run` previews components and paths
 without downloads or writes; the plain command applies setup again. Add
 `--json` for structured output or `--no-download` to require an existing Codex
@@ -96,10 +99,12 @@ CLI. `codex-mcp-bridge setup` runs the same setup. An incomplete result identifi
 the component to correct before rerunning. Explicit setup and `--check` return
 a nonzero exit status while configuration is incomplete.
 
-Local `npm install` and `npm ci` do not change app settings. Set
-`CODEX_BRIDGE_SKIP_SETUP=1` or use `--ignore-scripts` to skip setup during a
-global install. For Homebrew, run `codex-bridge-setup` after installing the
-formula. A pinned source checkout can use `node scripts/setup.mjs`.
+Local `npm install` and `npm ci` do not change app settings. For a deliberate
+package-only installation, a direct global npm install can use
+`CODEX_BRIDGE_SKIP_SETUP=1` or `--ignore-scripts`; this differs from the cache-only
+script suppression in the recommended updater command. For Homebrew, run
+`codex-bridge-setup` after installing the formula. A pinned source checkout can
+use `node scripts/setup.mjs`.
 
 The [manual macOS commands](../README.md#macos-terminal) and
 [Claude Code registration commands](../README.md#register-claude-code) remain

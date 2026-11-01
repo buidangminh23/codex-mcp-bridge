@@ -23,23 +23,27 @@ https://github.com/user-attachments/assets/98b23989-826f-4d7d-9dcb-ad7dd2739095
 
 ## Installation
 
-One global npm command installs the package, configures the local Claude, Codex and Antigravity bridges, and installs the independent worker relay. Native handoffs require the selected Desktop apps; background work requires the selected provider CLIs and their own authentication. Setup preserves existing project restrictions and custom settings; it does not sign in, grant workspace trust, change permission modes, or restart running apps.
+One npm command installs or updates the global package, applies all managed Claude, Codex and Antigravity settings, and configures the independent worker relay. Native handoffs require the selected Desktop apps; background work requires the selected provider CLIs and their own authentication. Setup preserves existing project restrictions and custom settings; it does not sign in, grant workspace trust, change permission modes, or restart running apps.
 
 ### Package — npm
 
 **macOS / Linux / WSL**
 
 ```bash
-npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
 ```
 
 **Windows PowerShell**
 
 ```powershell
-npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+npm.cmd exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
 ```
 
-Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows PowerShell. **Every release uses this same single install/update command.** It updates the package, applies the managed bridge settings across Claude, Codex and Antigravity, configures the independent background worker relay, and verifies saved registrations and service activation separately. Comprehensive setup migrates historical automatic Codex navigation to `CODEX_BRIDGE_OPEN_IN_APP=0`, enables Claude's native background preference and updates Antigravity's existing Windows background preference where supported. Accounts, project grants, unrelated custom registrations and existing permission denials remain unchanged. Setup adds only the four worker-relay communication grants required by headless Antigravity; it does not enable broad permission bypasses. If a native Codex CLI is missing, setup installs a pinned official `@openai/codex` package in the current user's `~/.config/GptClaudeBridge/tools` (or the corresponding `XDG_CONFIG_HOME` path); no separate CLI install command is needed.
+Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows PowerShell. **Use this same single command for a fresh install and every update**, including upgrades from 1.26.0 or 1.26.1. npm fetches the latest updater into its cache without running setup there. The updater installs that exact resolved version globally, runs the managed setup hook, and verifies the global version, saved settings and service activation separately. A second installation command is not required.
+
+For an enabled legacy Windows relay from 1.26.0 or 1.26.1, the updater moves only this package's owned service to newer code using private relay storage as its working directory before replacing the global package. The temporary service runtime points to the downloaded updater package; changing the working directory releases the old package lock. It waits for active work to drain and the replacement transport to become ready without killing processes or opening apps or chats. If migration is still pending after its bounded wait, it reports `UPDATE_RELAY_PENDING`; keep the existing jobs and receipts and rerun the same command after they finish. Intentionally disabled services stay disabled and are not reported as ready.
+
+Managed setup migrates historical automatic Codex navigation to `CODEX_BRIDGE_OPEN_IN_APP=0`, enables Claude's native background preference and updates Antigravity's existing Windows background preference where supported. Accounts, project grants, unrelated custom registrations and existing permission denials remain unchanged. Setup adds only the four worker-relay communication grants required by headless Antigravity; it does not enable broad permission bypasses. If a native Codex CLI is missing, setup installs a pinned official `@openai/codex` package in the current user's `~/.config/GptClaudeBridge/tools` (or the corresponding `XDG_CONFIG_HOME` path); no separate CLI install command is needed.
 
 ### Independent background workers
 
@@ -61,7 +65,7 @@ Keep the same request UUID for retries and read its durable receipt. Queued work
 
 Worker delegation is bounded. `WORKER_DELEGATION_CAPACITY` means the destination has no free execution slot and that delegation was not sent or queued behind waiting workers. Inspect or finish existing delegated work before retrying the same unsent request. Queue and delegation limits are reported explicitly.
 
-`--allow-scripts=@minhspark/codex-mcp-bridge` authorizes only this package's setup hook. npm versions that block install scripts by default need this flag; a plain install works only when the hook is allowed. `--foreground-scripts` displays configuration progress and failures that npm otherwise hides. If npm prints `1 package had install scripts blocked`, rerun the recommended command or run `codex-bridge-setup` explicitly.
+The recommended command's `--ignore-scripts` applies only to downloading the updater into npm's cache. The updater explicitly enables this package's setup hook for the global installation and displays its progress. This avoids client MCP registrations pointing into a temporary npm cache directory. A direct global npm install remains an advanced alternative, but it skips the updater's migration of an old service that can lock the package on Windows.
 
 | Client | Installed entry | Purpose |
 | --- | --- | --- |
@@ -75,11 +79,11 @@ Worker delegation is bounded. `WORKER_DELEGATION_CAPACITY` means the destination
 
 For native Claude-to-Codex handoffs, use an existing native Claude **Code** session and the same local project saved in Codex Desktop. The shared `codex-bridge-desktop` connector has its own legacy route; it does not establish a native Code sender identity. Setup applies saved configuration without opening or restarting apps. Saved configuration is not proof of a live connection; available supervisors reload compatible workers when idle. Complete [verification](#verify-the-installation) with the tools already available in the actual clients. If a native host is unloaded, report the diagnostic instead of opening chats to load a relay.
 
-Automatic setup runs only for a **global npm install**. Local `npm install` and `npm ci` do not change app settings. Set `CODEX_BRIDGE_SKIP_SETUP=1`, or pass `--ignore-scripts`, to install the package without configuring apps. The optional [workflow skill](#workflow-skill--npx-skills), VS Code preview, and hosted ChatGPT pairing retain their separate setup steps.
+Automatic setup runs during the updater's **global npm installation**. Local `npm install` and `npm ci` do not change app settings. For a deliberate package-only installation, use a direct global npm install with `CODEX_BRIDGE_SKIP_SETUP=1` or `--ignore-scripts`; that opt-out is separate from the cache-only `--ignore-scripts` in the recommended updater command. The optional [workflow skill](#workflow-skill--npx-skills), VS Code preview, and hosted ChatGPT pairing retain their separate setup steps.
 
 ### Setup recovery and checks
 
-If an app configuration step fails, setup and the global install return a nonzero exit with the failing component. Correct its reported issue and rerun the update command above, or rerun configuration on an existing installation:
+If service migration, installation or managed setup fails, the updater returns a nonzero exit and reports the failed step. Inspect that component and the installed version, correct the reported cause, and rerun the same update command above. npm can roll back package files while settings already written remain changed. For configuration-only repair of an already installed package, the following is an optional alternative:
 
 ```bash
 codex-bridge-setup
@@ -545,12 +549,12 @@ Node.js 22.13+ is required. If a command is missing, open a new terminal and che
 If the package or registrations are missing, use the complete installation command:
 
 ```powershell
-npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+npm.cmd exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
 ```
 
-On npm 12, `1 package had install scripts blocked` means the setup hook did not run. The scoped `--allow-scripts` flag authorizes this package's hook; it does not enable every package's scripts globally. `--foreground-scripts` displays lifecycle progress. A local `npm install`/`npm ci`, `--ignore-scripts`, or `CODEX_BRIDGE_SKIP_SETUP=1` intentionally skips automatic setup.
+This runs the latest updater outside the global package directory, handles an owned legacy service that can lock that directory, and installs the exact resolved package with its setup hook enabled. `--ignore-scripts` suppresses setup only for the temporary cached updater. If a previous direct install printed `1 package had install scripts blocked`, use this same updater command to install and apply the managed settings together. Intentional setup opt-outs and disabled-service choices are not silently removed.
 
-For an already-installed package, preview and apply setup explicitly:
+For an already-installed package, these optional commands preview or repair configuration without updating package files:
 
 ```powershell
 codex-bridge-setup.cmd --dry-run
@@ -558,7 +562,7 @@ codex-bridge-setup.cmd
 codex-bridge-setup.cmd --check
 ```
 
-`--dry-run` does not write settings or download tools. Setup resolves an existing Codex CLI or installs its managed official copy; `--no-download` requires one to be available already. A failed postinstall configuration step retains the npm package so it can be repaired. Explicit setup and `--check` return a nonzero exit code for incomplete configuration. Read the named component's error; running the same command cannot resolve a deliberate opt-out or an unrelated conflicting registration.
+`--dry-run` does not write settings or download tools. Setup resolves an existing Codex CLI or installs its managed official copy; `--no-download` requires one to be available already. Failed setup or update returns a nonzero exit; inspect the reported component and installed version, correct the cause, then rerun the same updater command. Package rollback does not guarantee that settings or command shims return to their previous state. Explicit setup and `--check` also return a nonzero exit code for incomplete configuration. Running the same command cannot resolve a deliberate opt-out or an unrelated conflicting registration.
 
 ### Missing module, stale source path, or a different running version
 

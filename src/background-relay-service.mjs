@@ -233,7 +233,7 @@ export async function runBackgroundRelayService({ env = process.env, platform = 
         signal?.addEventListener("abort", stop, { once: true });
         try {
           child = spawn(runtime.nodeExecutable, [path.join(root, "src", "background-relay-daemon.mjs")], {
-            cwd: root, env: childEnv, windowsHide: true, shell: false, stdio: ["ignore", "ignore", "pipe"],
+            cwd: config.paths.root, env: childEnv, windowsHide: true, shell: false, stdio: ["ignore", "ignore", "pipe"],
           });
           child.stderr?.on("error", () => {});
           child.stderr?.on("data", captureDiagnostic);
@@ -291,6 +291,7 @@ if (!new URL(import.meta.url).search && isMainModule(process.argv[1], import.met
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   try {
+    process.chdir(readRelayConfiguration().paths.root);
     let run = runBackgroundRelayService;
     while (true) {
       const result = await run({ signal: controller.signal });

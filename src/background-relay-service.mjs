@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { callBackgroundRelay } from "./background-relay-client.mjs";
 import { privateRelayDirectory, readRelayConfiguration, relayPaths, writeRelayJson } from "./background-relay-config.mjs";
 import { isMainModule, stableNodeBin } from "./install-paths.mjs";
-import { readRegularConfigFile } from "./project-policy.mjs";
+import { directoryBinding, readRegularConfigFile } from "./project-policy.mjs";
 
 export const RELAY_SERVICE_OWNER = "@minhspark/codex-mcp-bridge/background-relay-service/v1";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -87,8 +87,20 @@ export function readRelayServiceRuntime(directory, { root = ROOT, nodeExecutable
 
 export function acquireRelayServiceLock(root, { pid = process.pid, isAlive = alive, identity = processIdentity } = {}) {
   if (!Number.isSafeInteger(pid) || pid < 1) throw serviceFailure("SERVICE_PROCESS_IDENTITY_UNAVAILABLE");
+  if (typeof root !== "string" || !path.isAbsolute(root) || /[\u0000-\u001f\u007f]/.test(root)) throw serviceFailure("SERVICE_STORAGE_UNSAFE");
   privateRelayDirectory(root);
-  const file = path.join(root, "service.lock");
+  const binding = directoryBinding(root);
+  const file = path.resolve(binding.path, "service.lock");
+  if (!file.startsWith(binding.path.endsWith(path.sep) ? binding.path : `${binding.path}${path.sep}`)) throw serviceFailure("SERVICE_STORAGE_UNSAFE");
+  const assertDirectory = () => {
+    const current = directoryBinding(root);
+    if (current.path !== binding.path || current.identity !== binding.identity) throw serviceFailure("SERVICE_STORAGE_UNSAFE");
+  };
+  const sameFile = (expected) => {
+    const current = fs.lstatSync(file, { bigint: true });
+    return current.isFile() && !current.isSymbolicLink() && current.nlink === 1n
+      && ["dev", "ino", "birthtimeNs"].every((field) => current[field] === expected[field]);
+  };
   const nonce = randomUUID();
   const processStart = identity(pid);
   if (typeof processStart !== "string" || !processStart) throw serviceFailure("SERVICE_PROCESS_IDENTITY_UNAVAILABLE");
@@ -96,19 +108,30 @@ export function acquireRelayServiceLock(root, { pid = process.pid, isAlive = ali
   for (let attempt = 0; attempt < 2; attempt++) {
     let descriptor;
     try {
+      assertDirectory();
       descriptor = fs.openSync(file, "wx", 0o600);
+      const created = fs.fstatSync(descriptor, { bigint: true });
       fs.writeFileSync(descriptor, value);
       fs.fsyncSync(descriptor);
       fs.closeSync(descriptor);
+      descriptor = undefined;
       return { acquired: true, release() {
-        if (readRegularConfigFile(file, { missing: true, maxBytes: 4096 }) === value) fs.unlinkSync(file);
+        assertDirectory();
+        if (readRegularConfigFile(file, { missing: true, maxBytes: 4096 }) === value) {
+          if (!sameFile(created)) throw serviceFailure("SERVICE_STORAGE_UNSAFE");
+          assertDirectory();
+          fs.unlinkSync(file);
+        }
       } };
     } catch (error) {
       if (descriptor !== undefined) { try { fs.closeSync(descriptor); } catch {} }
       if (error.code !== "EEXIST") throw serviceFailure("SERVICE_STORAGE_UNSAFE");
       let raw;
       let existing;
+      let before;
       try {
+        assertDirectory();
+        before = fs.lstatSync(file, { bigint: true });
         raw = readRegularConfigFile(file, { maxBytes: 4096 });
         existing = JSON.parse(raw);
       } catch { throw serviceFailure("SERVICE_STORAGE_UNSAFE"); }
@@ -120,7 +143,8 @@ export function acquireRelayServiceLock(root, { pid = process.pid, isAlive = ali
         if (!currentIdentity) throw serviceFailure("SERVICE_PROCESS_IDENTITY_UNAVAILABLE");
         if (currentIdentity === existing.processStart) return { acquired: false, release() {} };
       }
-      if (readRegularConfigFile(file, { maxBytes: 4096 }) !== raw) throw serviceFailure("SERVICE_STORAGE_UNSAFE");
+      assertDirectory();
+      if (readRegularConfigFile(file, { maxBytes: 4096 }) !== raw || !sameFile(before)) throw serviceFailure("SERVICE_STORAGE_UNSAFE");
       try { fs.unlinkSync(file); }
       catch { throw serviceFailure("SERVICE_STORAGE_UNSAFE"); }
     }

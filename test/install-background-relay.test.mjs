@@ -253,6 +253,65 @@ test("Linux refuses foreign unit ownership and unverified registration", async (
   assert.equal(readback.code, "SERVICE_READBACK_FAILED");
 });
 
+test("startup registration rejects relative custom roots and linked descendant directories", async (t) => {
+  for (const platform of ["darwin", "linux"]) {
+    const relative = fixture(t, platform);
+    relative.env[platform === "darwin" ? "HOME" : "XDG_CONFIG_HOME"] = "relative-startup";
+    assert.equal((await relative.install()).code, "SERVICE_STORAGE_UNSAFE");
+    assert.equal(relative.calls.length, 0);
+    const linked = fixture(t, platform);
+    const outside = path.join(linked.directory, "outside");
+    const parent = platform === "darwin" ? path.join(linked.directory, "Library") : path.join(linked.env.XDG_CONFIG_HOME, "systemd");
+    fs.mkdirSync(outside);
+    fs.mkdirSync(parent, { recursive: true });
+    fs.symlinkSync(outside, path.join(parent, platform === "darwin" ? "LaunchAgents" : "user"), process.platform === "win32" ? "junction" : "dir");
+    assert.equal((await linked.install()).code, "SERVICE_STORAGE_UNSAFE");
+    assert.deepEqual(fs.readdirSync(outside), []);
+    assert.equal(linked.calls.length, 0);
+  }
+});
+
+test("startup registration detects directory replacement between inspection and writing", async (t) => {
+  const f = fixture(t, "darwin");
+  const directory = path.join(f.directory, "Library", "LaunchAgents");
+  fs.mkdirSync(directory, { recursive: true });
+  let replaced = false;
+  const result = await f.install({ run: async (...args) => {
+    const response = await f.options.run(...args);
+    if (!replaced) {
+      fs.renameSync(directory, `${directory}-previous`);
+      fs.mkdirSync(directory);
+      replaced = true;
+    }
+    return response;
+  } });
+  assert.equal(result.code, "SERVICE_CONFIGURATION_CHANGED");
+  assert.deepEqual(fs.readdirSync(directory), []);
+  assert.deepEqual(fs.readdirSync(`${directory}-previous`), []);
+});
+
+test("atomic startup cleanup preserves a substituted temporary file", async (t) => {
+  const f = fixture(t, "darwin");
+  const directory = path.join(f.directory, "Library", "LaunchAgents");
+  const sync = fs.fsyncSync;
+  let replaced;
+  fs.fsyncSync = (descriptor) => {
+    sync(descriptor);
+    if (replaced || !fs.existsSync(directory)) return;
+    const name = fs.readdirSync(directory).find((entry) => entry.endsWith(".tmp"));
+    if (!name) return;
+    replaced = path.join(directory, name);
+    fs.renameSync(replaced, `${replaced}.owned`);
+    fs.writeFileSync(replaced, "foreign-file");
+  };
+  t.after(() => { fs.fsyncSync = sync; });
+  const result = await f.install();
+  fs.fsyncSync = sync;
+  assert.equal(result.code, "SERVICE_CONFIGURATION_CHANGED");
+  assert.equal(fs.readFileSync(replaced, "utf8"), "foreign-file");
+  assert.equal(f.calls.some(({ args }) => ["bootstrap", "kickstart"].includes(args[0])), false);
+});
+
 test("explicitly disabled relay config does not start any platform service", async (t) => {
   for (const platform of ["win32", "darwin", "linux"]) {
     const f = fixture(t, platform);

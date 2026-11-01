@@ -178,6 +178,33 @@ test("a reused PID cannot strand a stale lock or cause an unrelated process to b
   replacement.release();
 });
 
+test("lock creation rejects relative roots and directory replacement before writing", (t) => {
+  assert.throws(() => acquireRelayServiceLock("relative-relay", { identity: () => "start" }), { code: "SERVICE_STORAGE_UNSAFE" });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-service-root-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const root = path.join(directory, "root");
+  const previous = path.join(directory, "previous");
+  assert.throws(() => acquireRelayServiceLock(root, { pid: 101, identity: () => {
+    fs.renameSync(root, previous);
+    fs.mkdirSync(root);
+    return "start";
+  } }), { code: "SERVICE_STORAGE_UNSAFE" });
+  assert.deepEqual(fs.readdirSync(root), []);
+  assert.deepEqual(fs.readdirSync(previous), []);
+});
+
+test("lock cleanup preserves a replacement file even when its contents were copied", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "relay-service-replaced-lock-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const lock = acquireRelayServiceLock(root, { pid: 101, identity: () => "start" });
+  const file = path.join(root, "service.lock");
+  const replacement = path.join(root, "replacement.lock");
+  fs.copyFileSync(file, replacement);
+  fs.renameSync(replacement, file);
+  assert.throws(() => lock.release(), { code: "SERVICE_STORAGE_UNSAFE" });
+  assert.equal(fs.existsSync(file), true);
+});
+
 test("migrates package roots only after requesting drain and receiving idle exit", async () => {
   let desiredRoot = process.cwd();
   const nextRoot = path.resolve("new-global-package");

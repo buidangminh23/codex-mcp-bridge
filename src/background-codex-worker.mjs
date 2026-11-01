@@ -62,9 +62,13 @@ function workerEnv(env, relayEnv = {}) {
 
 function binary(executable, env, platform = process.platform) {
   const selected = executable ?? resolveCodexBin(undefined, { env, platform });
-  if (typeof selected !== "string" || !selected || /[\u0000-\u001f\u007f]/.test(selected)
-      || platform === "win32" && /\.(?:cmd|bat|ps1)$/i.test(selected)) throw failure("CLI_UNAVAILABLE", "inspect");
-  return selected;
+  try {
+    if (typeof selected !== "string" || !path.isAbsolute(selected) || /[\u0000-\u001f\u007f]/.test(selected)) throw new Error();
+    const resolved = fs.realpathSync.native(selected);
+    if (!fs.statSync(resolved).isFile() || platform === "win32" && !/\.(?:exe|com)$/i.test(resolved)) throw new Error();
+    fs.accessSync(resolved, platform === "win32" ? fs.constants.R_OK : fs.constants.X_OK);
+    return resolved;
+  } catch { throw failure("CLI_UNAVAILABLE", "inspect"); }
 }
 
 export async function inspectCodexWorker({ env = process.env, executable, platform = process.platform, run = execFileAsync } = {}) {

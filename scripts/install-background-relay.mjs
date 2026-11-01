@@ -76,22 +76,92 @@ const quoteWindows = (value) => `"${String(value).replace(/(\\*)"/g, "$1$1\\\"")
 const quoteSystemd = (value, expandDollar = true) => `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%").replace(/\$/g, () => expandDollar ? "$$" : "$")}"`;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function atomicText(file, content, previous) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  if (readRegularConfigFile(file, { missing: true, maxBytes: 128 * 1024 }) !== previous) throw installFailure("SERVICE_CONFIGURATION_CHANGED");
-  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}.tmp`);
+function startupLocation(input, segments) {
+  if (typeof input !== "string" || !path.isAbsolute(input) || /[\u0000-\u001f\u007f]/.test(input)) throw installFailure("SERVICE_STORAGE_UNSAFE");
+  let ancestor = path.resolve(input);
+  const suffix = [];
+  while (true) {
+    try { fs.lstatSync(ancestor); break; }
+    catch (error) {
+      if (error.code !== "ENOENT" || ancestor === path.dirname(ancestor)) throw installFailure("SERVICE_STORAGE_UNSAFE");
+      suffix.unshift(path.basename(ancestor));
+      ancestor = path.dirname(ancestor);
+    }
+  }
+  ancestor = fs.realpathSync.native(ancestor);
+  const root = path.resolve(ancestor, ...suffix);
+  const file = path.resolve(root, ...segments);
+  if (!file.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`)) throw installFailure("SERVICE_STORAGE_UNSAFE");
+  const location = { root, file, ancestor, identities: new Map() };
+  startupDirectories(location);
+  return location;
+}
+
+function startupDirectories(location, create = false) {
+  const relative = path.relative(location.ancestor, path.dirname(location.file));
+  if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) throw installFailure("SERVICE_STORAGE_UNSAFE");
+  let current = location.ancestor;
+  for (const segment of ["", ...relative.split(path.sep).filter(Boolean)]) {
+    if (segment) current = path.join(current, segment);
+    let entry;
+    try { entry = fs.lstatSync(current, { bigint: true }); }
+    catch (error) {
+      if (error.code !== "ENOENT" || location.identities.has(current)) throw installFailure("SERVICE_CONFIGURATION_CHANGED");
+      if (!create) return;
+      fs.mkdirSync(current, { mode: 0o700 });
+      entry = fs.lstatSync(current, { bigint: true });
+    }
+    const identity = `${entry.dev}:${entry.ino}:${entry.birthtimeNs}`;
+    if (!entry.isDirectory() || entry.isSymbolicLink() || path.relative(current, fs.realpathSync.native(current))) throw installFailure("SERVICE_STORAGE_UNSAFE");
+    if (location.identities.has(current) && location.identities.get(current) !== identity) throw installFailure("SERVICE_CONFIGURATION_CHANGED");
+    location.identities.set(current, identity);
+  }
+}
+
+function startupText(location) {
+  startupDirectories(location);
+  return readRegularConfigFile(location.file, { missing: true, maxBytes: 128 * 1024 });
+}
+
+function sameStartupFile(location, candidate) {
+  if (typeof candidate !== "string" || !path.isAbsolute(candidate) || path.basename(candidate) !== path.basename(location.file)) return false;
+  try {
+    const entry = fs.lstatSync(candidate);
+    return entry.isFile() && !entry.isSymbolicLink() && path.relative(location.file, fs.realpathSync.native(candidate)) === "";
+  } catch { return false; }
+}
+
+function atomicText(location, content, previous) {
+  startupDirectories(location, true);
+  const file = location.file;
+  if (startupText(location) !== previous) throw installFailure("SERVICE_CONFIGURATION_CHANGED");
+  const directory = path.dirname(file);
+  const temporary = path.resolve(directory, `.${path.basename(file)}.${randomUUID()}.tmp`);
+  if (!temporary.startsWith(directory.endsWith(path.sep) ? directory : `${directory}${path.sep}`)) throw installFailure("SERVICE_STORAGE_UNSAFE");
   let descriptor;
+  let identity;
+  const sameTemporary = (entry) => entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1n
+    && ["dev", "ino", "birthtimeNs"].every((field) => entry[field] === identity[field]);
   try {
     descriptor = fs.openSync(temporary, "wx", 0o600);
+    identity = fs.fstatSync(descriptor, { bigint: true });
     fs.writeFileSync(descriptor, content);
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = undefined;
-    if (readRegularConfigFile(file, { missing: true, maxBytes: 128 * 1024 }) !== previous) throw installFailure("SERVICE_CONFIGURATION_CHANGED");
+    if (startupText(location) !== previous || !sameTemporary(fs.lstatSync(temporary, { bigint: true }))) throw installFailure("SERVICE_CONFIGURATION_CHANGED");
     fs.renameSync(temporary, file);
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
-    try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (identity) {
+      startupDirectories(location);
+      let remaining;
+      try { remaining = fs.lstatSync(temporary, { bigint: true }); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      if (remaining) {
+        if (!sameTemporary(remaining)) throw installFailure("SERVICE_CONFIGURATION_CHANGED");
+        fs.unlinkSync(temporary);
+      }
+    }
   }
 }
 
@@ -192,8 +262,9 @@ async function installMac(context) {
   const { env, config, node, service, label, invoke, mutate, uid } = context;
   if (!Number.isSafeInteger(uid) || uid < 0) throw installFailure("SERVICE_USER_UNAVAILABLE");
   const home = env.HOME || env.USERPROFILE || os.homedir();
-  const file = path.join(home, "Library", "LaunchAgents", `${label}.plist`);
-  const previous = readRegularConfigFile(file, { missing: true, maxBytes: 128 * 1024 });
+  const location = startupLocation(home, ["Library", "LaunchAgents", `${label}.plist`]);
+  const file = location.file;
+  const previous = startupText(location);
   if (previous !== null && !previous.includes(escapeXml(RELAY_SERVICE_OWNER))) throw installFailure("SERVICE_CONFIGURATION_CONFLICT");
   const domain = `gui/${uid}`;
   const disabled = await invoke("/bin/launchctl", ["print-disabled", domain]);
@@ -207,8 +278,8 @@ async function installMac(context) {
   if (loaded.status === 0 && previous === null) throw installFailure("SERVICE_CONFIGURATION_CONFLICT");
   if (loaded.status !== 0 && loaded.status !== 113) throw installFailure("LAUNCH_AGENT_UNAVAILABLE");
   const changed = previous !== wanted;
-  if (changed && mutate) atomicText(file, wanted, previous);
-  const configured = readRegularConfigFile(file, { missing: true, maxBytes: 128 * 1024 }) === wanted;
+  if (changed && mutate) atomicText(location, wanted, previous);
+  const configured = startupText(location) === wanted;
   if (mutate && !configured) throw installFailure("SERVICE_READBACK_FAILED");
   if (mutate) await context.prepareRuntime();
   let started = false;
@@ -225,7 +296,8 @@ async function installMac(context) {
 async function installLinux(context) {
   const { env, config, node, service, label, invoke, mutate } = context;
   const home = env.HOME || env.USERPROFILE || os.homedir();
-  const file = path.join(env.XDG_CONFIG_HOME || path.join(home, ".config"), "systemd", "user", `${label}.service`);
+  const location = startupLocation(env.XDG_CONFIG_HOME || path.join(home, ".config"), ["systemd", "user", `${label}.service`]);
+  const file = location.file;
   const query = async () => {
     const response = await invoke("systemctl", ["--user", "show", `${label}.service`, "--property=LoadState,UnitFileState,ActiveState,FragmentPath", "--no-pager"]);
     const values = Object.fromEntries(response.stdout.split(/\r?\n/).filter((line) => line.includes("=")).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
@@ -234,15 +306,15 @@ async function installLinux(context) {
   };
   const values = await query();
   if (values.UnitFileState === "masked" || values.UnitFileState === "masked-runtime") return { configured: false, enabled: false, changed: false, started: false, registration: label, code: "SERVICE_MASKED" };
-  const previous = readRegularConfigFile(file, { missing: true, maxBytes: 128 * 1024 });
+  const previous = startupText(location);
   if (previous !== null && !previous.includes(`Description=${RELAY_SERVICE_OWNER}\n`)
-      || values.FragmentPath && path.resolve(values.FragmentPath) !== path.resolve(file)) throw installFailure("SERVICE_CONFIGURATION_CONFLICT");
+      || values.FragmentPath && !sameStartupFile(location, values.FragmentPath)) throw installFailure("SERVICE_CONFIGURATION_CONFLICT");
   const userDisabled = previous !== null && ["disabled", "disabled-runtime"].includes(values.UnitFileState);
   const enabled = config.enabled && !userDisabled;
   const wanted = unit(node, service, savedEnvironment(env, config));
   const changed = previous !== wanted;
   if (changed && mutate) {
-    atomicText(file, wanted, previous);
+    atomicText(location, wanted, previous);
     if ((await invoke("systemctl", ["--user", "daemon-reload"])).status !== 0) throw installFailure("USER_SYSTEMD_UNAVAILABLE");
   }
   if (enabled && mutate && !["enabled", "enabled-runtime"].includes(values.UnitFileState)) {
@@ -255,8 +327,8 @@ async function installLinux(context) {
     started = true;
   }
   const verified = mutate ? await query() : values;
-  const configured = readRegularConfigFile(file, { missing: true, maxBytes: 128 * 1024 }) === wanted
-    && verified.LoadState === "loaded" && path.resolve(verified.FragmentPath || ".") === path.resolve(file)
+  const configured = startupText(location) === wanted
+    && verified.LoadState === "loaded" && sameStartupFile(location, verified.FragmentPath)
     && (!enabled || ["enabled", "enabled-runtime"].includes(verified.UnitFileState));
   if (mutate && !configured) throw installFailure("SERVICE_READBACK_FAILED");
   return { configured, enabled, changed, started, registration: label };

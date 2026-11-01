@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
@@ -137,6 +140,26 @@ test("inspection rejects shell shims and unsupported CLI options", async () => {
   const unsupported = await inspectCodexWorker({ executable: process.execPath, run: async (_executable, args) => ({ stdout: args[0] === "--version" ? "codex-cli 0.1.0" : "--json" }) });
   assert.equal(unsupported.code, "CLI_UNSUPPORTED");
   assert.equal(unsupported.ready, false);
+});
+
+test("rejects relative missing directory and nonnative executable paths before any child starts", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-worker-executable-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const script = path.join(directory, "codex.cmd");
+  fs.writeFileSync(script, "exit 0");
+  for (const executable of ["codex", "./codex", directory, path.join(directory, "missing.exe"), script]) {
+    const result = await inspectCodexWorker({ executable, platform: "win32", run: () => assert.fail("Invalid executable reached inspection") });
+    assert.equal(result.code, "CLI_UNAVAILABLE");
+    assert.equal(result.available, false);
+  }
+  for (const executable of ["codex", directory, path.join(directory, "missing.exe")]) {
+    const f = fixture({ settings: { executable } });
+    await assert.rejects(f.run(), { code: "CLI_UNAVAILABLE", deliveryState: "not-sent" });
+    assert.equal(f.calls.length, 0);
+  }
+  const calls = [];
+  assert.equal((await inspectCodexWorker({ executable: process.execPath, run: inspectionRun(undefined, calls) })).ready, true);
+  assert.ok(calls.every(({ executable }) => executable === fs.realpathSync.native(process.execPath)));
 });
 
 test("isolates native and plugin MCPs without changing auth or policy and sends prompt only through stdin", async () => {

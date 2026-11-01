@@ -151,7 +151,7 @@ test("a worker capability is revalidated immediately before operation dispatch",
   assert.equal(box.calls.length, 0);
 });
 
-test("transient pre-connect failures retry at most three times under one deadline", async t => {
+test("transient pre-connect failures retry at most twelve times under one deadline", async t => {
   const box = await fixture(t);
   let attempts = 0;
   const result = await callBackgroundRelay("status", {}, { connection: box.connection, connect(endpoint) {
@@ -161,22 +161,75 @@ test("transient pre-connect failures retry at most three times under one deadlin
   assert.equal(result.accepted, true);
   assert.equal(attempts, 3);
   let exhausted = 0;
-  await assert.rejects(callBackgroundRelay("send", {}, { connection: box.connection, connect() { exhausted++; throw Object.assign(new Error("Unavailable"), { code: "ECONNREFUSED" }); } }), { code: "WORKER_RELAY_UNAVAILABLE", deliveryState: "not_sent" });
-  assert.equal(exhausted, 3);
+  await assert.rejects(callBackgroundRelay("send", {}, { connection: box.connection, timeoutMs: 20000, connect() { exhausted++; throw Object.assign(new Error("Unavailable"), { code: "ECONNREFUSED" }); } }), { code: "WORKER_RELAY_UNAVAILABLE", deliveryState: "not_sent" });
+  assert.equal(exhausted, 12);
   let bounded = 0;
   await assert.rejects(callBackgroundRelay("send", {}, { connection: box.connection, timeoutMs: 25, connect() { bounded++; throw Object.assign(new Error("Unavailable"), { code: "ENOENT" }); } }), { code: "WORKER_RELAY_TIMEOUT", deliveryState: "not_sent" });
-  await pause(125);
+  await pause(300);
   assert.equal(bounded, 1);
 });
 
-test("permanent failures and failures after connecting are not retried", async t => {
-  const box = await fixture(t, { server: socket => socket.once("data", () => socket.destroy()) });
+test("permanent failures and partial or malformed replies are not retried", async t => {
+  const box = await fixture(t);
   let denied = 0;
   await assert.rejects(callBackgroundRelay("send", {}, { connection: box.connection, connect() { denied++; throw Object.assign(new Error("Denied"), { code: "EACCES" }); } }), { deliveryState: "not_sent" });
   assert.equal(denied, 1);
-  let connected = 0;
-  await assert.rejects(callBackgroundRelay("send", {}, { connection: box.connection, connect(endpoint) { connected++; return net.createConnection(endpoint); } }), { code: "WORKER_RELAY_INTERRUPTED", deliveryState: "not_sent" });
-  assert.equal(connected, 1);
+  for (const reply of ["{", "invalid JSON\n"]) {
+    const broken = await fixture(t, { server: socket => socket.once("data", () => socket.end(reply)) });
+    let connected = 0;
+    await assert.rejects(callBackgroundRelay("send", {}, { connection: broken.connection, connect(endpoint) { connected++; return net.createConnection(endpoint); } }), { code: reply.includes("\n") ? "WORKER_REPLY_INVALID" : "WORKER_RELAY_INTERRUPTED", deliveryState: "not_sent" });
+    assert.equal(connected, 1);
+  }
+});
+
+test("normal update gaps recover through unavailable reset and hello-only closes without replaying work", async t => {
+  let connections = 0;
+  let attempts = 0;
+  let operations = 0;
+  const wire = [];
+  const serve = signedServer((socket, frame, hello, challenge) => {
+    assert.equal(verifyRelayOperation(TOKEN, hello, challenge, frame), true);
+    operations++;
+    socket.end(JSON.stringify(relayResponse(TOKEN, hello, challenge, { schemaVersion: 1, id: hello.id, result: { recovered: true } })) + "\n");
+  });
+  const box = await fixture(t, { server: socket => {
+    if (++connections <= 2) socket.once("data", () => socket.destroy());
+    else serve(socket);
+  } });
+  const result = await callBackgroundRelay("send", { prompt: "Authorized update-gap fixture" }, { connection: box.connection, connect(endpoint) {
+    attempts++;
+    if (attempts <= 2) throw Object.assign(new Error("Reloading"), { code: attempts === 1 ? "ENOENT" : "ECONNRESET" });
+    const socket = net.createConnection(endpoint);
+    const write = socket.write.bind(socket);
+    socket.write = data => { wire.push(JSON.parse(String(data))); return write(data); };
+    return socket;
+  } });
+  assert.deepEqual(result, { recovered: true });
+  assert.equal(attempts, 5);
+  assert.equal(connections, 3);
+  assert.equal(operations, 1);
+  assert.equal(wire.filter(frame => frame.type === "operation").length, 1);
+  const hellos = wire.filter(frame => frame.type === "hello");
+  assert.equal(new Set(hellos.map(frame => frame.id)).size, 1);
+  assert.equal(new Set(hellos.map(frame => frame.clientNonce)).size, 3);
+  assert.equal(JSON.stringify(wire).includes(TOKEN), false);
+});
+
+test("hello-only recovery cannot extend the original deadline or send an operation", async t => {
+  const box = await fixture(t, { server: socket => socket.once("data", () => socket.destroy()) });
+  const frames = [];
+  let attempts = 0;
+  const started = Date.now();
+  await assert.rejects(callBackgroundRelay("send", { prompt: "Never dispatched" }, { connection: box.connection, timeoutMs: 600, connect(endpoint) {
+    attempts++;
+    const socket = net.createConnection(endpoint);
+    const write = socket.write.bind(socket);
+    socket.write = data => { frames.push(JSON.parse(String(data))); return write(data); };
+    return socket;
+  } }), { code: "WORKER_RELAY_TIMEOUT", deliveryState: "not_sent", sent: false });
+  assert.equal(attempts, 2);
+  assert.ok(Date.now() - started < 2000);
+  assert.ok(frames.every(frame => frame.type === "hello"));
 });
 
 test("extra and oversized unauthenticated frames fail before broker dispatch", async t => {

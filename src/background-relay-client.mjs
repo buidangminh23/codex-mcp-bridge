@@ -43,6 +43,7 @@ export async function callBackgroundRelay(method, params = {}, { env = process.e
       attempts++;
       let current;
       let connected = false;
+      let received = false;
       let retired = false;
       let buffer = "";
       let challenge;
@@ -51,8 +52,12 @@ export async function callBackgroundRelay(method, params = {}, { env = process.e
         if (complete || retired) return;
         retired = true;
         current?.destroy();
-        if (!connected && !sent && attempts < 3 && ["ENOENT", "ECONNREFUSED", "ECONNRESET", "EBUSY"].includes(error?.code)) {
-          retryTimer = setTimeout(attempt, attempts === 1 ? 100 : 250);
+        const transient = ["ENOENT", "ECONNREFUSED", "ECONNRESET", "EBUSY", "EPIPE"].includes(error?.code)
+          || connected && code === "WORKER_RELAY_INTERRUPTED";
+        if (!sent && !received && attempts < 12 && transient) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) { finish(failed("WORKER_RELAY_TIMEOUT", "The independent relay did not answer before the deadline")); return; }
+          retryTimer = setTimeout(attempt, Math.min(250 * 2 ** (attempts - 1), 1000, remaining));
         } else finish(failed(code, "The independent relay connection ended before a verified receipt was received"));
       };
       try { current = socket = connect(connection.endpoint); }
@@ -69,6 +74,7 @@ export async function callBackgroundRelay(method, params = {}, { env = process.e
       current.on("close", () => disconnect(null, "WORKER_RELAY_INTERRUPTED"));
       current.on("data", data => {
         if (complete || retired) return;
+        if (Buffer.byteLength(data)) received = true;
         buffer += data;
         if (Buffer.byteLength(buffer) > (challenge ? RELAY_REPLY_LIMIT : 4096)) { finish(failed("WORKER_REPLY_TOO_LARGE", "The relay response exceeded its limit")); return; }
         const end = buffer.indexOf("\n");

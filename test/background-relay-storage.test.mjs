@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { protectPrivateRelayDirectory, assertPrivateRelayDirectory, assertPrivateRelayFile, beginPrivateRelayWrite, bindPrivateRelayWrite, finishPrivateRelayWrite, abortPrivateRelayWrite } from "../src/background-relay-storage.mjs";
+import { protectPrivateRelayDirectory, assertPrivateRelayDirectory, assertPrivateRelayFile, assertPrivateRelayFiles, beginPrivateRelayWrite, bindPrivateRelayWrite, finishPrivateRelayWrite, abortPrivateRelayWrite } from "../src/background-relay-storage.mjs";
 
 const readback = kind => ({ ownerTrusted: true, allowedPrincipalsOnly: true, currentUserFullControl: true, protected: true, noReparse: true, kind });
 
@@ -94,6 +94,85 @@ test("Windows cached validation is invalidated by replacement and metadata chang
   fs.writeFileSync(file, "replacement");
   assertPrivateRelayFile(file, options);
   assert.ok(checks > previous);
+});
+
+test("batch privacy checks use one bounded literal helper request and populate individual caches", t => {
+  const directory = temporary(t);
+  const files = Array.from({ length: 100 }, (_, index) => path.join(directory, `receipt ${index} tiếng Việt $().json`));
+  for (const file of files) fs.writeFileSync(file, "fixture", { mode: 0o600 });
+  const calls = [];
+  const run = (command, args, options) => {
+    calls.push({ command, args, options });
+    return JSON.stringify({ directory: readback("directory"), files: JSON.parse(options.input).files.map(name => ({ name, state: readback("file") })) });
+  };
+  const options = { platform: "win32", run };
+  assert.equal(assertPrivateRelayFiles(files, options).length, files.length);
+  for (const file of files) assertPrivateRelayFile(file, options);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args[calls[0].args.indexOf("-Mode") + 1], "batch");
+  assert.equal(calls[0].args.some(value => value.includes("receipt 0")), false);
+  assert.equal(calls[0].options.windowsHide, true);
+  assert.equal(calls[0].options.shell, false);
+  assert.equal(JSON.parse(calls[0].options.input).files.length, 100);
+  fs.writeFileSync(files[50], "changed fixture");
+  assertPrivateRelayFiles(files, options);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(JSON.parse(calls[1].options.input).files, [path.basename(files[50])]);
+});
+
+test("batch privacy rejects incomplete readbacks and changes during the ACL snapshot", t => {
+  const directory = temporary(t);
+  const files = [path.join(directory, "first.json"), path.join(directory, "second.json")];
+  for (const file of files) fs.writeFileSync(file, "fixture");
+  const result = () => ({ directory: readback("directory"), files: files.map(file => ({ name: path.basename(file), state: readback("file") })) });
+  for (const mutate of [
+    value => { value.directory.ownerTrusted = false; },
+    value => { value.files.pop(); },
+    value => { value.files.reverse(); },
+    value => { value.files[1].state.allowedPrincipalsOnly = false; },
+    () => { fs.writeFileSync(files[1], "externally changed after inspection"); },
+  ]) {
+    assert.throws(() => assertPrivateRelayFiles(files, { platform: "win32", run: () => { const value = result(); mutate(value); return JSON.stringify(value); } }), { code: "WORKER_STORAGE_UNSAFE" });
+  }
+});
+
+test("batch privacy bounds scope and refuses linked missing or duplicate files before launch", t => {
+  const directory = temporary(t);
+  const other = temporary(t);
+  const file = path.join(directory, "receipt.json");
+  fs.writeFileSync(file, "fixture");
+  let calls = 0;
+  const options = { platform: "win32", run: () => { calls++; return "{}"; } };
+  assert.deepEqual(assertPrivateRelayFiles([], options), []);
+  for (const files of [[file, file], [file, path.join(other, "receipt.json")], [path.join(directory, "missing")], Array(1025).fill(file)]) {
+    assert.throws(() => assertPrivateRelayFiles(files, options), { code: "WORKER_STORAGE_UNSAFE" });
+  }
+  fs.linkSync(file, path.join(directory, "linked.json"));
+  assert.throws(() => assertPrivateRelayFiles([file], options), { code: "WORKER_STORAGE_UNSAFE" });
+  assert.equal(calls, 0);
+});
+
+test("Windows cold receipt checks validate one hundred real files in one ACL process", { skip: process.platform !== "win32" }, t => {
+  const directory = temporary(t);
+  protectPrivateRelayDirectory(directory);
+  const files = Array.from({ length: 100 }, (_, index) => path.join(directory, `receipt ${index} tiếng Việt.json`));
+  for (const file of files) fs.writeFileSync(file, "fixture", { mode: 0o600 });
+  let checks = 0;
+  const run = (...args) => { checks++; return execFileSync(...args); };
+  const options = { platform: "win32", run };
+  const started = performance.now();
+  assert.equal(assertPrivateRelayFiles(files, options).length, 100);
+  for (const file of files) assertPrivateRelayFile(file, options);
+  assert.equal(checks, 1);
+  t.diagnostic(`Cold privacy checks for 100 receipts: ${Math.round(performance.now() - started)} ms; ACL processes: ${checks}`);
+  fs.writeFileSync(path.join(directory, "unrelated.json"), "fixture", { mode: 0o600 });
+  assertPrivateRelayFiles(files, options);
+  assert.equal(checks, 2);
+  const windows = process.env.SystemRoot || "C:\\Windows";
+  const script = "$ErrorActionPreference='Stop'; $p=$env:RELAY_TEST_PATH; $a=[IO.File]::GetAccessControl($p,[Security.AccessControl.AccessControlSections]::Access); $s=New-Object Security.Principal.SecurityIdentifier('S-1-1-0'); $r=New-Object Security.AccessControl.FileSystemAccessRule($s,'ReadAndExecute','Allow'); $a.AddAccessRule($r); [IO.File]::SetAccessControl($p,$a)";
+  execFileSync(path.win32.join(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { env: { ...process.env, RELAY_TEST_PATH: files[99] }, windowsHide: true, stdio: "pipe", timeout: 15000 });
+  assert.throws(() => assertPrivateRelayFiles(files, options), { code: "WORKER_STORAGE_UNSAFE" });
+  assert.equal(checks, 3);
 });
 
 test("owned atomic writes refresh only the verified directory and exact new file identity", t => {

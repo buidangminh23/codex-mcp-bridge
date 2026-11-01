@@ -27,6 +27,22 @@ function inspectPath(target, kind, missing = false) {
 const identity = stat => [stat.dev, stat.ino, stat.birthtimeNs, stat.ctimeNs, stat.mtimeNs, stat.size, stat.mode, stat.nlink].join(":");
 const cacheKey = (target, kind) => `${kind}:${target.toLowerCase()}`;
 const sameObject = (left, right) => ["dev", "ino", "birthtimeNs", "uid", "mode", "nlink"].every(key => left[key] === right[key]);
+const validReadback = (value, kind) => value?.ownerTrusted === true && value?.allowedPrincipalsOnly === true && value?.currentUserFullControl === true
+  && value?.noReparse === true && (kind !== "directory" || value?.protected === true) && value?.kind === kind;
+
+function runWindowsHelper(target, kind, mode, run, input) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
+  const windows = process.env.SystemRoot || "C:\\Windows";
+  env.PSModulePath = path.win32.join(windows, "System32", "WindowsPowerShell", "v1.0", "Modules");
+  try {
+    const response = run(path.win32.join(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-File", helper, "-LiteralPath", target, "-Kind", kind, "-Mode", mode],
+      { env, windowsHide: true, shell: false, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], input,
+        timeout: 15000, maxBuffer: mode === "batch" ? 2 * 1024 * 1024 : 16384, encoding: "utf8" });
+    if (response && typeof response === "object" && !Buffer.isBuffer(response) && (response.status ?? response.exitCode ?? 0) !== 0) throw unsafe();
+    return JSON.parse(typeof response === "object" && !Buffer.isBuffer(response) ? response.stdout : String(response));
+  } catch { throw unsafe(); }
+}
 
 function windowsPrivacy(target, kind, mode, stat, run) {
   let cache = caches.get(run);
@@ -34,21 +50,12 @@ function windowsPrivacy(target, kind, mode, stat, run) {
   const key = cacheKey(target, kind);
   const previous = cache.get(key);
   if (previous?.identity === identity(stat)) return stat;
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
-  const windows = process.env.SystemRoot || "C:\\Windows";
-  env.PSModulePath = path.win32.join(windows, "System32", "WindowsPowerShell", "v1.0", "Modules");
   let result;
-  try {
-    const response = run(path.win32.join(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-      ["-NoProfile", "-NonInteractive", "-File", helper, "-LiteralPath", target, "-Kind", kind, "-Mode", mode],
-      { env, windowsHide: true, shell: false, stdio: ["ignore", "pipe", "pipe"], timeout: 15000, maxBuffer: 16384, encoding: "utf8" });
-    if (response && typeof response === "object" && !Buffer.isBuffer(response) && (response.status ?? response.exitCode ?? 0) !== 0) throw unsafe();
-    result = JSON.parse(typeof response === "object" && !Buffer.isBuffer(response) ? response.stdout : String(response));
-  } catch { cache.delete(key); throw unsafe(); }
+  try { result = runWindowsHelper(target, kind, mode, run); }
+  catch { cache.delete(key); throw unsafe(); }
   const current = inspectPath(target, kind);
   if (current.dev !== stat.dev || current.ino !== stat.ino || current.birthtimeNs !== stat.birthtimeNs
-    || result?.ownerTrusted !== true || result?.allowedPrincipalsOnly !== true || result?.currentUserFullControl !== true || result?.noReparse !== true
-    || kind === "directory" && result?.protected !== true || result?.kind !== kind) { cache.delete(key); throw unsafe(); }
+    || mode === "assert" && identity(current) !== identity(stat) || !validReadback(result, kind)) { cache.delete(key); throw unsafe(); }
   cache.set(key, { identity: identity(current) });
   if (cache.size > 2048) cache.delete(cache.keys().next().value);
   return current;
@@ -70,6 +77,46 @@ export function assertPrivateRelayFile(input, { missing = false, ...options } = 
   assertPrivateRelayDirectory(path.dirname(target), options);
   const stat = inspectPath(target, "file", missing);
   return stat === null ? null : assertPrivacy(target, "file", stat, options);
+}
+
+export function assertPrivateRelayFiles(inputs, { platform = process.platform, run = execFileSync } = {}) {
+  if (!Array.isArray(inputs) || inputs.length > 1024) throw unsafe();
+  if (!inputs.length) return [];
+  const files = inputs.map(targetPath);
+  const directory = path.dirname(files[0]);
+  const names = files.map(file => path.basename(file));
+  if (files.some(file => path.dirname(file) !== directory) || names.some(name => /[\\/:]/.test(name))
+    || new Set(files.map(file => platform === "win32" ? file.toLowerCase() : file)).size !== files.length) throw unsafe();
+  const input = JSON.stringify({ files: names });
+  if (Buffer.byteLength(input) > 1024 * 1024) throw unsafe();
+  const before = inspectPath(directory, "directory");
+  const states = files.map(file => inspectPath(file, "file"));
+  if (platform !== "win32") {
+    assertPrivacy(directory, "directory", before, { platform, run });
+    return states.map((stat, index) => assertPrivacy(files[index], "file", stat, { platform, run }));
+  }
+  let cache = caches.get(run);
+  if (!cache) { cache = new Map(); caches.set(run, cache); }
+  const pending = files.flatMap((file, index) => cache.get(cacheKey(file, "file"))?.identity === identity(states[index]) ? [] : [index]);
+  if (!pending.length && cache.get(cacheKey(directory, "directory"))?.identity === identity(before)) return states;
+  try {
+    const result = runWindowsHelper(directory, "directory", "batch", run, JSON.stringify({ files: pending.map(index => names[index]) }));
+    if (!validReadback(result?.directory, "directory") || !Array.isArray(result?.files) || result.files.length !== pending.length) throw unsafe();
+    for (let index = 0; index < pending.length; index++) {
+      if (result.files[index]?.name !== names[pending[index]] || !validReadback(result.files[index]?.state, "file")) throw unsafe();
+    }
+    const currentDirectory = inspectPath(directory, "directory");
+    const current = files.map(file => inspectPath(file, "file"));
+    if (identity(before) !== identity(currentDirectory) || current.some((stat, index) => identity(stat) !== identity(states[index]))) throw unsafe();
+    cache.set(cacheKey(directory, "directory"), { identity: identity(currentDirectory) });
+    for (const index of pending) cache.set(cacheKey(files[index], "file"), { identity: identity(current[index]) });
+    while (cache.size > 2048) cache.delete(cache.keys().next().value);
+    return current;
+  } catch {
+    cache.delete(cacheKey(directory, "directory"));
+    for (const file of files) cache.delete(cacheKey(file, "file"));
+    throw unsafe();
+  }
 }
 
 export function protectPrivateRelayDirectory(input, { platform = process.platform, run = execFileSync } = {}) {

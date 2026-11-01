@@ -1487,7 +1487,14 @@ describe("peer endpoint", () => {
     });
     const failed = endpoint.sendAndWait("recovered-peer", "fail", { timeoutMs: 1000 });
     const next = endpoint.sendAndWait("recovered-peer", "next", { timeoutMs: 1000 });
-    await assert.rejects(failed, /send failed/);
+    await assert.rejects(failed, (error) => {
+      assert.match(error.message, /send failed/);
+      assert.equal(error.sent, false);
+      const receipt = endpoint.readDelivery(error.msgId);
+      assert.equal(receipt.status, "send_failed");
+      assert.equal(receipt.reasonCode, "CLAUDE_PEER_SEND_FAILED");
+      return true;
+    });
     await yieldToEvents();
     assert.equal(endpoint.unconfirmedReplies.get("recovered-peer"), 1);
     await receiveMessage("recovered-peer", "recovered answer");

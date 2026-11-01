@@ -41,10 +41,9 @@ function fixture(t) {
       assert.deepEqual(identity, { codex: accounts.codex.fingerprint, claude: accounts.claude.fingerprint });
       if (state.accountChanged) throw new Error("Account changed");
     },
-    listSessions: () => state.sessions,
+    listSessions: () => { state.onListSessions?.(); return state.sessions; },
     listTasks: () => state.tasks ?? [],
-    openTask: async (taskId) => { state.opened = taskId; await state.onOpen?.(); },
-    recoveryTimeoutMs: 0,
+    openTask: async () => assert.fail("must not open an app or chat to load a relay"),
     readContext: () => desktop,
     readInbound: () => inbound,
     assertProcess(candidate) { assert.equal(candidate.processStart, "fixture-start"); },
@@ -188,20 +187,22 @@ test("dormant Claude discovery and reads do not start the app or send work", asy
   const rows = await f.backend.list({ target: "claude", sender: f.sender });
   assert.equal(rows.length, 1);
   assert.equal(rows[0].status, "dormant");
-  assert.equal(rows[0].recoverable, true);
+  assert.equal(rows[0].recoverable, false);
+  assert.equal(rows[0].code, "CLAUDE_SESSION_NOT_READY");
   const read = await f.backend.read({ target: "claude", sessionId: f.session.sessionId, taskId: f.desktop.taskId, sender: f.sender });
   assert.equal(read.status, "dormant");
   assert.equal(f.state.opened, undefined);
   assert.equal(f.state.peerCalls.length, 0);
 });
 
-test("dormant Claude delivery reopens the exact native task and binds its new session", async (t) => {
+test("Claude delivery rediscovers an endpoint that became available without opening a task", async (t) => {
   const f = fixture(t);
   const task = dormantTask(f);
   const resumed = { ...f.session, sessionId: crypto.randomUUID(), pid: 902, socket: "resumed-socket" };
-  f.state.onOpen = () => { task.cliSessionId = resumed.sessionId; f.state.sessions = [resumed]; };
+  let inspections = 0;
+  f.state.onListSessions = () => { if (++inspections === 3) f.state.sessions = [resumed]; };
   const receipt = await f.claudeSend();
-  assert.equal(f.state.opened, task.taskId);
+  assert.equal(f.state.opened, undefined);
   assert.equal(receipt.sessionId, resumed.sessionId);
   assert.equal(f.state.peerCalls.length, 1);
   assert.equal(f.state.peerCalls[0].socket, resumed.socket);
@@ -225,7 +226,7 @@ test("dormant recovery rejects stale identity, archived, foreign and duplicate t
   }
 });
 
-test("dormant recovery preserves native permission and account checks after the app opens", async (t) => {
+test("silent endpoint rediscovery preserves native permission and account checks", async (t) => {
   for (const mutate of [
     (f) => { f.inbound.value = "hold"; },
     (f) => { f.desktop.permissionClass = "bypass"; },
@@ -234,9 +235,10 @@ test("dormant recovery preserves native permission and account checks after the 
   ]) {
     const f = fixture(t);
     dormantTask(f);
-    f.state.onOpen = () => { f.state.sessions = [f.session]; mutate(f); };
+    let inspections = 0;
+    f.state.onListSessions = () => { if (++inspections === 3) { f.state.sessions = [f.session]; mutate(f); } };
     await assert.rejects(f.claudeSend());
-    assert.equal(f.state.opened, f.desktop.taskId);
+    assert.equal(f.state.opened, undefined);
     assert.equal(f.state.peerCalls.length, 0);
   }
 });

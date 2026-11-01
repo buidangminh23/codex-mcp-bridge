@@ -7,6 +7,7 @@ import { createReleaseSnapshot, pruneReleaseSnapshots, snapshotRoot, sourceRevis
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { isMainModule, stableInstallPath } from "./install-paths.mjs";
 import { CLIENT_CLOSE_DRAIN_MS, CLIENT_CLOSE_STOP_MS } from "./reload-control.mjs";
+import { withBridgeDiagnostic } from "./recipient-preflight.mjs";
 
 const WORKER_NODE = stableInstallPath(process.execPath);
 const ENTRIES = new Set(["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs"]);
@@ -16,7 +17,10 @@ const RETIRE_GRACE_MS = 6000;
 const CLIENT_CLOSE_GRACE_MS = CLIENT_CLOSE_DRAIN_MS + CLIENT_CLOSE_STOP_MS + 1000;
 const hasId = (message) => Object.hasOwn(message, "id");
 const idKey = (id) => JSON.stringify(id);
-const errorMessage = (id, message) => ({ jsonrpc: "2.0", id, error: { code: -32603, message } });
+const errorMessage = (id, message, options = {}) => {
+  const result = withBridgeDiagnostic({ content: [] }, new Error(message), { component: "mcp-supervisor", code: "MCP_WORKER_UNAVAILABLE", ...options });
+  return { jsonrpc: "2.0", id, error: { code: -32603, message: `${message}\n${result.content[0].text}`, data: { diagnostic: result.structuredContent.diagnostic } } };
+};
 
 export function supervisorInterval(value, fallback) {
   const parsed = Number(value);
@@ -235,12 +239,12 @@ export async function runSupervisor(entry, options = {}) {
         }
         output({ ...message, id: pending.id });
       };
-      void respond().catch((error) => { failure = error.message; output(errorMessage(pending.id, error.message)); });
+      void respond().catch((error) => { failure = error.message; output(errorMessage(pending.id, error.message, { code: "MCP_RESPONSE_FAILED", operation: pending.tool ?? pending.method, deliveryState: "unknown" })); });
     },
     exit(worker, error) {
       for (const [id, pending] of worker.clientPending) {
         requests.delete(idKey(pending.id));
-        output(errorMessage(pending.id, `${error.message}. The operation may already have been dispatched; it was not retried. Retain the original task and receipts.`));
+        output(errorMessage(pending.id, `${error.message}. The operation may already have been dispatched; it was not retried. Retain the original task and receipts.`, { code: "MCP_WORKER_EXITED", operation: pending.tool ?? pending.method, deliveryState: "unknown" }));
         worker.clientPending.delete(id);
       }
       for (const [id, pending] of reverse) if (pending.worker === worker) reverse.delete(id);
@@ -398,16 +402,16 @@ export async function runSupervisor(entry, options = {}) {
       }
       return;
     }
-    if (failure) { if (hasId(message)) output(errorMessage(message.id, `${failure}${canRecover() && recoveryAttempts < recoveryLimit ? "; native relay recovery is pending, this request was not sent" : ""}`)); return; }
+    if (failure) { if (hasId(message)) output(errorMessage(message.id, `${failure}${canRecover() && recoveryAttempts < recoveryLimit ? "; native relay recovery is pending, this request was not sent" : ""}`, { operation: message.params?.name ?? message.method, deliveryState: "not_sent" })); return; }
     if (switching || !active) {
       const bytes = queue.reduce((size, queued) => size + Buffer.byteLength(JSON.stringify(queued)), 0);
-      if (queue.length >= MAX_QUEUE || bytes + Buffer.byteLength(JSON.stringify(message)) > MAX_FRAME_BYTES) { if (hasId(message)) output(errorMessage(message.id, "Reload request queue is full; no operation was dispatched")); return; }
+      if (queue.length >= MAX_QUEUE || bytes + Buffer.byteLength(JSON.stringify(message)) > MAX_FRAME_BYTES) { if (hasId(message)) output(errorMessage(message.id, "Reload request queue is full; no operation was dispatched", { code: "MCP_QUEUE_FULL", operation: message.params?.name ?? message.method, deliveryState: "not_sent" })); return; }
       queue.push(message);
       return;
     }
     if (message.method === "initialize") initializeParams = message.params;
     if (hasId(message)) {
-      if (requests.has(idKey(message.id))) { output(errorMessage(message.id, "Duplicate active JSON-RPC request ID")); return; }
+      if (requests.has(idKey(message.id))) { output(errorMessage(message.id, "Duplicate active JSON-RPC request ID", { code: "MCP_DUPLICATE_REQUEST", operation: message.params?.name ?? message.method, deliveryState: "unknown" })); return; }
       const id = `client:${++sequence}`;
       active.clientPending.set(id, { id: message.id, method: message.method, tool: message.params?.name });
       requests.set(idKey(message.id), { worker: active, workerId: id });

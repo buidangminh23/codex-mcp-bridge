@@ -1,6 +1,5 @@
 import { assertClaudeSessionCwd } from "./peer-protocol.mjs";
 import { preflightFailure } from "./recipient-preflight.mjs";
-import { setTimeout as delay } from "node:timers/promises";
 
 function assertCwd(session, expectedCwd) {
   try {
@@ -24,13 +23,13 @@ function uniqueLiveSessions(sessions) {
   return [...unique.values()];
 }
 
-export async function recoverClaudeDesktopSession(args, { listTasks, listSessions, open, beforeOpen, sleep = delay, timeoutMs = 15000 }) {
+export async function recoverClaudeDesktopSession(args, { listTasks, listSessions, beforeInspect }) {
   try { return { session: resolveClaudeDesktopSession(args) }; }
   catch (error) {
     if (error.preflight?.code !== "CLAUDE_SESSION_NOT_FOUND" || args.target !== "auto" || !args.expectedTaskId) throw error;
   }
   const assertTask = async () => {
-    await beforeOpen();
+    await beforeInspect();
     const tasks = await listTasks();
     if (!Array.isArray(tasks) || tasks.length > 8192) throw preflightFailure("CLAUDE_DESKTOP_TASK_UNVERIFIED", "Saved Desktop tasks cannot be verified.");
     const matches = tasks.filter((task) => task.taskId === args.expectedTaskId);
@@ -41,17 +40,11 @@ export async function recoverClaudeDesktopSession(args, { listTasks, listSession
     return matches[0];
   };
   const task = await assertTask();
-  try { await open(task.taskId); }
-  catch { return { recovery: { status: "launch_uncertain", sent: false, taskId: task.taskId, cwd: args.expectedCwd, reason: "The exact Desktop task could not be confirmed open. Inspect this task before retrying; no message was sent." } }; }
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    await assertTask();
-    try { return { session: resolveClaudeDesktopSession({ ...args, sessions: await listSessions() }) }; }
-    catch (error) { if (error.preflight?.code !== "CLAUDE_SESSION_NOT_FOUND") throw error; }
-    if (Date.now() >= deadline) break;
-    await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
-  }
-  return { recovery: { status: "awaiting_session", sent: false, taskId: task.taskId, cwd: args.expectedCwd, reason: "The exact saved task was opened in Claude Desktop and is reconnecting. Retry target auto with this expectedTaskId; no message has been sent." } };
+  const sessions = await listSessions();
+  await assertTask();
+  try { return { session: resolveClaudeDesktopSession({ ...args, sessions }) }; }
+  catch (error) { if (error.preflight?.code !== "CLAUDE_SESSION_NOT_FOUND") throw error; }
+  throw Object.assign(preflightFailure("CLAUDE_SESSION_NOT_READY", "The exact saved Claude Desktop task has no live native Code endpoint. Background delivery requires that endpoint; this bridge has no supported silent cold-start API. No app or chat was opened. Inspect claude_bridge_status and report this diagnostic; do not create or open a chat to load the relay."), { taskId: task.taskId, phase: "recipient_discovery" });
 }
 
 export function sameClaudeDesktopRecipient(selected, current) {
@@ -133,7 +126,7 @@ export function resolveClaudeDesktopSession({ target, expectedCwd, expectedTaskI
     throw preflightFailure("CLAUDE_SESSION_AMBIGUOUS", "Multiple live Claude Desktop sessions match the current account and intended project/task; inspect the intended task and provide its exact identity.");
   }
   if (!candidates.length) {
-    throw preflightFailure("CLAUDE_SESSION_NOT_FOUND", "No live Claude Desktop session matches the current account and intended project/task. Open or reconnect the existing task in Claude Desktop.");
+    throw preflightFailure("CLAUDE_SESSION_NOT_FOUND", "No live Claude Desktop session matches the current account and intended project/task. Inspect list_claude_sessions and claude_bridge_status; do not open or create a chat to load the relay.");
   }
   return candidates[0];
 }

@@ -113,6 +113,16 @@ npm version minor      # or patch / major
 git push --follow-tags
 ```
 
+Every release must retain the single-command upgrade path documented in the
+README: global npm install of `@minhspark/codex-mcp-bridge@latest` with
+`--allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts`. Its setup
+hook must apply and verify all managed bridge registrations/settings, preserve
+accounts and permissions, and return a failing exit code for incomplete
+configuration. Include that command in the release notes. Validate upgrades
+from existing settings as well as fresh installs. Report saved configuration
+separately from live host readiness; never open apps or chats, use Computer Use,
+or dispatch a prompt just to make a relay appear ready.
+
 `npm version` runs `scripts/sync-version.mjs`, which rewrites the `VERSION`
 constant in `src/index.mjs` to match and stages it - `test/repo-hygiene.test.mjs`
 fails the build if the two ever disagree, and `codex_bridge_status` reports that

@@ -6,17 +6,30 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [1.25.3] - 2026-11-01
 
+### Upgrade
+
+One command updates the package and reapplies managed settings for all clients:
+
+```sh
+npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+```
+
+On Windows PowerShell use `npm.cmd` in place of `npm`. Setup reports saved configuration separately from live host readiness and never opens apps or chats to load a relay.
+
 ### Fixed
 
-- Normal Codex task creation and delivery no longer navigate or activate the Desktop window by default, including on Windows. Explicit `openInApp: true` or `CODEX_BRIDGE_OPEN_IN_APP=1` remains available. Fresh installs use the silent default and preserve existing explicit configuration.
+- Normal Codex task creation and delivery no longer navigate or activate the Desktop window by default, including on Windows. Explicit `openInApp: true` remains available. Comprehensive install/update migrates historical automatic navigation settings to the silent default.
 - The native relay refuses navigation to its internal executor, which has no user conversation history and must not be opened as a task.
-- Antigravity can discover dormant Claude Desktop tasks in the same project and recover the exact saved task before delivery. Reconnected sessions are revalidated against the current account, process, directory and native permission policy; failed recovery sends no message.
+- Claude endpoint rediscovery from Codex and Antigravity no longer opens apps or saved chats to load a relay. A dormant native task reports `CLAUDE_SESSION_NOT_READY` with `sent: false`; an endpoint that becomes available is revalidated against the current account, process, directory and native permission policy.
 - Antigravity inbound MCP instructions now describe the existing outbound `agent-bridge` instead of incorrectly claiming that Antigravity cannot send to Codex or Claude. Status reports distinguish supported Desktop routes from unverified outbound readiness and retain the CLI and automatic-reply-forwarding limits.
 - An unreachable Antigravity sidecar now reports a connectivity problem without assuming the App is closed, and points callers to the sidecar diagnostics when the App is already running.
+- Relay and tool failures include a readable diagnostic block and structured report with the exact error/cause codes, operation, phase, bridge/Node/platform versions, UTC time, report ID and safe request identifiers. Credential and private-path redaction applies to the report block. Uncertain sends remain uncertain and are never automatically replayed.
+- Antigravity IPC and durable delivery records preserve original failure codes and reports; failed or unknown receipt reads are surfaced as errors instead of successful-looking results. Supervisor crashes distinguish in-flight unknown delivery from a new request refused before dispatch.
+- The same one-command npm install/update applies managed settings for all clients, shows setup progress, and fails if configuration is incomplete. It enables supported native background preferences without changing accounts or permissions and distinguishes saved configuration from unverified running-client activation.
 
 ### Limitations
 
-- Background delivery still requires the native host process and its loaded bridge. Enable Antigravity's native `runInBackground` setting to keep its sidecar alive after closing the last window. Codex's native startup task starts the application in the background, but an unloaded native MCP cannot be cold-started by this bridge.
+- Background delivery still requires the native host process and its loaded bridge. Closing a window can retain these processes; fully quitting a native host cannot provide an always-ready endpoint. An unloaded Codex MCP or dormant Claude Code process has no supported silent cold-start path in this bridge. Recovery never opens old, new, empty or failed chats, uses Computer Use, or launches a substitute CLI/app-server.
 
 ## [1.25.2] - 2026-10-31
 

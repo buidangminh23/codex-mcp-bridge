@@ -7,7 +7,6 @@ import { readClaudeDesktopContext, readClaudeDesktopTasks } from "./claude-deskt
 import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
 import { assertRecipientClass } from "./recipient-preflight.mjs";
 import { recoverClaudeDesktopSession, sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
-import { openClaudeCodeComposer } from "./platform.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
 
@@ -44,7 +43,6 @@ export function createAntigravityOutboundTargets(options = {}) {
   const assertAccounts = options.assertAccounts ?? ((identity) => assertAccountIdentity(identity, readAccounts()));
   const listSessions = options.listSessions ?? listClaudeSessions;
   const listTasks = options.listTasks ?? ((account) => readClaudeDesktopTasks({ account }));
-  const openTask = options.openTask ?? ((taskId) => openClaudeCodeComposer(`claude://code/continue?session=${encodeURIComponent(taskId)}`));
   const readContext = options.readContext ?? ((session, account) => readClaudeDesktopContext(session, { account }));
   const readInbound = options.readInbound ?? readClaudeInboundPolicy;
   const assertProcess = options.assertProcess ?? assertClaudeSessionProcess;
@@ -132,7 +130,7 @@ export function createAntigravityOutboundTargets(options = {}) {
     if (matches.length !== 1 || typeof taskId !== "string" || !taskId.startsWith("local_") || !UUID.test(taskId.slice(6)) || task.fileTaskId !== taskId || task.isArchived !== false
         || !UUID.test(sessionId ?? "") || task.cliSessionId !== sessionId || !sameDirectory(captureDirectory(task.cwd).path, context.cwd)
         || typeof task.title !== "string" || !task.title.trim() || task.title.length > 1024 || /[\u0000-\u001f\u007f]/u.test(task.title)) throw blocked("Exact saved Claude Desktop task and session identity cannot be verified");
-    return { target: "claude", sessionId, taskId, cwd: context.cwd, title: task.title, status: "dormant", recoverable: true };
+    return { target: "claude", sessionId, taskId, cwd: context.cwd, title: task.title, status: "dormant", recoverable: false, code: "CLAUDE_SESSION_NOT_READY" };
   }
 
   async function recoverClaudeRecipient(context, sessionId, taskId) {
@@ -142,11 +140,9 @@ export function createAntigravityOutboundTargets(options = {}) {
     const resolved = await recoverClaudeDesktopSession({
       target: "auto", expectedCwd: context.cwd, expectedTaskId: taskId, sessions: listSessions(), account: context.accounts.claude, readContext,
     }, {
-      listTasks: () => listTasks(context.accounts.claude), listSessions, open: openTask, beforeOpen: context.check,
-      timeoutMs: options.recoveryTimeoutMs ?? 15000,
+      listTasks: () => listTasks(context.accounts.claude), listSessions, beforeInspect: context.check,
     });
     await context.check();
-    if (!resolved.session) throw Object.assign(blocked(resolved.recovery.reason), { code: "CLAUDE_SESSION_NOT_READY", recovery: resolved.recovery });
     return claudeRecipient(context, resolved.session.sessionId, taskId);
   }
 

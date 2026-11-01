@@ -157,3 +157,16 @@ it("does not report a successful operation merely because the relay socket recov
   await assert.rejects(delivery.request("list_projects", {}), /native dispatch rejected/);
   assert.equal(attempts, 2);
 });
+
+it("readiness retains the exact native failure for reporting without navigation", async () => {
+  const relay = { socketPath: "/s", async requestDesktop() {
+    throw Object.assign(new NativeRelayError("Native pipe could not be verified", "NATIVE_PIPE_UNAVAILABLE"), { sent: false });
+  } };
+  const delivery = new DesktopTaskDelivery({ relay, security: { assertCwd() {} } });
+  const status = await delivery.status();
+  assert.equal(status.available, false);
+  assert.equal(status.code, "NATIVE_PIPE_UNAVAILABLE");
+  assert.equal(status.diagnostic.code, "NATIVE_PIPE_UNAVAILABLE");
+  assert.equal(status.diagnostic.deliveryState, "not_applicable");
+  assert.doesNotMatch(RELAY_DOWN_GUIDANCE, /open any regular|reconnect it in a regular/);
+});

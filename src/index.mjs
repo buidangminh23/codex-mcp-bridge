@@ -38,6 +38,7 @@ import { DesktopReplyReceipts } from "./desktop-reply-receipts.mjs";
 import { registerDesktopReadTools } from "./desktop-read-tools.mjs";
 import { PROJECT_SETUP_TOOLS, registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
 import { createRelayWake } from "./relay-wake.mjs";
+import { withBridgeDiagnostic } from "./recipient-preflight.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -153,15 +154,18 @@ const textResult = (text, isError = false) => ({
   ...(isError ? { isError: true } : {}),
 });
 
-const failure = (err) => {
+const failure = (err, options = {}) => {
   const result = textResult(`Codex bridge error: ${err?.message ?? String(err)}`, true);
-  for (let cause = err; cause; cause = cause.cause) {
+  const seen = new Set();
+  for (let cause = err; cause && !seen.has(cause) && seen.size < 8; cause = cause.cause) {
+    seen.add(cause);
     if (["RESPONSE_TOO_LARGE", "INVALID_RESPONSE_PREFERENCES", "INVALID_CURSOR", "CURSOR_EXPIRED"].includes(cause.code)) {
       result.structuredContent = { error: Object.fromEntries(["code", "boundary", "bytes", "limit"].filter((key) => cause[key] !== undefined).map((key) => [key, cause[key]])) };
       break;
     }
   }
-  return result;
+  return withBridgeDiagnostic(result, err, { component: "codex-bridge", operation: desktopOperation.getStore()?.name,
+    ...(desktopOperation.getStore() ? { deliveryState: desktopOperation.getStore().dispatched ? "unknown" : "not_sent", readOnly: desktopOperation.getStore().readOnly ?? desktopOperation.getStore().diagnostic } : {}), ...options });
 };
 
 function replyResult(delivered, deliveryId, result, notes = []) {
@@ -171,10 +175,14 @@ function replyResult(delivered, deliveryId, result, notes = []) {
   const observationUnavailable = result.status === "observation_unavailable";
   if (observationUnavailable) notes = [...notes, OBSERVATION_UNAVAILABLE_GUIDANCE];
   const continuation = deliveryId ? `deliveryId: ${deliveryId}\n${pending ? "Continue automatically with wait_codex_reply and this deliveryId; it only observes the original send. Do not resend the prompt." : "Keep this deliveryId to inspect the same send after reconnecting."}` : "";
-  return {
+  const output = {
     ...textResult([...notes, `deliveryStatus: ${deliveryStatus}`, formatTurn(result, { desktop: true }), continuation].filter(Boolean).join("\n"), result.status === "failed" || result.status === "systemError"),
     structuredContent: { ...result, threadId: delivered.threadId, deliveryStatus, ...(deliveryId ? { deliveryId } : {}), nextAction: observationUnavailable ? "inspect_existing_task" : pending && deliveryId ? "wait_codex_reply" : "none" },
   };
+  return output.isError ? withBridgeDiagnostic(output, new Error("The native Codex turn failed. Inspect the original delivery receipt and local tool output for details."), {
+    component: "codex-bridge", operation: desktopOperation.getStore()?.name, code: result.status === "failed" ? "CODEX_TURN_FAILED" : "CODEX_TURN_SYSTEM_ERROR",
+    deliveryState: deliveryStatus === "accepted" ? "sent" : "unknown", deliveryId, threadId: delivered.threadId,
+  }) : output;
 }
 
 /**
@@ -243,7 +251,7 @@ function creationVerificationFailure({ created, deliveryId, requestId, err }) {
     threadId ? "Task was accepted; do not resend. Resolve the verification error, then continue observing with wait_codex_reply and this deliveryId." : "Do not resend or create again. Continue observing with wait_codex_reply and this deliveryId.");
   return {
     ...textResult(lines.join("\n"), true),
-    structuredContent: { ...failure(err).structuredContent, threadId, deliveryStatus: threadId ? "accepted" : "unconfirmed", ...(deliveryId ? { deliveryId } : {}), nextAction: deliveryId ? "wait_codex_reply" : "none" },
+    structuredContent: { ...failure(err, { deliveryState: threadId ? "sent" : "unknown", readOnly: false, requestId, deliveryId, threadId }).structuredContent, threadId, deliveryStatus: threadId ? "accepted" : "unconfirmed", ...(deliveryId ? { deliveryId } : {}), nextAction: deliveryId ? "wait_codex_reply" : "none" },
   };
 }
 
@@ -447,9 +455,9 @@ const server = new McpServer(
       "In legacy app-server mode, use delegate_to_codex with the initial prompt and omit requestId; durable creation deduplication is unavailable there. " +
       "Reuse that requestId only for retries of that creation. Continue unfinished work, fixes, clarifications, and results in its verified original threadId with send_to_codex_thread. " +
       "A completed turn alone does not mean the task is finished. Do not choose an old task merely because its project matches or it was recently active. " +
-      "Without authorization to create a new conversation, ask before creating it. With Desktop tasks enabled it assigns the exact saved project and starts visibly in " +
-      "Codex Desktop using Desktop permissions. Otherwise it releases the bridge writer lock and opens the exact thread in " +
-      "Codex Desktop. Desktop creation and sends always require the verified calling Claude task and the Codex destination to belong to the same project, even when cwd is omitted. " +
+      "Without authorization to create a new conversation, ask before creating it. With Desktop tasks enabled it assigns the exact saved project using Desktop permissions. Normal delivery does not navigate or focus a window. " +
+      "Never use Computer Use or open an old, new, empty or failed chat to load a relay. Report the Bridge diagnostic block when the native endpoint is unavailable. " +
+      "Desktop creation and sends always require the verified calling Claude task and the Codex destination to belong to the same project, even when cwd is omitted. " +
       "Use send_to_codex_thread only when an existing threadId is intentional; use " +
       "list_codex_threads or read_codex_thread to inspect sessions and codex_bridge_status to inspect wiring. " +
       "When a Desktop send returns nextAction=wait_codex_reply, continue observing with that tool and the returned deliveryId until completion, user input is required, or the user stops the task. Never resend to obtain a reply. Each observation is bounded, and the receipt survives reconnection. " +
@@ -459,8 +467,9 @@ const server = new McpServer(
 
 function registerTool(name, definition, handler) {
   server.registerTool(name, definition, async (...args) => {
+    let result;
     try {
-      return await reload.run(async () => {
+      result = await reload.run(async () => {
       if (!definition.annotations?.readOnlyHint) runtime.assertCurrent();
       if (name === "codex_bridge_status") {
         const state = runtime.status();
@@ -480,8 +489,8 @@ function registerTool(name, definition, handler) {
         const accounts = readBridgeAccounts();
         const identity = requireBridgeAccounts(accounts);
         const caller = requireClaudeSenderContext(await readClaudeSenderContext({ account: accounts.claude }));
-        const context = { accounts: identity, caller, dispatched: false, deadline, projectSetup: PROJECT_SETUP_TOOLS.has(name) };
         const readOnly = definition.annotations?.readOnlyHint === true;
+        const context = { name, accounts: identity, caller, dispatched: false, deadline, readOnly, projectSetup: PROJECT_SETUP_TOOLS.has(name) };
         const guidance = deliveryReadGuidance(name, args[0]);
         return await desktopOperation.run(context, async () => {
           let completed = false;
@@ -503,8 +512,13 @@ function registerTool(name, definition, handler) {
       return await handler(...args);
       });
     } catch (err) {
-      return failure(err);
+      result = failure(err);
     }
+    return result.isError ? withBridgeDiagnostic(result, result.structuredContent?.error ?? new Error("The Codex bridge operation failed. Inspect the local tool result for details."), {
+      component: "codex-bridge", operation: name, readOnly: definition.annotations?.readOnlyHint === true,
+      requestId: args[0]?.requestId, deliveryId: result.structuredContent?.deliveryId ?? args[0]?.deliveryId,
+      threadId: result.structuredContent?.threadId ?? args[0]?.threadId,
+    }) : result;
   });
 }
 
@@ -1023,12 +1037,12 @@ registerTool(
     if (desktopTasksEnabled) {
       const native = await desktopTasks.status();
       const sender = await readClaudeSenderContext({ account: readBridgeAccounts().claude });
-      const readiness = bridgeReadiness({ sender, scope: security.hardenedRoots.mode === "project-policy" ? security.hardenedRoots : { assert: (candidate) => { security.assertCwd(candidate); return candidate; } }, targetCwd: cwd, nativeAvailable: native.available, verifyTargetProject: captureProjectScope });
+      const readiness = bridgeReadiness({ sender, scope: security.hardenedRoots.mode === "project-policy" ? security.hardenedRoots : { assert: (candidate) => { security.assertCwd(candidate); return candidate; } }, targetCwd: cwd, nativeAvailable: native.available, nativeDiagnostic: native.diagnostic, verifyTargetProject: captureProjectScope });
       return { ...textResult([
         `platform:       ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
         `bridge version: ${VERSION}`,
         `node:           ${process.version} at ${process.execPath}`,
-        "desktop tasks:  enabled; Desktop permissions, exact saved project, immediate visibility",
+        "desktop tasks:  enabled; Desktop permissions, exact saved project, silent delivery",
         "project scope:  verified Claude sender; same directory or Git repository, checked before each mutation",
         `native relay:   ${native.available ? "available; verified through Codex Desktop" : "unavailable"}`,
         `native endpoint: ${native.socketPath}`,
@@ -1041,7 +1055,7 @@ registerTool(
         ...(readiness.projectPolicy ? [`project policy: ${readiness.projectPolicy.file}; revision ${readiness.projectPolicy.revision ?? "unavailable"}; changes apply on the next operation`] : []),
         ...(readiness.target ? [`target: ${readiness.target.cwd}; authorized=${readiness.target.authorized}${readiness.target.authorizedBy ? `; via ${readiness.target.authorizedBy.kind} ${readiness.target.authorizedBy.path}` : ""}`] : []),
         ...readiness.issues.map((issue) => `${issue.code}: ${issue.detail ?? ""} ${issue.action}`),
-      ].join("\n"), !readiness.ready), structuredContent: { readiness, projectScope: { enabled: true, policy: "verified-sender-same-project", match: "canonical-directory-or-git-repository", checkedBeforeMutation: true } } };
+      ].join("\n"), !readiness.ready), structuredContent: { readiness, native, ...(native.diagnostic ? { diagnostic: native.diagnostic } : !readiness.ready ? { error: { code: readiness.issues[0]?.code, message: readiness.issues[0]?.detail } } : {}), projectScope: { enabled: true, policy: "verified-sender-same-project", match: "canonical-directory-or-git-repository", checkedBeforeMutation: true } } };
     }
     const up = await client.isServerUp();
     let liveThreads = null;
@@ -1104,4 +1118,4 @@ const shutdown = () => shutdownPromise ??= (async () => {
 process.stdin.once("end", () => { void shutdown().catch((error) => log(`shutdown failed: ${error.message}`)); });
 process.once("disconnect", () => { void shutdown().catch((error) => log(`shutdown failed: ${error.message}`)); });
 reload.listen();
-log(desktopTasksEnabled ? `ready on ${PLATFORM_LABEL} (Codex Desktop only; external app-server disabled)` : `ready on ${PLATFORM_LABEL} (app-server endpoint: ${client.url}, codex: ${client.codexBin})`);
+log(desktopTasksEnabled ? `MCP initialized on ${PLATFORM_LABEL}; native readiness is checked per operation (external app-server disabled)` : `MCP initialized on ${PLATFORM_LABEL} (app-server endpoint: ${client.url}, codex: ${client.codexBin})`);

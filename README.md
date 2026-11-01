@@ -30,18 +30,18 @@ One global npm command installs the package and configures the local Claude, Cod
 **macOS / Linux / WSL**
 
 ```bash
-npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
+npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
 ```
 
 **Windows PowerShell**
 
 ```powershell
-npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge
+npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
 ```
 
-Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows PowerShell. Run the same command to update. The global install runs setup automatically and verifies the saved registrations. If a native Codex CLI is missing, setup installs a pinned official `@openai/codex` package in the current user's `~/.config/GptClaudeBridge/tools` (or the corresponding `XDG_CONFIG_HOME` path); no separate CLI install command is needed.
+Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows PowerShell. **Every release uses this same single install/update command.** It updates the package, applies the managed bridge settings across Claude, Codex and Antigravity, and verifies the saved registrations. Comprehensive setup migrates historical automatic Codex navigation to `CODEX_BRIDGE_OPEN_IN_APP=0`, enables Claude's native background preference and updates Antigravity's existing Windows background preference where supported. Accounts, permissions, project grants and unrelated custom registrations remain unchanged. If a native Codex CLI is missing, setup installs a pinned official `@openai/codex` package in the current user's `~/.config/GptClaudeBridge/tools` (or the corresponding `XDG_CONFIG_HOME` path); no separate CLI install command is needed.
 
-`--allow-scripts=@minhspark/codex-mcp-bridge` authorizes only this package's setup hook. npm versions that block install scripts by default need this flag; a plain install works only when the hook is allowed. Add `--foreground-scripts` to the command to see setup progress because npm may hide lifecycle output. If npm prints `1 package had install scripts blocked`, rerun the recommended command or run `codex-bridge-setup` explicitly.
+`--allow-scripts=@minhspark/codex-mcp-bridge` authorizes only this package's setup hook. npm versions that block install scripts by default need this flag; a plain install works only when the hook is allowed. `--foreground-scripts` displays configuration progress and failures that npm otherwise hides. If npm prints `1 package had install scripts blocked`, rerun the recommended command or run `codex-bridge-setup` explicitly.
 
 | Client | Installed entry | Purpose |
 | --- | --- | --- |
@@ -52,19 +52,19 @@ Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows P
 | Codex and Claude Code | `antigravity-bridge` | Send to Antigravity App or bridge-owned CLI sessions |
 | Antigravity | `agent-bridge` and `codex-bridge` sidecar | Outbound agent messages and native App connectivity |
 
-After setup, open or reconnect the affected apps after active work finishes. For native Claude-to-Codex handoffs, use Claude Desktop's **Code tab** and the same local project saved in Codex Desktop. The shared `codex-bridge-desktop` connector has its own legacy route; it does not establish a native Code sender identity. Saved configuration is not proof of a live connection. Complete [verification](#verify-the-installation) in the actual clients.
+For native Claude-to-Codex handoffs, use an existing native Claude **Code** session and the same local project saved in Codex Desktop. The shared `codex-bridge-desktop` connector has its own legacy route; it does not establish a native Code sender identity. Setup applies saved configuration without opening or restarting apps. Saved configuration is not proof of a live connection; available supervisors reload compatible workers when idle. Complete [verification](#verify-the-installation) with the tools already available in the actual clients. If a native host is unloaded, report the diagnostic instead of opening chats to load a relay.
 
 Automatic setup runs only for a **global npm install**. Local `npm install` and `npm ci` do not change app settings. Set `CODEX_BRIDGE_SKIP_SETUP=1`, or pass `--ignore-scripts`, to install the package without configuring apps. The optional [workflow skill](#workflow-skill--npx-skills), VS Code preview, and hosted ChatGPT pairing retain their separate setup steps.
 
 ### Setup recovery and checks
 
-If an app configuration step fails, the npm install retains the package and its commands so setup can be repaired. A successful npm exit alone does not mean all registrations are configured. If setup reports an incomplete component, correct its reported issue and rerun:
+If an app configuration step fails, setup and the global install return a nonzero exit with the failing component. Correct its reported issue and rerun the update command above, or rerun configuration on an existing installation:
 
 ```bash
 codex-bridge-setup
 ```
 
-On Windows use `codex-bridge-setup.cmd`. `codex-mcp-bridge setup` is an equivalent entry point. Repeated setup keeps existing settings and reports conflicts rather than overwriting unrelated registrations.
+On Windows use `codex-bridge-setup.cmd`. `codex-mcp-bridge setup` is an equivalent entry point. Repeated setup reapplies managed bridge settings and reports conflicts rather than overwriting unrelated registrations. `configured: true` confirms saved configuration; `liveVerified: false` means running clients have not been verified to load it. Setup never opens an app or chat, uses Computer Use, or interrupts active work to load a relay. Missing or unsupported native background preferences are reported separately.
 
 ```bash
 codex-bridge-setup --check
@@ -278,7 +278,7 @@ codex-mcp-bridge-install.cmd --entry-name codex-bridge-desktop
 CODEX_BRIDGE_DESKTOP_TASKS=0 CODEX_BRIDGE_AUTOSTART=1 codex-mcp-bridge-install --entry-name codex-bridge-desktop
 ```
 
-Close and reopen Claude after active work finishes to load changed shared configuration. A fresh `--entry-name codex-bridge-desktop` registration defaults to legacy mode even when the native relay is configured. Existing custom modes are preserved. `--desktop-tasks` does not make a shared Desktop chat server a verified Code sender.
+Running clients may retain their previously loaded configuration; setup reports live activation as unverified and does not interrupt them. A fresh `--entry-name codex-bridge-desktop` registration defaults to legacy mode even when the native relay is configured. Existing custom modes are preserved. `--desktop-tasks` does not make a shared Desktop chat server a verified Code sender.
 
 ### VS Code extensions — Windows preview
 
@@ -446,7 +446,7 @@ This repository ships a hosted ChatGPT plugin and the skill above. It does not c
 
 Run `codex-bridge-setup --check` (`codex-bridge-setup.cmd --check` on Windows) to inspect saved registrations. An incomplete result names the component requiring attention; rerun setup after correcting it.
 
-Reconnect the affected MCP servers in the actual client tasks; Claude Code provides `/mcp`. If the app has not loaded the new registrations, close and reopen it after active work finishes. Setup does not kill or restart apps. Run these **MCP tools** inside the apps:
+Use the bridge tools already available in the actual clients. Configuration checks do not prove that a running client loaded new registrations. Setup does not open, kill or restart apps or chats. If a tool is unavailable, retain that exact failure for reporting. Run these **MCP tools** when available:
 
 | Client | Tool |
 |---|---|
@@ -669,7 +669,7 @@ For a repeatable failure, capture the app/OS/Node versions, the version reported
 
 ### Relay unavailable, stale pipe, or an active writer
 
-Normal task creation and delivery run without navigating or focusing Codex Desktop. Use `openInApp: true` only when the user wants to see the target task. `CODEX_BRIDGE_OPEN_IN_APP=1` explicitly enables automatic navigation; set it to `0` in older installations that still carry that setting. The internal relay executor is not a user conversation and cannot be opened through the bridge.
+Normal task creation and delivery run without navigating or focusing Codex Desktop. Use `openInApp: true` only when the user wants to see the target task. The comprehensive install/update command migrates older `CODEX_BRIDGE_OPEN_IN_APP=1` settings to `0`. The internal relay executor is not a user conversation and cannot be opened through the bridge.
 
 Closing an application window and quitting its native host have different effects. Antigravity's native `runInBackground` setting keeps its sidecar running after the last window closes; Windows defaults to quitting when this setting is off. On Windows, use Codex's native startup task for background startup instead of an additional foreground `shell:AppsFolder` launcher. A healthy loaded relay can recover its worker, but cannot cold-start an unloaded Codex MCP. No periodic task-opening loop is used to simulate readiness.
 
@@ -677,7 +677,7 @@ Closing an application window and quitting its native host have different effect
 
 Native Desktop handoffs require Codex Desktop to be installed, signed in and open on Windows/macOS. The app runs `codex-native-relay` while a regular task has its MCP servers loaded. Recovery never navigates to a task, launches a window, or activates Codex. The Desktop-owned supervisor restarts crashed native relay workers with bounded exponential backoff; pending requests fail without replay, and later requests use the recovered worker. Inherited native pipe hints are rediscovered through the original Desktop process ancestry when they become stale. Requests that never reached the relay wait up to 20 seconds, within their original deadline, for its transport to recover. `CODEX_BRIDGE_RELAY_WAKE=0` disables that wait; the retired `CODEX_BRIDGE_RELAY_KEEPER` flag cannot enable UI navigation.
 
-Check `native_relay_status` in a regular project task and `codex_bridge_status` in the sending Code session. Native status performs a read-only `list_projects` probe and reports native dispatch separately from socket availability. Recovery requires the original Desktop-owned supervisor to remain alive: it cannot cold-start MCP when Desktop has loaded no session, and it stops when the MCP client closes. After five unsuccessful worker replacements, reconnect MCP in a regular task. Do not open the internal **Native Relay** executor; it is not an interactive chat and may show a missing-rollout error. Rerun setup if registration/executor configuration is missing, and verify [native relay pipe forwarding](#native-relay-pipe-forwarding). Never persist a pipe address copied from a different app process. After upgrading from a supervisor without crash recovery, reconnect the relay MCP once to load the updated supervisor; worker hot reload alone cannot replace its parent.
+Use the available `native_relay_status` and `codex_bridge_status` tools without opening a chat to load them. Native status performs a read-only `list_projects` probe and reports native dispatch separately from socket availability. Recovery requires the original Desktop-owned supervisor to remain alive: it cannot cold-start an unloaded native MCP, and it stops when the MCP client closes. After five unsuccessful worker replacements, report the exact diagnostic. Never open an old, new, empty, failed or internal **Native Relay** chat to bootstrap readiness. Rerun setup if registration/executor configuration is missing, and verify [native relay pipe forwarding](#native-relay-pipe-forwarding). Never persist a pipe address copied from a different app process. Worker hot reload cannot replace a running supervisor from an older release; configuration success alone does not prove that process is upgraded.
 
 An active-writer error usually identifies the legacy app-server route attempting to attach to a thread already owned by Desktop. Use the registered native Code-to-Desktop route for that conversation. Do not start another app-server or terminate shared work to force access. The ordinary `codex-bridge-desktop` Chat connector remains a legacy app-server connection; it is not a substitute for the verified native sender. An unused `CODEX_APP_SERVER_URL` alongside `external app-server disabled` is not by itself a native connection failure.
 
@@ -687,14 +687,30 @@ Use native session discovery and peer delivery from the Codex task:
 
 1. Call `list_claude_sessions` with the exact absolute `expectedCwd`.
 2. Verify the returned `entrypoint: claude-desktop`, `sessionId`, native `desktop.taskId`, and project directory. Use `read_claude_transcript` with that session identity to confirm the intended unfinished work when needed; a title alone is insufficient.
-3. Call `send_to_claude_session` with the exact session identity as `target`, the independently verified `expectedCwd`, and the returned native ID as `expectedTaskId`. For an exact dormant saved task, `target: "auto"` plus its `expectedTaskId` lets the bridge reopen and rediscover that task without substituting another conversation.
+3. Call `send_to_claude_session` with the exact session identity as `target`, the independently verified `expectedCwd`, and the returned native ID as `expectedTaskId`. `target: "auto"` plus `expectedTaskId` rediscovers the exact live endpoint without opening the app or chat. A dormant saved task returns `CLAUDE_SESSION_NOT_READY`, `sent: false`.
 4. Preserve the returned `msgId`. After a timeout, inspect it with `read_claude_delivery`; read `read_claude_inbox` for late replies and correlated bridge-status notifications.
 
-If no eligible session appears, open the intended Claude **Code** task in the same project and check sign-in, data-root selection and sender status. A new ordinary Chat window or unrelated CLI session does not establish that native recipient. [1.25.0](CHANGELOG.md#1250---2026-10-30) clarifies the tool instructions to use this route; it cannot guarantee every model follows them. External Computer Use typing/clicking is not a delivery fallback for an already-open session.
+If no eligible session appears, inspect sign-in, data-root selection and sender status using available bridge diagnostics. Saved history does not prove that a native Code endpoint is running. There is no supported silent cold-start API for a dormant Claude task. The bridge reports this limitation instead of opening a chat, using Computer Use, or launching a substitute CLI. Closing a window can preserve native background work; fully quitting the native host removes its receiving endpoint.
 
-Antigravity's `list_agent_tasks` also reports verified dormant Claude tasks with `status: "dormant"` and `recoverable: true`. Sending to the returned session and native task IDs reopens that exact task and waits for its native session to reconnect before delivering. Read-only discovery never opens the application. Archived tasks, changed accounts, mismatched directories and uncertain sends remain blocked; a recovery timeout does not mean a message was sent.
+Antigravity's `list_agent_tasks` also reports verified dormant Claude tasks with `status: "dormant"`, `recoverable: false` and `code: "CLAUDE_SESSION_NOT_READY"`. Discovery and sends never open the application or a chat to load its endpoint. Archived tasks, changed accounts, mismatched directories and uncertain sends remain blocked.
 
 `PEER_REPLY_PENDING` protects an earlier unresolved message. A `held` receipt, `CLAUDE_RECIPIENT_INBOUND_POLICY`, or `CLAUDE_RECIPIENT_CLASS_MISMATCH` identifies an actual recipient policy/permission boundary. Inspect the original receipt and task; resolve the stated policy through the user's intended host settings. Installing a newer bridge does not authorize changing permissions. An `interrupted` bridge-status notification ends observation only: it is not Claude's answer, does not cancel background work, and does not make retrying the original action safe.
+
+### Screenshot-ready error reports
+
+Failures include a **Bridge diagnostic** block in the tool result and `structuredContent.diagnostic` for clients. Capture that block when filing an issue. It contains the exact error and cause codes, component, tool, phase, bridge/Node/platform versions, UTC timestamp, report ID and available request/message/delivery IDs. It excludes request prompts, tokens and account identities and redacts common credential, URL, email and private-path patterns from the error reason. Review any surrounding output before sharing it.
+
+| Diagnostic | Meaning |
+|---|---|
+| `RELAY_UNREACHABLE` | Native relay transport could not be reached; this alone does not prove the app is closed. |
+| `NATIVE_PIPE_UNAVAILABLE` | The native dispatch pipe could not be verified. |
+| `CLAUDE_SESSION_NOT_READY` | The exact saved task has no live native Code endpoint; silent cold-start is unavailable. |
+| `CLAUDE_RECIPIENT_INBOUND_POLICY` / `CLAUDE_RECIPIENT_CLASS_MISMATCH` | Native recipient policy or permission classes block the handoff. |
+| `CLAUDE_REPLY_TIMEOUT` | A send has no confirmed reply yet; retain its message ID. |
+| `MCP_WORKER_EXITED` | A worker exited while handling a request; its delivery may already have happened. |
+| `MCP_WORKER_UNAVAILABLE` | This new request was refused before dispatch while its worker was unavailable. |
+
+`deliveryState: not_sent` means this operation did not send a message. `unknown` means delivery remains uncertain; inspect the original receipt and never automatically resend. `not_applicable` marks a diagnostic read rather than a send. A diagnostic does not instruct an agent to create/open chats, use Computer Use, or change permissions to make the error disappear.
 
 ### Normal startup output labelled as an error
 
@@ -737,7 +753,7 @@ The catalog below records user-visible failures fixed in earlier releases. It is
 | An account switch, a large task database or a concurrent metadata update hid an otherwise valid Claude task | [1.14.0](CHANGELOG.md#1140---2026-09-07): per-call account discovery, including Store data. [1.18.1](CHANGELOG.md#1181---2026-09-25): bounded discovery beyond 32 MiB. [1.22.3](CHANGELOG.md#1223---2026-10-15): retry changed metadata snapshots. | Check sign-in and [data-root selection](#microsoft-store-claude-or-multiple-data-directories), then rediscover. Conflicting, archived or persistently changing identities still fail closed; shared Chat still cannot prove Code ancestry. |
 | Windows ancestry checks expired while PowerShell was still starting | [1.19.1](CHANGELOG.md#1191---2026-09-29): separate startup/read deadlines. [1.25.0](CHANGELOG.md#1250---2026-10-30): coalesce identical simultaneous inspections. | Use the [timeout diagnostic steps](#connection-timeout-versus-sender-inspection-timeout). These changes do not establish a fix for every MCP initialization timeout. |
 | Ordinary managed Codex tasks were rejected as unverified senders; some review flags caused incorrect permission classification | [1.19.0](CHANGELOG.md#1190---2026-09-29): support verified managed prompting profiles. [1.13.6](CHANGELOG.md#1136---2026-09-06): correct human-review classification. | Upgrade and inspect `claude_bridge_status`. A real recipient class/inbound-policy mismatch remains a denial; do not change sandbox or approval settings merely to suppress it. |
-| Dormant Claude tasks could not resume; a new Windows conversation opened in “No folder”; an app update broke its URI launcher | [1.19.7](CHANGELOG.md#1197---2026-10-02): exact-task recovery, Windows folder/submission verification and launcher recovery. [1.22.4](CHANGELOG.md#1224---2026-10-19): moved-project discovery for authorized new conversations. | Resume the exact saved task with `target: "auto"` and `expectedTaskId`. A moved directory is a discovery candidate, not proof that an old task is safe to resume. Inspect an existing creation receipt before opening another composer. |
+| Dormant Claude tasks could not resume; a new Windows conversation opened in “No folder”; an app update broke its URI launcher | [1.19.7](CHANGELOG.md#1197---2026-10-02): exact-task recovery and composer verification. [1.25.3](CHANGELOG.md#1253---2026-11-01): removes implicit app/chat reopening from recovery. | `target: "auto"` rediscovers an existing live endpoint only. A dormant task reports `CLAUDE_SESSION_NOT_READY`; never open or create a chat to load a relay. A moved directory remains an unverified discovery candidate. |
 | A listed human-created thread returned `NOT AUTHORIZED`; a path from another computer resolved incorrectly | [1.11.0](CHANGELOG.md#1110---2026-08-23): explicit thread policy. [1.8.0](CHANGELOG.md#180---2026-08-19) / [1.11.2](CHANGELOG.md#1112---2026-08-28): usable cross-machine path resolution. | Verify the exact saved project and intended grant/thread policy. Listing and mutation have different authorization requirements; setup preserves existing restrictions and cannot authorize a different project. |
 | An Antigravity App restart could leave a sidecar attached to the retired parent | [1.24.0](CHANGELOG.md#1240---2026-10-28): sidecars track native parent identity and exit when that parent stops. | Use current setup and reconnect through the active App. An App receipt confirms native acceptance only; App reply forwarding and new App conversation creation remain unsupported. |
 

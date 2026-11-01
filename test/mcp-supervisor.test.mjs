@@ -614,6 +614,11 @@ for (const [entry, statusName] of REAL_ENTRIES) {
     assert.notEqual(after.structuredContent.autoReload.workerPid,before.structuredContent.autoReload.workerPid);
     if (entry.startsWith("antigravity")) assert.equal(after.structuredContent.autoReload.routingConfiguration, null);
     else assert.equal(after.structuredContent.runtime.current,true);
+    if (entry === "antigravity-bridge.mjs") {
+      assert.equal(after.structuredContent.version, JSON.parse(fs.readFileSync(path.join(repository, "package.json"), "utf8")).version);
+      assert.ok(after.structuredContent.desktop);
+      assert.equal(after.structuredContent.outbound.statusTool, "agent_bridge_status");
+    }
     if (entry === "native-relay-companion.mjs") assert.match(after.content[0].text, /account relay:.*\(protocol 2, listening\)/);
   });
 }

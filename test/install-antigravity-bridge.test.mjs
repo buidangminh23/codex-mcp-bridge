@@ -24,7 +24,7 @@ after(() => {
 function fixture() {
   const home = path.join(sandbox, `home-${++sequence}`);
   fs.mkdirSync(home);
-  return { home, codeConfigDir: home, root, node };
+  return { home, codeConfigDir: home, root, node, appData: path.join(home, "roaming") };
 }
 
 function write(home, relative, value) {
@@ -103,7 +103,7 @@ test("CLI setup uses HOME and CLAUDE_CONFIG_DIR consistently on every platform",
   const script = fileURLToPath(new URL("../scripts/install-antigravity-bridge.mjs", import.meta.url));
   const codeConfigDir = path.join(options.home, "custom-claude");
   const output = execFileSync(process.execPath, [script, "--claude", "--desktop", "--setup", "--dry-run"], {
-    env: { ...process.env, HOME: options.home, USERPROFILE: path.join(options.home, "unused-profile"), CLAUDE_CONFIG_DIR: codeConfigDir },
+    env: { ...process.env, HOME: options.home, USERPROFILE: path.join(options.home, "unused-profile"), CLAUDE_CONFIG_DIR: codeConfigDir, APPDATA: options.appData },
     encoding: "utf8", windowsHide: true, timeout: 15000,
   });
   const plan = JSON.parse(output);
@@ -129,6 +129,87 @@ test("automatic setup preserves a disabled sidecar and custom display and restar
   assert.equal(planAntigravityInstallation({ ...options, targets: ["desktop"], setup: true }).edits.length, 0);
   applyJsonEdits(planAntigravityInstallation({ ...options, targets: ["desktop"] }).edits);
   assert.equal(read(configPath).sidecars["codex-bridge"].enabled, true);
+});
+
+test("setup enables the existing Windows background preference and preserves native account and permission settings", () => {
+  const options = { ...fixture(), targets: ["desktop"], setup: true, platform: "win32" };
+  const original = { runInBackground: "false", account: { token: "private" }, permissions: { tools: "ask" }, custom: 5 };
+  const storage = write(options.appData, "Antigravity/app_storage.json", original);
+  const plan = planAntigravityInstallation(options);
+  assert.deepEqual(read(storage), original);
+  assert.equal(plan.backgroundPreference.status, "planned");
+  assert.equal(plan.backgroundPreference.liveVerified, false);
+  assert.equal(plan.edits.filter((edit) => edit.file === storage).length, 1);
+  applyJsonEdits(plan.edits);
+  assert.deepEqual(read(storage), { ...original, runInBackground: "true" });
+  const repeated = planAntigravityInstallation(options);
+  assert.equal(repeated.backgroundPreference.status, "configured");
+  assert.equal(repeated.edits.length, 0);
+  applyJsonEdits(planAntigravityInstallation({ ...options, remove: true }).edits);
+  assert.deepEqual(read(storage), { ...original, runInBackground: "true" });
+});
+
+test("setup reports missing or unverified native background preferences without creating or guessing native files", () => {
+  for (const platform of ["win32", "darwin", "linux"]) {
+    const options = { ...fixture(), targets: ["desktop"], setup: true, platform };
+    const plan = planAntigravityInstallation(options);
+    assert.equal(plan.backgroundPreference.status, "unavailable");
+    assert.equal(plan.backgroundPreference.liveVerified, false);
+    assert.ok(plan.notices.some((notice) => /background/.test(notice)));
+    assert.ok(!plan.edits.some((edit) => edit.file.includes("app_storage")));
+    applyJsonEdits(plan.edits);
+    assert.equal(fs.existsSync(options.appData), false);
+  }
+  const options = { ...fixture(), targets: ["desktop"], setup: true, platform: "win32", appData: "relative" };
+  assert.match(planAntigravityInstallation(options).backgroundPreference.detail, /absolute APPDATA/);
+});
+
+test("native background preferences change only during explicit comprehensive setup", () => {
+  const options = { ...fixture(), targets: ["desktop"], platform: "win32" };
+  const original = { runInBackground: "false", custom: "keep" };
+  const storage = write(options.appData, "Antigravity/app_storage.json", original);
+  const plan = planAntigravityInstallation(options);
+  assert.equal(plan.backgroundPreference, null);
+  assert.ok(!plan.edits.some((edit) => edit.file === storage));
+  applyJsonEdits(plan.edits);
+  assert.deepEqual(read(storage), original);
+  for (const platform of ["darwin", "linux"]) {
+    const unsupported = planAntigravityInstallation({ ...options, setup: true, platform });
+    assert.equal(unsupported.backgroundPreference.status, "unavailable");
+    assert.ok(!unsupported.edits.some((edit) => edit.file === storage));
+  }
+});
+
+test("setup refuses unsafe native preferences and detects concurrent changes before applying any registration", () => {
+  const options = { ...fixture(), targets: ["desktop"], setup: true, platform: "win32" };
+  const storage = write(options.appData, "Antigravity/app_storage.json", { runInBackground: "false" });
+  const alias = path.join(options.home, "native-alias.json");
+  fs.linkSync(storage, alias);
+  assert.throws(() => planAntigravityInstallation(options), /Unsafe configuration/);
+  assert.equal(fs.existsSync(path.join(options.home, ".gemini")), false);
+  fs.unlinkSync(alias);
+  const plan = planAntigravityInstallation(options);
+  fs.writeFileSync(storage, JSON.stringify({ runInBackground: "false", concurrent: true }));
+  assert.throws(() => applyJsonEdits(plan.edits), /changed while preparing/);
+  assert.deepEqual(read(storage), { runInBackground: "false", concurrent: true });
+  assert.equal(fs.existsSync(path.join(options.home, ".gemini")), false);
+});
+
+test("CLI setup reports saved background settings separately from live activation without disclosing native values", { skip: process.platform !== "win32" }, () => {
+  const options = fixture();
+  const storage = write(options.appData, "Antigravity/app_storage.json", { runInBackground: "false", accountToken: "do-not-print" });
+  const script = fileURLToPath(new URL("../scripts/install-antigravity-bridge.mjs", import.meta.url));
+  const output = execFileSync(process.execPath, [script, "--desktop", "--setup"], {
+    env: { ...process.env, HOME: options.home, USERPROFILE: options.home, APPDATA: options.appData },
+    encoding: "utf8", windowsHide: true, timeout: 15000,
+  });
+  const result = JSON.parse(output);
+  assert.equal(result.configured, true);
+  assert.equal(result.liveVerified, false);
+  assert.equal(result.backgroundPreference.status, "configured");
+  assert.equal(result.backgroundPreference.liveVerified, false);
+  assert.doesNotMatch(output, /accountToken|do-not-print|reopen|Restart|Reload/);
+  assert.deepEqual(read(storage), { runInBackground: "true", accountToken: "do-not-print" });
 });
 
 test("rejects occupied registration and sidecar names before writing any file", () => {

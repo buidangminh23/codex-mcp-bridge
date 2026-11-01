@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { automaticSetupEnabled, checkSetup, runSetup, setupArguments, setupEnvironment, setupPaths } from "../src/setup.mjs";
+import { automaticSetupEnabled, checkSetup, printSetup, runSetup, setupArguments, setupEnvironment, setupPaths } from "../src/setup.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -32,7 +32,7 @@ function fixture(t) {
     }
     const name = path.basename(args[0]);
     if (name === "install-claude-code.mjs") write(paths.code, { mcpServers: { "codex-bridge": registration("index.mjs") } });
-    else if (name === "install-claude-desktop.mjs") write(paths.desktop, { mcpServers: { "codex-bridge-desktop": registration("index.mjs") } });
+    else if (name === "install-claude-desktop.mjs") write(paths.desktop, { mcpServers: { "codex-bridge-desktop": registration("index.mjs") }, preferences: { menuBarEnabled: true } });
     else if (name === "install-native-relay.mjs") {
       inventory.set("codex-native-relay", { enabled: true, transport: { type: "stdio", ...registration("native-relay-companion.mjs"), env_vars: ["CODEX_APP_TOOLS_PIPE_PATH"] } });
       write(path.join(paths.codex, "native-relay.json"), { relayThreadId: "01234567-89ab-4cde-8123-0123456789ab", desktopTasks: true });
@@ -123,10 +123,22 @@ test("global setup initializes all native and Antigravity entries then verifies 
   assert.deepEqual(scripts.map((call) => path.basename(call.args[0])), ["install-claude-code.mjs", "install-claude-desktop.mjs", "install-native-relay.mjs", "install-codex-mcp.mjs", "install-antigravity-bridge.mjs"]);
   assert.ok(scripts[2].args.includes("--desktop-tasks"));
   assert.ok(!scripts[2].args.includes("--no-bootstrap"));
+  assert.ok(scripts.every((call) => call.args.includes("--setup")));
   assert.equal(scripts[0].env.CODEX_BRIDGE_AUTOSTART, "0");
   assert.ok(scripts[1].args.includes("codex-bridge-desktop"));
   assert.ok(scripts[4].args.includes("--all"));
   assert.match(result.nextActions.join(" "), /same saved project/);
+  assert.match(result.nextActions.join(" "), /earlier settings/);
+  assert.doesNotMatch(result.nextActions.join(" "), /(?:Open or reconnect|quit|reopen|keep.*task open)/i);
+  const output = [];
+  printSetup(result, { output: (line) => output.push(line) });
+  assert.match(output[0], /configuration verified.*connections have not been verified/);
+});
+
+test("setup help exposes one command for updating the package and applying managed settings", () => {
+  const result = runSetup({ args: ["--help"], run: () => assert.fail("must not run") });
+  assert.match(result.help, /npm install -g @minhspark\/codex-mcp-bridge@latest --allow-scripts=@minhspark\/codex-mcp-bridge/);
+  assert.match(result.help, /loaded app connections are verified separately/);
 });
 
 test("an existing relay routing opt-out is not forced back on during reinstall", (t) => {
@@ -162,16 +174,96 @@ test("read-only verification detects missing bootstrap and disabled servers", (t
   assert.ok(setup.calls.every((call) => call.args[0] === "mcp" && ["list", "get"].includes(call.args[1])));
 });
 
-test("verification reports preserved shared native routing as incompatible with Desktop chat", (t) => {
+test("verification distinguishes native-only shared registration from unsupported Desktop Chat delivery", (t) => {
   const setup = fixture(t);
   runSetup({ ...setup, args: ["--no-download"], platform: "win32", root });
   const desktop = JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8"));
-  desktop.mcpServers["codex-bridge-desktop"].env = { CODEX_BRIDGE_DESKTOP_TASKS: "1" };
+  desktop.mcpServers["codex-bridge-desktop"].env = { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_AUTOSTART: "0",
+    CODEX_BRIDGE_SANDBOX: "read-only", CODEX_BRIDGE_APPROVAL: "deny" };
   setup.write(setup.paths.desktop, desktop);
   const result = checkSetup({ ...setup, platform: "win32", root });
-  assert.equal(result.configured, false);
-  assert.ok(result.components.some((item) => item.name === "Claude Desktop / codex-bridge-desktop" && /native Code routing/.test(item.detail)));
+  assert.equal(result.configured, true);
+  assert.equal(result.liveVerified, false);
+  const component = result.components.find((item) => item.name === "Claude Desktop / codex-bridge-desktop");
+  assert.equal(component.nativeCodeOnly, true);
+  assert.equal(component.sharedChatDelivery, "unsupported");
+  assert.ok(component.notices.some((notice) => /Ordinary Claude Desktop Chat cannot deliver/.test(notice)));
+  const output = [];
+  printSetup(result, { output: (line) => output.push(line) });
+  assert.ok(output.some((line) => /native Code-only policy was preserved/.test(line)));
   assert.deepEqual(JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8")), desktop);
+});
+
+test("comprehensive setup visibly reports a preserved native-only restriction without declaring configuration failure", (t) => {
+  const setup = fixture(t);
+  const policy = { CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_SANDBOX: "read-only" };
+  const run = (command, args, env) => {
+    const output = setup.run(command, args, env);
+    if (path.basename(args[0]) === "install-claude-desktop.mjs") {
+      const desktop = JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8"));
+      desktop.mcpServers["codex-bridge-desktop"].env = policy;
+      setup.write(setup.paths.desktop, desktop);
+    }
+    return output;
+  };
+  const result = runSetup({ ...setup, run, args: ["--postinstall", "--no-download"], platform: "win32", root });
+  assert.equal(result.configured, true);
+  assert.equal(result.liveVerified, false);
+  const verified = result.verification.find((item) => item.name === "Claude Desktop / codex-bridge-desktop");
+  assert.equal(verified.sharedChatDelivery, "unsupported");
+  assert.equal(verified.nativeCodeOnly, true);
+  const output = [];
+  printSetup(result, { output: (line) => output.push(line) });
+  assert.ok(output.some((line) => /Ordinary Claude Desktop Chat cannot deliver/.test(line)));
+  assert.deepEqual(JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8")).mcpServers["codex-bridge-desktop"].env, policy);
+});
+
+test("read-only verification detects historical window-opening settings without rewriting them", (t) => {
+  const setup = fixture(t);
+  runSetup({ ...setup, args: ["--no-download"], platform: "win32", root });
+  for (const [file, name] of [[setup.paths.code, "codex-bridge"], [setup.paths.desktop, "codex-bridge-desktop"]]) {
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.mcpServers[name].env = { CODEX_BRIDGE_OPEN_IN_APP: "1" };
+    setup.write(file, saved);
+  }
+  setup.calls.length = 0;
+  const result = checkSetup({ ...setup, platform: "win32", root });
+  assert.equal(result.configured, false);
+  assert.equal(result.components.filter((item) => /silent configuration/.test(item.detail ?? "")).length, 2);
+  assert.ok(setup.calls.every((call) => call.args[0] === "mcp" && ["list", "get"].includes(call.args[1])));
+  assert.equal(JSON.parse(fs.readFileSync(setup.paths.code, "utf8")).mcpServers["codex-bridge"].env.CODEX_BRIDGE_OPEN_IN_APP, "1");
+  assert.equal(JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8")).mcpServers["codex-bridge-desktop"].env.CODEX_BRIDGE_OPEN_IN_APP, "1");
+});
+
+test("setup exposes unavailable native background preferences without claiming loaded-process readiness", (t) => {
+  const setup = fixture(t);
+  const backgroundPreference = { setting: "runInBackground", status: "unavailable", liveVerified: false };
+  const notice = "Antigravity native preferences are unavailable; background operation is unverified.";
+  const run = (command, args, env) => {
+    const output = setup.run(command, args, env);
+    return path.basename(args[0]) === "install-antigravity-bridge.mjs"
+      ? JSON.stringify({ notices: [notice], backgroundPreference }) : output;
+  };
+  const result = runSetup({ ...setup, run, args: ["--postinstall", "--no-download"], platform: "win32", root });
+  assert.equal(result.configured, true);
+  assert.equal(result.liveVerified, false);
+  const antigravity = result.components.find((item) => item.name === "Antigravity / all components");
+  assert.deepEqual(antigravity.backgroundPreference, backgroundPreference);
+  const output = [];
+  printSetup(result, { output: (line) => output.push(line) });
+  assert.ok(output.some((line) => line.includes(notice)));
+});
+
+test("verification detects a disabled Claude background preference without changing it", (t) => {
+  const setup = fixture(t);
+  runSetup({ ...setup, args: ["--no-download"], platform: "win32", root });
+  const saved = JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8"));
+  saved.preferences.menuBarEnabled = false;
+  setup.write(setup.paths.desktop, saved);
+  const result = checkSetup({ ...setup, platform: "win32", root });
+  assert.equal(result.configured, false);
+  assert.ok(result.components.some((item) => item.name === "Claude Desktop / background preference" && item.status === "incomplete"));
+  assert.equal(JSON.parse(fs.readFileSync(setup.paths.desktop, "utf8")).preferences.menuBarEnabled, false);
 });
 
 test("the package lifecycle skips local npm ci without creating application files", (t) => {
@@ -181,5 +273,19 @@ test("the package lifecycle skips local npm ci without creating application file
   });
   assert.equal(child.status, 0, child.stderr);
   assert.match(child.stdout, /only for a global npm install/);
+  assert.deepEqual(fs.readdirSync(setup.home), []);
+});
+
+test("global postinstall failures return a failing exit status instead of reporting a successful update", (t) => {
+  const setup = fixture(t);
+  const env = { ...setup.env, SystemRoot: process.env.SystemRoot, PATH: process.env.PATH,
+    CLAUDE_DESKTOP_CONFIG: setup.paths.desktop, CODEX_EXE: process.execPath };
+  for (const args of [["--postinstall", "--check", "--no-download"], ["--postinstall", "--unknown"]]) {
+    const child = spawnSync(process.execPath, [path.join(root, "scripts", "setup.mjs"), ...args], {
+      env, encoding: "utf8", windowsHide: true,
+    });
+    assert.equal(child.status, 1, child.stderr);
+    assert.match(child.stdout + child.stderr, /incomplete|configuration was not completed/);
+  }
   assert.deepEqual(fs.readdirSync(setup.home), []);
 });

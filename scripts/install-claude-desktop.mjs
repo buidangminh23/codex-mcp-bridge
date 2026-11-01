@@ -20,10 +20,11 @@ const entryOption = process.argv.indexOf("--entry-name");
 const requestedEntryName = entryOption < 0 ? undefined : process.argv[entryOption + 1];
 if (entryOption >= 0 && !["codex-bridge", "codex-bridge-desktop"].includes(requestedEntryName)) throw new Error("--entry-name must be codex-bridge or codex-bridge-desktop");
 const quiet = process.argv.includes("--quiet");
+const setup = process.argv.includes("--setup");
 const log = (...values) => { if (!quiet) console.log(...values); };
 const reset = process.argv.includes("--reset");
 const forceDesktopTasks = process.argv.includes("--desktop-tasks");
-const fullAccess = process.argv.includes("--full-access") || requestedEntryName === undefined && fullAccessEnabled();
+const fullAccess = process.argv.includes("--full-access") || !setup && requestedEntryName === undefined && fullAccessEnabled();
 
 /**
  * This bridge is intentionally the local hand-off point between Claude and
@@ -80,6 +81,7 @@ const original = readConfig();
 const cfg = original ? JSON.parse(original.data.toString("utf8")) : {};
 if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("Desktop configuration must be a JSON object");
 if (cfg.mcpServers !== undefined && (!cfg.mcpServers || typeof cfg.mcpServers !== "object" || Array.isArray(cfg.mcpServers))) throw new Error("Desktop mcpServers must be a JSON object");
+if (setup && cfg.preferences !== undefined && (!cfg.preferences || typeof cfg.preferences !== "object" || Array.isArray(cfg.preferences))) throw new Error("Desktop preferences must be a JSON object");
 cfg.mcpServers = cfg.mcpServers ?? {};
 
 /**
@@ -108,7 +110,7 @@ if (bridgeEntries.length > 1 || requestedEntryName && bridgeEntries.some((name) 
   throw new Error(`Claude Desktop already has several bridge entries (${bridgeEntries.join(", ")}); remove all but one and re-run. No configuration was changed.`);
 }
 const entryName = requestedEntryName ?? bridgeEntries[0] ?? "codex-bridge";
-if (requestedEntryName && cfg.mcpServers[entryName] !== undefined) {
+if ((requestedEntryName || setup) && cfg.mcpServers[entryName] !== undefined) {
   const existing = cfg.mcpServers[entryName];
   const script = existing?.args?.[0];
   const source = typeof script === "string" && path.isAbsolute(script) ? path.dirname(script) : null;
@@ -133,6 +135,7 @@ const desktopEnabled = desktopMode === undefined ? desktopTasksConfigured() : de
 
 const kept = Object.keys(previousEnv).filter(
   (name) => process.env[name] === undefined && name !== "CODEX_BIN" &&
+    !(setup && name === "CODEX_BRIDGE_OPEN_IN_APP") &&
     !(forceDesktopTasks && name === "CODEX_BRIDGE_DESKTOP_TASKS") &&
     !(desktopEnabled && name === "CODEX_BRIDGE_AUTOSTART"),
 );
@@ -168,7 +171,7 @@ cfg.mcpServers[entryName] = {
      */
     CODEX_BRIDGE_THREAD_POLICY: settled("CODEX_BRIDGE_THREAD_POLICY", "roots"),
     CODEX_BRIDGE_SANDBOX: fullAccess ? "danger-full-access" : settled("CODEX_BRIDGE_SANDBOX", "workspace-write"),
-    CODEX_BRIDGE_OPEN_IN_APP: settled("CODEX_BRIDGE_OPEN_IN_APP", "0"),
+    CODEX_BRIDGE_OPEN_IN_APP: setup ? "0" : settled("CODEX_BRIDGE_OPEN_IN_APP", "0"),
     CODEX_BRIDGE_RELEASE_AFTER_TURN: settled("CODEX_BRIDGE_RELEASE_AFTER_TURN", IS_WINDOWS ? "1" : "0"),
     ...(desktopMode !== undefined ? { CODEX_BRIDGE_DESKTOP_TASKS: desktopMode } : {}),
     CODEX_BRIDGE_AUTOSTART: desktopEnabled ? "0" : settled("CODEX_BRIDGE_AUTOSTART", "1"),
@@ -185,6 +188,7 @@ cfg.mcpServers[entryName] = {
       : {}),
   },
 };
+if (setup) cfg.preferences = { ...cfg.preferences, menuBarEnabled: true };
 
 createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...cfg.mcpServers[entryName].env }) });
 
@@ -255,7 +259,8 @@ if (entryName === "codex-bridge") {
   }
 }
 
-log(`\nReconnect ${entryName} once in the existing Claude task to load the supervisor. Subsequent compatible installed-source updates reload automatically when the worker is safely idle.`);
-log("Verify codex_bridge_status from that task: autoReload must be enabled and runtime state must be current. A separate diagnostic process does not verify the app's loaded MCP process.");
-if (desktopEnabled) log("Verify Desktop tasks are enabled and the native relay is available. Configuration changes require MCP reconnect even when source auto-reload is enabled; keep the destination task open in Codex Desktop.");
-if (quiet) console.log(JSON.stringify({ action: "install", entry: entryName, configured: true, liveVerified: false, changed, restartRequired: changed, desktopTasks: desktopEnabled }));
+log(`\nConfiguration saved for ${entryName}. Running MCP processes were not restarted and may still hold earlier settings.`);
+log("An existing compatible supervisor reloads installed source when the worker is safely idle. codex_bridge_status reports the loaded process; a separate diagnostic process cannot verify it.");
+if (desktopEnabled) log("Native delivery requires a loaded Desktop-owned relay. This installer does not start apps or open conversations, and saved configuration does not prove live readiness.");
+if (quiet) console.log(JSON.stringify({ action: "install", entry: entryName, configured: true, liveVerified: false, changed, restartRequired: changed, desktopTasks: desktopEnabled,
+  ...(setup ? { backgroundPreference: { setting: "preferences.menuBarEnabled", status: "configured", liveVerified: false } } : {}) }));

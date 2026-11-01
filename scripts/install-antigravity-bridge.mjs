@@ -79,7 +79,7 @@ function changed(original, value) {
   return { ...original, next: text };
 }
 
-export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = process.env.CLAUDE_CONFIG_DIR || home, root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."), node = stableNodeBin(), targets = ["codex", "claude", "desktop"], remove = false, setup = false, codexExisting = null } = {}) {
+export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = process.env.CLAUDE_CONFIG_DIR || home, root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."), node = stableNodeBin(), targets = ["codex", "claude", "desktop"], remove = false, setup = false, codexExisting = null, platform = process.platform, appData = process.env.APPDATA } = {}) {
   if (!path.isAbsolute(home) || !path.isAbsolute(codeConfigDir) || !path.isAbsolute(root) || !path.isAbsolute(node)) throw new Error("Installer paths must be absolute");
   if (!targets.length || targets.some((target) => !["codex", "claude", "desktop"].includes(target))) throw new Error("Unknown installation target");
   const entry = path.join(root, "src", "antigravity-bridge.mjs");
@@ -87,6 +87,7 @@ export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = 
   const outboundEntry = path.join(root, "src", "antigravity-outbound-bridge.mjs");
   const edits = [];
   const notices = [];
+  let backgroundPreference = null;
   const retarget = setup && !remove;
   let codex = null;
   if (targets.includes("codex")) {
@@ -154,8 +155,26 @@ export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = 
     const configEdit = changed(originalConfig, config);
     if (sidecarEdit) edits.push(sidecarEdit);
     if (configEdit) edits.push(configEdit);
+    if (setup && !remove) {
+      backgroundPreference = { setting: "runInBackground", status: "unavailable", liveVerified: false };
+      if (platform !== "win32") {
+        backgroundPreference.detail = "Automatic Antigravity background preferences are not verified on this platform; native settings were preserved.";
+      } else if (typeof appData !== "string" || !path.isAbsolute(appData)) {
+        backgroundPreference.detail = "Antigravity background preferences were not applied because an absolute APPDATA path is unavailable.";
+      } else {
+        const storage = snapshot(path.join(appData, "Antigravity", "app_storage.json"));
+        if (storage.text === null) {
+          backgroundPreference.detail = "Antigravity app_storage.json was not found; no native preferences file was created and background operation is unverified.";
+        } else {
+          const storageEdit = changed(storage, { ...storage.value, runInBackground: "true" });
+          if (storageEdit) edits.push(storageEdit);
+          backgroundPreference.status = storageEdit ? "planned" : "configured";
+        }
+      }
+      if (backgroundPreference.detail) notices.push(backgroundPreference.detail);
+    }
   }
-  return { name: NAME, targets: [...new Set(targets)], remove, edits, notices, codex, entry, sidecarEntry, outboundEntry };
+  return { name: NAME, targets: [...new Set(targets)], remove, edits, notices, codex, entry, sidecarEntry, outboundEntry, backgroundPreference };
 }
 
 function assertCurrent(edit) {
@@ -224,7 +243,7 @@ export function runAntigravityInstaller(args = process.argv.slice(2)) {
     }
   }
   if (options.dryRun) {
-    console.log(JSON.stringify({ dryRun: true, remove: plan.remove, targets: plan.targets, files: plan.edits.map((edit) => ({ path: edit.file, action: edit.next === null ? "remove" : "write" })), notices: plan.notices, codex: plan.codex ? { name: NAME, action: options.remove ? "remove" : "register" } : null }, null, 2));
+    console.log(JSON.stringify({ dryRun: true, remove: plan.remove, targets: plan.targets, files: plan.edits.map((edit) => ({ path: edit.file, action: edit.next === null ? "remove" : "write" })), notices: plan.notices, backgroundPreference: plan.backgroundPreference, codex: plan.codex ? { name: NAME, action: options.remove ? "remove" : "register" } : null }, null, 2));
     return plan;
   }
   for (const edit of plan.edits) assertCurrent(edit);
@@ -233,10 +252,15 @@ export function runAntigravityInstaller(args = process.argv.slice(2)) {
     else applyStdioMcpRegistration({ name: NAME, registration: plan.codex, existing: codexExisting, run, configPath: path.join(process.env.CODEX_HOME ?? path.join(home, ".codex"), "config.toml") });
   }
   applyJsonEdits(plan.edits);
+  if (plan.backgroundPreference?.status === "planned") plan.backgroundPreference.status = "configured";
+  if (options.setup) {
+    console.log(JSON.stringify({ action: options.remove ? "remove" : "install", targets: plan.targets, configured: true, liveVerified: false,
+      changedFiles: plan.edits.length, notices: plan.notices, backgroundPreference: plan.backgroundPreference }));
+    return plan;
+  }
   console.log(`${options.remove ? "Removed" : "Installed"} Antigravity bridge: ${plan.targets.join(", ")}.`);
   for (const notice of plan.notices) console.log(notice);
-  if (!options.remove && options.targets.includes("desktop")) console.log("In Antigravity Customizations > Installed, find agent-bridge and choose More actions > Restart. If it is absent, reopen the App to load its new registration. In the CLI, use /mcp to reload server configurations.");
-  if (!options.remove) console.log("Reload the selected clients to load the bridge. Antigravity Desktop must launch its sidecar; installation alone does not prove a live connection. Native permissions were preserved.");
+  if (!options.remove) console.log("Bridge configuration saved; running clients and native permissions were preserved. Installation does not prove a live connection or load new settings into existing processes. This installer does not start apps or open conversations.");
   return plan;
 }
 

@@ -89,7 +89,7 @@ export function setupEnvironment(env, paths, codex) {
 }
 
 function configurationCheck(label, check, components) {
-  try { check(); components.push({ name: label, status: "configured" }); }
+  try { const details = check(); components.push({ name: label, status: "configured", ...details }); }
   catch (error) { components.push({ name: label, status: "incomplete", detail: error.message }); }
 }
 
@@ -131,9 +131,16 @@ export function checkSetup({ env = process.env, platform = process.platform, roo
   ]) configurationCheck(label, () => {
     const entry = readJson(file)?.mcpServers?.[name];
     assertEntry(entry, worker, root, { caller });
-    if (name === "codex-bridge-desktop" && entry.env?.CODEX_BRIDGE_DESKTOP_TASKS === "1") {
-      throw new Error("Shared Desktop chat cannot use native Code routing. Its saved choice was preserved; explicitly set CODEX_BRIDGE_DESKTOP_TASKS=0 for the local app-server route and CODEX_BRIDGE_AUTOSTART=1 if the bridge should start that server.");
+    if (worker === "index.mjs" && entry.env?.CODEX_BRIDGE_OPEN_IN_APP === "1") {
+      throw new Error("Managed bridge settings still allow opening Codex Desktop. Run codex-bridge-setup to apply the current silent configuration.");
     }
+    if (name === "codex-bridge-desktop" && entry.env?.CODEX_BRIDGE_DESKTOP_TASKS === "1") {
+      return { nativeCodeOnly: true, sharedChatDelivery: "unsupported",
+        notices: ["The saved native Code-only policy was preserved. Ordinary Claude Desktop Chat cannot deliver through this connector; native delivery uses the registered Claude Desktop Code connector and remains unverified by setup."] };
+    }
+  }, components);
+  configurationCheck("Claude Desktop / background preference", () => {
+    if (readJson(paths.desktop)?.preferences?.menuBarEnabled !== true) throw new Error("The managed Claude background preference is not enabled. Run codex-bridge-setup to apply it; live activation is verified separately.");
   }, components);
   configurationCheck("Antigravity / codex-bridge sidecar", () => {
     assertEntry(readJson(path.join(paths.gemini, "sidecars", "codex-bridge", "sidecar.json")), "antigravity-sidecar.mjs", root);
@@ -151,7 +158,7 @@ export function checkSetup({ env = process.env, platform = process.platform, roo
 
 export function runSetup({ args = [], env = process.env, platform = process.platform, root = ROOT, run = execute, resolve = resolveCodexBin } = {}) {
   const options = setupArguments(args);
-  if (options.help) return { help: "Usage: codex-bridge-setup [--check|--dry-run] [--json] [--no-download]\nGlobal npm installation configures Claude Desktop, Claude Code, Codex and Antigravity automatically. CODEX_BRIDGE_SKIP_SETUP=1 opts out." };
+  if (options.help) return { help: "Usage: codex-bridge-setup [--check|--dry-run] [--json] [--no-download]\nUpdate the package and apply managed settings with: npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge\nGlobal npm installation configures Claude Desktop, Claude Code, Codex and Antigravity automatically. CODEX_BRIDGE_SKIP_SETUP=1 opts out. Saved configuration and loaded app connections are verified separately." };
   if (options.postinstall && !automaticSetupEnabled(env)) return { skipped: true, reason: "Automatic configuration runs only for a global npm install; use codex-bridge-setup for manual setup." };
   if (options.check) return checkSetup({ env, platform, root, run, resolve });
   const native = platform === "win32" || platform === "darwin";
@@ -166,16 +173,18 @@ export function runSetup({ args = [], env = process.env, platform = process.plat
   const install = (name, script, arguments_, environment = base) => {
     try {
       const output = run(process.execPath, [path.join(root, "scripts", script), ...arguments_], environment, 180000);
-      let notices = [];
-      try { notices = JSON.parse(output).notices ?? []; } catch {}
-      components.push({ name, status: "configured", ...(notices.length ? { notices } : {}) });
+      let details = {};
+      try { details = JSON.parse(output); } catch {}
+      const notices = details.notices ?? [];
+      components.push({ name, status: "configured", ...(notices.length ? { notices } : {}),
+        ...(details.backgroundPreference ? { backgroundPreference: details.backgroundPreference } : {}) });
       return true;
     } catch (error) { components.push({ name, status: "incomplete", detail: error.message }); return false; }
   };
-  const code = install(planned[0], "install-claude-code.mjs", ["--install", "--desktop-config", paths.desktop], {
+  const code = install(planned[0], "install-claude-code.mjs", ["--install", "--setup", "--desktop-config", paths.desktop], {
     ...base, CODEX_BRIDGE_DESKTOP_TASKS: native ? "1" : "0", CODEX_BRIDGE_AUTOSTART: native ? "0" : "1", CODEX_BRIDGE_THREAD_POLICY: "roots",
   });
-  if (code) install(planned[1], "install-claude-desktop.mjs", ["--entry-name", "codex-bridge-desktop", "--quiet"]);
+  if (code) install(planned[1], "install-claude-desktop.mjs", ["--entry-name", "codex-bridge-desktop", "--quiet", "--setup"]);
   if (native) {
     const relay = readJson(path.join(paths.codex, "native-relay.json"));
     install("Codex / codex-native-relay and executor", "install-native-relay.mjs", ["--setup", ...(relay?.desktopTasks === undefined ? ["--desktop-tasks"] : [])]);
@@ -185,20 +194,24 @@ export function runSetup({ args = [], env = process.env, platform = process.plat
   const inspection = checkSetup({ env: base, platform, root, run, resolve: () => runtime.binary });
   return { configured: components.every((item) => item.status === "configured") && inspection.configured, liveVerified: false,
     cliInstalled: runtime.installed, components, verification: inspection.components,
-    nextActions: ["Open or reconnect Claude, Codex and Antigravity after active work finishes so they load the new entries.",
-      "Use the same saved project in Claude Desktop Code and Codex Desktop. Keep the apps signed in.",
-      "Verify codex_bridge_status in Claude Code, native_relay_status in Codex, and agent_bridge_status in Antigravity. Shared Claude Desktop chat uses the local app-server route."] };
+    nextActions: ["Running MCP processes may still hold earlier settings. Setup does not start apps or open conversations.",
+      "Existing compatible supervisors reload installed source when idle; configuration changes are not proof of loaded-process readiness.",
+      "Native delivery uses the same saved project and signed-in accounts in Claude Desktop Code and Codex Desktop.",
+      "codex_bridge_status, native_relay_status and agent_bridge_status report live readiness separately from this configuration check."] };
 }
 
 export function printSetup(result, { json = false, output = console.log } = {}) {
   if (json) { output(JSON.stringify(result, null, 2)); return; }
   if (result.help) { output(result.help); return; }
   if (result.skipped) { output(result.reason); return; }
-  output(result.dryRun ? "Bridge setup preview (no changes)" : result.configured ? "Bridge configuration verified. Live connections still require the apps to load it." : "Bridge setup is incomplete. Fix the items below, then run codex-bridge-setup again.");
+  output(result.dryRun ? "Bridge setup preview (no changes)" : result.configured ? "Bridge configuration verified. Running app connections have not been verified." : "Bridge setup is incomplete. Fix the items below, then run codex-bridge-setup again.");
   for (const item of result.components ?? []) {
     output(`[${item.status}] ${item.name}${item.detail ? `: ${item.detail}` : ""}`);
     for (const notice of item.notices ?? []) output(`  ${notice}`);
   }
-  for (const item of result.verification ?? []) if (item.status !== "configured") output(`[${item.status}] ${item.name}: ${item.detail}`);
+  for (const item of result.verification ?? []) {
+    if (item.status !== "configured") output(`[${item.status}] ${item.name}: ${item.detail}`);
+    for (const notice of item.notices ?? []) output(`${item.name}: ${notice}`);
+  }
   for (const action of result.nextActions ?? []) output(action);
 }

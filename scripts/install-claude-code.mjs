@@ -68,7 +68,7 @@ try {
   if (args.includes("--install")) {
     if (args.includes("--check") || args.includes("--apply")) throw new Error("Use --install separately from --check or --apply");
     const root = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
-    const plan = planInitialCodeRegistration({ code, desktop, root, node: stableNodeBin(), environment: process.env });
+    const plan = planInitialCodeRegistration({ code, desktop, root, node: stableNodeBin(), environment: process.env, setup: args.includes("--setup") });
     const dryRun = args.includes("--dry-run");
     const writtenFiles = dryRun ? 0 : apply(plan);
     console.log(JSON.stringify({ action: dryRun ? "plan" : "install", configured: !dryRun, liveVerified: false,
@@ -86,7 +86,7 @@ try {
     if (args.includes("--apply")) {
       if (!args.includes("--clients-stopped")) throw new Error("Exit Claude and the configuration manager first, then pass --clients-stopped to avoid their overwriting the migration");
       apply(plan);
-      console.log("Reopen the original Code task and call codex_bridge_status with the intended project cwd. Update the configuration manager's matching entry to the same policy file. No new per-project MCP entry is needed.");
+      console.log("Shared policy migration applied. Loaded Code registrations have not been verified; codex_bridge_status reports the active configuration. The configuration manager's matching entry must use the same policy file.");
     }
   }
 } catch (error) { console.error(error.message); process.exitCode = 1; }

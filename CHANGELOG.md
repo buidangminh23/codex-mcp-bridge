@@ -8,17 +8,22 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Upgrade
 
-Update the package and all managed client and background-service settings together:
+Install or update the global package and all managed client and background-service settings with one command, including upgrades from 1.26.0 or 1.26.1:
 
 ```sh
-npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
 ```
 
-Use `npm.cmd` in Windows PowerShell. Setup does not open apps or chats.
+Use `npm.cmd` in Windows PowerShell. npm downloads the latest updater without running setup in its cache; the updater installs that exact resolved version globally with managed setup enabled and verifies the global installation. No second installation command is required.
+
+### Added
+
+- Automatic `codex-bridge-update` orchestration for package replacement, all managed client settings and background-service configuration. Before replacing a Windows installation held by an owned legacy relay, it migrates only that service to private relay storage, waits for work to drain and verifies replacement readiness. It reports a pending migration instead of killing processes or interrupting jobs.
+- Preserve disabled services, provider authentication, custom project grants and permission denials throughout the update. Setup does not open apps or chats, and a deliberately disabled service is not reported as ready.
 
 ### Fixed
 
-- Run the background service and daemon from private relay storage instead of the npm installation directory. Windows no longer locks the installed package as a running process's working directory, allowing package replacement during updates. Worker jobs continue using their explicitly authorized project directories.
+- New background service and daemon launches use private relay storage instead of the npm installation directory, preventing those processes from locking the package as their working directory on Windows. The updater migrates owned legacy instances before package replacement. Worker jobs continue using their explicitly authorized project directories.
 
 ## [1.26.1] - 2026-11-01
 

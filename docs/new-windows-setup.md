@@ -3,25 +3,36 @@
 Install Node.js 22.13+. Native handoffs use signed-in Desktop apps and the same
 local project saved in Codex Desktop and Claude Desktop's **Code tab**.
 Independent background work uses separately authenticated provider CLIs and
-does not require the Desktop apps to be open. Run one PowerShell command:
+does not require the Desktop apps to be open. Use this one PowerShell command
+for a fresh installation or an update, including from 1.26.0 or 1.26.1:
 
 ```powershell
-npm.cmd install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+npm.cmd exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
 ```
 
-The `--allow-scripts` value permits only this package's setup hook. npm versions
-that block install scripts by default need it; a plain install runs setup only
-when scripts are allowed. `--foreground-scripts` displays setup progress. If
-npm reports `1 package had install scripts blocked`, run the recommended command
-again or run `codex-bridge-setup.cmd` explicitly.
+npm downloads the latest updater into its cache. `--ignore-scripts` prevents
+setup from running in that temporary location; the updater then installs its
+exact resolved version globally with this package's managed setup hook enabled.
+It displays progress and verifies the global version and saved settings.
+No second installation or setup command is required.
+
+An older Windows background service can keep the global npm package directory
+locked as its working directory. Before replacing the package, the updater
+migrates only this package's owned legacy service to private relay storage when
+needed. It waits for active work to drain and the replacement transport to become
+ready, without killing processes or opening apps or chats. If that migration
+remains pending, `UPDATE_RELAY_PENDING` leaves jobs and receipts intact; rerun
+the same command after the active work finishes. Deliberately disabled services
+remain disabled and are not reported as ready.
 
 The global installation configures the bridges and verifies their saved
 registrations. It reuses an available native Codex CLI, or installs a pinned
 official package in the current user's `.config\GptClaudeBridge\tools`
 directory. It also configures native pipe forwarding and bootstraps the relay
-executor. A failed component is reported as incomplete rather than ready. The
-package stays installed when an app configuration step fails, so the setup
-command remains available for repair. npm success alone does not verify setup.
+executor. A failed component is reported as incomplete rather than ready. If
+setup or update exits nonzero, inspect the reported component and installed
+version, correct the cause, and rerun the same updater command. npm can roll back
+package files without restoring settings already written or command shims.
 
 The same command installs the independent worker relay as a hidden per-user
 scheduled task and applies its managed settings on every update. It registers
@@ -78,6 +89,7 @@ codex-bridge-setup.cmd --dry-run
 codex-bridge-setup.cmd
 ```
 
+These are optional configuration-only checks and repairs after installation.
 The first command inspects configuration; the second previews components and
 paths without writes or downloads; the third applies setup again. Add `--json`
 for structured output or `--no-download` to require an existing Codex CLI.
@@ -87,8 +99,12 @@ incomplete.
 has no bridge tools, inspect and reconnect `codex-bridge` using `/mcp` before
 attempting delivery.
 
-Local `npm install` and `npm ci` do not configure apps. To opt out during a
-global install, set `CODEX_BRIDGE_SKIP_SETUP=1` or use `--ignore-scripts`.
+Local `npm install` and `npm ci` do not configure apps. For a deliberate
+package-only installation, a direct global npm install can use
+`CODEX_BRIDGE_SKIP_SETUP=1` or `--ignore-scripts`. This differs from the
+recommended updater command, which suppresses setup only in its temporary cache
+and enables it for the final global installation. A direct install skips the
+updater's migration of legacy Windows services that can lock the package.
 The optional card extension, hosted ChatGPT pairing, and VS Code preview have
 separate installation steps.
 

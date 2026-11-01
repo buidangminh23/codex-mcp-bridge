@@ -4,7 +4,7 @@
 
 ### Codex to Codex over SSH
 
-Update both computers with `npm install -g @minhspark/codex-mcp-bridge@latest`. If an existing task still shows the old tool catalog, reconnect the MCP server or start a fresh Codex task to load `remote_codex`.
+Update both computers with the [one-command updater](README.md#package--npm). If an existing task still shows the old tool catalog, allow its managed worker to reload when idle or reconnect its MCP server normally. Do not create or open a task to load the relay.
 
 The native companion exposes `remote_codex` for an existing Codex Desktop task on another computer. It uses an existing SSH alias and the receiving computer's running native relay. It does not start an agent, create a task, change permissions, or delegate through Claude. The sender and recipient can use different Codex accounts. Each call discovers the current signed-in identities, and a change during delivery stops that operation.
 
@@ -250,16 +250,12 @@ Two ways in. Pick by what you intend to do with it.
 **Install it — no clone, no checkout to keep in sync.** Right for a machine that only has to run the bridge:
 
 ```bash
-npm install -g @minhspark/codex-mcp-bridge
+npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
 ```
 
-Already installed? The same command with `@latest` upgrades it in place. Once the supervisor is registered, compatible updates load automatically without restarting the client. Details in [Upgrading an install you already have](#upgrading-an-install-you-already-have):
+Use `npm.cmd` in Windows PowerShell. The same command handles fresh installs and upgrades, including 1.26.0/1.26.1 Windows services that can lock the global package directory. npm fetches the latest updater with setup disabled in the cache; the updater installs its exact resolved version globally with managed setup enabled and verifies that installation. No second install command is required. See [Upgrading an install you already have](#upgrading-an-install-you-already-have).
 
-```bash
-npm install -g @minhspark/codex-mcp-bridge@latest
-```
-
-Installing straight from the repository works the same way and needs no registry account:
+Direct installation from the repository is an advanced alternative for an intentionally selected source version. It bypasses the updater's legacy service migration:
 
 ```bash
 npm install -g git+https://github.com/buidangminh23/codex-mcp-bridge.git
@@ -269,13 +265,9 @@ Either route puts the bridge servers, configuration installers, native relay, an
 
 #### Upgrading an install you already have
 
-Install the new files with `npm install -g @minhspark/codex-mcp-bridge@latest`. To migrate an existing direct-entry installation, run `codex-mcp-bridge-install` for Claude Desktop, `claude-mcp-bridge-install` for Codex, and `codex-native-relay-install --no-bootstrap` if the native companion is installed. Update Claude Code's separate registration as shown below. Reconnect each MCP server once in its existing task so it loads the supervisor. No replacement task or full app exit is required when the client exposes MCP reconnect/reload. A process launched before this upgrade cannot acquire the supervisor merely because files changed on disk.
+Use the same updater command above. It handles package replacement and all managed Claude Code, shared Claude Desktop, Codex, Antigravity and background-service settings. If an owned legacy Windows relay holds the global npm directory as its working directory, the updater first moves that service to private relay storage and waits for active work to drain and replacement transport readiness. A pending migration reports `UPDATE_RELAY_PENDING`; rerun the same command after work finishes. It does not kill processes, open apps or chats, remove project grants or enable deliberately disabled services.
 
-Codex entries registered directly, with `args` naming `src/claude-bridge.mjs` or `src/native-relay-companion.mjs`, never reload: they stay on the version Codex Desktop started until the app restarts. Re-running the two Codex installers moves them to the supervisor. When the environment does not change, each installer edits only `command` and `args` of the existing `[mcp_servers.<name>]` table in place, so `env_vars`, `cwd`, tool filters, timeouts, comments and unrelated tables are kept byte for byte. `codex mcp add` would drop `env_vars` and every comment in the file. The installer then reads the entry back through `codex mcp get --json` and restores the previous file if any value differs. The one-time step for Codex Desktop:
-
-1. Run `claude-mcp-bridge-install` and, if the relay is installed, `codex-native-relay-install --no-bootstrap`. Both report `existing entry retargeted in place`, and `codex mcp get <name>` shows `src/mcp-supervisor.mjs` followed by the entry file.
-2. After active Codex work finishes, quit and reopen Codex Desktop once. Codex Desktop keeps the MCP processes it started; on 2026-10-20 a changed entry took effect only after the app restarted.
-3. In an existing Codex task, call `claude_bridge_status` and `native_relay_status`. Each must end with `automatic reload: current`, a `supervisor pid` and a `reload count`. After the next release, the same task should report `reload count: 1` and the new version without another restart.
+Managed setup migrates recognized direct MCP registrations to supervisors while preserving unrelated entries and access settings. A process already launched directly remains on its loaded version until its native host reconnects normally; changing files on disk cannot add a supervisor to that process. This native-host boundary is separate from the independent background service's automatic migration. Use status tools already available in the actual clients to distinguish saved configuration from the version they loaded; do not open replacement chats to force activation.
 
 After this one-time migration, the stable supervisor keeps the client's MCP stdio connection open while it starts each worker from an immutable source snapshot. The installers prepare this snapshot before changing the registration, avoiding a slow first copy during MCP initialization. Compatible installed-source changes become candidates after the tree stabilizes. A candidate must initialize successfully before it can replace an idle worker. Active calls, pending deliveries, late replies, and relay work defer the switch; an update never silently resends a prompt. A failed candidate leaves the existing worker and its delivery state available.
 
@@ -301,11 +293,7 @@ codex-npm-footer-install --shell zsh
 
 Use `--shell bash` on Bash or `--shell powershell` in PowerShell 7. A source checkout can run `npm run install:footer -- --shell zsh`. The installer backs up existing profiles, preserves unrelated content, and prints a command to load the integration into the current terminal. New login and interactive Bash/Zsh shells load it automatically; PowerShell uses its current-user all-hosts profile. A terminal started before setup must run the printed reload command or open a new shell. Existing unmanaged `npm` functions are refused for review rather than overwritten. Use `--profile /absolute/path` to select a custom profile or `--remove` to remove the managed loader.
 
-The integration leaves the command unchanged:
-
-```sh
-npm install -g @minhspark/codex-mcp-bridge@latest
-```
+This optional integration reports direct global npm installations without changing their command. The recommended `npm exec` updater reports its own installation and verification results and does not require this shell integration.
 
 | Measured result | Final line |
 | --- | --- |

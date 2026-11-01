@@ -1,18 +1,19 @@
 # Project onboarding and shared authorization
 
-The recommended global installation registers the bridges and configures the
-independent worker relay automatically:
+One command installs or updates the global package, registers the bridges and
+configures the independent worker relay automatically:
 
 ```sh
-npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts
+npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
 ```
 
-In Windows PowerShell use `npm.cmd`. The script allowance authorizes only this
-package's setup hook; npm versions that block install scripts by default need
-it. A plain install runs setup only when the hook is allowed.
-`--foreground-scripts` displays progress. If npm prints
-`1 package had install scripts blocked`, rerun the recommended command or run
-`codex-bridge-setup` explicitly. The setup creates
+In Windows PowerShell use `npm.cmd`. npm fetches the latest updater into its
+cache with setup disabled there. The updater migrates an owned legacy service
+away from the global package directory when needed, waits for active work to
+drain, then installs its exact resolved version globally with the setup hook
+enabled. It verifies the global installation and managed settings. No second
+installation command is required. It does not open apps or chats or kill
+processes. The setup creates
 `codex-bridge` for Claude Code and the separate `codex-bridge-desktop` shared
 Claude connector, configures Codex and Antigravity, and initializes the native
 relay on Windows/macOS. It also installs the per-user background service and
@@ -32,11 +33,15 @@ display results. Use a terminal or another responsive client, subject to the
 `codex-bridge-setup --check` inspects all saved registrations. Use
 `codex-bridge-setup --dry-run` to preview or rerun `codex-bridge-setup` to apply
 setup after correcting an incomplete component. Add `.cmd` on Windows and
-`--json` for structured output. Local package installs do not run setup;
-`CODEX_BRIDGE_SKIP_SETUP=1` and npm `--ignore-scripts` opt out of global setup.
-If app configuration is incomplete, npm retains the package for repair; its
-success exit alone does not verify setup. Explicit setup and `--check` return
-a nonzero status until the saved configuration passes verification.
+`--json` for structured output. Local package installs do not run setup.
+For a deliberate package-only direct global installation,
+`CODEX_BRIDGE_SKIP_SETUP=1` or npm `--ignore-scripts` opts out of setup; this is
+separate from the cache-only script suppression in the recommended updater.
+Failed setup or update returns a nonzero exit. Inspect the reported component
+and installed version, correct the cause, then rerun the same updater command.
+npm can roll back package files without restoring settings or command shims.
+Explicit setup and `--check` also return a nonzero status until the saved
+configuration passes verification.
 
 ## Shared project policy
 

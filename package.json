@@ -30,6 +30,7 @@
     "codex-mcp-bridge-install": "scripts/install-claude-desktop.mjs",
     "codex-bridge-code-install": "scripts/install-claude-code.mjs",
     "codex-bridge-setup": "scripts/setup.mjs",
+    "codex-bridge-update": "scripts/update.mjs",
     "worker-relay": "scripts/worker-relay.mjs",
     "bridge-projects": "scripts/bridge-projects.mjs",
     "claude-mcp-bridge-install": "scripts/install-codex-mcp.mjs",

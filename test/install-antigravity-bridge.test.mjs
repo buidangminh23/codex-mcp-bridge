@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { applyJsonEdits, installerArguments, planAntigravityInstallation, validateCodexExecutable } from "../scripts/install-antigravity-bridge.mjs";
@@ -193,6 +193,56 @@ test("setup refuses unsafe native preferences and detects concurrent changes bef
   assert.throws(() => applyJsonEdits(plan.edits), /changed while preparing/);
   assert.deepEqual(read(storage), { runInBackground: "false", concurrent: true });
   assert.equal(fs.existsSync(path.join(options.home, ".gemini")), false);
+});
+
+test("malformed native preferences report a static diagnostic without exposing file paths or JSON", () => {
+  for (const text of ["null", "[]", "true", "42", '"private-native-value"', '{"private-native-value":']) {
+    const options = { ...fixture(), targets: ["desktop"], setup: true, platform: "win32" };
+    const storage = write(options.appData, "Antigravity/app_storage.json", {});
+    fs.writeFileSync(storage, text);
+    assert.throws(() => planAntigravityInstallation(options), {
+      message: "Invalid Antigravity native preferences: expected a JSON object.",
+    });
+    assert.equal(fs.readFileSync(storage, "utf8"), text);
+    assert.equal(fs.existsSync(path.join(options.home, ".gemini")), false);
+  }
+});
+
+test("malformed native preferences stay sanitized during concurrency checks and readback", (t) => {
+  const options = { ...fixture(), targets: ["desktop"], setup: true, platform: "win32" };
+  const storage = write(options.appData, "Antigravity/app_storage.json", { runInBackground: "false" });
+  const plan = planAntigravityInstallation(options);
+  const invalid = '{"private-native-value":';
+  fs.writeFileSync(storage, invalid);
+  assert.throws(() => applyJsonEdits(plan.edits), { message: "Invalid Antigravity native preferences: expected a JSON object." });
+  assert.equal(fs.existsSync(path.join(options.home, ".gemini")), false);
+  fs.writeFileSync(storage, JSON.stringify({ runInBackground: "false" }));
+  const updated = planAntigravityInstallation(options);
+  const originalRename = fs.renameSync;
+  t.mock.method(fs, "renameSync", function (source, destination) {
+    const result = originalRename.call(fs, source, destination);
+    if (destination === storage) fs.writeFileSync(storage, invalid);
+    return result;
+  });
+  assert.throws(() => applyJsonEdits(updated.edits), { message: "Invalid Antigravity native preferences: expected a JSON object." });
+  assert.equal(fs.readFileSync(storage, "utf8"), invalid);
+});
+
+test("CLI malformed native preferences retain a static setup-compatible stderr diagnostic", { skip: process.platform !== "win32" }, () => {
+  const options = fixture();
+  const storage = write(options.appData, "Antigravity/app_storage.json", {});
+  const script = fileURLToPath(new URL("../scripts/install-antigravity-bridge.mjs", import.meta.url));
+  for (const text of ['["private-native-value"]', '{"private-native-value":']) {
+    fs.writeFileSync(storage, text);
+    const result = spawnSync(process.execPath, [script, "--desktop", "--setup"], {
+      env: { ...process.env, HOME: options.home, USERPROFILE: options.home, APPDATA: options.appData },
+      encoding: "utf8", windowsHide: true, timeout: 15000,
+    });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr.trim(), "Invalid Antigravity native preferences: expected a JSON object.");
+    assert.equal(fs.existsSync(path.join(options.home, ".gemini")), false);
+  }
 });
 
 test("CLI setup reports saved background settings separately from live activation without disclosing native values", { skip: process.platform !== "win32" }, () => {

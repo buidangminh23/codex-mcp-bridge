@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
 import { relayFileIdentity, removeRelayFile } from "./native-relay-files.mjs";
+import { bridgeDiagnostic } from "./recipient-preflight.mjs";
 
 const LIMIT = 2 * 1024 * 1024;
 
@@ -55,28 +56,30 @@ export function callAntigravityDesktop(request, { directory = antigravityBridgeD
       socket.destroy();
       if (error) {
         error.deliveryState ??= dispatched ? "unknown" : "not_sent";
+        error.phase ??= dispatched ? "dispatch" : "connect";
+        error.diagnostic = bridgeDiagnostic(error, { component: "antigravity-sidecar", operation: request?.operation, requestId: request?.requestId, conversationId: request?.conversationId, readOnly: ["status", "list", "read", "receipt"].includes(request?.operation) });
         reject(error);
       } else resolve(result);
     };
-    const timer = setTimeout(() => done(Object.assign(new Error("Antigravity sidecar did not reply; inspect the original requestId before retrying"), { deliveryState: "unknown" })), timeoutMs);
+    const timer = setTimeout(() => done(Object.assign(new Error("Antigravity sidecar did not reply; inspect the original requestId before retrying"), { code: "ANTIGRAVITY_IPC_TIMEOUT" })), timeoutMs);
     socket.on("error", (error) => done(error));
-    socket.on("end", () => done(new Error("Antigravity sidecar disconnected before replying")));
+    socket.on("end", () => done(Object.assign(new Error("Antigravity sidecar disconnected before replying"), { code: "ANTIGRAVITY_IPC_DISCONNECTED" })));
     socket.on("connect", () => {
       const frame = JSON.stringify(request) + "\n";
-      if (Buffer.byteLength(frame) > LIMIT) return done(new Error("Request exceeds size limit"));
+      if (Buffer.byteLength(frame) > LIMIT) return done(Object.assign(new Error("Request exceeds size limit"), { code: "ANTIGRAVITY_REQUEST_TOO_LARGE", phase: "validation" }));
       dispatched = true;
       socket.write(frame);
     });
     socket.on("data", (chunk) => {
       buffer = Buffer.concat([buffer, chunk]);
-      if (buffer.length > LIMIT) return done(new Error("Sidecar response exceeds size limit"));
+      if (buffer.length > LIMIT) return done(Object.assign(new Error("Sidecar response exceeds size limit"), { code: "ANTIGRAVITY_RESPONSE_TOO_LARGE", phase: "response" }));
       const end = buffer.indexOf(10);
       if (end < 0) return;
       try {
         const response = JSON.parse(buffer.subarray(0, end).toString("utf8"));
-        if (response.error) return done(Object.assign(new Error(response.error), { deliveryState: response.deliveryState }));
+        if (response.error) return done(Object.assign(new Error(response.error), { code: response.code, phase: response.phase, deliveryState: response.deliveryState, diagnostic: response.diagnostic }));
         done(null, response.result);
-      } catch (error) { done(error); }
+      } catch (error) { done(Object.assign(new Error("Antigravity sidecar returned an invalid response"), { code: "ANTIGRAVITY_RESPONSE_INVALID", phase: "response", cause: error })); }
     });
   });
 }
@@ -101,12 +104,18 @@ export async function serveAntigravityDesktop(handler, { directory = antigravity
       const end = buffer.indexOf(10);
       if (end < 0) return;
       received = true;
+      let request;
       try {
-        const result = await handler(JSON.parse(buffer.subarray(0, end).toString("utf8")));
+        try { request = JSON.parse(buffer.subarray(0, end).toString("utf8")); }
+        catch { throw Object.assign(new Error("Invalid Antigravity sidecar request"), { code: "ANTIGRAVITY_REQUEST_INVALID", phase: "validation", deliveryState: "not_sent" }); }
+        const result = await handler(request);
         const frame = JSON.stringify({ result }) + "\n";
-        if (Buffer.byteLength(frame) > LIMIT) throw new Error("Sidecar response exceeds size limit");
+        if (Buffer.byteLength(frame) > LIMIT) throw Object.assign(new Error("Sidecar response exceeds size limit"), { code: "ANTIGRAVITY_RESPONSE_TOO_LARGE", phase: "response" });
         socket.end(frame);
-      } catch (error) { socket.end(JSON.stringify({ error: error.message, deliveryState: error.deliveryState }) + "\n"); }
+      } catch (error) {
+        const diagnostic = bridgeDiagnostic(error, { component: "antigravity-sidecar", operation: request?.operation, requestId: request?.requestId, conversationId: request?.conversationId, readOnly: ["status", "list", "read", "receipt"].includes(request?.operation), deliveryState: error.deliveryState ?? "unknown" });
+        socket.end(JSON.stringify({ error: diagnostic.reason, code: diagnostic.code, phase: diagnostic.phase, deliveryState: diagnostic.deliveryState, diagnostic }) + "\n");
+      }
     });
   });
   const privatePath = process.platform === "win32" ? socketPath : path.join(directory, `.${crypto.randomBytes(6).toString("hex")}.sock`);

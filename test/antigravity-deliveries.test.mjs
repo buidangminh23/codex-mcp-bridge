@@ -46,6 +46,8 @@ test("restart with pending receipt stays unknown and never resends", async (t) =
   const restarted = new AntigravityDeliveries(directory);
   let called = false;
   assert.equal((await restarted.dispatch(request, () => { called = true; })).status, "unknown");
+  assert.equal(restarted.read(request.requestId).diagnostic.code, "ANTIGRAVITY_WORKER_UNAVAILABLE");
+  assert.equal(restarted.read(request.requestId).diagnostic.deliveryState, "unknown");
   assert.equal(called, false);
   finish({});
   await delay(10);
@@ -90,6 +92,7 @@ test("native permission failures remain failed results rather than success", asy
   await delay(10);
   assert.equal(store.read(request.requestId).status, "failed");
   assert.equal(store.read(request.requestId).result.status, "PERMISSION_DENIED");
+  assert.equal(store.read(request.requestId).diagnostic.code, "PERMISSION_DENIED");
 });
 
 test("receipt reads reject hard-linked records", async (t) => {
@@ -169,4 +172,34 @@ test("invalid native message IDs are not persisted as recovery handles", async (
   const receipt = store.read(request.requestId);
   assert.equal(receipt.status, "unknown");
   assert.equal(receipt.result, undefined);
+  assert.equal(receipt.diagnostic.ids.msgId, undefined);
+});
+
+test("durable failure diagnostics preserve codes and IDs while excluding private request data", async (t) => {
+  const { store, request, directory } = fixture(t);
+  const msgId = crypto.randomUUID();
+  const conversationId = crypto.randomUUID();
+  const next = { ...request, conversationId, prompt: "PRIVATE_PROMPT" };
+  await store.dispatch(next, async () => {
+    throw Object.assign(new Error("Native connection failed; token=PRIVATE_TOKEN; C:\\private\\file", { cause: Object.assign(new Error("PRIVATE_CAUSE"), { code: "ECONNRESET" }) }), {
+      code: "ANTIGRAVITY_NATIVE_FAILED", phase: "dispatch", deliveryState: "unknown", msgId, stdout: "PRIVATE_STDOUT", stderr: "PRIVATE_STDERR",
+    });
+  }, { component: "agent-bridge", operation: "send_to_agent_task" });
+  await delay(10);
+  const original = store.read(next.requestId);
+  const restarted = new AntigravityDeliveries(directory);
+  const receipt = restarted.read(next.requestId);
+  assert.deepEqual(receipt.diagnostic, original.diagnostic);
+  assert.equal(receipt.status, "unknown");
+  assert.equal(receipt.diagnostic.code, "ANTIGRAVITY_NATIVE_FAILED");
+  assert.deepEqual(receipt.diagnostic.causeCodes, ["ECONNRESET"]);
+  assert.equal(receipt.diagnostic.operation, "send_to_agent_task");
+  assert.equal(receipt.diagnostic.ids.requestId, next.requestId);
+  assert.equal(receipt.diagnostic.ids.conversationId, conversationId);
+  assert.equal(receipt.diagnostic.ids.msgId, msgId);
+  assert.equal(receipt.diagnostic.retrySafe, false);
+  assert.doesNotMatch(JSON.stringify(receipt.diagnostic), /PRIVATE_|C:\\\\private/i);
+  assert.doesNotMatch(fs.readFileSync(store.file(next.requestId), "utf8"), /PRIVATE_/);
+  const repeated = await restarted.dispatch(next, () => assert.fail("Unknown delivery must not be sent again"));
+  assert.equal(repeated.diagnostic.reportId, original.diagnostic.reportId);
 });

@@ -146,7 +146,7 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   const config = readConfig({ env: childEnv, platform, missing: true });
   let runtime;
   if (config) {
-    runtime = readRuntime(config.paths.root, { root: globalRoot, nodeExecutable: process.execPath });
+    runtime = readRuntime(config.paths.root, { root: globalRoot, nodeExecutable: process.execPath, allowMissingFiles: true });
     if (runtime.packageVersion && newerVersion(runtime.packageVersion, version)) throw failure("UPDATE_DOWNGRADE_REFUSED", "The owned relay runtime is newer than this updater. Run the update command with the latest published package.", "preflight");
     if (runtime.environment !== undefined) childEnv = { ...Object.fromEntries(Object.entries(childEnv).filter(([name]) => !MANAGED_ENV.has(name.toUpperCase()))), ...runtime.environment };
     childEnv.AGENT_RELAY_DIRECTORY = config.paths.root;
@@ -176,7 +176,7 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
       if (!quiescent(config)) throw Object.assign(failure("UPDATE_RELAY_PENDING", `The disabled relay still has an owned process whose release could not be verified. ${RETRY}`, "migration"), { pending: true });
     } else {
       onProgress("Waiting for the legacy relay to finish existing work and activate the update runtime.");
-      const staged = runtime.packageVersion && !legacy(runtime.packageVersion) && !newerVersion("1.26.2", runtime.packageVersion);
+      const staged = runtime.filesAvailable !== false && runtime.packageVersion && !legacy(runtime.packageVersion) && !newerVersion("1.26.2", runtime.packageVersion);
       const service = await awaitService(staged ? runtime.packageRoot : root, !staged, "migration", staged ? runtime.packageVersion : version);
       migrated = !staged && service.enabled;
     }

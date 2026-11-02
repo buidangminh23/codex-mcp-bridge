@@ -7,16 +7,27 @@ does not require the Desktop apps to be open. Use this one PowerShell command
 for a fresh installation or an update, including from 1.26.0 or 1.26.1:
 
 ```powershell
-npx.cmd --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update --user
+npx.cmd -y @minhspark/codex-mcp-bridge@latest
 ```
 
-npm downloads the latest updater into its cache. `--user` selects `%APPDATA%\npm`
-instead of a protected Node installation directory such as `Program Files`;
+Run this directly in an interactive terminal. The bare npm package launch
+selects the complete updater and defaults to `%APPDATA%\npm` on Windows instead
+of a protected Node installation directory such as `Program Files`;
 administrator rights are not required. The updater installs its exact resolved
 version globally with lifecycle scripts disabled, then runs managed setup
 directly using Node. It displays progress and verifies the global version,
 saved settings and relay activation.
 No second installation or setup command is required.
+
+For scripts or redirected input/output, select the updater explicitly:
+
+```powershell
+npx.cmd -y --ignore-scripts -p @minhspark/codex-mcp-bridge@latest codex-bridge-update --user
+```
+
+MCP clients keep using the package's normal stdio launch. Piped launches do not
+select the terminal updater. An installed package also accepts
+`codex-mcp-bridge.cmd update` for an explicit update from that package version.
 
 An older Windows background service can keep the global npm package directory
 locked as its working directory. Before replacing the package, the updater

@@ -30,16 +30,16 @@ Requires **Node.js 22.13+**. Use the same command for a fresh install or an upda
 **Windows PowerShell**
 
 ```powershell
-npx.cmd --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update --user
+npx.cmd -y @minhspark/codex-mcp-bridge@latest
 ```
 
 **macOS / Linux / WSL**
 
 ```bash
-npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
+npx -y @minhspark/codex-mcp-bridge@latest
 ```
 
-The updater installs the package, applies Claude/Codex/Antigravity settings, and verifies the background relay. Windows installs into `%APPDATA%\npm` without administrator rights. Existing permissions, project grants, custom settings, and disabled services are preserved.
+Run the command directly in an interactive terminal. It installs the package, applies Claude/Codex/Antigravity settings, and verifies the background relay. Windows installs into `%APPDATA%\npm` without administrator rights. Existing permissions, project grants, custom settings, and disabled services are preserved.
 
 For native handoffs, sign in to the Desktop apps and open the same saved project in Codex Desktop and Claude Desktop's **Code tab**. The shared Claude chat connector is a separate local app-server route.
 

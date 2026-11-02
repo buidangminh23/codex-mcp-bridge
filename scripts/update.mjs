@@ -123,10 +123,10 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   const npm = resolveUpdateNpm(env);
   let cwd = neutralDirectory([root], env);
   let childEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !/^AGENT_RELAY_(?!DIRECTORY$)/i.test(name)));
-  const command = async (arguments_, phase, timeout = 600000) => {
+  const command = async (arguments_, phase, timeout = 600000, environment = childEnv) => {
     let result;
     try {
-      result = await run(process.execPath, arguments_, { env: childEnv, cwd, encoding: "utf8", windowsHide: true,
+      result = await run(process.execPath, arguments_, { env: environment, cwd, encoding: "utf8", windowsHide: true,
         shell: false, timeout, maxBuffer: 8 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
     } catch (error) { throw childFailure({ error, stderr: error.stderr }, phase); }
     if (result?.error || (result?.status ?? result?.exitCode ?? 0) !== 0) throw childFailure(result, phase);
@@ -146,7 +146,7 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   const config = readConfig({ env: childEnv, platform, missing: true });
   let runtime;
   if (config) {
-    runtime = readRuntime(config.paths.root, { root: globalRoot, nodeExecutable: process.execPath });
+    runtime = readRuntime(config.paths.root, { root: globalRoot, nodeExecutable: process.execPath, allowMissingFiles: true });
     if (runtime.packageVersion && newerVersion(runtime.packageVersion, version)) throw failure("UPDATE_DOWNGRADE_REFUSED", "The owned relay runtime is newer than this updater. Run the update command with the latest published package.", "preflight");
     if (runtime.environment !== undefined) childEnv = { ...Object.fromEntries(Object.entries(childEnv).filter(([name]) => !MANAGED_ENV.has(name.toUpperCase()))), ...runtime.environment };
     childEnv.AGENT_RELAY_DIRECTORY = config.paths.root;
@@ -176,19 +176,22 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
       if (!quiescent(config)) throw Object.assign(failure("UPDATE_RELAY_PENDING", `The disabled relay still has an owned process whose release could not be verified. ${RETRY}`, "migration"), { pending: true });
     } else {
       onProgress("Waiting for the legacy relay to finish existing work and activate the update runtime.");
-      const staged = runtime.packageVersion && !legacy(runtime.packageVersion) && !newerVersion("1.26.2", runtime.packageVersion);
+      const staged = runtime.filesAvailable !== false && runtime.packageVersion && !legacy(runtime.packageVersion) && !newerVersion("1.26.2", runtime.packageVersion);
       const service = await awaitService(staged ? runtime.packageRoot : root, !staged, "migration", staged ? runtime.packageVersion : version);
       migrated = !staged && service.enabled;
     }
   }
-  onProgress(`Installing bridge ${version} and applying managed settings.`);
-  await command([npm, "install", "--global", "--prefix", prefix, `${PACKAGE}@${version}`, "--ignore-scripts=false", `--allow-scripts=${PACKAGE}`, "--foreground-scripts"], "installation");
+  onProgress(`Installing bridge ${version}.`);
+  await command([npm, "install", "--global", "--prefix", prefix, `${PACKAGE}@${version}`, "--ignore-scripts=false", `--allow-scripts=${PACKAGE}`, "--foreground-scripts"],
+    "installation", 600000, { ...childEnv, CODEX_BRIDGE_SKIP_SETUP: "1" });
   if (packageVersion(globalRoot) !== version) throw failure("UPDATE_VERSION_MISMATCH", "The global package version does not match the updater version. Rerun the same update command.", "verification");
-  onProgress("Verifying the global bridge settings and owned relay runtime.");
-  let setup;
-  try { setup = JSON.parse(await command([path.join(globalRoot, "scripts", "setup.mjs"), "--check", "--json"], "verification")); }
-  catch (error) { if (error?.code) throw error; throw failure("UPDATE_SETUP_INCOMPLETE", `Global setup did not return a verifiable result. ${RETRY}`, "verification"); }
-  if (setup?.configured !== true) throw failure("UPDATE_SETUP_INCOMPLETE", `The global bridge settings are incomplete. ${RETRY}`, "verification");
+  for (const check of [false, true]) {
+    onProgress(check ? "Verifying the global bridge settings and owned relay runtime." : "Applying managed settings from the installed bridge.");
+    let setup;
+    try { setup = JSON.parse(await command([path.join(globalRoot, "scripts", "setup.mjs"), ...(check ? ["--check"] : []), "--json"], "verification")); }
+    catch (error) { if (error?.code) throw error; throw failure("UPDATE_SETUP_INCOMPLETE", `Global setup did not return a verifiable result. ${RETRY}`, "verification"); }
+    if (setup?.configured !== true) throw failure("UPDATE_SETUP_INCOMPLETE", `The global bridge settings are incomplete. ${RETRY}`, "verification");
+  }
   const service = await awaitService(globalRoot, false, "verification");
   return { updated: true, configured: true, version, previousVersion, migrated, service, opensApps: false, opensChats: false };
 }

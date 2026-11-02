@@ -66,7 +66,7 @@ export function relayServiceRuntimeId(runtime) {
   return createHash("sha256").update(JSON.stringify([runtime.packageRoot, runtime.nodeExecutable, runtime.packageVersion ?? null, runtime.environment ?? {}])).digest("hex");
 }
 
-export function readRelayServiceRuntime(directory, { root = ROOT, nodeExecutable = stableNodeBin() } = {}) {
+export function readRelayServiceRuntime(directory, { root = ROOT, nodeExecutable = stableNodeBin(), allowMissingFiles = false } = {}) {
   let text;
   try { text = readRegularConfigFile(path.join(directory, "service-runtime.json"), { missing: true, maxBytes: 64 * 1024 }); }
   catch { throw serviceFailure("SERVICE_RUNTIME_INVALID"); }
@@ -78,11 +78,17 @@ export function readRelayServiceRuntime(directory, { root = ROOT, nodeExecutable
       || ![value.packageRoot, value.nodeExecutable].every((entry) => typeof entry === "string" && path.isAbsolute(entry) && !/[\u0000-\u001f\u007f]/.test(entry))
       || value.environment !== undefined && (!value.environment || typeof value.environment !== "object" || Array.isArray(value.environment)
         || Object.entries(value.environment).some(([name, entry]) => !["HOME", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"].includes(name)
-          || typeof entry !== "string" || !entry || /[\u0000-\u001f\u007f]/.test(entry)))
-      || ![path.join(value.packageRoot, "src", "background-relay-service.mjs"), path.join(value.packageRoot, "src", "background-relay-daemon.mjs"), value.nodeExecutable].every((entry) => {
-        try { return fs.statSync(entry).isFile(); } catch { return false; }
-      })) throw serviceFailure("SERVICE_RUNTIME_INVALID");
-  return value;
+          || typeof entry !== "string" || !entry || /[\u0000-\u001f\u007f]/.test(entry)))) throw serviceFailure("SERVICE_RUNTIME_INVALID");
+  let filesAvailable = true;
+  for (const entry of [path.join(value.packageRoot, "src", "background-relay-service.mjs"), path.join(value.packageRoot, "src", "background-relay-daemon.mjs"), value.nodeExecutable]) {
+    try {
+      if (!fs.statSync(entry).isFile()) throw serviceFailure("SERVICE_RUNTIME_INVALID");
+    } catch (error) {
+      if (!allowMissingFiles || error.code !== "ENOENT") throw serviceFailure("SERVICE_RUNTIME_INVALID");
+      filesAvailable = false;
+    }
+  }
+  return allowMissingFiles ? { ...value, filesAvailable } : value;
 }
 
 export function acquireRelayServiceLock(root, { pid = process.pid, isAlive = alive, identity = processIdentity } = {}) {

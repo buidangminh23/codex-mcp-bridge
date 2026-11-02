@@ -320,6 +320,38 @@ test("owned runtime metadata cannot persist credentials or change arbitrary envi
   assert.throws(() => readRelayServiceRuntime(directory), { code: "SERVICE_RUNTIME_INVALID" });
 });
 
+test("updater metadata recovery permits missing files without weakening the default runtime loader", t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-runtime-recovery-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const value = { schemaVersion: 1, owner: RELAY_SERVICE_OWNER, packageVersion: "1.26.4",
+    packageRoot: process.cwd(), nodeExecutable: process.execPath, environment: { PATH: "saved-path" } };
+  const file = path.join(directory, "service-runtime.json");
+  for (const overrides of [{ packageRoot: path.join(directory, "missing package") }, { nodeExecutable: path.join(directory, "missing-node.exe") }]) {
+    const metadata = { ...value, ...overrides };
+    fs.writeFileSync(file, JSON.stringify(metadata));
+    assert.throws(() => readRelayServiceRuntime(directory), { code: "SERVICE_RUNTIME_INVALID" });
+    assert.deepEqual(readRelayServiceRuntime(directory, { allowMissingFiles: true }), { ...metadata, filesAvailable: false });
+  }
+  fs.writeFileSync(file, JSON.stringify(value));
+  assert.deepEqual(readRelayServiceRuntime(directory), value);
+  assert.deepEqual(readRelayServiceRuntime(directory, { allowMissingFiles: true }), { ...value, filesAvailable: true });
+});
+
+test("updater metadata recovery rejects malformed ownership, paths, environment, versions and non-files", t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-runtime-invalid-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const value = { schemaVersion: 1, owner: RELAY_SERVICE_OWNER, packageVersion: "1.26.4",
+    packageRoot: path.join(directory, "missing package"), nodeExecutable: process.execPath };
+  const file = path.join(directory, "service-runtime.json");
+  for (const overrides of [{ schemaVersion: 2 }, { owner: "unrelated" }, { packageRoot: "relative" },
+    { nodeExecutable: directory }, { packageVersion: "latest" }, { environment: { OPENAI_API_KEY: SECRET } }, { environment: { PATH: "bad\npath" } }]) {
+    fs.writeFileSync(file, JSON.stringify({ ...value, ...overrides }));
+    assert.throws(() => readRelayServiceRuntime(directory, { allowMissingFiles: true }), { code: "SERVICE_RUNTIME_INVALID" });
+  }
+  fs.writeFileSync(file, "{");
+  assert.throws(() => readRelayServiceRuntime(directory, { allowMissingFiles: true }), { code: "SERVICE_RUNTIME_INVALID" });
+});
+
 test("a same-path version update drains the current daemon and records a new runtime identity", async () => {
   let version = "1.25.3";
   let drains = 0;

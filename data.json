@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-11-02T06:08:26.014Z",
+  "updatedAt": "2026-11-02T15:57:35.382Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -25656,16 +25656,11 @@
       }
     },
     {
-      "collectedAt": "2026-11-02T06:08:26.014Z",
+      "collectedAt": "2026-11-02T15:57:35.382Z",
       "views": {
-        "count": 338,
-        "uniques": 90,
+        "count": 359,
+        "uniques": 88,
         "views": [
-          {
-            "timestamp": "2026-10-18T00:00:00Z",
-            "count": 15,
-            "uniques": 9
-          },
           {
             "timestamp": "2026-10-19T00:00:00Z",
             "count": 11,
@@ -25730,18 +25725,18 @@
             "timestamp": "2026-10-31T00:00:00Z",
             "count": 42,
             "uniques": 11
+          },
+          {
+            "timestamp": "2026-11-01T00:00:00Z",
+            "count": 36,
+            "uniques": 11
           }
         ]
       },
       "clones": {
-        "count": 3338,
-        "uniques": 506,
+        "count": 3521,
+        "uniques": 529,
         "clones": [
-          {
-            "timestamp": "2026-10-18T00:00:00Z",
-            "count": 247,
-            "uniques": 22
-          },
           {
             "timestamp": "2026-10-19T00:00:00Z",
             "count": 480,
@@ -25806,6 +25801,11 @@
             "timestamp": "2026-10-31T00:00:00Z",
             "count": 132,
             "uniques": 37
+          },
+          {
+            "timestamp": "2026-11-01T00:00:00Z",
+            "count": 430,
+            "uniques": 70
           }
         ]
       },
@@ -25815,21 +25815,9 @@
         "subscribers": 0
       },
       "npm": {
-        "start": "2026-09-30",
-        "end": "2026-10-29",
+        "start": "2026-10-03",
+        "end": "2026-11-01",
         "downloads": [
-          {
-            "day": "2026-09-30",
-            "downloads": 166
-          },
-          {
-            "day": "2026-10-01",
-            "downloads": 71
-          },
-          {
-            "day": "2026-10-02",
-            "downloads": 690
-          },
           {
             "day": "2026-10-03",
             "downloads": 388
@@ -25937,10 +25925,30 @@
           {
             "day": "2026-10-29",
             "downloads": 221
+          },
+          {
+            "day": "2026-10-30",
+            "downloads": 290
+          },
+          {
+            "day": "2026-10-31",
+            "downloads": 489
+          },
+          {
+            "day": "2026-11-01",
+            "downloads": 1345
           }
         ]
       },
       "releases": [
+        {
+          "tag": "v1.26.6",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.5",
+          "assets": []
+        },
         {
           "tag": "v1.26.4",
           "assets": []
@@ -26366,11 +26374,11 @@
         }
       ],
       "sourceCollectedAt": {
-        "views": "2026-11-02T06:08:26.014Z",
-        "clones": "2026-11-02T06:08:26.014Z",
-        "npm": "2026-11-02T06:08:26.014Z",
-        "repository": "2026-11-02T06:08:26.014Z",
-        "releases": "2026-11-02T06:08:26.014Z"
+        "views": "2026-11-02T15:57:35.382Z",
+        "clones": "2026-11-02T15:57:35.382Z",
+        "npm": "2026-11-02T15:57:35.382Z",
+        "repository": "2026-11-02T15:57:35.382Z",
+        "releases": "2026-11-02T15:57:35.382Z"
       }
     }
   ],
@@ -26623,6 +26631,10 @@
       "2026-10-31": {
         "count": 42,
         "uniques": 11
+      },
+      "2026-11-01": {
+        "count": 36,
+        "uniques": 11
       }
     },
     "clones": {
@@ -26873,6 +26885,10 @@
       "2026-10-31": {
         "count": 132,
         "uniques": 37
+      },
+      "2026-11-01": {
+        "count": 430,
+        "uniques": 70
       }
     },
     "npm": {
@@ -27199,11 +27215,20 @@
       },
       "2026-10-29": {
         "downloads": 221
+      },
+      "2026-10-30": {
+        "downloads": 290
+      },
+      "2026-10-31": {
+        "downloads": 489
+      },
+      "2026-11-01": {
+        "downloads": 1345
       }
     }
   },
   "usage": {
-    "collectedAt": "2026-11-02T06:08:27Z",
+    "collectedAt": "2026-11-02T15:57:37Z",
     "active": {
       "day": 0,
       "week": 0,

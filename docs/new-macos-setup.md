@@ -106,9 +106,8 @@ managed setup directly after package installation. For Homebrew, run
 `codex-bridge-setup` after installing the formula. A pinned source checkout can
 use `node scripts/setup.mjs`.
 
-The [manual macOS commands](../README.md#macos-terminal) and
-[Claude Code registration commands](../README.md#register-claude-code) remain
-available for selective configuration. `codex-bridge-code-install --install`
+See [project onboarding](project-onboarding.md) for shared authorization and
+selective configuration. `codex-bridge-code-install --install`
 can create a missing user-level Code entry; its existing policy migration mode
 is described in [project onboarding](project-onboarding.md). Use intended
 project paths when setting explicit `CODEX_BRIDGE_ALLOWED_ROOTS`; macOS

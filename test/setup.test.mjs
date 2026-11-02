@@ -158,10 +158,12 @@ test("global setup initializes all native and Antigravity entries then verifies 
 });
 
 test("setup help exposes one command for updating the package and applying managed settings", () => {
-  const result = runSetup({ args: ["--help"], run: () => assert.fail("must not run") });
-  assert.match(result.help, /npm install -g @minhspark\/codex-mcp-bridge@latest --allow-scripts=@minhspark\/codex-mcp-bridge/);
-  assert.match(result.help, /background relay health and loaded native app connections are verified separately/);
-  assert.match(result.help, /--foreground-scripts/);
+  for (const platform of ["win32", "darwin", "linux"]) {
+    const result = runSetup({ args: ["--help"], platform, run: () => assert.fail("must not run") });
+    assert.ok(result.help.includes(`${platform === "win32" ? "npx.cmd" : "npx"} --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update${platform === "win32" ? " --user" : ""}\n`));
+    assert.match(result.help, /background relay health and loaded native app connections are verified separately/);
+    assert.doesNotMatch(result.help, /--foreground-scripts|--allow-scripts/);
+  }
 });
 
 test("an existing relay routing opt-out is not forced back on during reinstall", (t) => {

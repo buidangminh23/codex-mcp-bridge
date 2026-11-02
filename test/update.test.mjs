@@ -10,11 +10,11 @@ import { readRelayServiceRuntime, RELAY_SERVICE_OWNER } from "../src/background-
 const PACKAGE = "@minhspark/codex-mcp-bridge";
 const VERSION = "1.26.2";
 
-function fixture(t, previousVersion = "1.26.1", platform = "win32") {
+function fixture(t, previousVersion = "1.26.1", platform = "win32", userInstall = false) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-update-")));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const root = path.join(directory, "cached package with spaces");
-  const prefix = path.join(directory, "global prefix with spaces");
+  const prefix = userInstall ? path.join(directory, ...(platform === "win32" ? ["roaming profile", "npm"] : [".local"])) : path.join(directory, "global prefix with spaces");
   const modules = path.join(prefix, ...(platform === "win32" ? [] : ["lib"]), "node_modules");
   const globalRoot = path.join(modules, "@minhspark", "codex-mcp-bridge");
   const npm = path.join(directory, "npm with spaces", "bin", "npm-cli.js");
@@ -27,7 +27,7 @@ function fixture(t, previousVersion = "1.26.1", platform = "win32") {
   fs.mkdirSync(path.dirname(npm), { recursive: true });
   fs.writeFileSync(npm, "");
   fs.writeFileSync(path.resolve(path.dirname(npm), "..", "package.json"), JSON.stringify({ name: "npm" }));
-  const env = { npm_execpath: npm, HOME: directory, USERPROFILE: directory, PATH: "caller-path", npm_config_ignore_scripts: "true" };
+  const env = { npm_execpath: npm, HOME: directory, USERPROFILE: directory, APPDATA: path.join(directory, "roaming profile"), PATH: "caller-path", npm_config_ignore_scripts: "true" };
   const calls = [];
   let clock = 0;
   const options = {
@@ -109,7 +109,7 @@ test("updates an unconfigured installation with the exact package version and ve
     service: { enabled: true, ready: true, liveVerified: true, version: VERSION, pid: 123 }, opensApps: false, opensChats: false });
   const [install] = f.installCalls();
   assert.equal(install.command, process.execPath);
-  assert.deepEqual(install.args, [f.npm, "install", "--global", "--prefix", f.prefix, `${PACKAGE}@${VERSION}`, "--ignore-scripts=false", `--allow-scripts=${PACKAGE}`, "--foreground-scripts"]);
+  assert.deepEqual(install.args, [f.npm, "install", "--global", "--prefix", f.prefix, `${PACKAGE}@${VERSION}`, "--ignore-scripts"]);
   assert.equal(install.settings.env.npm_config_ignore_scripts, "true");
   assert.equal(install.settings.env.CODEX_BRIDGE_SKIP_SETUP, "1");
   assert.equal(f.env.CODEX_BRIDGE_SKIP_SETUP, undefined);
@@ -158,6 +158,105 @@ test("legacy migration waits for authenticated readiness before npm and preserve
   assert.equal(commands.some(item => item.args[0] === path.join(f.root, "scripts", "setup.mjs")), false);
   assert.equal(f.installCalls()[0].settings.env.PATH, "saved-path");
   assert.equal(f.installCalls()[0].args[f.installCalls()[0].args.indexOf("--prefix") + 1], f.prefix);
+});
+
+test("per-user updates pin the user prefix before restoring the saved relay environment", async t => {
+  for (const platform of ["win32", "linux", "darwin"]) {
+    const f = fixture(t, null, platform, true);
+    f.configured(true);
+    f.options.args = ["--user"];
+    const result = await runUpdate(f.options);
+    assert.equal(result.updated, true);
+    for (const call of f.calls.filter(item => item.kind === "command" && item.args[0] === f.npm)) {
+      assert.equal(call.args[call.args.indexOf("--prefix") + 1], f.prefix);
+    }
+    assert.equal(f.installCalls()[0].settings.env.PATH, "saved-path");
+    assert.equal(f.env.PATH, "caller-path");
+    assert.equal(f.env.npm_config_prefix, undefined);
+    assert.deepEqual(f.calls.filter(item => item.kind === "service").map(item => item.request.root), [f.globalRoot]);
+  }
+});
+
+test("per-user updates migrate an owned legacy runtime from a different installation prefix", async t => {
+  const f = fixture(t, null, "win32", true);
+  f.configured(true);
+  f.options.args = ["--user"];
+  f.options.readRuntime = () => ({ packageRoot: path.join(f.directory, "old protected prefix"), packageVersion: "1.26.1", environment: {} });
+  const result = await runUpdate(f.options);
+  assert.equal(result.previousVersion, null);
+  assert.equal(result.migrated, true);
+  assert.deepEqual(f.calls.filter(item => item.kind === "service").map(item => [item.request.root, item.request.check]), [[f.root, false], [f.globalRoot, true]]);
+});
+
+test("per-user mode still refuses to downgrade a newer owned runtime", async t => {
+  const f = fixture(t, null, "win32", true);
+  f.configured(true);
+  f.options.args = ["--user"];
+  f.options.readRuntime = () => ({ packageRoot: path.join(f.directory, "other prefix"), packageVersion: "1.27.0" });
+  await assert.rejects(runUpdate(f.options), { code: "UPDATE_DOWNGRADE_REFUSED" });
+  assert.equal(f.installCalls().length, 0);
+});
+
+test("per-user mode rejects unsafe or ignored user prefixes before installation", async t => {
+  for (const APPDATA of ["relative-directory", "invalid\npath"]) {
+    const f = fixture(t, null, "win32", true);
+    await assert.rejects(runUpdate({ ...f.options, args: ["--user"], env: { ...f.env, APPDATA } }), { code: "UPDATE_GLOBAL_ROOT_INVALID" });
+    assert.equal(f.calls.length, 0);
+  }
+  const f = fixture(t);
+  await assert.rejects(runUpdate({ ...f.options, args: ["--user"] }), { code: "UPDATE_GLOBAL_ROOT_INVALID" });
+  assert.equal(f.installCalls().length, 0);
+});
+
+test("installation errors preserve safe permission, exit, signal and timeout diagnostics", async t => {
+  const cases = [
+    [{ status: 1, stderr: "npm error code EPERM\nsecret=never-report-this" }, "UPDATE_INSTALL_PERMISSION", "EPERM"],
+    [{ status: 1, stderr: "npm ERR! code EACCES" }, "UPDATE_INSTALL_PERMISSION", "EACCES"],
+    [{ status: 1, stderr: "npm error code 1\nsecret=never-report-this" }, "UPDATE_NPM_FAILED", "EXIT_1"],
+    [{ error: { code: 4294963248 } }, "UPDATE_NPM_FAILED", "EXIT_4294963248"],
+    [{ status: null, error: { killed: true, signal: "SIGTERM" } }, "UPDATE_COMMAND_TIMEOUT", "ETIMEDOUT"],
+    [{ error: { code: "ETIMEDOUT" } }, "UPDATE_COMMAND_TIMEOUT", "ETIMEDOUT"],
+    [{ status: 1, signal: "SIGINT", error: { signal: "SIGINT" } }, "UPDATE_NPM_FAILED", "SIGNAL_SIGINT"],
+  ];
+  for (const [failure, code, cause] of cases) {
+    const f = fixture(t);
+    const run = f.options.run;
+    f.options.run = async (command, args, settings) => args[1] === "install" ? failure : run(command, args, settings);
+    await assert.rejects(runUpdate(f.options), error => {
+      assert.equal(error.code, code);
+      assert.equal(error.cause.code, cause);
+      assert.doesNotMatch(error.message, /never-report-this/);
+      if (code === "UPDATE_INSTALL_PERMISSION") assert.match(error.message, /--user/);
+      return true;
+    });
+    assert.equal(f.calls.some(item => item.kind === "service"), false);
+  }
+});
+
+test("real npm installs without running a failing lifecycle and setup still applies and verifies", async t => {
+  const f = fixture(t, null, process.platform, true);
+  const npm = resolveUpdateNpm(process.env);
+  const marker = path.join(f.directory, "lifecycle-ran");
+  fs.writeFileSync(path.join(f.root, "package.json"), JSON.stringify({ name: PACKAGE, version: VERSION, scripts: { postinstall: "node fail-install.mjs" } }));
+  fs.writeFileSync(path.join(f.root, "fail-install.mjs"), `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'ran'); process.exit(99);`);
+  const env = { ...process.env, HOME: f.directory, USERPROFILE: f.directory, APPDATA: f.env.APPDATA, npm_execpath: npm, npm_config_ignore_scripts: "true" };
+  const packed = spawnSync(process.execPath, [npm, "pack", f.root, "--pack-destination", f.directory, "--ignore-scripts", "--json"], {
+    env, cwd: f.directory, encoding: "utf8", windowsHide: true, timeout: 30000,
+  });
+  assert.equal(packed.status, 0);
+  const tarball = path.join(f.directory, fs.readdirSync(f.directory).find(name => name.endsWith(".tgz")) ?? "missing.tgz");
+  assert.ok(fs.existsSync(tarball), packed.stdout);
+  const run = f.options.run;
+  const result = await runUpdate({ ...f.options, args: ["--user"], env, run: async (command, args, settings) => {
+    if (args[0] !== npm) return run(command, args, settings);
+    const arguments_ = args.map(arg => arg === `${PACKAGE}@${VERSION}` ? tarball : arg);
+    const child = spawnSync(command, [...arguments_, ...(args[1] === "install" ? ["--offline", "--no-audit", "--no-fund"] : [])], settings);
+    return { status: child.status, error: child.error, stdout: child.stdout, stderr: child.stderr };
+  } });
+  assert.equal(result.updated, true);
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.globalRoot, "package.json"))).version, VERSION);
+  assert.deepEqual(f.calls.filter(item => item.kind === "command").map(item => item.args.slice(1)), [["--json"], ["--check", "--json"]]);
 });
 
 test("a pending migration never installs globally or forces existing jobs", async t => {

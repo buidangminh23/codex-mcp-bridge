@@ -7,12 +7,12 @@ configures the independent worker relay automatically:
 npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
 ```
 
-In Windows PowerShell use `npm.cmd`. npm fetches the latest updater into its
+In Windows PowerShell use `npx.cmd --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update --user` to select the per-user npm prefix without administrator rights. npm fetches the latest updater into its
 cache with setup disabled there. The updater moves an owned legacy service to
 newer code using private relay storage as its working directory when needed,
 temporarily using the downloaded updater package. It waits for active work to
-drain, then installs its exact resolved version globally with the setup hook
-enabled. It verifies the global installation and managed settings. No second
+drain, then installs its exact resolved version globally with lifecycle scripts
+disabled and runs managed setup directly using Node. It verifies the global installation and managed settings. No second
 installation command is required. It does not open apps or chats or kill
 processes. The setup creates
 `codex-bridge` for Claude Code and the separate `codex-bridge-desktop` shared
@@ -37,10 +37,10 @@ setup after correcting an incomplete component. Add `.cmd` on Windows and
 `--json` for structured output. Local package installs do not run setup.
 For a deliberate package-only direct global installation,
 `CODEX_BRIDGE_SKIP_SETUP=1` or npm `--ignore-scripts` opts out of setup; this is
-separate from the cache-only script suppression in the recommended updater.
+separate from the complete updater, which runs managed setup directly after installation.
 Failed setup or update returns a nonzero exit. Inspect the reported component
 and installed version, correct the cause, then rerun the same updater command.
-npm can roll back package files without restoring settings or command shims.
+A completed package installation is preserved when managed setup fails.
 Explicit setup and `--check` also return a nonzero status until the saved
 configuration passes verification.
 

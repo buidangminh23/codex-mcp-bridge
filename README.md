@@ -36,10 +36,10 @@ npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- 
 **Windows PowerShell**
 
 ```powershell
-npm.cmd exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
+npx.cmd --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update --user
 ```
 
-Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows PowerShell. **Use this same single command for a fresh install and every update**, including upgrades from 1.26.0 or 1.26.1. npm fetches the latest updater into its cache without running setup there. The updater installs that exact resolved version globally, runs the managed setup hook, and verifies the global version, saved settings and service activation separately. A second installation command is not required.
+Requires **Node.js 22.13+**. Use `.cmd` for this package's commands in Windows PowerShell. **Use this same single command for a fresh install and every update**, including upgrades from 1.26.0 or 1.26.1. On Windows, `--user` selects `%APPDATA%\npm`, avoiding protected `Program Files` prefixes and administrator rights even when switching Node installations. npm fetches the latest updater into its cache without running setup there. The updater installs that exact resolved version globally with lifecycle scripts disabled, applies managed setup directly using Node, and verifies the global version, saved settings and service activation separately. A second installation command is not required.
 
 For an enabled legacy Windows relay from 1.26.0 or 1.26.1, the updater moves only this package's owned service to newer code using private relay storage as its working directory before replacing the global package. The temporary service runtime points to the downloaded updater package; changing the working directory releases the old package lock. It waits for active work to drain and the replacement transport to become ready without killing processes or opening apps or chats. If migration is still pending after its bounded wait, it reports `UPDATE_RELAY_PENDING`; keep the existing jobs and receipts and rerun the same command after they finish. Intentionally disabled services stay disabled and are not reported as ready.
 
@@ -65,7 +65,7 @@ Keep the same request UUID for retries and read its durable receipt. Queued work
 
 Worker delegation is bounded. `WORKER_DELEGATION_CAPACITY` means the destination has no free execution slot and that delegation was not sent or queued behind waiting workers. Inspect or finish existing delegated work before retrying the same unsent request. Queue and delegation limits are reported explicitly.
 
-The recommended command's `--ignore-scripts` applies only to downloading the updater into npm's cache. The updater explicitly enables this package's setup hook for the global installation and displays its progress. This avoids client MCP registrations pointing into a temporary npm cache directory. A direct global npm install remains an advanced alternative, but it skips the updater's migration of an old service that can lock the package on Windows.
+The updater disables npm lifecycle scripts for both the cached download and the global installation, then runs the installed package's managed setup directly using Node. This avoids npm script-policy differences, lifecycle shell failures and client MCP registrations pointing into a temporary npm cache directory. A direct global npm install remains an advanced alternative, but it skips the updater's migration of an old service that can lock the package on Windows.
 
 | Client | Installed entry | Purpose |
 | --- | --- | --- |
@@ -79,11 +79,11 @@ The recommended command's `--ignore-scripts` applies only to downloading the upd
 
 For native Claude-to-Codex handoffs, use an existing native Claude **Code** session and the same local project saved in Codex Desktop. The shared `codex-bridge-desktop` connector has its own legacy route; it does not establish a native Code sender identity. Setup applies saved configuration without opening or restarting apps. Saved configuration is not proof of a live connection; available supervisors reload compatible workers when idle. Complete [verification](#verify-the-installation) with the tools already available in the actual clients. If a native host is unloaded, report the diagnostic instead of opening chats to load a relay.
 
-Automatic setup runs during the updater's **global npm installation**. Local `npm install` and `npm ci` do not change app settings. For a deliberate package-only installation, use a direct global npm install with `CODEX_BRIDGE_SKIP_SETUP=1` or `--ignore-scripts`; that opt-out is separate from the cache-only `--ignore-scripts` in the recommended updater command. The optional [workflow skill](#workflow-skill--npx-skills), VS Code preview, and hosted ChatGPT pairing retain their separate setup steps.
+Managed setup runs **after the updater's global npm installation succeeds**, outside npm's lifecycle hook. Local `npm install` and `npm ci` do not change app settings. For a deliberate package-only installation, use a direct global npm install with `CODEX_BRIDGE_SKIP_SETUP=1` or `--ignore-scripts`; the complete updater always applies and verifies setup, and refuses an explicit `CODEX_BRIDGE_SKIP_SETUP=1` opt-out. The optional [workflow skill](#workflow-skill--npx-skills), VS Code preview, and hosted ChatGPT pairing retain their separate setup steps.
 
 ### Setup recovery and checks
 
-If service migration, installation or managed setup fails, the updater returns a nonzero exit and reports the failed step. Inspect that component and the installed version, correct the reported cause, and rerun the same update command above. npm can roll back package files while settings already written remain changed. For configuration-only repair of an already installed package, the following is an optional alternative:
+If service migration, installation or managed setup fails, the updater returns a nonzero exit and reports the failed step. Inspect that component and the installed version, correct the reported cause, and rerun the same update command above. A completed package installation is preserved if managed setup fails. For configuration-only repair of an already installed package, the following is an optional alternative:
 
 ```bash
 codex-bridge-setup
@@ -549,10 +549,10 @@ Node.js 22.13+ is required. If a command is missing, open a new terminal and che
 If the package or registrations are missing, use the complete installation command:
 
 ```powershell
-npm.cmd exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
+npx.cmd --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update --user
 ```
 
-This runs the latest updater outside the global package directory, handles an owned legacy service that can lock that directory, and installs the exact resolved package with its setup hook enabled. `--ignore-scripts` suppresses setup only for the temporary cached updater. If a previous direct install printed `1 package had install scripts blocked`, use this same updater command to install and apply the managed settings together. Intentional setup opt-outs and disabled-service choices are not silently removed.
+This runs the latest updater outside the global package directory, handles an owned legacy service that can lock that directory, installs the exact resolved package into the per-user npm prefix, then directly applies and verifies managed setup. Lifecycle scripts remain disabled during npm installation. If a previous update reported `UPDATE_NPM_FAILED` or `UPDATE_INSTALL_PERMISSION` because npm selected a protected directory, `--user` selects the user-writable destination. If a previous direct install printed `1 package had install scripts blocked`, this same updater command installs and applies the managed settings together. Intentional setup opt-outs and disabled-service choices are not silently removed. On macOS/Linux, use the installation command above; optional `--user` selects `~/.local`, whose `bin` directory must be on `PATH` for terminal commands.
 
 For an already-installed package, these optional commands preview or repair configuration without updating package files:
 

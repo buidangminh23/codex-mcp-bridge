@@ -7,13 +7,15 @@ does not require the Desktop apps to be open. Use this one PowerShell command
 for a fresh installation or an update, including from 1.26.0 or 1.26.1:
 
 ```powershell
-npm.cmd exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
+npx.cmd --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update --user
 ```
 
-npm downloads the latest updater into its cache. `--ignore-scripts` prevents
-setup from running in that temporary location; the updater then installs its
-exact resolved version globally with this package's managed setup hook enabled.
-It displays progress and verifies the global version and saved settings.
+npm downloads the latest updater into its cache. `--user` selects `%APPDATA%\npm`
+instead of a protected Node installation directory such as `Program Files`;
+administrator rights are not required. The updater installs its exact resolved
+version globally with lifecycle scripts disabled, then runs managed setup
+directly using Node. It displays progress and verifies the global version,
+saved settings and relay activation.
 No second installation or setup command is required.
 
 An older Windows background service can keep the global npm package directory
@@ -33,8 +35,8 @@ official package in the current user's `.config\GptClaudeBridge\tools`
 directory. It also configures native pipe forwarding and bootstraps the relay
 executor. A failed component is reported as incomplete rather than ready. If
 setup or update exits nonzero, inspect the reported component and installed
-version, correct the cause, and rerun the same updater command. npm can roll back
-package files without restoring settings already written or command shims.
+version, correct the cause, and rerun the same updater command. A completed
+package installation is preserved when managed setup fails.
 
 The same command installs the independent worker relay as a hidden per-user
 scheduled task and applies its managed settings on every update. It registers
@@ -104,8 +106,8 @@ attempting delivery.
 Local `npm install` and `npm ci` do not configure apps. For a deliberate
 package-only installation, a direct global npm install can use
 `CODEX_BRIDGE_SKIP_SETUP=1` or `--ignore-scripts`. This differs from the
-recommended updater command, which suppresses setup only in its temporary cache
-and enables it for the final global installation. A direct install skips the
+recommended updater command, which disables lifecycle scripts and runs managed
+setup directly after the final global installation. A direct install skips the
 updater's migration of legacy Windows services that can lock the package.
 The optional card extension, hosted ChatGPT pairing, and VS Code preview have
 separate installation steps.

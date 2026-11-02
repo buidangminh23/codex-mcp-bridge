@@ -19,9 +19,9 @@ npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- 
 ```
 
 npm downloads the latest updater into its cache. `--ignore-scripts` suppresses
-setup only in that temporary location. The updater installs its exact resolved
-version globally, enables this package's managed setup hook, displays progress
-and verifies the global version and configuration. No second installation or
+setup in that temporary location. The updater installs its exact resolved
+version globally with lifecycle scripts disabled, runs managed setup directly
+using Node and verifies the global version and configuration. No second installation or
 setup command is required. Existing disabled choices, authentication and custom
 project grants are preserved; the updater does not open apps or chats or kill
 processes. A pending service migration is reported instead of interrupting work.
@@ -32,8 +32,8 @@ official package under `~/.config/GptClaudeBridge/tools` (or
 `XDG_CONFIG_HOME/GptClaudeBridge/tools`). No separate Codex CLI install command
 is required. Run the install under the account that uses the apps, without `sudo`.
 If setup or update exits nonzero, inspect the reported component and installed
-version, correct the cause, and rerun the same updater command. npm can roll back
-package files without restoring settings already written or command shims.
+version, correct the cause, and rerun the same updater command. A completed
+package installation is preserved when managed setup fails.
 
 The command also installs an independent per-user LaunchAgent for separate
 Claude, Codex and Antigravity CLI workers and updates its managed settings on
@@ -101,8 +101,8 @@ a nonzero exit status while configuration is incomplete.
 
 Local `npm install` and `npm ci` do not change app settings. For a deliberate
 package-only installation, a direct global npm install can use
-`CODEX_BRIDGE_SKIP_SETUP=1` or `--ignore-scripts`; this differs from the cache-only
-script suppression in the recommended updater command. For Homebrew, run
+`CODEX_BRIDGE_SKIP_SETUP=1` or `--ignore-scripts`; the complete updater runs
+managed setup directly after package installation. For Homebrew, run
 `codex-bridge-setup` after installing the formula. A pinned source checkout can
 use `node scripts/setup.mjs`.
 

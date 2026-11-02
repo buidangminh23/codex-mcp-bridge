@@ -4,6 +4,24 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.5] - 2026-11-02
+
+### Fixed
+
+- Add `codex-bridge-update --user` to pin installation to the per-user npm prefix before inspecting or replacing packages. The recommended Windows command now avoids `EPERM` when Node resolves its global prefix to `Program Files`, including machines with several Node installations. Existing owned relay runtimes, project grants and disabled-service choices are preserved when moving between prefixes.
+- Install the global package with npm lifecycle scripts disabled, then apply managed setup directly using Node and verify settings and live relay readiness. This removes the lifecycle shell and npm script-approval dependency, and preserves the installed package if setup needs repair.
+- Report installation permission failures, numeric child exit codes, signals and timeouts explicitly while keeping raw child output and credentials out of diagnostics.
+
+### Upgrade
+
+Windows PowerShell, without administrator rights:
+
+```powershell
+npx.cmd --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update --user
+```
+
+This single command updates the package, applies all managed client settings and verifies the independent background relay. On macOS/Linux, keep using the installation command in the README; optional `--user` selects `~/.local`.
+
 ## [1.26.4] - 2026-11-01
 
 ### Fixed

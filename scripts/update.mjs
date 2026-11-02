@@ -87,11 +87,19 @@ function neutralDirectory(roots, env) {
 }
 
 function childFailure(result, phase) {
-  const match = /npm\s+(?:ERR!|error)\s+code\s+([A-Z][A-Z0-9_]{0,79})\b/.exec(String(result?.stderr ?? ""));
-  const code = match?.[1] ?? (/^[A-Z][A-Z0-9_]{0,79}$/.test(result?.error?.code ?? "") ? result.error.code : null);
+  const match = /npm\s+(?:ERR!|error)\s+code\s+([A-Z][A-Z0-9_]{0,79}|\d{1,10})\b/.exec(String(result?.stderr ?? ""));
+  const signal = result?.error?.signal ?? result?.signal;
+  const value = match?.[1] ?? result?.error?.code ?? (signal ? null : result?.status ?? result?.exitCode);
+  const timedOut = value === "ETIMEDOUT" || result?.error?.killed === true && signal === "SIGTERM";
+  const code = timedOut ? "ETIMEDOUT" : /^\d{1,10}$/.test(String(value)) ? `EXIT_${value}`
+    : /^[A-Z][A-Z0-9_]{0,79}$/.test(value ?? "") ? value
+    : /^SIG[A-Z0-9]{1,20}$/.test(signal ?? "") ? `SIGNAL_${signal}` : null;
   const cause = code ? Object.assign(new Error("The child command reported a failure."), { code }) : undefined;
-  return failure(code === "EBUSY" ? "UPDATE_PACKAGE_BUSY" : phase === "verification" ? "UPDATE_SETUP_INCOMPLETE" : "UPDATE_NPM_FAILED",
-    code === "EBUSY" ? `The installed package is still held open by another process. No process was stopped. ${RETRY}`
+  const permissionDenied = phase === "installation" && ["EPERM", "EACCES"].includes(code);
+  return failure(permissionDenied ? "UPDATE_INSTALL_PERMISSION" : code === "EBUSY" ? "UPDATE_PACKAGE_BUSY" : timedOut ? "UPDATE_COMMAND_TIMEOUT" : phase === "verification" ? "UPDATE_SETUP_INCOMPLETE" : "UPDATE_NPM_FAILED",
+    permissionDenied ? "npm could not write to the installation directory. Run codex-bridge-update --user to install and configure the bridge in your user account without administrator rights. Existing work and receipts were preserved."
+      : timedOut ? `The update command exceeded its deadline. ${RETRY}`
+      : code === "EBUSY" ? `The installed package is still held open by another process. No process was stopped. ${RETRY}`
       : `The ${phase === "verification" ? "installed setup verification" : "npm command"} did not complete. ${RETRY}`, phase, cause);
 }
 
@@ -114,13 +122,20 @@ function serviceQuiescent(config) {
 export async function runUpdate({ args = [], env = process.env, platform = process.platform, root = ROOT, run = execute,
   installService = installBackgroundRelay, readConfig = readRelayConfiguration, readRuntime = readRelayServiceRuntime,
   quiescent = serviceQuiescent, now = Date.now, sleep = pause, waitMs = 120000, onProgress = () => {} } = {}) {
-  if (args.some(arg => !["--help", "--json"].includes(arg))) throw failure("UPDATE_ARGUMENT_INVALID", "Usage: codex-bridge-update [--json] [--help]", "preflight");
-  if (args.includes("--help")) return { help: "Usage: codex-bridge-update [--json]\nSafely update the global bridge and all managed settings. Legacy Windows relays migrate when existing work finishes; pending migrations can be retried with the same command." };
+  if (args.some(arg => !["--help", "--json", "--user"].includes(arg))) throw failure("UPDATE_ARGUMENT_INVALID", "Usage: codex-bridge-update [--user] [--json] [--help]", "preflight");
+  if (args.includes("--help")) return { help: "Usage: codex-bridge-update [--user] [--json]\nSafely update the global bridge and all managed settings. --user selects the per-user npm prefix (Windows: AppData/Roaming/npm; macOS/Linux: ~/.local) without administrator rights. Legacy Windows relays migrate when existing work finishes; pending migrations can be retried with the same command." };
   if (env.CODEX_BRIDGE_SKIP_SETUP === "1") throw failure("UPDATE_SETUP_DISABLED", "CODEX_BRIDGE_SKIP_SETUP=1 disables managed setup. Remove that explicit opt-out before requesting this complete update.", "preflight");
   if (!Number.isSafeInteger(waitMs) || waitMs < 1 || waitMs > 600000) throw failure("UPDATE_ARGUMENT_INVALID", "The update readiness deadline is invalid.", "preflight");
   root = fs.realpathSync.native(root);
   const version = packageVersion(root);
   const npm = resolveUpdateNpm(env);
+  const userPrefix = args.includes("--user") ? platform === "win32"
+    ? path.join(env.APPDATA || path.join(env.USERPROFILE || os.homedir(), "AppData", "Roaming"), "npm")
+    : path.join(env.HOME || os.homedir(), ".local") : null;
+  if (userPrefix && (!path.isAbsolute(userPrefix) || /[\u0000-\u001f\u007f]/.test(userPrefix))) {
+    throw failure("UPDATE_GLOBAL_ROOT_INVALID", "The per-user installation directory is invalid.", "preflight");
+  }
+  const prefixArgs = userPrefix ? ["--prefix", userPrefix] : [];
   let cwd = neutralDirectory([root], env);
   let childEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !/^AGENT_RELAY_(?!DIRECTORY$)/i.test(name)));
   const command = async (arguments_, phase, timeout = 600000, environment = childEnv) => {
@@ -132,10 +147,10 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
     if (result?.error || (result?.status ?? result?.exitCode ?? 0) !== 0) throw childFailure(result, phase);
     return String(result?.stdout ?? "");
   };
-  const modules = (await command([npm, "root", "--global"], "preflight", 30000)).trim();
+  const modules = (await command([npm, "root", "--global", ...prefixArgs], "preflight", 30000)).trim();
   if (!path.isAbsolute(modules) || /[\u0000-\u001f\u007f]/.test(modules)) throw failure("UPDATE_GLOBAL_ROOT_INVALID", "npm returned an invalid global installation directory.", "preflight");
-  const prefix = (await command([npm, "prefix", "--global"], "preflight", 30000)).trim();
-  if (!path.isAbsolute(prefix) || /[\u0000-\u001f\u007f]/.test(prefix)
+  const prefix = (await command([npm, "prefix", "--global", ...prefixArgs], "preflight", 30000)).trim();
+  if (!path.isAbsolute(prefix) || /[\u0000-\u001f\u007f]/.test(prefix) || userPrefix && path.relative(userPrefix, prefix) !== ""
       || path.relative(modules, path.join(prefix, ...(platform === "win32" ? [] : ["lib"]), "node_modules")) !== "") {
     throw failure("UPDATE_GLOBAL_ROOT_INVALID", "npm returned inconsistent global prefix and installation directories.", "preflight");
   }
@@ -182,7 +197,7 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
     }
   }
   onProgress(`Installing bridge ${version}.`);
-  await command([npm, "install", "--global", "--prefix", prefix, `${PACKAGE}@${version}`, "--ignore-scripts=false", `--allow-scripts=${PACKAGE}`, "--foreground-scripts"],
+  await command([npm, "install", "--global", "--prefix", prefix, `${PACKAGE}@${version}`, "--ignore-scripts"],
     "installation", 600000, { ...childEnv, CODEX_BRIDGE_SKIP_SETUP: "1" });
   if (packageVersion(globalRoot) !== version) throw failure("UPDATE_VERSION_MISMATCH", "The global package version does not match the updater version. Rerun the same update command.", "verification");
   for (const check of [false, true]) {

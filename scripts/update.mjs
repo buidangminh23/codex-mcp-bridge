@@ -211,9 +211,7 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   return { updated: true, configured: true, version, previousVersion, migrated, service, opensApps: false, opensChats: false };
 }
 
-if (isMainModule(process.argv[1], import.meta.url)) {
-  exitForVersionRequest(import.meta.url);
-  const args = process.argv.slice(2);
+export async function runUpdateCli(args = process.argv.slice(2)) {
   try {
     process.chdir(neutralDirectory([ROOT], process.env));
     const result = await runUpdate({ args, onProgress: message => process.stderr.write(`${message}\n`) });
@@ -225,4 +223,9 @@ if (isMainModule(process.argv[1], import.meta.url)) {
     else process.stderr.write(withBridgeDiagnostic({ isError: true, content: [] }, error, options).content.map(item => item.text ?? "").join("\n") + "\n");
     process.exitCode = 1;
   }
+}
+
+if (isMainModule(process.argv[1], import.meta.url)) {
+  exitForVersionRequest(import.meta.url);
+  await runUpdateCli();
 }

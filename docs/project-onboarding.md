@@ -4,11 +4,15 @@ One command installs or updates the global package, registers the bridges and
 configures the independent worker relay automatically:
 
 ```sh
-npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
+npx -y @minhspark/codex-mcp-bridge@latest
 ```
 
-In Windows PowerShell use `npx.cmd --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update --user` to select the per-user npm prefix without administrator rights. npm fetches the latest updater into its
-cache with setup disabled there. The updater moves an owned legacy service to
+Run it directly in an interactive terminal. In Windows PowerShell use
+`npx.cmd -y @minhspark/codex-mcp-bridge@latest`; it selects the per-user npm
+prefix without administrator rights. For scripts or redirected terminals, use
+the explicit updater in the [Windows](new-windows-setup.md) or
+[macOS](new-macos-setup.md) guide. Normal MCP client launches keep serving stdio.
+The updater moves an owned legacy service to
 newer code using private relay storage as its working directory when needed,
 temporarily using the downloaded updater package. It waits for active work to
 drain, then installs its exact resolved version globally with lifecycle scripts

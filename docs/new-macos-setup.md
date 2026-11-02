@@ -15,16 +15,21 @@ separately authenticated provider CLIs and do not require open Desktop apps.
 Use the same command for a fresh installation and every update:
 
 ```bash
-npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update
+npx -y @minhspark/codex-mcp-bridge@latest
 ```
 
-npm downloads the latest updater into its cache. `--ignore-scripts` suppresses
-setup in that temporary location. The updater installs its exact resolved
+Run this directly in an interactive terminal. The bare npm package launch
+selects the complete updater. The updater installs its exact resolved
 version globally with lifecycle scripts disabled, runs managed setup directly
 using Node and verifies the global version and configuration. No second installation or
 setup command is required. Existing disabled choices, authentication and custom
 project grants are preserved; the updater does not open apps or chats or kill
 processes. A pending service migration is reported instead of interrupting work.
+
+For scripts or redirected input/output, use
+`npx -y --ignore-scripts -p @minhspark/codex-mcp-bridge@latest codex-bridge-update`.
+MCP clients keep using the normal stdio launch; piped launches do not select
+the terminal updater.
 
 Setup registers the local bridges, adds native pipe forwarding, and bootstraps
 the relay executor. It reuses an available Codex CLI or installs a pinned
@@ -106,9 +111,8 @@ managed setup directly after package installation. For Homebrew, run
 `codex-bridge-setup` after installing the formula. A pinned source checkout can
 use `node scripts/setup.mjs`.
 
-The [manual macOS commands](../README.md#macos-terminal) and
-[Claude Code registration commands](../README.md#register-claude-code) remain
-available for selective configuration. `codex-bridge-code-install --install`
+See [project onboarding](project-onboarding.md) for shared authorization and
+selective configuration. `codex-bridge-code-install --install`
 can create a missing user-level Code entry; its existing policy migration mode
 is described in [project onboarding](project-onboarding.md). Use intended
 project paths when setting explicit `CODEX_BRIDGE_ALLOWED_ROOTS`; macOS

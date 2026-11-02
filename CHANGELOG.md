@@ -4,6 +4,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.6] - 2026-11-02
+
+### Added
+
+- One short command for a complete terminal install or update: `npx.cmd -y @minhspark/codex-mcp-bridge@latest` on Windows, or `npx -y @minhspark/codex-mcp-bridge@latest` on macOS/Linux. A bare npm-exec launch with interactive input and output runs the full updater; Windows selects the per-user npm prefix automatically. Package installation, managed setup and live relay verification remain part of the same command.
+- An explicit `codex-mcp-bridge update` subcommand for installed-package automation. Existing piped MCP launches, direct MCP invocation, setup, telemetry and version commands retain their routing.
+
+### Documentation
+
+- Reduce the README from 817 to 133 lines, keeping installation, prerequisites, verification, everyday use and documentation links.
+
 ## [1.26.5] - 2026-11-02
 
 ### Fixed

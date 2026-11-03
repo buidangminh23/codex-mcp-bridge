@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -85,4 +86,51 @@ test("sidecar closes on parent death while idle and stops monitoring after close
   const checks = state.checks;
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(state.checks, checks);
+});
+
+test("sidecar persists the pre-send boundary and refreshes native replies without resending", async (t) => {
+  const { state, options } = fixture(t);
+  const requestId = crypto.randomUUID();
+  const conversationId = crypto.randomUUID();
+  let sends = 0;
+  let observations = 0;
+  options.runNative = async (args) => {
+    sends++;
+    await args.beforeDispatch({ version: 1, status: "ready", trajectoryId: crypto.randomUUID(), beforeStepIndex: 12, promptSha256: "b".repeat(64), projectId: "project" });
+    const persisted = JSON.parse(fs.readFileSync(path.join(options.directory, "desktop-deliveries", `${requestId}.json`), "utf8"));
+    assert.equal(persisted.nativeObservation.beforeStepIndex, 12);
+    assert.equal(persisted.status, "pending");
+    return { status: "accepted", completed: false, conversationId };
+  };
+  options.observeDelivery = async (record) => {
+    observations++;
+    assert.equal(record.nativeObservation.beforeStepIndex, 12);
+    return { ...record, status: "reply_received", result: { status: "reply_received", completed: true, response: "native exact reply" } };
+  };
+  const sidecar = await startAntigravitySidecar(options);
+  t.after(() => sidecar.close());
+  const request = { operation: "send", requestId, conversationId, cwd: options.directory, sender: { provider: "codex", id: crypto.randomUUID() }, prompt: "Fixture message" };
+  assert.equal((await state.handler(request)).status, "pending");
+  await new Promise((resolve) => setImmediate(resolve));
+  const receipt = await state.handler({ operation: "receipt", requestId });
+  assert.equal(receipt.status, "reply_received");
+  assert.equal(receipt.result.response, "native exact reply");
+  assert.equal((await state.handler(request)).status, "reply_received");
+  assert.equal(sends, 1);
+  assert.equal(observations, 1);
+});
+
+test("sidecar keeps unknown reply observations unconfirmed", async (t) => {
+  const { state, options } = fixture(t);
+  options.runNative = async () => ({ status: "accepted", completed: false });
+  options.observeDelivery = async (record) => ({ ...record, replyObservation: { status: "unavailable", code: "ANTIGRAVITY_TRANSCRIPT_UNSUPPORTED" } });
+  const sidecar = await startAntigravitySidecar(options);
+  t.after(() => sidecar.close());
+  const requestId = crypto.randomUUID();
+  await state.handler({ operation: "send", requestId, conversationId: crypto.randomUUID(), cwd: options.directory, sender: { provider: "codex", id: crypto.randomUUID() }, prompt: "Fixture message" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const receipt = await state.handler({ operation: "receipt", requestId });
+  assert.equal(receipt.status, "accepted");
+  assert.equal(receipt.result.completed, false);
+  assert.equal(receipt.replyObservation.status, "unavailable");
 });

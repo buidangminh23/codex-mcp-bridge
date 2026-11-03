@@ -134,6 +134,78 @@ test("inspection distinguishes absent login, unknown authentication and unavaila
   assert.equal(JSON.stringify([missing, unknown, unavailable]).includes(TOKEN), false);
 });
 
+function inspectionInstallation(t) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-inspection-update-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const install = version => {
+    const executable = path.join(directory, "OpenAI", "Codex", "bin", version, "codex.exe");
+    fs.mkdirSync(path.dirname(executable), { recursive: true });
+    fs.writeFileSync(executable, "fixture", { mode: 0o755 });
+    return fs.realpathSync.native(executable);
+  };
+  return { env: { LOCALAPPDATA: directory }, install };
+}
+
+for (const failedCommand of ["--version", "exec", "login"]) {
+  test(`inspection rediscovers an unpinned executable removed before ${failedCommand}`, async t => {
+    const setup = inspectionInstallation(t);
+    const older = setup.install("version-1");
+    let newer;
+    const calls = [];
+    const inspect = inspectionRun();
+    const result = await inspectCodexWorker({ env: setup.env, platform: "win32", run: async (executable, args, options) => {
+      calls.push({ executable, args });
+      if (executable === older && args[0] === failedCommand) {
+        fs.unlinkSync(older);
+        newer = setup.install("version-2");
+        throw Object.assign(new Error(TOKEN), { code: "ENOENT" });
+      }
+      return inspect(executable, args, options);
+    } });
+    assert.equal(result.ready, true);
+    assert.equal(result.executable, newer);
+    assert.deepEqual(calls.filter(call => call.executable === newer).map(call => call.args), [["--version"], ["exec", "--help"], ["login", "status"]]);
+    assert.equal(JSON.stringify(result).includes(TOKEN), false);
+  });
+}
+
+test("inspection retries disappearance once and never retries permission or authentication failures", async t => {
+  const setup = inspectionInstallation(t);
+  setup.install("version-1");
+  for (const [code, stderr, expected, count] of [
+    ["ENOENT", "", "CLI_UNAVAILABLE", 2],
+    ["ENOTDIR", "", "CLI_UNAVAILABLE", 2],
+    ["EACCES", "permission denied", "PERMISSION_DENIED", 1],
+    [1, "Not logged in", "AUTH_REQUIRED", 1],
+  ]) {
+    let calls = 0;
+    const result = await inspectCodexWorker({ env: setup.env, platform: "win32", run: async () => { calls++; throw Object.assign(new Error(TOKEN), { code, stderr }); } });
+    assert.equal(result.code, expected);
+    assert.equal(calls, count);
+    assert.equal(result.ready, false);
+  }
+});
+
+test("inspection preserves explicit and environment executable pins during an update", async t => {
+  const setup = inspectionInstallation(t);
+  const older = setup.install("version-1");
+  setup.install("version-2");
+  for (const pin of [{ executable: older }, { env: { ...setup.env, CODEX_BIN: older } }, { env: { ...setup.env, CODEX_CLI_PATH: older } }]) {
+    const calls = [];
+    const result = await inspectCodexWorker({ env: setup.env, platform: "win32", ...pin, run: async executable => {
+      calls.push(executable);
+      throw Object.assign(new Error(TOKEN), { code: "ENOENT" });
+    } });
+    assert.equal(result.code, "CLI_UNAVAILABLE");
+    assert.deepEqual(calls, [older]);
+  }
+  fs.unlinkSync(older);
+  for (const pin of [{ executable: older }, { env: { ...setup.env, CODEX_BIN: older } }, { env: { ...setup.env, CODEX_CLI_PATH: older } }]) {
+    const result = await inspectCodexWorker({ env: setup.env, platform: "win32", ...pin, run: () => assert.fail("must not substitute a pinned executable") });
+    assert.equal(result.code, "CLI_UNAVAILABLE");
+  }
+});
+
 test("inspection rejects shell shims and unsupported CLI options", async () => {
   const shim = await inspectCodexWorker({ executable: "codex.cmd", platform: "win32", run: () => assert.fail("must not execute a shell shim") });
   assert.equal(shim.code, "CLI_UNAVAILABLE");

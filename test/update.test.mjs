@@ -108,7 +108,7 @@ test("updates an unconfigured installation with the exact package version and ve
   const f = fixture(t, null);
   const result = await runUpdate(f.options);
   assert.deepEqual(result, { updated: true, configured: true, version: VERSION, previousVersion: null, migrated: false,
-    service: { enabled: true, ready: true, liveVerified: true, version: VERSION, pid: 123 }, opensApps: false, opensChats: false });
+    service: { enabled: true, ready: true, liveVerified: true, version: VERSION, pid: 123 }, desktopConnectionsVerified: false, opensApps: false, opensChats: false });
   const [install] = f.installCalls();
   assert.equal(install.command, process.execPath);
   assert.deepEqual(install.args, [f.npm, "install", "--global", "--prefix", f.prefix, `${PACKAGE}@${VERSION}`, "--ignore-scripts"]);

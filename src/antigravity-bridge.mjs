@@ -7,9 +7,11 @@ import { z } from "zod";
 import { resolveCodexSenderContext } from "./codex-sender-context.mjs";
 import { readClaudeSenderContext, requireClaudeSenderContext, stopProcessInspectors } from "./claude-sender-context.mjs";
 import { readClaudeAccountContext } from "./desktop-account-context.mjs";
+import { readCodexAccountContext } from "./codex-account-context.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { antigravityBridgeDirectory, callAntigravityDesktop } from "./antigravity-ipc.mjs";
 import { AntigravityDeliveries, antigravityDeliveryError } from "./antigravity-deliveries.mjs";
+import { observeAntigravityDelivery } from "./antigravity-desktop.mjs";
 import { AntigravityCliSession } from "./antigravity-cli.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { NativeDesktopRelay, desktopTaskSocketPath, accountRelaySocketPath } from "./native-relay.mjs";
@@ -45,6 +47,7 @@ const reload = createReloadControl({
 
 async function identifySender(extra) {
   if (caller === "codex") {
+    const account = readCodexAccountContext();
     const context = await resolveCodexSenderContext(extra?._meta, { inspectDesktopTask: async (threadId) => {
       const accounts = requireBridgeAccounts(readBridgeAccounts());
       const { result } = await senderRelay.requestDesktop("read_thread", { threadId, hostId: "local", turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 1 }, { accountContext: accounts, beforeSend: () => assertAccountIdentity(accounts) });
@@ -52,11 +55,16 @@ async function identifySender(extra) {
       return { thread: result?.thread, latestTurnId: result?.turns?.[0]?.id ?? null };
     } });
     if (context.status !== "verified") throw new Error(context.reason ?? "Unverified Codex sender");
-    return { provider: "codex", id: context.threadId, cwd: context.cwd };
+    const current = readCodexAccountContext();
+    if (account.status !== "verified" || current.status !== "verified" || !/^[a-f0-9]{64}$/.test(account.fingerprint ?? "")) throw new Error("The calling Codex account is not verified");
+    if (current.fingerprint !== account.fingerprint) throw new Error("The calling Codex account changed during sender verification");
+    return { provider: "codex", id: context.threadId, cwd: context.cwd, accountFingerprint: account.fingerprint };
   }
   if (caller === "claude") {
     const context = requireClaudeSenderContext(await readClaudeSenderContext({ account: readClaudeAccountContext() }));
-    return { provider: "claude", id: context.sessionId, cwd: context.cwd };
+    const current = readClaudeAccountContext();
+    if (current.status !== "verified" || !/^[a-f0-9]{64}$/.test(context.accountFingerprint ?? "") || current.fingerprint !== context.accountFingerprint) throw new Error("The calling Claude account changed during sender verification");
+    return { provider: "claude", id: context.sessionId, cwd: context.cwd, accountFingerprint: context.accountFingerprint };
   }
   throw new Error("Install this bridge for Codex or Claude; unknown callers cannot read conversations or send work");
 }
@@ -89,8 +97,23 @@ function sameCwd(expected, actual) {
 
 function owns(record, identity) {
   if (!record || record.sender?.provider !== identity.provider || record.sender?.id !== identity.id) throw preflightFailure("ANTIGRAVITY_RECEIPT_OWNER_MISMATCH", "Delivery does not belong to this sending conversation");
+  if (Object.hasOwn(record.sender, "accountFingerprint") && record.sender.accountFingerprint !== identity.accountFingerprint) throw preflightFailure("ANTIGRAVITY_RECEIPT_ACCOUNT_MISMATCH", "Delivery does not belong to the currently signed-in sending account");
   sameCwd(identity.cwd, record.cwd);
   return record;
+}
+
+function sameSender(left, right) {
+  return left?.provider === right?.provider && left?.id === right?.id && left?.accountFingerprint === right?.accountFingerprint;
+}
+
+function accountUnboundReceipt(record) {
+  const recovered = record.status === "reply_received" || record.result?.status === "reply_received" || record.replyObservation?.status === "reply_received";
+  const status = recovered ? "unknown" : record.status;
+  const { response, reply, ...originalResult } = record.result ?? {};
+  return { ...record, status,
+    result: recovered ? { conversationId: record.conversationId, surface: "desktop", status, completed: false } : originalResult,
+    replyObservation: { status: "unavailable", code: "ANTIGRAVITY_RECEIPT_ACCOUNT_UNBOUND", source: "native-transcript", retrySafe: false,
+      reason: "The original delivery did not record its sending account. Recovered reply text is withheld; retain the original receipt and do not resend." } };
 }
 
 function handoff(prompt, identity) {
@@ -146,7 +169,7 @@ register("list_antigravity_conversations", "List native Desktop conversations an
   const identity = await sender(extra);
   const records = surface === "desktop" ? await callAntigravityDesktop({ operation: "list" }) : [...sessions.values()].map((entry) => ({ ...entry.session.read(), sender: entry.sender }));
   return records.filter((record) => {
-    try { sameCwd(identity.cwd, record.cwd); return surface !== "cli" || record.sender.id === identity.id && record.sender.provider === identity.provider; }
+    try { sameCwd(identity.cwd, record.cwd); return surface !== "cli" || sameSender(record.sender, identity); }
     catch { return false; }
   });
 });
@@ -156,14 +179,26 @@ register("send_to_antigravity_conversation", "Send one authorized prompt to an e
   const cwd = sameCwd(identity.cwd, args.cwd);
   const prompt = handoff(args.prompt, identity);
   if (args.surface === "desktop" && (prompt.length > 30000 || prompt.includes("\0"))) throw preflightFailure("ANTIGRAVITY_PROMPT_INVALID", "Desktop handoff must fit within 30000 characters and contain no NUL");
-  if (args.surface === "desktop") return callAntigravityDesktop({ operation: "send", ...args, cwd, prompt, sender: identity });
+  if (args.surface === "desktop") {
+    const receipt = await callAntigravityDesktop({ operation: "send", ...args, cwd, prompt, sender: identity });
+    try {
+      const current = await sender(extra);
+      if (!sameSender(current, identity)) throw preflightFailure("ANTIGRAVITY_SENDER_CHANGED", "Sender changed while inspecting the native delivery receipt");
+      owns(receipt, current);
+      return Object.hasOwn(receipt.sender, "accountFingerprint") ? receipt : accountUnboundReceipt(receipt);
+    } catch (error) {
+      error.phase = "receipt";
+      error.deliveryState = "unknown";
+      throw error;
+    }
+  }
   const entry = sessions.get(args.conversationId);
-  if (!entry || entry.sender.id !== identity.id || entry.sender.provider !== identity.provider) throw preflightFailure("ANTIGRAVITY_SESSION_OWNER_MISMATCH", "CLI session is not owned by this sender and bridge process");
+  if (!entry || !sameSender(entry.sender, identity)) throw preflightFailure("ANTIGRAVITY_SESSION_OWNER_MISMATCH", "CLI session is not owned by this sender and bridge process");
   sameCwd(cwd, entry.session.read().cwd);
   return deliveries.dispatch({ ...args, cwd, sender: identity, prompt }, async () => {
     const current = await sender(extra);
     sameCwd(cwd, current.cwd);
-    if (current.id !== identity.id) throw preflightFailure("ANTIGRAVITY_SENDER_CHANGED", "Sender changed before delivery");
+    if (!sameSender(current, identity)) throw preflightFailure("ANTIGRAVITY_SENDER_CHANGED", "Sender changed before delivery");
     return entry.session.send(prompt);
   }, { component: "antigravity-bridge", operation: "send_to_antigravity_conversation" });
 });
@@ -188,7 +223,7 @@ register("start_antigravity_cli_session", "Create a new bridge-owned Antigravity
       reserved = false;
       const current = await sender(extra);
       sameCwd(cwd, current.cwd);
-      if (current.id !== identity.id) throw preflightFailure("ANTIGRAVITY_SENDER_CHANGED", "Sender changed before delivery");
+      if (!sameSender(current, identity)) throw preflightFailure("ANTIGRAVITY_SENDER_CHANGED", "Sender changed before delivery");
       sending = true;
       return await session.send(handoff(args.prompt, identity));
     } catch (error) {
@@ -208,16 +243,21 @@ register("start_antigravity_cli_session", "Create a new bridge-owned Antigravity
   }, { component: "antigravity-bridge", operation: "start_antigravity_cli_session" });
 });
 
-register("read_antigravity_delivery", "Read the original receipt without resending. Desktop accepted means the native API accepted it, not that the agent completed a turn.", { surface: z.enum(["desktop", "cli"]), requestId: z.string().uuid() }, true, async (args, extra) => {
+register("read_antigravity_delivery", "Read the original receipt without resending. Desktop accepted means native acceptance; reply_received requires a final reply correlated to the original message and execution.", { surface: z.enum(["desktop", "cli"]), requestId: z.string().uuid() }, true, async (args, extra) => {
   const identity = await sender(extra);
   const record = args.surface === "desktop" ? await callAntigravityDesktop({ operation: "receipt", requestId: args.requestId }) : deliveries.read(args.requestId);
-  return owns(record, identity);
+  owns(record, identity);
+  if (args.surface !== "desktop") return record;
+  const observed = Object.hasOwn(record.sender, "accountFingerprint") ? await observeAntigravityDelivery(record) : accountUnboundReceipt(record);
+  const current = await sender(extra);
+  if (!sameSender(current, identity)) throw preflightFailure("ANTIGRAVITY_SENDER_CHANGED", "Sender changed while inspecting the original delivery");
+  return owns(observed, current);
 });
 
 register("close_antigravity_cli_session", "Close an idle bridge-owned CLI session belonging to the caller.", { conversationId: z.string().uuid() }, false, async ({ conversationId }, extra) => {
   const identity = await sender(extra);
   const entry = sessions.get(conversationId);
-  if (!entry || entry.sender.id !== identity.id || entry.sender.provider !== identity.provider) throw preflightFailure("ANTIGRAVITY_SESSION_OWNER_MISMATCH", "CLI session is not owned by this sender");
+  if (!entry || !sameSender(entry.sender, identity)) throw preflightFailure("ANTIGRAVITY_SESSION_OWNER_MISMATCH", "CLI session is not owned by this sender");
   sameCwd(identity.cwd, entry.session.read().cwd);
   if (["running", "starting"].includes(entry.session.read().status)) throw preflightFailure("ANTIGRAVITY_SESSION_BUSY", "Wait for the active CLI delivery before closing");
   const closed = await entry.session.close();

@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { antigravityBridgeDirectory, serveAntigravityDesktop } from "./antigravity-ipc.mjs";
 import { AntigravityDeliveries } from "./antigravity-deliveries.mjs";
-import { listAntigravityConversations, runAgentApi, sanitizeAntigravityMetadata } from "./antigravity-desktop.mjs";
+import { listAntigravityConversations, observeAntigravityDelivery, runAgentApi, sanitizeAntigravityMetadata } from "./antigravity-desktop.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { readProcessAncestry } from "./claude-sender-context.mjs";
 
@@ -34,7 +34,7 @@ export async function createAntigravityParentGuard({ parentPid = process.ppid, i
   };
 }
 
-export async function startAntigravitySidecar({ directory = antigravityBridgeDirectory(), env = process.env, createParentGuard = createAntigravityParentGuard, serve = serveAntigravityDesktop, parentCheckIntervalMs = 5000, onParentLost = () => {} } = {}) {
+export async function startAntigravitySidecar({ directory = antigravityBridgeDirectory(), env = process.env, createParentGuard = createAntigravityParentGuard, serve = serveAntigravityDesktop, parentCheckIntervalMs = 5000, onParentLost = () => {}, runNative = runAgentApi, observeDelivery = observeAntigravityDelivery } = {}) {
   if (!env.ANTIGRAVITY_AGENTAPI_EXE || !env.ANTIGRAVITY_LS_ADDRESS) throw new Error("Antigravity must launch this sidecar. Do not run it as a replacement app server.");
   const assertParent = await createParentGuard();
   const deliveries = new AntigravityDeliveries(path.join(directory, "desktop-deliveries"));
@@ -68,7 +68,7 @@ export async function startAntigravitySidecar({ directory = antigravityBridgeDir
       const native = sanitizeAntigravityMetadata(await runAgentApi({ command: "metadata", conversationId: request.conversationId, env }), request.conversationId);
       return { ...record, ...native };
     }
-    if (request.operation === "receipt") return deliveries.read(request.requestId);
+    if (request.operation === "receipt") return deliveries.refresh(request.requestId, observeDelivery);
     if (request.operation !== "send" || typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > 30000 || request.prompt.includes("\0")
       || typeof request.cwd !== "string" || !path.isAbsolute(request.cwd) || !request.sender || !["codex", "claude"].includes(request.sender.provider)
       || typeof request.sender.id !== "string" || !request.sender.id) throw new Error("Invalid Antigravity delivery request");
@@ -76,7 +76,8 @@ export async function startAntigravitySidecar({ directory = antigravityBridgeDir
       await checkParent();
       if (sending.has(request.conversationId)) throw Object.assign(new Error("Another delivery is pending for this conversation"), { deliveryState: "not_sent" });
       sending.add(request.conversationId);
-      try { return await runAgentApi({ command: "send", conversationId: request.conversationId, expectedCwd: request.cwd, prompt: request.prompt, env }); }
+      try { return await runNative({ command: "send", conversationId: request.conversationId, expectedCwd: request.cwd, prompt: request.prompt, env,
+        beforeDispatch: (observation) => deliveries.captureObservation(request.requestId, observation) }); }
       finally { sending.delete(request.conversationId); }
     });
   }, { directory });

@@ -38,6 +38,20 @@ it("keeps uncertain delivery and the original report stable across receipt reads
   assert.equal(bridgeDiagnostic(new Error("Unexpected error")).deliveryState, "unknown");
 });
 
+it("keeps a pending original message inspectable without encouraging a resend", () => {
+  const msgId = "94fcf128-7244-4dba-a046-0941c1bc05fa";
+  const error = Object.assign(new Error("An earlier message still awaits a reply"), { code: "PEER_REPLY_PENDING", sent: false, msgId });
+  const diagnostic = bridgeDiagnostic(error);
+  assert.equal(diagnostic.sent, false);
+  assert.equal(diagnostic.retrySafe, false);
+  assert.equal(diagnostic.ids.msgId, msgId);
+  assert.match(diagnostic.nextAction, /read_claude_delivery/);
+  assert.match(diagnostic.nextAction, /do not resend/);
+  const reread = withBridgeDiagnostic({ content: [], structuredContent: { diagnostic } }, null, { readOnly: true });
+  assert.equal(reread.structuredContent.diagnostic.retrySafe, false);
+  assert.equal(reread.structuredContent.diagnostic.ids.msgId, msgId);
+});
+
 it("redacts credentials, account addresses and private paths from report blocks", () => {
   const error = new Error('Failed https://user:secret@example.invalid/request?token=fixture-url-secret; Authorization: Bearer fixture-bearer; token=fixture-token; user@example.invalid; "C:\\Users\\Fixture Person\\private\\data.json"; /tmp/fixture/private/file');
   const diagnostic = bridgeDiagnostic(error, { requestId: "not-a-valid-id", prompt: "private prompt", token: "private token" });

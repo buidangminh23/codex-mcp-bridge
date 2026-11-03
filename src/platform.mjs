@@ -88,9 +88,9 @@ function workspaceRoots() {
 }
 
 function isRunnable(candidate) {
-  if (!candidate || !existsSync(candidate)) return false;
-  if (IS_WINDOWS) return true;
   try {
+    if (!candidate || !statSync(candidate).isFile()) return false;
+    if (IS_WINDOWS) return true;
     accessSync(candidate, constants.X_OK);
     return true;
   } catch {
@@ -98,9 +98,9 @@ function isRunnable(candidate) {
   }
 }
 
-function windowsCodexCandidates() {
-  const roaming = process.env.APPDATA;
-  const local = process.env.LOCALAPPDATA;
+function windowsCodexCandidates(env, runnable) {
+  const roaming = env.APPDATA;
+  const local = env.LOCALAPPDATA;
   const versionedRoot = local && path.join(local, "OpenAI", "Codex", "bin");
   let versioned = [];
   if (versionedRoot) {
@@ -108,7 +108,7 @@ function windowsCodexCandidates() {
       versioned = readdirSync(versionedRoot, { withFileTypes: true })
         .filter((entry) => entry.isDirectory())
         .map((entry) => path.join(versionedRoot, entry.name, "codex.exe"))
-        .filter((candidate) => isRunnable(candidate))
+        .filter((candidate) => runnable(candidate))
         .sort((left, right) => {
           try {
             return statSync(path.dirname(right)).mtimeMs - statSync(path.dirname(left)).mtimeMs;
@@ -119,16 +119,16 @@ function windowsCodexCandidates() {
     } catch {}
   }
   return [
-    process.env.CODEX_CLI_PATH,
+    env.CODEX_CLI_PATH,
     ...versioned,
     local && path.join(local, "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
     roaming && path.join(roaming, "npm", "codex.cmd"),
-    process.env.ProgramFiles && path.join(process.env.ProgramFiles, "nodejs", "codex.cmd"),
+    env.ProgramFiles && path.join(env.ProgramFiles, "nodejs", "codex.cmd"),
   ];
 }
 
-function unixCodexCandidates() {
-  const home = homeDir();
+function unixCodexCandidates(env) {
+  const home = env.HOME ?? env.USERPROFILE ?? os.homedir();
   return [
     path.join(home, ".local", "bin", "codex"),
     path.join(home, ".npm-global", "bin", "codex"),
@@ -147,17 +147,17 @@ function unixCodexCandidates() {
  * two versions write that same state, so prefer the app's binary whenever the
  * app is installed and fall back to the standalone CLI installs otherwise.
  */
-function macosCodexCandidates() {
+function macosCodexCandidates(env) {
   return [
     hasCodexDesktopApp() ? CODEX_DESKTOP_BIN_MACOS : null,
-    ...unixCodexCandidates(),
+    ...unixCodexCandidates(env),
   ];
 }
 
-function pathCandidates() {
-  const separator = IS_WINDOWS ? ";" : ":";
-  const names = IS_WINDOWS ? ["codex.exe", "codex.cmd"] : ["codex"];
-  return (process.env.PATH ?? "")
+function pathCandidates(env, platform) {
+  const separator = platform === "win32" ? ";" : ":";
+  const names = platform === "win32" ? ["codex.exe", "codex.cmd"] : ["codex"];
+  return (env.PATH ?? "")
     .split(separator)
     .filter(Boolean)
     .flatMap((dir) => names.map((name) => path.join(dir, name)));
@@ -217,8 +217,8 @@ export function resolveCodexBin(explicit, {
     explicit,
     env.CODEX_BIN,
     ...(discovered ?? [
-      ...(IS_WINDOWS ? windowsCodexCandidates() : IS_MACOS ? macosCodexCandidates() : unixCodexCandidates()),
-      ...pathCandidates(),
+      ...(platform === "win32" ? windowsCodexCandidates(env, runnable) : platform === "darwin" ? macosCodexCandidates(env) : unixCodexCandidates(env)),
+      ...pathCandidates(env, platform),
     ]),
   ].filter(Boolean);
 

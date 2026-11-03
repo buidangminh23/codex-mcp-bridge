@@ -200,6 +200,40 @@ describe("platform facts", () => {
     assert.notEqual(resolveCodexBin(missing), missing);
   });
 
+  it("uses the supplied Windows environment without leaking host discovery paths", () => {
+    const directory = path.join(sandbox, "supplied-windows");
+    const native = path.join(directory, "codex.exe");
+    const override = path.join(directory, "explicit.exe");
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(native, "fixture", { mode: 0o755 });
+    fs.writeFileSync(override, "fixture", { mode: 0o755 });
+    const options = { platform: "win32", env: { PATH: `${path.join(sandbox, "missing-path")};${directory}` }, packaged: () => null };
+    assert.equal(resolveCodexBin(undefined, options), native);
+    assert.equal(resolveCodexBin(undefined, { ...options, env: { ...options.env, CODEX_CLI_PATH: override } }), override);
+    const inspected = [];
+    assert.equal(resolveCodexBin(undefined, { platform: "win32", env: {}, runnable: candidate => { inspected.push(candidate); return false; }, packaged: () => null }), "codex");
+    assert.deepEqual(inspected, []);
+  });
+
+  it("skips incomplete Windows updates and rediscovers the replacement executable", () => {
+    const local = path.join(sandbox, "update-local");
+    const root = path.join(local, "OpenAI", "Codex", "bin");
+    const older = path.join(root, "version-1", "codex.exe");
+    const newer = path.join(root, "version-2", "codex.exe");
+    const malformed = path.join(root, "version-3", "codex.exe");
+    fs.mkdirSync(path.dirname(older), { recursive: true });
+    fs.mkdirSync(path.dirname(newer), { recursive: true });
+    fs.mkdirSync(malformed, { recursive: true });
+    fs.writeFileSync(older, "fixture", { mode: 0o755 });
+    fs.utimesSync(path.dirname(older), 1000, 1000);
+    fs.utimesSync(path.dirname(newer), 2000, 2000);
+    fs.utimesSync(path.dirname(malformed), 3000, 3000);
+    const options = { platform: "win32", env: { LOCALAPPDATA: local }, packaged: () => null };
+    assert.equal(resolveCodexBin(undefined, options), older);
+    fs.writeFileSync(newer, "replacement", { mode: 0o755 });
+    assert.equal(resolveCodexBin(undefined, options), newer);
+  });
+
   it(
     "finds the versioned Codex Desktop binary on Windows",
     { skip: IS_WINDOWS ? false : "Windows Codex Desktop path regression" },

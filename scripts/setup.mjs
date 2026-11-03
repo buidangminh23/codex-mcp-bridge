@@ -4,7 +4,8 @@ import { printSetup, runSetup, setupFailureResult } from "../src/setup.mjs";
 
 exitForVersionRequest(import.meta.url);
 try {
-  const result = runSetup({ args: process.argv.slice(2) });
+  const onProgress = process.argv.includes("--progress") ? (step) => process.stderr.write(`setup-progress: ${step}\n`) : undefined;
+  const result = runSetup({ args: process.argv.slice(2), onProgress });
   printSetup(result, { json: process.argv.includes("--json") });
   if (result.configured === false && !result.dryRun) process.exitCode = 1;
 } catch (error) {

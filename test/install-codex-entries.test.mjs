@@ -35,7 +35,7 @@ const all = servers(read());
 if (sub === "list") { process.stdout.write(JSON.stringify(Object.keys(all).map((entry) => ({ name: entry })))); process.exit(0); }
 if (sub === "get") {
   const entry = process.env.FAKE_CODEX_STALE_GET ? servers(fs.readFileSync(process.env.FAKE_CODEX_STALE_GET, "utf8"))[name] : all[name];
-  if (!entry) { process.stderr.write("not found"); process.exit(1); }
+  if (!entry) { process.stderr.write("Error: No MCP server named '" + name + "' found.\\n"); process.exit(1); }
   const json = { name, enabled: entry.enabled ?? true, disabled_reason: null, transport: { type: "stdio", command: entry.command, args: entry.args ?? [], env: entry.env, env_vars: entry.env_vars ?? null, cwd: entry.cwd ?? null },
     enabled_tools: entry.enabled_tools ?? null, disabled_tools: null, startup_timeout_sec: entry.startup_timeout_sec ?? null, tool_timeout_sec: null };
   process.stdout.write(rest.includes("--json") ? JSON.stringify(json) : name + "\\n  command: " + entry.command + "\\n  args: " + (entry.args ?? []).join(" ") + "\\n");

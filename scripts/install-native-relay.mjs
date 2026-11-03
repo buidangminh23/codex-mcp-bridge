@@ -17,7 +17,7 @@ import {
   spawnEnv,
 } from "../src/platform.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
-import { applyStdioMcpRegistration, stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
+import { applyStdioMcpRegistration, readCodexMcpServer, stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
 import { codexAccessPaths, enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
 import { stableInstallPath } from "../src/install-paths.mjs";
@@ -25,7 +25,7 @@ import { removeRelayFile } from "../src/native-relay-files.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.26.8";
+const VERSION = "1.26.9";
 const root = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const entry = path.join(root, "src", "mcp-supervisor.mjs");
 const entryArgs = ["native-relay-companion.mjs"];
@@ -69,10 +69,7 @@ if (!IS_MACOS && !IS_WINDOWS) {
   console.log("claude-bridge will keep using the app-server path here.");
 }
 
-const servers = JSON.parse(run(["mcp", "list", "--json"]));
-if (!Array.isArray(servers)) throw new Error("Codex returned an invalid MCP inventory; existing configuration was not changed");
-const existingServer = servers.some((server) => server.name === serverName)
-  ? JSON.parse(run(["mcp", "get", serverName, "--json"])) : null;
+const existingServer = readCodexMcpServer(run, serverName);
 /**
  * Registering under whichever Node happens to run this installer is what made
  * the companion unreachable on macOS: Codex Desktop rejects a peer whose
@@ -105,7 +102,7 @@ if (runtime.source === "process.execPath" && hasCodexDesktopApp()) {
   console.log("runtime shipped inside Codex Desktop if that happens.");
 }
 console.log(`registered MCP server "${serverName}" with Codex (${applied.mode === "retarget" ? "existing entry retargeted in place; its other settings were kept" : "codex mcp add"}):`);
-console.log(run(["mcp", "get", serverName]));
+if (!process.argv.includes("--setup")) console.log(run(["mcp", "get", serverName]));
 if (applied.notice) console.log(`NOTE: ${applied.notice}`);
 else if (ensureEnvVars.length) console.log(`env_vars includes ${ensureEnvVars.join(", ")}; the temporary pipe path itself is never saved.`);
 

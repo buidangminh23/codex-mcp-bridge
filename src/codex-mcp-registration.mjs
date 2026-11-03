@@ -6,6 +6,27 @@ import { backupRegularConfigFile } from "./project-policy.mjs";
 
 const PRESERVED_FIELDS = ["enabled", "disabled_reason", "enabled_tools", "disabled_tools", "startup_timeout_sec", "tool_timeout_sec"];
 
+export const CODEX_MCP_TIMEOUT_MS = 120000;
+
+function missingServerError(error, name) {
+  const output = `${error?.stderr ?? ""}\n${error?.stdout ?? ""}\n${error?.message ?? ""}`;
+  return output.includes(`No MCP server named '${name}' found`);
+}
+
+export function readCodexMcpServer(run, name) {
+  let output;
+  try { output = run(["mcp", "get", name, "--json"]); }
+  catch (error) {
+    if (missingServerError(error, name)) return null;
+    throw error;
+  }
+  const entry = JSON.parse(output);
+  if (!entry || typeof entry !== "object" || Array.isArray(entry) || entry.name !== name) {
+    throw new Error(`Codex returned an invalid ${name} entry; existing configuration was not changed`);
+  }
+  return entry;
+}
+
 function sameEnvironment(left = {}, right = {}) {
   const keys = (value) => Object.keys(value ?? {}).sort();
   return JSON.stringify(keys(left)) === JSON.stringify(keys(right)) && keys(left).every((key) => left[key] === right[key]);

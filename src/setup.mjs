@@ -8,6 +8,7 @@ import { resolveCodexBin, resolvePackagedCodexBin } from "./platform.mjs";
 import { readRegularConfigFile } from "./project-policy.mjs";
 import { stableInstallPath } from "./install-paths.mjs";
 import { resolveClaudeDesktopConfigRoot } from "./desktop-account-context.mjs";
+import { CODEX_MCP_TIMEOUT_MS } from "./codex-mcp-registration.mjs";
 
 const ROOT = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const CODEX_PACKAGE = "@openai/codex@0.166.0";
@@ -64,7 +65,7 @@ export function setupFailureSummary(value) {
 }
 
 export function setupArguments(args) {
-  const allowed = new Set(["--postinstall", "--check", "--dry-run", "--json", "--no-download", "--help"]);
+  const allowed = new Set(["--postinstall", "--check", "--dry-run", "--json", "--no-download", "--progress", "--help"]);
   if (args.some((arg) => !allowed.has(arg))) throw new Error("Unknown setup option; use codex-bridge-setup --help");
   if (args.includes("--check") && args.includes("--dry-run")) throw new Error("Use --check or --dry-run, not both");
   return Object.fromEntries([...allowed].map((arg) => [arg.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()), args.includes(arg)]));
@@ -148,6 +149,13 @@ export function setupEnvironment(env, paths, codex) {
     CLAUDE_DESKTOP_CONFIG: paths.desktop, CODEX_EXE: codex, CODEX_BIN: codex };
 }
 
+function codexInventoryFailure(error) {
+  const detail = error?.message?.includes("ETIMEDOUT") || error?.code === "ETIMEDOUT"
+    ? `Codex CLI did not list its MCP servers within ${CODEX_MCP_TIMEOUT_MS / 1000} seconds; the computer may be busy. Rerun the check when it is idle`
+    : error?.message ?? String(error);
+  return Object.assign(new Error(detail), error?.code ? { code: error.code } : {});
+}
+
 function configurationCheck(label, check, components) {
   try { const details = check(); components.push({ name: label, status: "configured", ...details }); }
   catch (error) { components.push(failedComponent(label, error)); }
@@ -171,15 +179,16 @@ export function checkSetup({ env = process.env, platform = process.platform, roo
   let inventory;
   configurationCheck("Codex CLI", () => {
     codex = ensureSetupCodex({ env, paths, platform, download: false, run, resolve }).binary;
-    inventory = JSON.parse(run(codex, ["mcp", "list", "--json"], setupEnvironment(env, paths, codex), 30000));
-    if (!Array.isArray(inventory)) throw new Error("Codex returned an invalid MCP inventory");
+    try { inventory = JSON.parse(run(codex, ["mcp", "list", "--json"], setupEnvironment(env, paths, codex), CODEX_MCP_TIMEOUT_MS)); }
+    catch (error) { throw codexInventoryFailure(error); }
+    if (!Array.isArray(inventory)) { inventory = undefined; throw new Error("Codex returned an invalid MCP inventory"); }
   }, components);
   const native = platform === "win32" || platform === "darwin";
   for (const [name, worker] of [["claude-bridge", "claude-bridge.mjs"], ...(native ? [["codex-native-relay", "native-relay-companion.mjs"]] : []), ["antigravity-bridge", "antigravity-bridge.mjs"]]) {
     configurationCheck(`Codex / ${name}`, () => {
-      const item = inventory?.find((server) => server.name === name);
-      if (!item) throw new Error("MCP registration is missing");
-      const entry = JSON.parse(run(codex, ["mcp", "get", name, "--json"], setupEnvironment(env, paths, codex), 30000));
+      if (!inventory) throw new Error("Not checked because Codex CLI did not report its MCP servers; the registration may still be present");
+      const entry = inventory.find((server) => server?.name === name);
+      if (!entry) throw new Error("MCP registration is missing");
       const details = assertEntry({ ...entry.transport, enabled: entry.enabled }, worker, root, name === "antigravity-bridge" ? { caller: "codex" } : {});
       if (name === "codex-native-relay" && !entry.transport.env_vars?.includes("CODEX_APP_TOOLS_PIPE_PATH")) throw new Error("Native pipe forwarding is missing");
       return details;
@@ -228,7 +237,7 @@ export function checkSetup({ env = process.env, platform = process.platform, roo
   return { configured: components.every((item) => item.status === "configured"), liveVerified: false, components };
 }
 
-export function runSetup({ args = [], env = process.env, platform = process.platform, root = ROOT, run = execute, resolve = resolveCodexBin } = {}) {
+export function runSetup({ args = [], env = process.env, platform = process.platform, root = ROOT, run = execute, resolve = resolveCodexBin, onProgress = () => {} } = {}) {
   const options = setupArguments(args);
   if (options.help) return { help: `Usage: codex-bridge-setup [--check|--dry-run] [--json] [--no-download]\nUpdate the package and apply managed settings in an interactive terminal with: ${platform === "win32" ? "npx.cmd" : "npx"} -y @minhspark/codex-mcp-bridge@latest\nThe updater installs the package with lifecycle scripts disabled, then directly configures Claude Desktop, Claude Code, Codex, Antigravity and the independent worker relay. CODEX_BRIDGE_SKIP_SETUP=1 opts out. Saved configuration, background relay health and loaded native app connections are verified separately.` };
   if (options.postinstall && !automaticSetupEnabled(env)) return { skipped: true, reason: "Automatic configuration runs only for a global npm install; use codex-bridge-setup for manual setup." };
@@ -243,6 +252,7 @@ export function runSetup({ args = [], env = process.env, platform = process.plat
   const base = setupEnvironment(env, paths, runtime.binary);
   const components = [];
   const install = (name, script, arguments_, environment = base) => {
+    onProgress(name);
     try {
       const output = run(process.execPath, [path.join(root, "scripts", script), ...arguments_], environment, 180000);
       let details = {};
@@ -265,6 +275,7 @@ export function runSetup({ args = [], env = process.env, platform = process.plat
   install("Codex / claude-bridge", "install-codex-mcp.mjs", ["--setup"]);
   if (code) install("Antigravity / all components", "install-antigravity-bridge.mjs", ["--all", "--setup"]);
   install("Independent background relay", "setup-background-relay.mjs", ["--json"]);
+  onProgress("Verifying saved settings");
   const inspection = checkSetup({ env: base, platform, root, run, resolve: () => runtime.binary });
   return { configured: components.every((item) => item.status === "configured") && inspection.configured, liveVerified: false,
     cliInstalled: runtime.installed, components, verification: inspection.components,

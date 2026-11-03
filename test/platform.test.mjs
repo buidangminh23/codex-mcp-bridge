@@ -200,6 +200,19 @@ describe("platform facts", () => {
     assert.notEqual(resolveCodexBin(missing), missing);
   });
 
+  it("validates configured executable paths while preserving external installations", () => {
+    const directory = path.join(sandbox, "external install", "custom cli.exe");
+    const executable = path.join(sandbox, "external install", "custom executable.exe");
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(executable, "fixture", { mode: 0o755 });
+    const options = { env: {}, candidates: [], packaged: () => null };
+    assert.equal(resolveCodexBin(executable, options), executable);
+    assert.equal(resolveCodexBin(undefined, { ...options, env: { CODEX_BIN: executable } }), executable);
+    for (const candidate of [directory, `${executable}\0suffix`, Buffer.from(executable), 123, ""]) {
+      assert.equal(resolveCodexBin(candidate, options), "codex");
+    }
+  });
+
   it("uses the supplied Windows environment without leaking host discovery paths", () => {
     const directory = path.join(sandbox, "supplied-windows");
     const native = path.join(directory, "codex.exe");

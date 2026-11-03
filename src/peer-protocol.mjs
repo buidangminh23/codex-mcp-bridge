@@ -284,6 +284,7 @@ export function assertClaudeSessionProcess(session) {
  * rather than by reconstructing the slug.
  */
 function findTranscriptFile(sessionId, cwd) {
+  if (typeof sessionId !== "string" || !sessionId || sessionId.length > 128 || /[^a-zA-Z0-9_-]/.test(sessionId)) return null;
   const dir = projectsDir();
   const guess = path.join(dir, String(cwd ?? "").replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
   if (fs.existsSync(guess)) return guess;
@@ -297,7 +298,7 @@ function findTranscriptFile(sessionId, cwd) {
 
 export function readTranscript(sessionId, cwd, limit = 10) {
   const file = findTranscriptFile(sessionId, cwd);
-  if (!fs.existsSync(file)) return { file, messages: [] };
+  if (!file || !fs.existsSync(file)) return { file, messages: [] };
   const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
   const messages = [];
   for (const line of lines) {
@@ -325,7 +326,7 @@ export function readTranscript(sessionId, cwd, limit = 10) {
 
 export function readInitialTranscriptMessage(sessionId, cwd) {
   const file = findTranscriptFile(sessionId, cwd);
-  if (!fs.existsSync(file)) return { file, messages: [] };
+  if (!file || !fs.existsSync(file)) return { file, messages: [] };
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
     const stat = fs.fstatSync(descriptor);
@@ -405,8 +406,10 @@ function resumableTranscriptDelivery(id, sent, receipt) {
 }
 
 function hasTranscriptDeliveryRoot(sessionId, cwd, msgId) {
+  const file = findTranscriptFile(sessionId, cwd);
+  if (!file) return false;
   let lines;
-  try { lines = fs.readFileSync(findTranscriptFile(sessionId, cwd), "utf8").split("\n"); }
+  try { lines = fs.readFileSync(file, "utf8").split("\n"); }
   catch { return false; }
   let roots = 0;
   const ids = new Set();
@@ -498,6 +501,7 @@ function compactContinuation(entry, root, entriesById, transcriptIds, sessionId,
 // user turn's answer to the original request or claim its side effects stopped.
 export function readTranscriptOutcome(sessionId, cwd, msgId) {
   const file = findTranscriptFile(sessionId, cwd);
+  if (!file) return null;
   let lines;
   try { lines = fs.readFileSync(file, "utf8").split("\n"); }
   catch { return null; }
@@ -978,6 +982,7 @@ export class PeerEndpoint {
       if (!pending.transcriptSession) continue;
       const { sessionId, cwd } = pending.transcriptSession;
       const file = findTranscriptFile(sessionId, cwd);
+      if (!file) continue;
       let stamp;
       try { const stat = fs.statSync(file, { bigint: true }); stamp = `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`; }
       catch { continue; }

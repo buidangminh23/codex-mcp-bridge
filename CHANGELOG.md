@@ -13,6 +13,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - Migrate pending Claude transcript observations during future worker updates only after a unique native message proves acceptance. Held and unobserved deliveries keep their locks and defer reload, preserving their original reply channel.
 - Resolve Codex CLI candidates from the worker's actual environment, skip incomplete version directories and retry read-only inspection once if an unpinned executable disappears during an app update. Explicit executable selections, authentication failures and real jobs are never retried or silently redirected.
 - Report background relay readiness separately from unverified Desktop connections after updating. A ready background worker does not establish a live native Desktop relay.
+- Reject malformed transcript session identifiers before composing filesystem paths, and validate executable candidates before inspecting their file type. Configured external executable locations remain supported.
 
 ### Verification and limits
 

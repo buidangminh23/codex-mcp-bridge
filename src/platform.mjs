@@ -88,8 +88,9 @@ function workspaceRoots() {
 }
 
 function isRunnable(candidate) {
+  if (typeof candidate !== "string" || !candidate || candidate.includes("\0")) return false;
   try {
-    if (!candidate || !statSync(candidate).isFile()) return false;
+    if (!existsSync(candidate) || !statSync(candidate).isFile()) return false;
     if (IS_WINDOWS) return true;
     accessSync(candidate, constants.X_OK);
     return true;

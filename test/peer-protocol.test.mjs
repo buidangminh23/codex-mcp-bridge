@@ -365,6 +365,23 @@ describe("Windows peer endpoint", { skip: isWindows ? false : "Windows named-pip
 });
 
 describe("transcript reading", () => {
+  it("rejects session path injection before any transcript file is read", (t) => {
+    const outside = path.join(sandbox, "escaped-transcript.jsonl");
+    const root = { uuid: "request", message: { role: "user", content: "outside transcript must remain unread" } };
+    const reply = { uuid: "reply", parentUuid: "request", message: { role: "assistant", stop_reason: "end_turn", content: "outside reply must remain unread" } };
+    fs.writeFileSync(outside, [root, reply].map(JSON.stringify).join("\n") + "\n");
+    const readFile = fs.readFileSync;
+    const reads = [];
+    t.mock.method(fs, "readFileSync", function (file, ...args) { reads.push(file); return readFile.call(this, file, ...args); });
+    for (const sessionId of ["../../escaped-transcript", "..\\..\\escaped-transcript", "/escaped-transcript", "C:\\escaped-transcript", "session/name", "session\\name", "session:stream", "session\0id", "session.id", "session\n", "session\r\n", "a".repeat(129), "", undefined, null, {}]) {
+      assert.deepEqual(readTranscript(sessionId, "").messages, [], String(sessionId));
+      assert.deepEqual(readInitialTranscriptMessage(sessionId, "").messages, [], String(sessionId));
+      assert.equal(readTranscriptOutcome(sessionId, "", "request"), null, String(sessionId));
+      assert.equal(readTranscriptReply(sessionId, "", "request"), null, String(sessionId));
+    }
+    assert.deepEqual(reads, [], "invalid transcript identities must never reach a file read");
+  });
+
   it("checks the first user prompt rather than a later matching message or assistant echo", () => {
     const directory = path.join(projectsDir, "initial-message");
     fs.mkdirSync(directory, { recursive: true });

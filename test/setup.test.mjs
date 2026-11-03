@@ -29,7 +29,15 @@ function fixture(t) {
   fs.writeFileSync(binary, "");
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const env = { HOME: home, USERPROFILE: home, APPDATA: path.join(home, "roaming"), CODEX_HOME: path.join(home, "codex"), npm_config_global: "true" };
-  const paths = setupPaths(env, "win32");
+  const paths = {
+    home,
+    code: path.join(home, ".claude.json"),
+    desktop: path.join(home, "roaming", "Claude", "claude_desktop_config.json"),
+    codex: path.join(home, "codex"),
+    gemini: path.join(home, ".gemini", "config"),
+    tools: path.join(home, ".config", "GptClaudeBridge", "tools"),
+  };
+  assert.deepEqual(setupPaths(env, "win32"), paths);
   const calls = [];
   const inventory = new Map();
   let backgroundConfigured = false;
@@ -371,7 +379,7 @@ test("the package lifecycle skips local npm ci without creating application file
 
 test("global postinstall failures return a failing exit status instead of reporting a successful update", (t) => {
   const setup = fixture(t);
-  const env = { ...setup.env, SystemRoot: process.env.SystemRoot, PATH: process.env.PATH,
+  const env = { ...setup.env, SystemRoot: process.env.SystemRoot, PATH: "",
     CLAUDE_DESKTOP_CONFIG: setup.paths.desktop, CODEX_EXE: process.execPath };
   for (const args of [["--postinstall", "--check", "--no-download"], ["--postinstall", "--unknown"]]) {
     const child = spawnSync(process.execPath, [path.join(root, "scripts", "setup.mjs"), ...args], {

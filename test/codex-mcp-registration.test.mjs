@@ -3,10 +3,24 @@ import { it, mock } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applyStdioMcpRegistration, codexMcpRegistration, stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
+import { applyStdioMcpRegistration, codexMcpRegistration, readCodexMcpServer, stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
 
 const defaults = { name: "claude-bridge", node: "/runtime/node", entry: "/bridge/mcp-supervisor.mjs", entryArgs: ["claude-bridge.mjs"], env: {}, desktopOnly: true };
 const existing = (env = {}) => ({ enabled: true, transport: { type: "stdio", env } });
+
+it("reads one Codex entry without listing every server and treats only a named miss as absent", () => {
+  const entry = { name: "claude-bridge", enabled: true, transport: { type: "stdio" } };
+  const calls = [];
+  assert.deepEqual(readCodexMcpServer((args) => { calls.push(args); return JSON.stringify(entry); }, "claude-bridge"), entry);
+  assert.deepEqual(calls, [["mcp", "get", "claude-bridge", "--json"]]);
+  const missing = Object.assign(new Error("Command failed"), { stderr: Buffer.from("Error: No MCP server named 'claude-bridge' found.\n") });
+  assert.equal(readCodexMcpServer(() => { throw missing; }, "claude-bridge"), null);
+  const other = Object.assign(new Error("Command failed"), { stderr: "Error: No MCP server named 'other' found.\n" });
+  assert.throws(() => readCodexMcpServer(() => { throw other; }, "claude-bridge"), /Command failed/);
+  const timeout = Object.assign(new Error("spawnSync codex ETIMEDOUT"), { code: "ETIMEDOUT" });
+  assert.throws(() => readCodexMcpServer(() => { throw timeout; }, "claude-bridge"), /ETIMEDOUT/);
+  assert.throws(() => readCodexMcpServer(() => JSON.stringify({ ...entry, name: "other" }), "claude-bridge"), /invalid claude-bridge entry/);
+});
 
 it("records a downloaded CLI for fresh installs without changing customized existing environments", () => {
   const fresh = codexMcpRegistration({ ...defaults, env: { CODEX_BIN: "/managed/codex" } });

@@ -4,6 +4,26 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.9] - 2026-11-03
+
+### Fixed
+
+- Shorten the "Applying managed settings" step of `npx @minhspark/codex-mcp-bridge@latest`. Each Codex `mcp` command takes several seconds to start on a machine with many MCP servers and plugins, and one update ran about sixteen of them. The Codex installers now read their own entry with one `codex mcp get` instead of listing every server first, the verification reads all three registrations from a single `codex mcp list`, and the updater no longer runs a second, separate verification process after setup has already verified the saved settings.
+- Show which component the updater is configuring while managed settings are applied, instead of a single line that looked frozen for a minute or more.
+- Stop reporting `MCP registration is missing` for `claude-bridge`, `codex-native-relay` and `antigravity-bridge` when Codex CLI was merely too slow to answer. A slow inventory now says so, and the three registrations are reported as not checked. Codex `mcp` commands used by setup may take up to 120 seconds instead of 30, so a busy computer no longer fails an otherwise complete update.
+
+### Verification
+
+- Regression coverage checks that verification makes exactly one Codex inventory call, that only Codex's own "No MCP server named" error counts as an absent entry, that a timed-out inventory is reported as unchecked, and that the updater runs setup once and relays only its progress lines.
+
+### Upgrade
+
+```powershell
+npx.cmd -y @minhspark/codex-mcp-bridge@latest
+```
+
+This command runs the 1.26.9 updater itself, so the shorter sequence applies to this update.
+
 ## [1.26.8] - 2026-11-03
 
 ### Fixed

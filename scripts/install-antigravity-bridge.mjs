@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { applyStdioMcpRegistration, stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
+import { applyStdioMcpRegistration, CODEX_MCP_TIMEOUT_MS, readCodexMcpServer, stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
 import { bridgeEntrypointConflict, isBridgeSource, isMainModule, isNodeLauncher, stableInstallPath, stableNodeBin } from "../src/install-paths.mjs";
 import { backupRegularConfigFile } from "../src/project-policy.mjs";
 import { homeDir, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
@@ -256,10 +256,8 @@ export function runAntigravityInstaller(args = process.argv.slice(2), { prepareR
   let codexExisting = null;
   if (options.targets.includes("codex")) {
     const codexBin = validateCodexExecutable(resolveCodexBin(process.env.CODEX_EXE));
-    run = (command) => execFileSync(codexBin, command, { encoding: "utf8", env: spawnEnv(), windowsHide: true, shell: false, timeout: 30000, stdio: "pipe" });
-    const inventory = JSON.parse(run(["mcp", "list", "--json"]));
-    if (!Array.isArray(inventory)) throw new Error("Codex returned an invalid MCP inventory");
-    if (inventory.some((item) => item.name === NAME)) codexExisting = JSON.parse(run(["mcp", "get", NAME, "--json"]));
+    run = (command) => execFileSync(codexBin, command, { encoding: "utf8", env: spawnEnv(), windowsHide: true, shell: false, timeout: CODEX_MCP_TIMEOUT_MS, stdio: "pipe" });
+    codexExisting = readCodexMcpServer(run, NAME);
   }
   const plan = planAntigravityInstallation({ ...options, home, root, node, codexExisting });
   if (!options.remove) {

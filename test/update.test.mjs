@@ -40,7 +40,9 @@ function fixture(t, previousVersion = "1.26.1", platform = "win32", userInstall 
       if (args[0] === npm && args[1] === "root") return { status: 0, stdout: modules + "\n" };
       if (args[0] === npm && args[1] === "prefix") return { status: 0, stdout: prefix + "\n" };
       if (args[0] === npm && args[1] === "install") { writePackage(globalRoot, VERSION); return { status: 0, stdout: "npm lifecycle output" }; }
-      assert.deepEqual(args, [path.join(globalRoot, "scripts", "setup.mjs"), ...(args.includes("--check") ? ["--check"] : []), "--json"]);
+      assert.deepEqual(args, [path.join(globalRoot, "scripts", "setup.mjs"), "--json", "--progress"]);
+      settings.onStderrLine?.("setup-progress: Codex / claude-bridge");
+      settings.onStderrLine?.("unrelated diagnostic line");
       return { status: 0, stdout: JSON.stringify({ configured: true }) };
     },
     installService: async request => {
@@ -114,7 +116,7 @@ test("updates an unconfigured installation with the exact package version and ve
   assert.equal(install.settings.env.CODEX_BRIDGE_SKIP_SETUP, "1");
   assert.equal(f.env.CODEX_BRIDGE_SKIP_SETUP, undefined);
   const setupCalls = f.calls.filter(item => item.kind === "command" && item.args[0].endsWith("setup.mjs"));
-  assert.deepEqual(setupCalls.map(item => item.args.slice(1)), [["--json"], ["--check", "--json"]]);
+  assert.deepEqual(setupCalls.map(item => item.args.slice(1)), [["--json", "--progress"]]);
   for (const call of f.calls.filter(item => item.kind === "command")) {
     if (call !== install) assert.equal(call.settings.env.CODEX_BRIDGE_SKIP_SETUP, undefined);
     assert.equal(call.settings.shell, false);
@@ -256,7 +258,7 @@ test("real npm installs without running a failing lifecycle and setup still appl
   assert.equal(result.updated, true);
   assert.equal(fs.existsSync(marker), false);
   assert.equal(JSON.parse(fs.readFileSync(path.join(f.globalRoot, "package.json"))).version, VERSION);
-  assert.deepEqual(f.calls.filter(item => item.kind === "command").map(item => item.args.slice(1)), [["--json"], ["--check", "--json"]]);
+  assert.deepEqual(f.calls.filter(item => item.kind === "command").map(item => item.args.slice(1)), [["--json", "--progress"]]);
 });
 
 test("a pending migration never installs globally or forces existing jobs", async t => {
@@ -491,10 +493,23 @@ test("setup JSON cannot override timeout, signal or failing exit semantics", asy
 test("global setup verification failure does not claim the update completed", async t => {
   const f = fixture(t);
   const run = f.options.run;
-  f.options.run = async (command, args, settings) => args[0].endsWith("setup.mjs") && args.includes("--check")
-    ? { status: 0, stdout: JSON.stringify({ configured: false }) } : run(command, args, settings);
+  let setupRuns = 0;
+  f.options.run = async (command, args, settings) => args[0].endsWith("setup.mjs") && ++setupRuns
+    ? { status: 0, stdout: JSON.stringify({ configured: false, components: [{ name: "Codex / claude-bridge", status: "configured" }],
+      verification: [{ name: "Codex / claude-bridge", status: "incomplete", code: "SETUP_COMPONENT_INCOMPLETE" }] }) } : run(command, args, settings);
   await assert.rejects(runUpdate(f.options), { code: "UPDATE_SETUP_INCOMPLETE", phase: "verification" });
   assert.equal(f.installCalls().length, 1);
+  assert.equal(setupRuns, 1);
+});
+
+test("update reports each setup step it receives and nothing else from setup output", async t => {
+  const f = fixture(t);
+  const progress = [];
+  f.options.onProgress = message => progress.push(message);
+  await runUpdate(f.options);
+  assert.ok(progress.includes("  Codex / claude-bridge"));
+  assert.equal(progress.some(message => message.includes("unrelated diagnostic line")), false);
+  assert.ok(progress.indexOf("  Codex / claude-bridge") < progress.indexOf("Verifying the owned relay runtime."));
 });
 
 test("managed setup service activation must complete before update success", async t => {

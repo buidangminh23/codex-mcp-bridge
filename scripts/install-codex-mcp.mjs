@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { PLATFORM_LABEL, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { desktopTasksConfigured } from "../src/native-relay.mjs";
-import { applyStdioMcpRegistration, codexMcpRegistration } from "../src/codex-mcp-registration.mjs";
+import { applyStdioMcpRegistration, codexMcpRegistration, readCodexMcpServer } from "../src/codex-mcp-registration.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
 import { codexAccessPaths, enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
 import { stableInstallPath, stableNodeBin } from "../src/install-paths.mjs";
@@ -37,10 +37,7 @@ if (remove) {
   process.exit(0);
 }
 
-const servers = JSON.parse(run(["mcp", "list", "--json"]));
-if (!Array.isArray(servers)) throw new Error("Codex returned an invalid MCP inventory; existing configuration was not changed");
-const existing = servers.some((server) => server.name === serverName)
-  ? JSON.parse(run(["mcp", "get", serverName, "--json"])) : null;
+const existing = readCodexMcpServer(run, serverName);
 const registration = codexMcpRegistration({ name: serverName, existing, node: nodeBin, entry, entryArgs, env: process.env, desktopOnly: desktopTasksConfigured() });
 createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...registration.environment }) });
 const applied = applyStdioMcpRegistration({ name: serverName, registration, existing, run, configPath: codexAccessPaths().config });

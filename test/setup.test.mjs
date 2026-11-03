@@ -109,7 +109,7 @@ function fixture(t) {
   const run = (command, args, childEnv) => {
     calls.push({ command, args, env: childEnv });
     if (args[0] === "mcp") {
-      if (args[1] === "list") return JSON.stringify([...inventory.keys()].map((name) => ({ name })));
+      if (args[1] === "list") return JSON.stringify([...inventory].map(([name, entry]) => ({ name, ...entry })));
       if (args[1] === "get") return JSON.stringify(inventory.get(args[2]));
       throw new Error("Unexpected Codex mutation");
     }
@@ -246,6 +246,47 @@ test("global setup initializes all native and Antigravity entries then verifies 
   const output = [];
   printSetup(result, { output: (line) => output.push(line) });
   assert.match(output[0], /configuration verified.*connections have not been verified/);
+});
+
+test("verification reads every Codex registration from one inventory call", (t) => {
+  const setup = fixture(t);
+  runSetup({ ...setup, args: ["--no-download"], platform: "win32", root });
+  setup.calls.length = 0;
+  const result = checkSetup({ ...setup, platform: "win32", root });
+  assert.equal(result.configured, true, JSON.stringify(result));
+  const codexCalls = setup.calls.filter((call) => call.args[0] === "mcp");
+  assert.deepEqual(codexCalls.map((call) => call.args.slice(0, 2)), [["mcp", "list"]]);
+});
+
+test("a slow Codex CLI is reported as unchecked instead of missing registrations", (t) => {
+  const setup = fixture(t);
+  runSetup({ ...setup, args: ["--no-download"], platform: "win32", root });
+  const run = (command, args, env, timeout) => {
+    if (args[0] === "mcp" && args[1] === "list") {
+      assert.ok(timeout >= 120000);
+      throw setupProcessFailure(command, args, { status: null, error: { code: "ETIMEDOUT" }, stdout: "", stderr: "" });
+    }
+    return setup.run(command, args, env, timeout);
+  };
+  const result = checkSetup({ ...setup, run, platform: "win32", root });
+  assert.equal(result.configured, false);
+  const cli = result.components.find((item) => item.name === "Codex CLI");
+  assert.match(cli.detail, /did not list its MCP servers within 120 seconds/);
+  for (const name of ["Codex / claude-bridge", "Codex / codex-native-relay", "Codex / antigravity-bridge"]) {
+    const item = result.components.find((component) => component.name === name);
+    assert.equal(item.status, "incomplete");
+    assert.match(item.detail, /Not checked.*may still be present/);
+    assert.doesNotMatch(item.detail, /registration is missing/);
+  }
+});
+
+test("setup reports each component before applying it", (t) => {
+  const setup = fixture(t);
+  const progress = [];
+  runSetup({ ...setup, args: ["--no-download"], platform: "win32", root, onProgress: (step) => progress.push(step) });
+  assert.deepEqual(progress, ["Claude Code / codex-bridge", "Claude Desktop / codex-bridge-desktop", "Codex / codex-native-relay and executor",
+    "Codex / claude-bridge", "Antigravity / all components", "Independent background relay", "Verifying saved settings"]);
+  assert.equal(setupArguments(["--progress", "--json"]).progress, true);
 });
 
 test("setup help exposes one command for updating the package and applying managed settings", () => {

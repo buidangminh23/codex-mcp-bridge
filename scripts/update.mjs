@@ -65,9 +65,18 @@ export function resolveUpdateNpm(env = process.env) {
   throw failure("UPDATE_NPM_NOT_FOUND", "A supported npm CLI could not be located. Run this updater through npm exec.", "preflight");
 }
 
-function execute(command, args, options) {
+const SETUP_PROGRESS = /^setup-progress: ([^\u0000-\u001f\u007f]{1,120})$/;
+
+function execute(command, args, { onStderrLine, ...options }) {
   return new Promise(resolve => {
-    execFile(command, args, options, (error, stdout, stderr) => resolve({ status: error ? 1 : 0, error, stdout, stderr }));
+    const child = execFile(command, args, options, (error, stdout, stderr) => resolve({ status: error ? 1 : 0, error, stdout, stderr }));
+    if (!onStderrLine || !child.stderr) return;
+    let pending = "";
+    child.stderr.on("data", chunk => {
+      const lines = (pending + chunk).split(/\r?\n/);
+      pending = lines.pop();
+      for (const line of lines) onStderrLine(line);
+    });
   });
 }
 
@@ -141,11 +150,11 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   const prefixArgs = userPrefix ? ["--prefix", userPrefix] : [];
   let cwd = neutralDirectory([root], env);
   let childEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !/^AGENT_RELAY_(?!DIRECTORY$)/i.test(name)));
-  const command = async (arguments_, phase, timeout = 600000, environment = childEnv, setupCommand = false) => {
+  const command = async (arguments_, phase, timeout = 600000, environment = childEnv, setupCommand = false, onStderrLine) => {
     let result;
     try {
       result = await run(process.execPath, arguments_, { env: environment, cwd, encoding: "utf8", windowsHide: true,
-        shell: false, timeout, maxBuffer: 8 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+        shell: false, timeout, maxBuffer: 8 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], ...(onStderrLine ? { onStderrLine } : {}) });
     } catch (error) { throw childFailure({ error, stdout: error.stdout, stderr: error.stderr }, phase, setupCommand); }
     if (result?.error || (result?.status ?? result?.exitCode ?? 0) !== 0) throw childFailure(result, phase, setupCommand);
     return String(result?.stdout ?? "");
@@ -203,13 +212,13 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   await command([npm, "install", "--global", "--prefix", prefix, `${PACKAGE}@${version}`, "--ignore-scripts"],
     "installation", 600000, { ...childEnv, CODEX_BRIDGE_SKIP_SETUP: "1" });
   if (packageVersion(globalRoot) !== version) throw failure("UPDATE_VERSION_MISMATCH", "The global package version does not match the updater version. Rerun the same update command.", "verification");
-  for (const check of [false, true]) {
-    onProgress(check ? "Verifying the global bridge settings and owned relay runtime." : "Applying managed settings from the installed bridge.");
-    let setup;
-    try { setup = JSON.parse(await command([path.join(globalRoot, "scripts", "setup.mjs"), ...(check ? ["--check"] : []), "--json"], "verification", 600000, childEnv, true)); }
-    catch (error) { if (error?.code) throw error; throw failure("UPDATE_SETUP_INCOMPLETE", `Global setup did not return a verifiable result. ${SETUP_INSPECTION} ${RETRY}`, "verification"); }
-    if (setup?.configured !== true) throw failure("UPDATE_SETUP_INCOMPLETE", `The global bridge settings are incomplete. ${setupFailureSummary(setup) ?? SETUP_INSPECTION} ${RETRY}`, "verification");
-  }
+  onProgress("Applying and verifying managed settings from the installed bridge. Each step can take up to a minute while Codex CLI reads its configuration.");
+  const setupProgress = line => { const step = SETUP_PROGRESS.exec(line)?.[1]; if (step) onProgress(`  ${step}`); };
+  let setup;
+  try { setup = JSON.parse(await command([path.join(globalRoot, "scripts", "setup.mjs"), "--json", "--progress"], "verification", 600000, childEnv, true, setupProgress)); }
+  catch (error) { if (error?.code) throw error; throw failure("UPDATE_SETUP_INCOMPLETE", `Global setup did not return a verifiable result. ${SETUP_INSPECTION} ${RETRY}`, "verification"); }
+  if (setup?.configured !== true) throw failure("UPDATE_SETUP_INCOMPLETE", `The global bridge settings are incomplete. ${setupFailureSummary(setup) ?? SETUP_INSPECTION} ${RETRY}`, "verification");
+  onProgress("Verifying the owned relay runtime.");
   const service = await awaitService(globalRoot, false, "verification");
   return { updated: true, configured: true, version, previousVersion, migrated, service, opensApps: false, opensChats: false };
 }

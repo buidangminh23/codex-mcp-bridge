@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-11-03T15:10:10.353Z",
+  "updatedAt": "2026-11-03T21:01:08.316Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -26382,7 +26382,7 @@
       }
     },
     {
-      "collectedAt": "2026-11-03T15:10:10.353Z",
+      "collectedAt": "2026-11-03T21:01:08.316Z",
       "views": {
         "count": 377,
         "uniques": 90,
@@ -26840,7 +26840,7 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.4.zip",
-              "downloads": 2
+              "downloads": 3
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.4.zip.sha256",
@@ -26853,7 +26853,7 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.3.zip",
-              "downloads": 4
+              "downloads": 5
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.3.zip.sha256",
@@ -26866,7 +26866,7 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.2.zip",
-              "downloads": 3
+              "downloads": 4
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.2.zip.sha256",
@@ -26879,7 +26879,7 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.1.zip",
-              "downloads": 3
+              "downloads": 4
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.1.zip.sha256",
@@ -26892,7 +26892,7 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.21.0.zip",
-              "downloads": 4
+              "downloads": 5
             },
             {
               "name": "codex-mcp-bridge-plugin-1.21.0.zip.sha256",
@@ -26905,7 +26905,7 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.20.1.zip",
-              "downloads": 6
+              "downloads": 7
             },
             {
               "name": "codex-mcp-bridge-plugin-1.20.1.zip.sha256",
@@ -26918,7 +26918,7 @@
           "assets": [
             {
               "name": "codex-mcp-bridge-plugin-1.20.0.zip",
-              "downloads": 5
+              "downloads": 6
             },
             {
               "name": "codex-mcp-bridge-plugin-1.20.0.zip.sha256",
@@ -26963,11 +26963,11 @@
           "assets": [
             {
               "name": "minhspark-codex-mcp-bridge-1.18.2.tgz",
-              "downloads": 2
+              "downloads": 3
             },
             {
               "name": "SHA256SUMS.txt",
-              "downloads": 5
+              "downloads": 6
             }
           ]
         },
@@ -26976,11 +26976,11 @@
           "assets": [
             {
               "name": "minhspark-codex-mcp-bridge-1.18.1.tgz",
-              "downloads": 2
+              "downloads": 3
             },
             {
               "name": "SHA256SUMS.txt",
-              "downloads": 4
+              "downloads": 5
             }
           ]
         },
@@ -26993,11 +26993,11 @@
           "assets": [
             {
               "name": "minhspark-codex-mcp-bridge-1.17.0.tgz",
-              "downloads": 3
+              "downloads": 4
             },
             {
               "name": "SHA256SUMS.txt",
-              "downloads": 3
+              "downloads": 4
             }
           ]
         },
@@ -27116,11 +27116,11 @@
         }
       ],
       "sourceCollectedAt": {
-        "views": "2026-11-03T15:10:10.353Z",
-        "clones": "2026-11-03T15:10:10.353Z",
-        "npm": "2026-11-03T15:10:10.353Z",
-        "repository": "2026-11-03T15:10:10.353Z",
-        "releases": "2026-11-03T15:10:10.353Z"
+        "views": "2026-11-03T21:01:08.316Z",
+        "clones": "2026-11-03T21:01:08.316Z",
+        "npm": "2026-11-03T21:01:08.316Z",
+        "repository": "2026-11-03T21:01:08.316Z",
+        "releases": "2026-11-03T21:01:08.316Z"
       }
     }
   ],
@@ -27981,7 +27981,7 @@
     }
   },
   "usage": {
-    "collectedAt": "2026-11-03T15:10:12Z",
+    "collectedAt": "2026-11-03T21:01:10Z",
     "active": {
       "day": 0,
       "week": 0,

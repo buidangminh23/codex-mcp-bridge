@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readRegularConfigFile } from "./project-policy.mjs";
 
 const KEG_PATH = /^(\/.*?)\/Cellar\/([^/]+)\/[^/]+(\/.*)?$/;
 
@@ -34,6 +35,40 @@ export function stableInstallPath(target, env = process.env) {
 /** The node binary to record for later launches. */
 export function stableNodeBin(env = process.env) {
   return stableInstallPath(process.execPath, env);
+}
+
+export function isNodeLauncher(command) {
+  return typeof command === "string" && !command.includes("\0")
+    && /^(?:node|node\.exe)$/i.test(path.basename(command))
+    && (path.isAbsolute(command) || command === path.basename(command));
+}
+
+export function isBridgeSource(script, sources = [], workers = []) {
+  if (typeof script !== "string" || !path.isAbsolute(script) || script.includes("\0")) return false;
+  const source = path.dirname(path.resolve(script));
+  if ([...sources].some(value => path.relative(value, source) === "")) return true;
+  if (path.basename(source) !== "src") return false;
+  const root = path.dirname(source);
+  try {
+    for (const directory of [root, source]) {
+      const stat = fs.lstatSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    }
+    const metadata = JSON.parse(readRegularConfigFile(path.join(root, "package.json"), { maxBytes: 128 * 1024 }));
+    if (metadata?.name !== "@minhspark/codex-mcp-bridge" || typeof metadata.version !== "string"
+      || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?$/.test(metadata.version)) return false;
+    for (const name of new Set([path.basename(script), ...workers])) {
+      if (typeof name !== "string" || path.basename(name) !== name) return false;
+      const stat = fs.lstatSync(path.join(source, name));
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return false;
+    }
+    return true;
+  } catch { return false; }
+}
+
+export function bridgeEntrypointConflict(label, node, args, detail = "an unrecognized or customized entrypoint") {
+  const code = "SETUP_ENTRYPOINT_CONFLICT";
+  return Object.assign(new Error(`${code}: ${label} has ${detail}; no configuration was changed. Restore the previous bridge package so setup can verify its package.json, or back up this registration and update only command=${JSON.stringify(node)} and args=${JSON.stringify(args)}. Preserve its other settings, then rerun setup.`), { code });
 }
 
 /**

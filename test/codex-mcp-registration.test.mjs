@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { it } from "node:test";
+import { it, mock } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -123,4 +123,44 @@ it("never falls back to codex mcp add when that would drop the entry's env_vars"
   assert.throws(() => applyStdioMcpRegistration({ name: "r", registration, existing: structuredClone(stub.entry), run: stub.run, configPath: stub.configPath }), /exactly one \[mcp_servers\.r\] table.*update only command=/s);
   assert.equal(stub.calls.length, 0);
   assert.equal(fs.readFileSync(stub.configPath, "utf8"), 'mcp_servers.r = { command = "/runtime/node", args = [], env_vars = ["PIPE"] }\n');
+});
+
+it("backs up exact Codex configuration bytes before retargeting and keeps reruns idempotent", (t) => {
+  const original = '[mcp_servers.r]\r\ncommand = "/old/node"\r\nargs = ["/old/entry.mjs"]\r\nenabled = false\r\ntool_timeout_sec = 90\r\n';
+  const stub = codexStub(t, original);
+  const previous = { enabled: false, tool_timeout_sec: 90, transport: { type: "stdio", command: "/old/node", args: ["/old/entry.mjs"], env: {} } };
+  const registration = stdioMcpRegistration({ ...defaults, name: "r", existing: previous });
+  const run = args => {
+    assert.deepEqual(args, ["mcp", "get", "r", "--json"]);
+    const saved = fs.readFileSync(stub.configPath, "utf8");
+    return JSON.stringify({ ...previous, transport: { ...previous.transport,
+      command: JSON.parse(/^command = (.+)$/m.exec(saved)[1]), args: JSON.parse(/^args = (.+)$/m.exec(saved)[1]) } });
+  };
+  applyStdioMcpRegistration({ name: "r", registration, existing: previous, run, configPath: stub.configPath });
+  const backups = () => fs.readdirSync(path.dirname(stub.configPath)).filter(name => name.startsWith("config.toml.backup-"));
+  assert.equal(backups().length, 1);
+  assert.equal(fs.readFileSync(path.join(path.dirname(stub.configPath), backups()[0]), "utf8"), original);
+  assert.match(fs.readFileSync(stub.configPath, "utf8"), /enabled = false\r\ntool_timeout_sec = 90/);
+  applyStdioMcpRegistration({ name: "r", registration, existing: previous, run, configPath: stub.configPath });
+  assert.equal(backups().length, 1);
+});
+
+it("never falls back to CLI overwrite when Codex configuration changes after backup", (t) => {
+  const original = '[mcp_servers.r]\ncommand = "/old/node"\nargs = ["/old/entry.mjs"]\n';
+  const stub = codexStub(t, original);
+  const previous = { enabled: true, transport: { type: "stdio", command: "/old/node", args: ["/old/entry.mjs"], env: {} } };
+  const registration = stdioMcpRegistration({ ...defaults, name: "r", existing: previous });
+  assert.ok(registration.args);
+  const write = fs.writeFileSync;
+  const concurrent = original + "concurrent = true\n";
+  const canonical = fs.realpathSync.native(stub.configPath);
+  mock.method(fs, "writeFileSync", (file, ...args) => {
+    const result = write(file, ...args);
+    if (String(file).startsWith(`${canonical}.backup-`)) write(stub.configPath, concurrent);
+    return result;
+  });
+  t.after(() => mock.restoreAll());
+  assert.throws(() => applyStdioMcpRegistration({ name: "r", registration, existing: previous, run: stub.run, configPath: stub.configPath }), /configuration changed/i);
+  assert.equal(fs.readFileSync(stub.configPath, "utf8"), concurrent);
+  assert.equal(stub.calls.length, 0);
 });

@@ -10,7 +10,7 @@ import { desktopTasksConfigured } from "../src/native-relay.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
 import { enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
-import { stableInstallPath, stableNodeBin } from "../src/install-paths.mjs";
+import { bridgeEntrypointConflict, isBridgeSource, isNodeLauncher, stableInstallPath, stableNodeBin } from "../src/install-paths.mjs";
 
 exitForVersionRequest(import.meta.url);
 
@@ -113,14 +113,12 @@ const entryName = requestedEntryName ?? bridgeEntries[0] ?? "codex-bridge";
 if ((requestedEntryName || setup) && cfg.mcpServers[entryName] !== undefined) {
   const existing = cfg.mcpServers[entryName];
   const script = existing?.args?.[0];
-  const source = typeof script === "string" && path.isAbsolute(script) ? path.dirname(script) : null;
-  const ownedSource = source && (sourceDirectories.has(source)
-    || path.basename(source) === "src" && path.basename(path.dirname(source)).toLowerCase() === "codex-mcp-bridge");
+  const ownedSource = isBridgeSource(script, sourceDirectories, ["index.mjs"]);
   const supervised = existing?.args?.length === 2 && path.basename(script ?? "") === "mcp-supervisor.mjs" && existing.args[1] === "index.mjs";
   const direct = existing?.args?.length === 1 && ["index.mjs", "codex-bridge-launcher.mjs"].includes(path.basename(script ?? ""));
-  if (!existing || typeof existing !== "object" || Array.isArray(existing) || !ownedSource || !(supervised || direct)
+  if (!existing || typeof existing !== "object" || Array.isArray(existing) || !ownedSource || !(supervised || direct) || !isNodeLauncher(existing.command)
       || existing.type !== undefined && existing.type !== "stdio" || ["url", "httpUrl", "serverUrl"].some((key) => existing[key] !== undefined)) {
-    throw new Error(`Desktop ${entryName} has an unrecognized or customized entrypoint; no configuration was changed`);
+    throw bridgeEntrypointConflict(`Desktop ${entryName}`, nodeBin, [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"]);
   }
   if (existing.env !== undefined && (!existing.env || typeof existing.env !== "object" || Array.isArray(existing.env)
       || Object.values(existing.env).some((value) => typeof value !== "string"))) throw new Error(`Desktop ${entryName} environment must contain string values`);
@@ -194,10 +192,9 @@ createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...cfg.mcpSe
 
 const changed = original === null || JSON.stringify(JSON.parse(original.data.toString("utf8"))) !== JSON.stringify(cfg);
 if (changed) {
-  const backup = `${cfgPath}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge`;
+  const backup = `${cfgPath}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge-${randomUUID()}`;
   if (original) {
-    try { fs.writeFileSync(backup, original.data, { flag: "wx", mode: 0o600 }); }
-    catch (error) { if (error.code !== "EEXIST") throw error; }
+    fs.writeFileSync(backup, original.data, { flag: "wx", mode: 0o600 });
   }
   const temporary = `${cfgPath}.${randomUUID()}.tmp`;
   try {

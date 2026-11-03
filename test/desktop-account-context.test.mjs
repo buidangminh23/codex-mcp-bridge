@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
 
-import { readClaudeAccountContext } from "../src/desktop-account-context.mjs";
+import { readClaudeAccountContext, resolveClaudeDesktopConfigRoot } from "../src/desktop-account-context.mjs";
 
 const ACCOUNT_A = "11111111-1111-4111-8111-111111111111";
 const ACCOUNT_B = "22222222-2222-4222-8222-222222222222";
@@ -149,6 +149,128 @@ describe("Claude Desktop persisted account identity", () => {
 });
 
 describe("Claude Desktop account data discovery", () => {
+  function migratedWindows({ alias = false, account = true } = {}) {
+    const local = path.join(sandbox, "Local");
+    const legacy = path.join(local, "Packages", "Claude_test", "LocalCache", "Roaming", "Claude");
+    const current = path.join(local, "Claude-Data", "claude_test");
+    const env = { HOME: sandbox, APPDATA: sandbox, LOCALAPPDATA: local };
+    for (const directory of [legacy, current]) fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(legacy, ".user-data-left.claude_test"), "");
+    if (alias) fs.symlinkSync(legacy, root, process.platform === "win32" ? "junction" : "dir");
+    else {
+      fs.mkdirSync(root);
+      fs.writeFileSync(path.join(root, ".user-data-left.claude_test"), "");
+    }
+    fs.writeFileSync(path.join(current, "claude_desktop_config.json"), "{}");
+    if (account) writeConfig(ACCOUNT_B, true, current);
+    return { local, legacy, current, env, platform: "win32" };
+  }
+
+  it("discovers migrated MSIX data and ignores marker-only legacy directories and their known alias", () => {
+    const options = migratedWindows({ alias: true });
+    assert.equal(resolveClaudeDesktopConfigRoot(options), options.current);
+    const actual = readClaudeAccountContext(options);
+    assert.equal(actual.status, "verified");
+    assert.equal(actual.accountId, ACCOUNT_B);
+    assert.equal(actual.root, options.current);
+  });
+
+  it("selects the migrated settings directory without claiming an unrecorded account", () => {
+    const options = migratedWindows({ account: false });
+    assert.equal(resolveClaudeDesktopConfigRoot(options), options.current);
+    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+  });
+
+  it("does not discard a marked directory that still contains account data", () => {
+    const options = migratedWindows();
+    writeConfig(ACCOUNT_A, true, options.legacy);
+    expectHiddenIdentity(readClaudeAccountContext(options), "ambiguous");
+    assert.throws(() => resolveClaudeDesktopConfigRoot(options), { code: "CLAUDE_DESKTOP_DATA_ROOT_AMBIGUOUS" });
+  });
+
+  it("refuses to guess between migrated profiles even when both report the same account", () => {
+    const options = migratedWindows();
+    writeConfig(ACCOUNT_B, true, path.join(options.local, "Claude-Data", "claude_other"));
+    expectHiddenIdentity(readClaudeAccountContext(options), "ambiguous");
+    assert.throws(() => resolveClaudeDesktopConfigRoot(options), { code: "CLAUDE_DESKTOP_DATA_ROOT_AMBIGUOUS" });
+  });
+
+  it("keeps explicit data-root overrides authoritative after migration", () => {
+    const options = migratedWindows();
+    options.env.CLAUDE_DESKTOP_USER_DATA = options.legacy;
+    assert.equal(resolveClaudeDesktopConfigRoot(options), options.legacy);
+    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+  });
+
+  it("does not follow an ordinary alias to an undiscovered marker-only directory", () => {
+    const options = migratedWindows();
+    const foreign = path.join(sandbox, "foreign");
+    fs.mkdirSync(foreign);
+    fs.writeFileSync(path.join(foreign, ".user-data-left.claude_test"), "");
+    fs.rmSync(root, { recursive: true });
+    fs.symlinkSync(foreign, root, process.platform === "win32" ? "junction" : "dir");
+    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+    assert.throws(() => resolveClaudeDesktopConfigRoot(options));
+  });
+
+  it("does not treat a directory named like a migration marker as an abandoned root", () => {
+    const options = migratedWindows({ account: false });
+    fs.mkdirSync(path.join(options.legacy, ".user-data-left.claude_directory"));
+    assert.throws(() => resolveClaudeDesktopConfigRoot(options), { code: "CLAUDE_DESKTOP_DATA_ROOT_AMBIGUOUS" });
+  });
+
+  it("does not recreate abandoned roots when no migrated data exists", () => {
+    const options = migratedWindows();
+    fs.rmSync(options.current, { recursive: true });
+    assert.throws(() => resolveClaudeDesktopConfigRoot(options), { code: "CLAUDE_DESKTOP_DATA_ROOT_UNAVAILABLE" });
+    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+    fs.rmSync(root, { recursive: true });
+    assert.throws(() => resolveClaudeDesktopConfigRoot(options), { code: "CLAUDE_DESKTOP_DATA_ROOT_UNAVAILABLE" });
+    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+    assert.equal(fs.existsSync(root), false);
+  });
+
+  it("rejects a newly appearing migrated profile during account inspection", () => {
+    const options = migratedWindows();
+    const originalRead = fs.readSync;
+    let created = false;
+    mock.method(fs, "readSync", (...args) => {
+      const count = originalRead(...args);
+      if (!created) {
+        created = true;
+        writeConfig(ACCOUNT_A, true, path.join(options.local, "Claude-Data", "claude_new"));
+      }
+      return count;
+    });
+    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+  });
+
+  it("rejects a legacy root becoming active during migrated account inspection", () => {
+    const options = migratedWindows();
+    const originalRead = fs.readSync;
+    let activated = false;
+    mock.method(fs, "readSync", (...args) => {
+      const count = originalRead(...args);
+      if (!activated) {
+        activated = true;
+        writeConfig(ACCOUNT_A, true, options.legacy);
+      }
+      return count;
+    });
+    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+  });
+
+  it("rejects symbolic migrated profiles and bounds the number of discovered roots", () => {
+    const options = migratedWindows();
+    const parent = path.dirname(options.current);
+    const alias = path.join(parent, "claude_link");
+    fs.symlinkSync(options.current, alias, process.platform === "win32" ? "junction" : "dir");
+    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+    fs.unlinkSync(alias);
+    for (let index = 0; index < 16; index++) fs.mkdirSync(path.join(parent, `claude_${index}`));
+    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+  });
+
   it("finds macOS and Linux data roots using supplied homes and config roots", () => {
     const macRoot = path.join(sandbox, "Library", "Application Support", "Claude");
     const linuxRoot = path.join(sandbox, "config", "Claude");

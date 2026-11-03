@@ -4,6 +4,27 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.8] - 2026-11-03
+
+### Fixed
+
+- Discover Claude Desktop's migrated Windows MSIX data under `%LOCALAPPDATA%\Claude-Data\claude_*`. Ignore old roots containing only migration markers, including an alias to a discovered retired root, without deleting data or guessing between active profiles. Explicit data-root overrides remain authoritative.
+- Retarget verified older bridge source registrations during managed setup, including renamed checkouts, while preserving custom environment values, project restrictions and disabled settings. Changed configuration files receive unique backups, including repeated Desktop migrations on the same day. Custom launchers, extra arguments, unrelated packages and unavailable old source remain protected and receive specific recovery guidance.
+- Restore a missing Antigravity sidecar definition when only its ordinary enable/disable registration remains. Preserve a deliberately disabled sidecar and refuse custom orphan settings.
+- Include the failed setup components and safe recovery guidance in updater errors instead of reporting only `EXIT_1`. Detailed local setup failures remain available through `codex-bridge-setup --check --json`; raw child output and private configuration are excluded from the updater summary.
+
+### Verification
+
+- Regression coverage includes migrated MSIX roots, retired aliases, multiple profiles, verified legacy entrypoints, exact configuration backups, concurrent configuration changes, disabled sidecars and bounded error summaries. Native delivery on the reporter's Windows 11 / Claude Desktop 4.4212 environment has not been exercised.
+
+### Upgrade
+
+```powershell
+npx.cmd -y @minhspark/codex-mcp-bridge@latest
+```
+
+After active work finishes, reconnect the affected MCP clients or restart their host apps so existing direct processes load the updated registrations.
+
 ## [1.26.7] - 2026-11-03
 
 ### Fixed

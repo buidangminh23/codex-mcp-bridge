@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { retargetMcpServerToml } from "./codex-mcp-toml.mjs";
+import { backupRegularConfigFile } from "./project-policy.mjs";
 
 const PRESERVED_FIELDS = ["enabled", "disabled_reason", "enabled_tools", "disabled_tools", "startup_timeout_sec", "tool_timeout_sec"];
 
@@ -99,12 +101,19 @@ function verificationErrors(before, after, registration, ensureEnvVars) {
 
 export function applyStdioMcpRegistration({ name, registration, existing, run, configPath, ensureEnvVars = [] }) {
   const original = readConfigSnapshot(configPath);
+  let backedUp = false;
+  const ensureBackup = () => {
+    if (!original || backedUp) return;
+    backupRegularConfigFile(original.path, `${original.path}.backup-${randomUUID()}`, original.contents, 16 * 1024 * 1024);
+    backedUp = true;
+  };
   const target = { command: registration.command, args: registration.commandArgs, ensureEnvVars };
   const editInPlace = () => {
     const current = readConfigSnapshot(configPath);
     if (!current) throw new Error("The Codex configuration file does not exist");
     const next = retargetMcpServerToml(current.contents, name, target);
     if (next === current.contents) return false;
+    ensureBackup();
     writeConfigAtomically(current, next);
     return true;
   };
@@ -120,11 +129,12 @@ export function applyStdioMcpRegistration({ name, registration, existing, run, c
         mutated = edited;
         envVarsAdded = true;
       } catch (error) {
-        if (!registration.args) throw new Error(`${error.message}. ${registration.manual}`);
+        if (!registration.args || backedUp) throw new Error(`${error.message}. ${registration.manual}`);
         mode = "add";
       }
     }
     if (mode === "add") {
+      ensureBackup();
       run(registration.args);
       mutated = true;
       if (!envVarsAdded) {

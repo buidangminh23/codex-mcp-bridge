@@ -33,6 +33,31 @@ function directoryStat(directory) {
   return stat;
 }
 
+function retiredRoot(root, candidates) {
+  let initial;
+  try { initial = fs.lstatSync(root, { bigint: true }); }
+  catch (error) { if (isMissing(error)) return false; throw error; }
+  let directory = root;
+  let destination;
+  if (initial.isSymbolicLink()) {
+    destination = fs.realpathSync.native(root);
+    directory = candidates.find((candidate) => {
+      if (candidate === root) return false;
+      try {
+        directoryStat(candidate);
+        return fs.realpathSync.native(candidate).toLowerCase() === destination.toLowerCase();
+      } catch (error) { if (isMissing(error) || error.message === "invalid directory") return false; throw error; }
+    });
+    if (!directory) throw new Error("invalid directory");
+  }
+  const before = directoryStat(directory);
+  const entries = fs.readdirSync(directory, { withFileTypes: true });
+  const retired = entries.length > 0 && entries.every((entry) => entry.isFile() && /^\.user-data-left(?:\.|$)/i.test(entry.name));
+  if (!sameVersion(before, directoryStat(directory)) || !sameVersion(initial, fs.lstatSync(root, { bigint: true }))
+      || destination !== undefined && fs.realpathSync.native(root) !== destination) throw new Error("root changed");
+  return retired;
+}
+
 function candidateRoots({ platform, env, root }) {
   const selected = root !== undefined ? root : env.CLAUDE_DESKTOP_USER_DATA;
   if (selected !== undefined) return [absoluteDirectory(selected)];
@@ -42,30 +67,40 @@ function candidateRoots({ platform, env, root }) {
       : env.XDG_CONFIG_HOME || path.join(home, ".config");
   const roots = [absoluteDirectory(path.join(config, "Claude"))];
   if (platform === "win32") {
-    const packages = absoluteDirectory(path.join(env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "Packages"));
-    let entries;
-    try {
-      directoryStat(packages);
-      entries = fs.readdirSync(packages, { withFileTypes: true });
-    } catch (error) {
-      if (!isMissing(error)) throw error;
-      entries = [];
-    }
-    if (entries.length > MAX_PACKAGES) throw new Error("package scan limit");
-    for (const entry of entries) {
-      if (!PACKAGE_NAME.test(entry.name)) continue;
-      const packageRoot = path.join(packages, entry.name);
-      directoryStat(packageRoot);
-      roots.push(path.join(packageRoot, "LocalCache", "Roaming", "Claude"));
+    const local = absoluteDirectory(env.LOCALAPPDATA || path.join(home, "AppData", "Local"));
+    for (const [name, suffix] of [["Packages", ["LocalCache", "Roaming", "Claude"]], ["Claude-Data", []]]) {
+      const parent = path.join(local, name);
+      let entries;
+      try {
+        directoryStat(parent);
+        entries = fs.readdirSync(parent, { withFileTypes: true });
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+        entries = [];
+      }
+      if (entries.length > MAX_PACKAGES) throw new Error("package scan limit");
+      for (const entry of entries) {
+        if (!PACKAGE_NAME.test(entry.name)) continue;
+        const packageRoot = path.join(parent, entry.name);
+        directoryStat(packageRoot);
+        roots.push(path.join(packageRoot, ...suffix));
+      }
     }
   }
   const unique = [...new Map(roots.map((value) => [platform === "win32" ? value.toLowerCase() : value, value])).values()].sort();
   if (unique.length > MAX_ROOTS) throw new Error("root scan limit");
-  return unique;
+  if (platform !== "win32") return unique;
+  const active = unique.filter((candidate) => !retiredRoot(candidate, unique));
+  if (active.length === unique.length) return active;
+  return active.filter((candidate) => {
+    try { directoryStat(candidate); return true; }
+    catch (error) { if (isMissing(error)) return false; throw error; }
+  });
 }
 
 export function resolveClaudeDesktopConfigRoot({ platform = process.platform, env = process.env } = {}) {
   const roots = candidateRoots({ platform, env });
+  if (!roots.length) throw Object.assign(new Error("No active Claude Desktop data root remains after migration. Start Claude Desktop or set CLAUDE_DESKTOP_USER_DATA to its active data directory, then rerun setup."), { code: "CLAUDE_DESKTOP_DATA_ROOT_UNAVAILABLE" });
   if (roots.length === 1) return roots[0];
   const account = readClaudeAccountContext({ platform, env });
   if (account.status === "verified" || account.status === "signed_out") return account.root;
@@ -79,7 +114,7 @@ export function resolveClaudeDesktopConfigRoot({ platform = process.platform, en
     const ordinary = path.resolve(env.APPDATA || path.join(home, "AppData", "Roaming"), "Claude");
     return roots.find((root) => root.toLowerCase() !== ordinary.toLowerCase());
   }
-  throw new Error("Multiple Claude Desktop data roots exist. Set CLAUDE_DESKTOP_USER_DATA to the application's active data directory, then rerun setup.");
+  throw Object.assign(new Error("Multiple Claude Desktop data roots exist. Set CLAUDE_DESKTOP_USER_DATA to the application's active data directory, then rerun setup."), { code: "CLAUDE_DESKTOP_DATA_ROOT_AMBIGUOUS" });
 }
 
 function readConfig(root) {

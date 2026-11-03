@@ -540,6 +540,35 @@ describe("claude desktop installer", () => {
     }
   });
 
+  it("setup retargets a renamed verified source checkout with an exact backup", () => {
+    const previous = path.join(sandbox, "renamed-desktop-source");
+    fs.mkdirSync(path.join(previous, "src"), { recursive: true });
+    fs.writeFileSync(path.join(previous, "package.json"), JSON.stringify({ name: "@minhspark/codex-mcp-bridge", version: "1.26.0" }));
+    for (const name of ["index.mjs", "mcp-supervisor.mjs"]) fs.writeFileSync(path.join(previous, "src", name), "export {};\n");
+    const config = configWith({ mcpServers: { "codex-bridge-desktop": { command: process.execPath,
+      args: [path.join(previous, "src", "mcp-supervisor.mjs"), "index.mjs"], disabled: true,
+      env: { CODEX_BRIDGE_ALLOWED_ROOTS: "/limited", CODEX_BRIDGE_APPROVAL: "deny", CUSTOM_TOKEN: "preserve" } } } });
+    const before = fs.readFileSync(config);
+    const earlierBackup = `${config}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge`;
+    const earlierContents = Buffer.from('{"older":true}\n');
+    fs.writeFileSync(earlierBackup, earlierContents);
+    const args = ["--entry-name", "codex-bridge-desktop", "--quiet", "--setup"];
+    const saved = install({ config, args }).mcpServers["codex-bridge-desktop"];
+    assert.deepEqual(saved.args, [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"]);
+    assert.equal(saved.disabled, true);
+    assert.equal(saved.env.CODEX_BRIDGE_ALLOWED_ROOTS, "/limited");
+    assert.equal(saved.env.CODEX_BRIDGE_APPROVAL, "deny");
+    assert.equal(saved.env.CUSTOM_TOKEN, "preserve");
+    const backups = fs.readdirSync(sandbox).filter(name => name.startsWith(`${path.basename(config)}.bak-`));
+    assert.equal(backups.length, 2);
+    assert.deepEqual(fs.readFileSync(earlierBackup), earlierContents);
+    const newestBackup = path.join(sandbox, backups.find(name => name !== path.basename(earlierBackup)));
+    assert.deepEqual(fs.readFileSync(newestBackup), before);
+    if (process.platform !== "win32") assert.equal(fs.statSync(newestBackup).mode & 0o777, 0o600);
+    assert.equal(JSON.parse(installOutput({ config, args })).changed, false);
+    assert.equal(fs.readdirSync(sandbox).filter(name => name.startsWith(`${path.basename(config)}.bak-`)).length, 2);
+  });
+
   it("refuses invalid requested names or conflicting shared entries without touching configuration", () => {
     const unrelated = { mcpServers: { "codex-bridge-desktop": { command: "custom", args: ["custom.mjs"], env: { KEEP: "private" } } } };
     const config = configWith(unrelated);

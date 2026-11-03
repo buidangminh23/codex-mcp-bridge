@@ -15,7 +15,7 @@ import { bridgeEntrypointConflict, isBridgeSource, isNodeLauncher, stableInstall
 exitForVersionRequest(import.meta.url);
 
 const root = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
-const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();
+const cfgPath = path.resolve(process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath());
 const entryOption = process.argv.indexOf("--entry-name");
 const requestedEntryName = entryOption < 0 ? undefined : process.argv[entryOption + 1];
 if (entryOption >= 0 && !["codex-bridge", "codex-bridge-desktop"].includes(requestedEntryName)) throw new Error("--entry-name must be codex-bridge or codex-bridge-desktop");
@@ -191,12 +191,20 @@ if (setup) cfg.preferences = { ...cfg.preferences, menuBarEnabled: true };
 createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...cfg.mcpServers[entryName].env }) });
 
 const changed = original === null || JSON.stringify(JSON.parse(original.data.toString("utf8"))) !== JSON.stringify(cfg);
+function configSibling(suffix) {
+  const directory = path.resolve(path.dirname(cfgPath));
+  const file = path.resolve(directory, `${path.basename(cfgPath)}.${suffix}`);
+  const relative = path.relative(directory, file);
+  if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`) || path.dirname(file) !== directory) throw new Error("Unsafe Desktop configuration sibling path");
+  return file;
+}
+
 if (changed) {
-  const backup = `${cfgPath}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge-${randomUUID()}`;
+  const backup = configSibling(`bak-${new Date().toISOString().slice(0, 10)}-codexbridge-${randomUUID()}`);
   if (original) {
     fs.writeFileSync(backup, original.data, { flag: "wx", mode: 0o600 });
   }
-  const temporary = `${cfgPath}.${randomUUID()}.tmp`;
+  const temporary = configSibling(`${randomUUID()}.tmp`);
   try {
     fs.writeFileSync(temporary, `${JSON.stringify(cfg, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     const current = readConfig();

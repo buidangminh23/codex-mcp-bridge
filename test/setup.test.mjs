@@ -24,11 +24,11 @@ test("one-command setup preserves structured service failure codes without copyi
 test("setup recognizes typed installer conflicts without copying their private details", () => {
   for (const code of ["SETUP_ENTRYPOINT_CONFLICT", "SETUP_SIDECAR_DEFINITION_MISSING"]) {
     const error = setupProcessFailure(process.execPath, ["install-antigravity-bridge.mjs"], {
-      status: 1, stderr: `Error: ${code}: custom registration at /Users/private/config with private-value\n`,
+      status: 1, stderr: `Error: ${code}: custom registration at /Users/<user>/config with private-value\n`,
     });
     assert.equal(error.code, code);
     assert.match(error.message, new RegExp(code));
-    assert.doesNotMatch(error.message, /private-value|\/Users\/private/);
+    assert.doesNotMatch(error.message, /private-value|\/Users\/<user>/);
   }
 });
 
@@ -63,11 +63,11 @@ test("setup retains typed component failure codes for updater inspection", (t) =
 
 test("safe setup diagnostics preserve root categories and bound the public summary", () => {
   for (const code of ["CLAUDE_DESKTOP_DATA_ROOT_AMBIGUOUS", "CLAUDE_DESKTOP_DATA_ROOT_UNAVAILABLE"]) {
-    const result = setupFailureResult(Object.assign(new Error("private-value /Users/private/data"), { code }));
+    const result = setupFailureResult(Object.assign(new Error("private-value /Users/<user>/data"), { code }));
     assert.equal(result.components[0].code, code);
     assert.equal(result.components[0].name, "Claude Desktop data directory");
     assert.match(setupFailureSummary(result), /CLAUDE_DESKTOP_USER_DATA/);
-    assert.doesNotMatch(JSON.stringify(result), /private-value|\/Users\/private/);
+    assert.doesNotMatch(JSON.stringify(result), /private-value|\/Users\/<user>/);
   }
   const names = ["Codex CLI", "Codex / claude-bridge", "Codex / codex-native-relay", "Codex / antigravity-bridge",
     "Claude Code / codex-bridge", "Claude Desktop / codex-bridge-desktop", "Antigravity / all components"];

@@ -418,7 +418,7 @@ test("update identifies failed setup components without exposing private child o
     const f = fixture(t);
     const run = f.options.run;
     const component = { name: "Claude Code / codex-bridge", status: "incomplete", code: "SETUP_ENTRYPOINT_CONFLICT",
-      detail: "private-value /Users/private/config token=hidden", nextAction: "Run private-command" };
+      detail: "private-value /Users/<user>/config token=hidden", nextAction: "Run private-command" };
     f.options.run = async (command, args, settings) => args[0].endsWith("setup.mjs") ? {
       status, stderr: "private-stderr", stdout: JSON.stringify({ configured: false, components: [component],
         verification: [component, { name: "Antigravity / codex-bridge sidecar", status: "incomplete", code: "SETUP_SIDECAR_DEFINITION_MISSING" }],

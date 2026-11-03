@@ -100,7 +100,9 @@ it("recognizes relocated bridge sources only with their package identity and reg
   }
   fs.writeFileSync(manifest, JSON.stringify(metadata));
   assert.equal(isBridgeSource(script, [], ["index.mjs"]), true);
-  assert.equal(isBridgeSource(path.relative(process.cwd(), script), [], ["index.mjs"]), false);
+  const relative = path.relative(root, script);
+  assert.equal(path.isAbsolute(relative), false);
+  assert.equal(isBridgeSource(relative, [], ["index.mjs"]), false);
   assert.equal(isBridgeSource(script, [], ["../index.mjs"]), false);
   fs.unlinkSync(worker);
   assert.equal(isBridgeSource(script, [], ["index.mjs"]), false);

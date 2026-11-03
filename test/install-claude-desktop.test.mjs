@@ -43,7 +43,7 @@ const INSTALL_TIMEOUT_MS = 60000;
  * installer writes, and the test would pass or fail according to whose
  * machine it ran on.
  */
-function installOutput({ config, env = {}, args = [] }) {
+function installOutput({ config, env = {}, args = [], cwd }) {
   return execFileSync(process.execPath, [installer, ...args], {
     env: {
       PATH: process.env.PATH ?? "",
@@ -56,6 +56,7 @@ function installOutput({ config, env = {}, args = [] }) {
       ...env,
     },
     encoding: "utf8",
+    cwd,
     stdio: "pipe",
     timeout: INSTALL_TIMEOUT_MS,
   });
@@ -78,6 +79,24 @@ it("rejects a linked Desktop config without changing its target", { skip: proces
   fs.symlinkSync(target, config);
   assert.throws(() => install({ config }), /unsafe|regular file/i);
   assert.deepEqual(JSON.parse(fs.readFileSync(target, "utf8")), { preserved: true });
+});
+
+it("keeps relative configuration overrides and their exact backups in the selected directory", () => {
+  const directory = path.join(sandbox, "relative configuration");
+  fs.mkdirSync(path.join(directory, "nested"), { recursive: true });
+  const config = path.join(directory, "config.json");
+  const before = Buffer.from('{"preserved":true}\n');
+  fs.writeFileSync(config, before);
+  const options = { config: `nested${path.sep}..${path.sep}config.json`, cwd: directory, args: ["--quiet", "--setup"] };
+  installOutput(options);
+  assert.equal(JSON.parse(fs.readFileSync(config, "utf8")).preserved, true);
+  const backups = fs.readdirSync(directory).filter(name => name.startsWith("config.json.bak-"));
+  assert.equal(backups.length, 1);
+  assert.deepEqual(fs.readFileSync(path.join(directory, backups[0])), before);
+  assert.deepEqual(fs.readdirSync(path.join(directory, "nested")), []);
+  assert.equal(fs.readdirSync(directory).some(name => name.endsWith(".tmp")), false);
+  assert.equal(JSON.parse(installOutput(options)).changed, false);
+  assert.deepEqual(fs.readdirSync(directory).filter(name => name.startsWith("config.json.bak-")), backups);
 });
 
 it("preserves a concurrent Desktop configuration update", () => {

@@ -69,7 +69,9 @@ function candidateRoots({ platform, env, root }) {
   if (platform === "win32") {
     const local = absoluteDirectory(env.LOCALAPPDATA || path.join(home, "AppData", "Local"));
     for (const [name, suffix] of [["Packages", ["LocalCache", "Roaming", "Claude"]], ["Claude-Data", []]]) {
-      const parent = path.join(local, name);
+      const parent = path.resolve(local, name);
+      const relative = path.relative(local, parent);
+      if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) throw new Error("invalid package directory");
       let entries;
       try {
         directoryStat(parent);

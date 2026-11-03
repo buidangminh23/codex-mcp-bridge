@@ -633,6 +633,8 @@ it("retains open Antigravity CLI pipes across updates and reads crashed deliveri
     prepare(fixture) {
       const directory = path.join(fixture.root, ".codex", "sessions", "2026", "11", "01");
       fs.mkdirSync(directory, { recursive: true });
+      const claims = Buffer.from(JSON.stringify({ sub: "fixture-user", "https://api.openai.com/auth": { chatgpt_account_id: "fixture-account" } })).toString("base64url");
+      fs.writeFileSync(path.join(fixture.root, ".codex", "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: "fixture-account", id_token: `e30.${claims}.c2ln` } }));
       const records = [
         { type: "session_meta", payload: { id: threadId, originator: "Codex Desktop", source: "vscode", cwd: fixture.root } },
         { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
@@ -660,7 +662,8 @@ it("retains open Antigravity CLI pipes across updates and reads crashed deliveri
   });
   const request = { requestId: randomUUID(), cwd: fixture.root, prompt: "Fixture only; no real CLI is available" };
   const read = requestId => api.call("read_antigravity_delivery", { surface: "cli", requestId }, metadata);
-  await api.call("start_antigravity_cli_session", request, metadata);
+  const started = await api.call("start_antigravity_cli_session", request, metadata);
+  assert.notEqual(started.isError, true, JSON.stringify(started));
   await eventually(() => read(request.requestId), value => JSON.parse(value.content[0].text).status === "completed");
   const before = await api.call();
   fs.appendFileSync(path.join(fixture.root, "src", fixture.entry), "\n");

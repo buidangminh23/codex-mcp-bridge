@@ -236,7 +236,7 @@ export function createAntigravityOutboundTargets(options = {}) {
       await context.check();
       return { target, sessionId: recipient.sessionId, taskId, cwd: context.cwd, msgId, status: outcome.delivery?.status ?? "sent_unconfirmed", completed: false, accountContext: context.accountContext };
     } catch (error) {
-      if (error.msgId) receipts.set(error.msgId, { sender: context.identity, accountContext: context.accountContext, cwd: context.cwd });
+      if (error.msgId && error.code !== "PEER_REPLY_PENDING") receipts.set(error.msgId, { sender: context.identity, accountContext: context.accountContext, cwd: context.cwd });
       if (msgId) error.msgId = msgId;
       if (msgId || error.deliveryUncertain) error.deliveryState = "unknown";
       else if (!error.deliveryState) error.deliveryState = "not_sent";

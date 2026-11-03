@@ -61,22 +61,29 @@ function workerEnv(env, relayEnv = {}) {
 }
 
 function binary(executable, env, platform = process.platform) {
-  const selected = executable ?? resolveCodexBin(undefined, { env, platform });
+  const selected = executable ?? env.CODEX_BIN ?? env.CODEX_CLI_PATH ?? resolveCodexBin(undefined, { env, platform });
   try {
     if (typeof selected !== "string" || !path.isAbsolute(selected) || /[\u0000-\u001f\u007f]/.test(selected)) throw new Error();
     const resolved = fs.realpathSync.native(selected);
     if (!fs.statSync(resolved).isFile() || platform === "win32" && !/\.(?:exe|com)$/i.test(resolved)) throw new Error();
     fs.accessSync(resolved, platform === "win32" ? fs.constants.R_OK : fs.constants.X_OK);
     return resolved;
-  } catch { throw failure("CLI_UNAVAILABLE", "inspect"); }
+  } catch (cause) { throw Object.assign(failure("CLI_UNAVAILABLE", "inspect"), { cause }); }
 }
 
-export async function inspectCodexWorker({ env = process.env, executable, platform = process.platform, run = execFileAsync } = {}) {
+function missingExecutable(error) {
+  return ["ENOENT", "ENOTDIR"].includes(error?.code) || ["ENOENT", "ENOTDIR"].includes(error?.cause?.code);
+}
+
+async function inspectCodexWorkerAttempt({ env, executable, platform, run, retryMissing = false }) {
   const result = { agent: "codex", available: false, authenticated: null, ready: false };
   if (!object(env) || typeof run !== "function") return { ...result, code: "INVALID_INPUT", reason: ERRORS.INVALID_INPUT };
   let selected;
   try { selected = binary(executable, env, platform); }
-  catch (error) { return { ...result, code: error.code, reason: error.message }; }
+  catch (error) {
+    if (retryMissing && missingExecutable(error)) throw error;
+    return { ...result, code: error.code, reason: error.message };
+  }
   const options = { env: workerEnv(env), windowsHide: true, shell: false, timeout: 10000, maxBuffer: MAX_CAPTURE, encoding: "utf8" };
   try {
     const version = await run(selected, ["--version"], options);
@@ -88,6 +95,8 @@ export async function inspectCodexWorker({ env = process.env, executable, platfo
       return { ...result, code: "CLI_UNSUPPORTED", reason: ERRORS.CLI_UNSUPPORTED };
     }
   } catch (error) {
+    if (retryMissing && missingExecutable(error)) throw error;
+    if (missingExecutable(error)) return { ...result, available: false, code: "CLI_UNAVAILABLE", reason: ERRORS.CLI_UNAVAILABLE };
     const code = diagnosticCode(error.stderr, result.available ? "CLI_UNSUPPORTED" : "CLI_UNAVAILABLE");
     return { ...result, code, reason: ERRORS[code] };
   }
@@ -100,8 +109,21 @@ export async function inspectCodexWorker({ env = process.env, executable, platfo
     const code = diagnosticCode(text, "AUTH_UNVERIFIED");
     return { ...result, authenticated: code === "AUTH_REQUIRED" ? false : null, code, reason: ERRORS[code] };
   } catch (error) {
+    if (retryMissing && missingExecutable(error)) throw error;
+    if (missingExecutable(error)) return { ...result, available: false, code: "CLI_UNAVAILABLE", reason: ERRORS.CLI_UNAVAILABLE };
     const code = diagnosticCode(`${error.stdout ?? ""}\n${error.stderr ?? ""}`, "AUTH_UNVERIFIED");
     return { ...result, authenticated: code === "AUTH_REQUIRED" ? false : null, code, reason: ERRORS[code] };
+  }
+}
+
+export async function inspectCodexWorker({ env = process.env, executable, platform = process.platform, run = execFileAsync } = {}) {
+  const settings = { env, executable, platform, run };
+  const pinned = executable != null || env?.CODEX_BIN != null || env?.CODEX_CLI_PATH != null;
+  try { return await inspectCodexWorkerAttempt({ ...settings, retryMissing: !pinned }); }
+  catch (error) {
+    if (!missingExecutable(error)) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    return inspectCodexWorkerAttempt(settings);
   }
 }
 

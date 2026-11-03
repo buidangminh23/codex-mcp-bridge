@@ -55,8 +55,9 @@ export function bridgeDiagnostic(error, options = {}) {
     phase: name(previous?.phase ?? options.phase ?? error?.phase ?? error?.diagnostic?.stage, deliveryState === "not_sent" ? "preflight" : options.readOnly ? "inspection" : "delivery"),
     deliveryState,
     sent: deliveryState === "not_sent" ? false : deliveryState === "sent" ? true : null,
-    retrySafe: deliveryState === "not_sent",
-    nextAction: deliveryState === "not_sent" ? "Inspect the reported cause and bridge status before retrying. Do not open or create chats to load a relay."
+    retrySafe: deliveryState === "not_sent" && code !== "PEER_REPLY_PENDING",
+    nextAction: code === "PEER_REPLY_PENDING" ? "Read read_claude_delivery with the original msgId. Wait for its correlated outcome; do not resend or start another bridge to bypass pending work."
+      : deliveryState === "not_sent" ? "Inspect the reported cause and bridge status before retrying. Do not open or create chats to load a relay."
       : deliveryState === "not_applicable" ? "Inspect bridge status and include this diagnostic in the report."
       : "Inspect the original delivery receipt. Do not resend automatically or create a replacement chat.",
     reason: diagnosticText(previous?.reason ?? error?.preflight?.reason ?? error?.message ?? error),

@@ -45,6 +45,21 @@ function writeSession(name, entry) {
   fs.writeFileSync(path.join(sessionsDir, `${name}.json`), JSON.stringify(entry));
 }
 
+function monitorReplyFixture(msgId = "request") {
+  const initial = [
+    { uuid: "absorbed-root", type: "attachment", attachment: { type: "queued_command", commandMode: "prompt", origin: { kind: "peer", msg_id: msgId }, prompt: "inspect the existing work" } },
+    { uuid: "background-call", parentUuid: "absorbed-root", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "background-tool", name: "Bash" }] } },
+    { uuid: "background-result", parentUuid: "background-call", toolUseResult: { backgroundTaskId: "background-task" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "background-tool", content: "running" }] } },
+    { uuid: "monitor-call", parentUuid: "background-result", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "monitor-tool", name: "Monitor" }] } },
+    { uuid: "monitor-result", parentUuid: "monitor-call", sourceToolAssistantUUID: "monitor-call", toolUseResult: { taskId: "monitor-task", timeoutMs: 1800000, persistent: false }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "monitor-tool", content: "monitor started" }] } },
+    { uuid: "interim", parentUuid: "monitor-result", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "waiting for background work" }] } },
+  ];
+  const notification = { uuid: "monitor-event", parentUuid: "interim", type: "user", origin: { kind: "task-notification", producer: "session-task" }, promptSource: "system", turnOrigin: "task_notification", message: { role: "user", content: '<task-notification>\n<task-id>monitor-task</task-id>\n<summary>Monitor event: "test progress"</summary>\n<event>One test completed</event>\n</task-notification>' } };
+  const completion = { uuid: "background-completion", parentUuid: "monitor-event", type: "user", origin: { kind: "task-notification", producer: "session-task" }, promptSource: "system", turnOrigin: "task_notification", message: { role: "user", content: "<task-notification>\n<task-id>background-task</task-id>\n<tool-use-id>background-tool</tool-use-id>\n<status>completed</status>\n</task-notification>" } };
+  const answer = { uuid: "final-answer", parentUuid: "background-completion", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "background work completed" }] } };
+  return { initial, notification, completion, answer };
+}
+
 before(() => {
   process.env.HOME = sandbox;
   fs.mkdirSync(sessionsDir, { recursive: true });
@@ -350,6 +365,23 @@ describe("Windows peer endpoint", { skip: isWindows ? false : "Windows named-pip
 });
 
 describe("transcript reading", () => {
+  it("rejects session path injection before any transcript file is read", (t) => {
+    const outside = path.join(sandbox, "escaped-transcript.jsonl");
+    const root = { uuid: "request", message: { role: "user", content: "outside transcript must remain unread" } };
+    const reply = { uuid: "reply", parentUuid: "request", message: { role: "assistant", stop_reason: "end_turn", content: "outside reply must remain unread" } };
+    fs.writeFileSync(outside, [root, reply].map(JSON.stringify).join("\n") + "\n");
+    const readFile = fs.readFileSync;
+    const reads = [];
+    t.mock.method(fs, "readFileSync", function (file, ...args) { reads.push(file); return readFile.call(this, file, ...args); });
+    for (const sessionId of ["../../escaped-transcript", "..\\..\\escaped-transcript", "/escaped-transcript", "C:\\escaped-transcript", "session/name", "session\\name", "session:stream", "session\0id", "session.id", "session\n", "session\r\n", "a".repeat(129), "", undefined, null, {}]) {
+      assert.deepEqual(readTranscript(sessionId, "").messages, [], String(sessionId));
+      assert.deepEqual(readInitialTranscriptMessage(sessionId, "").messages, [], String(sessionId));
+      assert.equal(readTranscriptOutcome(sessionId, "", "request"), null, String(sessionId));
+      assert.equal(readTranscriptReply(sessionId, "", "request"), null, String(sessionId));
+    }
+    assert.deepEqual(reads, [], "invalid transcript identities must never reach a file read");
+  });
+
   it("checks the first user prompt rather than a later matching message or assistant echo", () => {
     const directory = path.join(projectsDir, "initial-message");
     fs.mkdirSync(directory, { recursive: true });
@@ -565,6 +597,234 @@ describe("peer endpoint", () => {
     assert.equal(readTranscriptReply("background", "unused", "request"), null, "a human command still separates turns");
     write([...initial, { ...notification, uuid: "unrelated-branch" }, { ...final, parentUuid: "interim" }]);
     assert.equal(readTranscriptReply("background", "unused", "request"), null, "completion on another branch must not release this branch");
+  });
+
+  it("preserves native Monitor progress ancestry until the actual background completion", () => {
+    const dir = path.join(projectsDir, "monitor-replies");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "monitor-replies.jsonl");
+    const { initial, notification, completion, answer } = monitorReplyFixture();
+    const write = rows => fs.writeFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
+    write([...initial, notification, { ...answer, parentUuid: notification.uuid }]);
+    assert.equal(readTranscriptOutcome("monitor-replies", "unused", "request"), null, "Monitor output does not finish background work");
+    write([...initial, notification, completion, answer]);
+    assert.deepEqual(readTranscriptReply("monitor-replies", "unused", "request"), { text: "background work completed", msgId: "final-answer", source: "transcript", inReplyTo: "request", absorbed: true });
+    write([...initial, { ...notification, message: { ...notification.message, content: notification.message.content.replace("One test completed", "Expected <example> to match\n2 < 3") } }, completion, answer]);
+    assert.equal(readTranscriptReply("monitor-replies", "unused", "request")?.text, "background work completed", "Monitor output may contain multiline text and angle brackets");
+    const repeated = { ...notification, uuid: "second-event", parentUuid: notification.uuid };
+    const inline = { uuid: "inline-event", parentUuid: repeated.uuid, type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", origin: notification.origin, prompt: notification.message.content } };
+    write([...initial, notification, repeated, inline, { ...completion, parentUuid: inline.uuid }, answer]);
+    assert.equal(readTranscriptReply("monitor-replies", "unused", "request")?.text, "background work completed");
+    const otherCall = { uuid: "other-call", parentUuid: "interim", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "other-tool", name: "Bash" }] } };
+    const otherResult = { uuid: "other-result", parentUuid: otherCall.uuid, toolUseResult: { backgroundTaskId: "other-task" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "other-tool", content: "running" }] } };
+    const concurrent = [...initial, otherCall, otherResult, { ...notification, parentUuid: otherResult.uuid }, completion, answer];
+    write(concurrent);
+    assert.equal(readTranscriptReply("monitor-replies", "unused", "request"), null, "Monitor events and one completion cannot finish other background work");
+    write([...concurrent, { ...completion, uuid: "other-completion", parentUuid: answer.uuid, message: { ...completion.message, content: completion.message.content.replaceAll("background-task", "other-task").replaceAll("background-tool", "other-tool") } }, { ...answer, uuid: "all-finished", parentUuid: "other-completion" }]);
+    assert.equal(readTranscriptReply("monitor-replies", "unused", "request")?.msgId, "all-finished");
+    const rows = [...initial, notification, completion, answer];
+    for (const change of [
+      r => { r[3].message.content[0].name = "Bash"; },
+      r => { r[3].message.content.push({ ...r[3].message.content[0] }); },
+      r => { delete r[3].message.content[0].id; delete r[4].message.content[0].tool_use_id; },
+      r => { r[4].message.content[0].tool_use_id = "unrelated-tool"; },
+      r => { r[4].message.content[0].is_error = true; },
+      r => { r[4].sourceToolAssistantUUID = "unrelated-call"; },
+      r => { r[4].toolUseResult.taskId = "unrelated-monitor"; },
+      r => { r[6].origin = { kind: "task-notification", producer: "unknown" }; },
+      r => { r[6].origin = { kind: "human" }; r[6].promptSource = "sdk"; r[6].turnOrigin = "human"; },
+      r => { delete r[6].origin; },
+      r => { r[6].promptSource = "user"; },
+      r => { r[6].turnOrigin = "human"; },
+      r => { r[6].message.content = r[6].message.content.replace("monitor-task", "unknown-task"); },
+      r => { r[6].message.content = r[6].message.content.replace("</task-id>", "</task-id><task-id>monitor-task</task-id>"); },
+      r => { r[6].message.content = r[6].message.content.replace("</task-id>", "</task-id><task-id></task-id>"); },
+      r => { r[6].message.content = r[6].message.content.replace("</summary>", "</summary><summary>duplicate</summary>"); },
+      r => { r[6].message.content = r[6].message.content.replace("</event>", "</event><event>duplicate</event>"); },
+      r => { r[6].message.content = r[6].message.content.replace("</event>", "</event><event></event>"); },
+      r => { r[6].message.content = r[6].message.content.replace("</event>", "</event><status>completed</status>"); },
+      r => { r[7].message.content = r[7].message.content.replace("background-tool", "wrong-tool"); },
+    ]) {
+      const changed = structuredClone(rows); change(changed); write(changed);
+      assert.equal(readTranscriptReply("monitor-replies", "unused", "request"), null, String(change));
+    }
+    write([...initial.slice(0, 3), { ...initial[3], parentUuid: "absorbed-root" }, initial[4], { ...initial[5], parentUuid: "background-result" }, notification, completion, answer]);
+    assert.equal(readTranscriptOutcome("monitor-replies", "unused", "request"), null, "Monitor registrations cannot cross sibling branches");
+    for (const boundary of [
+      { uuid: "new-input", parentUuid: notification.uuid, message: { role: "user", content: "inspect something else" } },
+      { uuid: "new-input", parentUuid: notification.uuid, origin: { kind: "peer", msg_id: "other-request" }, message: { role: "user", content: "another request" } },
+    ]) {
+      write([...initial, notification, boundary, { ...completion, parentUuid: boundary.uuid }, answer]);
+      const outcome = readTranscriptOutcome("monitor-replies", "unused", "request");
+      assert.equal(outcome?.status, "interrupted");
+      assert.deepEqual(outcome.backgroundTaskIds, ["background-task"]);
+      assert.equal(outcome.reply, undefined);
+    }
+  });
+
+  it("releases pending ownership after native Monitor progress and a correlated final reply", async (t) => {
+    const isolated = new PeerEndpoint({ name: "monitor-reply-fixture", cwd: sandbox });
+    t.after(() => isolated.stop());
+    const dir = path.join(projectsDir, "monitor-endpoint");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "monitor-endpoint.jsonl");
+    let fixture;
+    t.mock.method(isolated, "send", async (target, text, { msgId }) => {
+      fixture = monitorReplyFixture(msgId);
+      fs.writeFileSync(file, [...fixture.initial, fixture.notification].map(JSON.stringify).join("\n") + "\n");
+      return msgId;
+    });
+    const options = { timeoutMs: 0, transcriptSession: { sessionId: "monitor-endpoint", cwd: "unused" } };
+    const first = await isolated.sendAndWait("monitor-target", "original", options);
+    assert.equal(isolated.readDelivery(first.msgId).pending, true);
+    await assert.rejects(isolated.sendAndWait("monitor-target", "follow-up", options), error => error.code === "PEER_REPLY_PENDING" && error.msgId === first.msgId && error.sent === false);
+    fs.appendFileSync(file, [fixture.completion, fixture.answer].map(JSON.stringify).join("\n") + "\n");
+    const receipt = isolated.readDelivery(first.msgId);
+    assert.equal(receipt.pending, false);
+    assert.equal(receipt.status, "reply_received");
+    assert.equal(receipt.reply, "background work completed");
+    assert.equal(receipt.replyAbsorbed, true);
+    assert.equal(isolated.send.mock.callCount(), 1);
+    assert.equal(isolated.reloadReason(), null);
+    const second = await isolated.sendAndWait("monitor-target", "follow-up", options);
+    assert.notEqual(second.msgId, first.msgId);
+    assert.equal(isolated.send.mock.callCount(), 2);
+  });
+
+  for (const status of ["sent_unconfirmed", "uncertain"]) it(`transfers accepted pending Desktop transcript observations through hot reload: ${status}`, { timeout: 7000 }, async (t) => {
+    const first = new PeerEndpoint({ name: "transcript-reload-fixture", cwd: sandbox, signalExit: false });
+    const second = new PeerEndpoint({ name: "transcript-reload-replacement", cwd: sandbox, signalExit: false });
+    t.after(async () => { first.stop(); second.stop(); await Promise.all([first.closed, second.closed]); });
+    const sessionId = "ce537172-42f5-4492-9bbb-9bf492d42525";
+    const dir = path.join(projectsDir, `pending-reload-${status}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    const accountContext = { claude: "a".repeat(64), codex: "b".repeat(64) };
+    const transcriptSession = { sessionId, cwd: sandbox, socket: `reload-target-${status}`, entrypoint: "claude-desktop",
+      desktop: { status: "matched", taskId: "local_71ff1c9b-116c-40e2-b95f-de822527c1bc", cwd: sandbox, accountFingerprint: accountContext.claude } };
+    const scopeBindings = { sender: { path: sandbox }, recipient: { path: sandbox } };
+    t.mock.method(first, "send", async (target, text, { msgId }) => {
+      fs.writeFileSync(file, JSON.stringify({ uuid: msgId, sessionId, cwd: sandbox, entrypoint: "claude-desktop", origin: { kind: "peer", msg_id: msgId }, message: { role: "user", content: text } }) + "\n");
+      if (status === "uncertain") throw Object.assign(new Error("Socket closed after write"), { deliveryUncertain: true });
+      return msgId;
+    });
+    const options = { timeoutMs: 0, transcriptSession, accountContext, scopeBindings, replyThreadId: "f1ecc354-166f-463d-aa6a-e88360298cda", permissionMode: "bypass" };
+    let msgId;
+    try { msgId = (await first.sendAndWait(transcriptSession.socket, "original", options)).msgId; }
+    catch (error) { assert.equal(status, "uncertain"); msgId = error.msgId; }
+    const originalReceipt = first.readDelivery(msgId);
+    assert.equal(originalReceipt.pending, true);
+    assert.equal(first.reloadReason(), null);
+    await first.start();
+    await first.quiesce();
+    assert.equal(first.responsePoll, null);
+    await first.resume();
+    assert.notEqual(first.responsePoll, null);
+    await first.quiesce();
+    const snapshot = first.exportReloadState();
+    assert.equal(snapshot.pendingMessages.length, 1);
+    assert.equal(snapshot.pendingMessages[0][0], msgId);
+    assert.equal(snapshot.pendingMessages[0][1].transcriptStamp, undefined);
+    second.restoreReloadState(snapshot);
+    assert.deepEqual(second.readDelivery(msgId), originalReceipt);
+    assert.equal(second.responsePoll, null, "a staged worker must not observe or forward before activation");
+    assert.equal(second.unconfirmedReplies.get(transcriptSession.socket), 1);
+    await assert.rejects(second.sendAndWait(transcriptSession.socket, "duplicate", options), error => error.code === "PEER_REPLY_PENDING" && error.msgId === msgId);
+    fs.appendFileSync(file, JSON.stringify({ uuid: "reply-after-reload", parentUuid: msgId, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "original reply after upgrade" }] } }) + "\n");
+    assert.equal(second.readDelivery(msgId).pending, true);
+    const observed = new Promise(resolve => second.onMessage(resolve));
+    await second.start();
+    const reply = await observed;
+    assert.equal(reply.inReplyTo, msgId);
+    assert.equal(reply.replyThreadId, options.replyThreadId);
+    assert.deepEqual(reply.accountContext, accountContext);
+    assert.deepEqual(reply.scopeBindings, scopeBindings);
+    assert.equal(second.readDelivery(msgId).pending, false);
+    assert.equal(second.readDelivery(msgId).reply, "original reply after upgrade");
+    assert.equal(second.unconfirmedReplies.size, 0);
+    assert.equal(first.send.mock.callCount(), 1);
+    first.stop();
+    await first.closed;
+    fs.rmSync(file);
+  });
+
+  it("rejects malformed pending reload state and keeps direct peer or in-flight sends blocking reload", async (t) => {
+    const first = new PeerEndpoint({ name: "reload-validation-fixture", cwd: sandbox });
+    t.after(() => first.stop());
+    const msgId = "7c735afb-c100-49d1-9049-dc07bf64fd94";
+    const sessionId = "cf7df7bf-977d-4a93-8cff-c9d3c6b26cc6";
+    const accountContext = { claude: "a".repeat(64), codex: "b".repeat(64) };
+    const transcriptSession = { sessionId, cwd: sandbox, socket: "reload-validation-target", entrypoint: "claude-desktop",
+      desktop: { status: "matched", taskId: "local_71ff1c9b-116c-40e2-b95f-de822527c1bc", cwd: sandbox, accountFingerprint: accountContext.claude } };
+    const sent = { targetSocket: transcriptSession.socket, transcriptSession, accountContext, sentAt: Date.now() };
+    first.sentMessages.set(msgId, sent);
+    first.pendingMessages.set(msgId, { targetSocket: sent.targetSocket, transcriptSession });
+    first.unconfirmedReplies.set(sent.targetSocket, 1);
+    assert.match(first.reloadReason(), /pending or unconfirmed/, "an unobserved send still relies on native control receipts at the original socket");
+    const dir = path.join(projectsDir, "pending-reload-validation");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    const root = { uuid: msgId, sessionId, cwd: sandbox, entrypoint: "claude-desktop", origin: { kind: "peer", msg_id: msgId }, message: { role: "user", content: "original" } };
+    const write = rows => fs.writeFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
+    write([root]);
+    first.deliveryReceipts.set(msgId, { status: "held", fromSocket: sent.targetSocket });
+    assert.match(first.reloadReason(), /pending or unconfirmed/, "held requests must retain their original native control-receipt socket");
+    assert.throws(() => first.exportReloadState(), /pending or unconfirmed/);
+    first.deliveryReceipts.clear();
+    for (const rows of [
+      [root, { ...root, uuid: "second-root" }],
+      [{ ...root, origin: { kind: "peer", msg_id: "other-request" } }],
+      [{ ...root, isSidechain: true }],
+      [{ ...root, sessionId: "different-session" }],
+      [{ ...root, cwd: "different-project" }],
+      [{ ...root, entrypoint: "cli" }],
+    ]) {
+      write(rows);
+      assert.match(first.reloadReason(), /pending or unconfirmed/);
+    }
+    write([root]);
+    fs.appendFileSync(file, '{"partial":');
+    assert.match(first.reloadReason(), /pending or unconfirmed/);
+    write([root]);
+    const snapshot = first.exportReloadState();
+    for (const mutate of [
+      state => { state.pendingMessages = undefined; },
+      state => { state.pendingMessages.push(state.pendingMessages[0]); },
+      state => { state.pendingMessages[0][0] = "unrelated"; },
+      state => { state.pendingMessages[0][1].targetSocket = "other-target"; },
+      state => { delete state.sentMessages[0][1].transcriptSession; },
+      state => { state.sentMessages[0][1].transcriptSession.entrypoint = "cli"; },
+      state => { state.sentMessages[0][1].transcriptSession.sessionId = "not-a-uuid"; },
+      state => { state.sentMessages[0][1].transcriptSession.cwd = "relative-path"; },
+      state => { state.sentMessages[0][1].transcriptSession.desktop.status = "unmatched"; },
+      state => { state.sentMessages[0][1].accountContext.claude = "different-account"; },
+      state => { state.sentMessages[0][1].failed = true; },
+      state => { state.deliveryReceipts.push([msgId, { status: "refused" }]); },
+      state => { state.deliveryReceipts.push([msgId, { status: "held", fromSocket: "reload-validation-target" }]); },
+      state => { state.deliveryReceipts.push([msgId, { status: "held", fromSocket: "other-target" }]); },
+      state => { state.deliveryReceipts.push([msgId, { status: "unknown", fromSocket: "reload-validation-target" }]); },
+    ]) {
+      const changed = structuredClone(snapshot); mutate(changed);
+      const candidate = new PeerEndpoint({ name: "invalid-reload", cwd: sandbox });
+      assert.throws(() => candidate.restoreReloadState(changed), /Invalid/);
+      assert.equal(candidate.sentMessages.size, 0);
+      assert.equal(candidate.pendingMessages.size, 0);
+      assert.equal(candidate.responsePoll, null);
+    }
+    first.requestQueues.set(sent.targetSocket, Promise.resolve());
+    assert.match(first.reloadReason(), /still being sent/);
+    assert.throws(() => first.exportReloadState(), /still being sent/);
+    first.requestQueues.clear();
+    first.connections.add({ destroy() {} });
+    assert.match(first.reloadReason(), /connections/);
+    first.connections.clear();
+    first.unconfirmedReplies.set(sent.targetSocket, 2);
+    assert.match(first.reloadReason(), /pending or unconfirmed/);
+    first.unconfirmedReplies.set(sent.targetSocket, 1);
+    delete sent.transcriptSession;
+    delete first.pendingMessages.get(msgId).transcriptSession;
+    assert.match(first.reloadReason(), /pending or unconfirmed/);
+    assert.throws(() => first.exportReloadState(), /pending or unconfirmed/);
   });
 
   it("reports a new input after a background wait as interrupted, never as a completed task", () => {

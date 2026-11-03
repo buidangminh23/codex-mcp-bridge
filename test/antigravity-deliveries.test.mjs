@@ -203,3 +203,46 @@ test("durable failure diagnostics preserve codes and IDs while excluding private
   const repeated = await restarted.dispatch(next, () => assert.fail("Unknown delivery must not be sent again"));
   assert.equal(repeated.diagnostic.reportId, original.diagnostic.reportId);
 });
+
+test("native reply boundaries survive uncertain dispatch and exclude arbitrary private fields", async (t) => {
+  const { store, request, directory } = fixture(t);
+  const boundary = { version: 1, status: "ready", trajectoryId: crypto.randomUUID(), beforeStepIndex: 7, promptSha256: "a".repeat(64), projectId: "project", private: "PRIVATE_PROMPT" };
+  await store.dispatch(request, async () => {
+    store.captureObservation(request.requestId, boundary);
+    throw Object.assign(new Error("Lost native acknowledgement"), { deliveryState: "unknown" });
+  });
+  await delay(10);
+  const receipt = new AntigravityDeliveries(directory).read(request.requestId);
+  assert.equal(receipt.status, "unknown");
+  assert.equal(receipt.nativeObservation.beforeStepIndex, 7);
+  assert.equal(receipt.nativeObservation.trajectoryId, boundary.trajectoryId);
+  assert.doesNotMatch(JSON.stringify(receipt), /PRIVATE_/);
+  assert.throws(() => store.captureObservation(request.requestId, boundary), /inactive/);
+});
+
+test("native reply observation persists exact replies across restart without dispatching again", async (t) => {
+  const { store, request, directory } = fixture(t);
+  await store.dispatch(request, async () => ({ status: "accepted", completed: false }));
+  await delay(10);
+  const observe = (record) => ({ ...record, status: "reply_received", result: { status: "reply_received", completed: true, response: "correlated reply" } });
+  assert.equal((await store.refresh(request.requestId, observe)).status, "reply_received");
+  const restarted = new AntigravityDeliveries(directory);
+  assert.equal(restarted.read(request.requestId).result.response, "correlated reply");
+  const repeated = await restarted.dispatch(request, () => assert.fail("Original delivery must never be resent"));
+  assert.equal(repeated.status, "reply_received");
+});
+
+test("receipt observation rejects scope changes and never overwrites a concurrent result", async (t) => {
+  const { store, request } = fixture(t);
+  await store.dispatch(request, async () => ({ status: "accepted", completed: false }));
+  await delay(10);
+  for (const change of [{ requestId: crypto.randomUUID() }, { digest: "0".repeat(64) }, { cwd: "other" }, { conversationId: "other" }, { sender: { provider: "claude", id: "other" } }]) {
+    await assert.rejects(store.refresh(request.requestId, (record) => ({ ...record, ...change, status: "reply_received" })), /identity/);
+  }
+  const result = await store.refresh(request.requestId, (record) => {
+    store.write({ ...record, status: "refused" });
+    return { ...record, status: "reply_received" };
+  });
+  assert.equal(result.status, "refused");
+  assert.equal(store.read(request.requestId).status, "refused");
+});

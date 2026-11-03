@@ -82,6 +82,12 @@ new task, account, process, prompt and directory to match.
    turn. The exact dispatch must occur after the saved watermark, and commentary
    alone is never a final reply. Receipt observation resolves that exact dispatch
    even after newer turns start; it does not substitute the latest turn's answer.
+   For Antigravity Desktop, retain `requestId` and use
+   `read_antigravity_delivery`. `accepted` confirms only native acceptance;
+   `reply_received` requires an exact native message and execution with a public
+   final reply. Unsupported transcript formats or ambiguous interleaving keep
+   the delivery unconfirmed. Receipts without their original account binding
+   cannot disclose recovered reply text. None of these states authorizes a resend.
 5. An `interrupted` receipt ends observation only: task outcome is unknown and
    background work may continue. Inspect the existing task before a scoped
    follow-up; do not repeat card creation or file operations.
@@ -112,6 +118,18 @@ If an old worker is stuck on an unrecognized pending transcript record, it may
 defer hot reload. Save the original receipt and any verified historical reply
 before reconnecting. An unknown ID after reconnecting is not evidence of
 non-delivery. Verify recovery with one harmless message, not by resending work.
+
+Updated workers can transfer a pending Claude transcript observation only when
+the exact native message has already been observed. Held or unobserved deliveries
+retain their original callback channel and continue to defer reload. Installing
+new code cannot change the migration behavior of an already-running old worker.
+
+Updater success verifies managed settings and the background relay separately
+from Desktop connectivity. Check `codex_bridge_status`, `claude_bridge_status`
+and `antigravity_bridge_status` in the existing clients. If a native companion
+starts and then exits, retain its MCP host stderr and shutdown reason. A missing
+relay pipe alone does not identify the cause; do not infer that an empty chat or
+a dummy prompt is required to keep it alive.
 
 Card revocation and communication revocation are independent. Archiving a
 conversation does not guarantee worktree/branch removal. Check running work,

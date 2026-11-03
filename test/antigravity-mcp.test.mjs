@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { antigravityBridgeDirectory, antigravitySocket } from "../src/antigravity-ipc.mjs";
 import { bridgeDiagnostic } from "../src/recipient-preflight.mjs";
+import { readCodexAccountContext } from "../src/codex-account-context.mjs";
 
 const entry = fileURLToPath(new URL("../src/antigravity-bridge.mjs", import.meta.url));
 const TOOLS = [
@@ -40,6 +41,14 @@ async function fixture(t, { caller, verified = false, sidecarAvailable = true, s
   ];
   const writeRollout = () => fs.writeFileSync(rollout, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
   if (verified) writeRollout();
+  const authFile = path.join(home, ".codex", "auth.json");
+  const writeAccount = (accountId = "fixture-account", userId = "fixture-user") => {
+    const claims = Buffer.from(JSON.stringify({ sub: userId, "https://api.openai.com/auth": { chatgpt_account_id: accountId } })).toString("base64url");
+    fs.writeFileSync(authFile, JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: accountId, id_token: `e30.${claims}.c2ln` } }));
+    return readCodexAccountContext({ root: path.dirname(authFile) }).fingerprint;
+  };
+  const accountFingerprint = verified && caller === "codex" ? writeAccount() : undefined;
+  const signOut = () => fs.rmSync(authFile, { force: true });
   const sidecarRequests = [];
   const sockets = new Set();
   const sidecar = net.createServer((socket) => {
@@ -75,7 +84,7 @@ async function fixture(t, { caller, verified = false, sidecarAvailable = true, s
   await client.connect(transport);
   const call = (name, args, meta) => client.callTool({ name, arguments: args, ...(meta ? { _meta: meta } : {}) }, undefined, { timeout: 10000 });
   const receipts = () => fs.readdirSync(path.join(bridgeDirectory, "cli-deliveries"));
-  return { client, call, home, cwd, otherCwd, metadata, threadId, records, writeRollout, sidecarRequests, receipts, bridgeDirectory };
+  return { client, call, home, cwd, otherCwd, metadata, threadId, records, writeRollout, sidecarRequests, receipts, bridgeDirectory, accountFingerprint, writeAccount, signOut };
 }
 
 test("real stdio bridge advertises all tools and reads status without starting a CLI", { timeout: 20000 }, async (t) => {
@@ -224,6 +233,136 @@ test("fixture receipts are scoped to exact sender identity and workspace", { tim
   assert.deepEqual(f.sidecarRequests, []);
 });
 
+test("native receipt observation retains acceptance when unavailable and checks ownership first", { timeout: 20000 }, async (t) => {
+  let record;
+  const f = await fixture(t, { caller: "codex", verified: true, sidecarResponse: () => ({ result: record }) });
+  const requestId = crypto.randomUUID();
+  record = { requestId, digest: "a".repeat(64), status: "accepted", surface: "desktop", conversationId: crypto.randomUUID(),
+    cwd: f.cwd, sender: { provider: "codex", id: f.threadId, cwd: f.cwd, accountFingerprint: f.accountFingerprint }, createdAt: new Date().toISOString(), finishedAt: new Date().toISOString(), result: { completed: false } };
+  const read = () => f.call("read_antigravity_delivery", { surface: "desktop", requestId }, f.metadata);
+  const accepted = payload(await read());
+  assert.equal(accepted.status, "accepted");
+  assert.equal(accepted.result.completed, false);
+  assert.equal(accepted.replyObservation.status, "unavailable");
+  record.sender.id = crypto.randomUUID();
+  const denied = await read();
+  assert.equal(denied.isError, true);
+  assert.match(payload(denied).error, /does not belong/);
+  assert.equal(payload(denied).replyObservation, undefined);
+  assert.deepEqual(f.sidecarRequests.map(request => request.operation), ["receipt", "receipt"]);
+});
+
+test("native sends bind the verified Codex account without requiring another provider login", { timeout: 20000 }, async (t) => {
+  const f = await fixture(t, { caller: "codex", verified: true, sidecarResponse: request => ({ result: { ...request, status: "pending" } }) });
+  const response = await f.call("send_to_antigravity_conversation", {
+    requestId: crypto.randomUUID(), cwd: f.cwd, prompt: "Fixture account binding", surface: "desktop", conversationId: crypto.randomUUID(),
+  }, f.metadata);
+  assert.equal(response.isError, undefined);
+  assert.equal(f.sidecarRequests.length, 1);
+  assert.equal(f.sidecarRequests[0].sender.accountFingerprint, f.accountFingerprint);
+  assert.equal(payload(response).sender.accountFingerprint, f.accountFingerprint);
+  assert.doesNotMatch(JSON.stringify(response), /fixture-account|fixture-user|id_token|tokens/);
+  assert.equal(fs.existsSync(path.join(f.home, "AppData", "Roaming", "Claude")), false);
+});
+
+test("a signed-out Codex sender cannot send or inspect a receipt using an active local rollout", { timeout: 20000 }, async (t) => {
+  const f = await fixture(t, { caller: "codex", verified: true });
+  f.signOut();
+  for (const [name, args] of [
+    ["send_to_antigravity_conversation", { requestId: crypto.randomUUID(), cwd: f.cwd, prompt: "Must not be sent", surface: "desktop", conversationId: crypto.randomUUID() }],
+    ["read_antigravity_delivery", { surface: "desktop", requestId: crypto.randomUUID() }],
+  ]) {
+    const response = await f.call(name, args, f.metadata);
+    assert.equal(response.isError, true);
+    assert.equal(payload(response).code, "ANTIGRAVITY_SENDER_UNVERIFIED");
+    assert.match(payload(response).error, /Codex account is not verified/);
+  }
+  assert.deepEqual(f.sidecarRequests, []);
+  assert.deepEqual(f.receipts(), []);
+});
+
+test("a cached native send reply is withheld if the account changes while IPC is pending", { timeout: 20000 }, async (t) => {
+  const f = await fixture(t, { caller: "codex", verified: true, sidecarResponse: request => {
+    f.writeAccount("other-account");
+    return { result: { ...request, status: "reply_received", result: { status: "reply_received", completed: true, reply: "PRIVATE_CACHED_REPLY" } } };
+  } });
+  const denied = await f.call("send_to_antigravity_conversation", {
+    requestId: crypto.randomUUID(), cwd: f.cwd, prompt: "Fixture cached receipt", surface: "desktop", conversationId: crypto.randomUUID(),
+  }, f.metadata);
+  assert.equal(denied.isError, true);
+  assert.equal(payload(denied).code, "ANTIGRAVITY_SENDER_CHANGED");
+  assert.equal(payload(denied).deliveryState, "unknown");
+  assert.equal(denied.structuredContent.diagnostic.retrySafe, false);
+  assert.doesNotMatch(JSON.stringify(denied), /PRIVATE_CACHED_REPLY/);
+  assert.deepEqual(f.sidecarRequests.map(request => request.operation), ["send"]);
+});
+
+test("a bound native reply is withheld after the sender account changes", { timeout: 20000 }, async (t) => {
+  let record;
+  const f = await fixture(t, { caller: "codex", verified: true, sidecarResponse: () => ({ result: record }) });
+  const requestId = crypto.randomUUID();
+  record = { requestId, status: "reply_received", surface: "desktop", cwd: f.cwd, conversationId: crypto.randomUUID(),
+    sender: { provider: "codex", id: f.threadId, cwd: f.cwd, accountFingerprint: f.accountFingerprint },
+    result: { status: "reply_received", completed: true, response: "PRIVATE_NATIVE_REPLY", reply: "PRIVATE_NATIVE_REPLY" } };
+  const read = () => f.call("read_antigravity_delivery", { surface: "desktop", requestId }, f.metadata);
+  const owned = await read();
+  assert.equal(owned.isError, undefined);
+  assert.equal(payload(owned).result.reply, "PRIVATE_NATIVE_REPLY");
+  assert.notEqual(f.writeAccount("other-account"), f.accountFingerprint);
+  const denied = await read();
+  assert.equal(denied.isError, true);
+  assert.equal(payload(denied).code, "ANTIGRAVITY_RECEIPT_ACCOUNT_MISMATCH");
+  assert.doesNotMatch(JSON.stringify(denied), /PRIVATE_NATIVE_REPLY/);
+  assert.deepEqual(f.sidecarRequests.map(request => request.operation), ["receipt", "receipt"]);
+});
+
+for (const change of ["switch", "signout"]) {
+  test(`native receipt observation rechecks the sender account after ${change}`, { timeout: 20000 }, async (t) => {
+    let record;
+    const f = await fixture(t, { caller: "codex", verified: true, sidecarResponse: () => {
+      if (change === "switch") f.writeAccount("other-account");
+      else f.signOut();
+      return { result: record };
+    } });
+    const requestId = crypto.randomUUID();
+    record = { requestId, status: "reply_received", surface: "desktop", cwd: f.cwd, conversationId: crypto.randomUUID(),
+      sender: { provider: "codex", id: f.threadId, cwd: f.cwd, accountFingerprint: f.accountFingerprint },
+      result: { status: "reply_received", completed: true, response: "PRIVATE_NATIVE_REPLY", reply: "PRIVATE_NATIVE_REPLY" } };
+    const denied = await f.call("read_antigravity_delivery", { surface: "desktop", requestId }, f.metadata);
+    assert.equal(denied.isError, true);
+    assert.equal(payload(denied).code, change === "switch" ? "ANTIGRAVITY_SENDER_CHANGED" : "ANTIGRAVITY_SENDER_UNVERIFIED");
+    assert.doesNotMatch(JSON.stringify(denied), /PRIVATE_NATIVE_REPLY/);
+    assert.deepEqual(f.sidecarRequests.map(request => request.operation), ["receipt"]);
+  });
+}
+
+for (const status of ["accepted", "unknown", "sent_unconfirmed", "reply_received"]) {
+  test(`legacy native ${status} receipts remain account-unbound and never expose recovered reply text`, { timeout: 20000 }, async (t) => {
+    let record;
+    const f = await fixture(t, { caller: "codex", verified: true, sidecarResponse: () => ({ result: record }) });
+    const requestId = crypto.randomUUID();
+    record = { requestId, digest: "a".repeat(64), status, surface: "desktop", cwd: f.cwd, conversationId: crypto.randomUUID(),
+      sender: { provider: "codex", id: f.threadId, cwd: f.cwd },
+      result: { status, completed: status === "reply_received", response: "PRIVATE_LEGACY_REPLY", reply: "PRIVATE_LEGACY_REPLY" },
+      ...(status === "reply_received" ? { replyObservation: { status, source: "native-transcript", stepId: "PRIVATE_STEP_ID" } } : {}) };
+    const original = JSON.stringify(record);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await f.call("read_antigravity_delivery", { surface: "desktop", requestId }, f.metadata);
+      assert.equal(response.isError, ["unknown", "reply_received"].includes(status) ? true : undefined);
+      const receipt = payload(response);
+      assert.equal(receipt.status, status === "reply_received" ? "unknown" : status);
+      assert.equal(receipt.result.completed, false);
+      assert.equal(receipt.replyObservation.status, "unavailable");
+      assert.equal(receipt.replyObservation.code, "ANTIGRAVITY_RECEIPT_ACCOUNT_UNBOUND");
+      assert.equal(receipt.replyObservation.retrySafe, false);
+      assert.equal(receipt.sender.accountFingerprint, undefined);
+      assert.doesNotMatch(JSON.stringify(response), /PRIVATE_LEGACY_REPLY|PRIVATE_STEP_ID/);
+    }
+    assert.equal(JSON.stringify(record), original);
+    assert.deepEqual(f.sidecarRequests.map(request => request.operation), ["receipt", "receipt"]);
+  });
+}
+
 test("native sidecar failures expose typed diagnostics without dispatching a replacement", { timeout: 20000 }, async (t) => {
   const f = await fixture(t, { caller: "codex", verified: true, sidecarResponse: () => ({ error: "Native outcome is unknown; token=PRIVATE_TOKEN", code: "ANTIGRAVITY_OUTCOME_UNKNOWN", phase: "dispatch", deliveryState: "unknown" }) });
   const request = { requestId: crypto.randomUUID(), cwd: f.cwd, prompt: "PRIVATE_PROMPT", surface: "desktop", conversationId: crypto.randomUUID() };
@@ -272,6 +411,7 @@ test("CLI initialization failure is durably not sent without launching a substit
   const response = await f.call("read_antigravity_delivery", { surface: "cli", requestId: request.requestId }, f.metadata);
   assert.equal(response.isError, true);
   assert.equal(payload(response).status, "failed");
+  assert.equal(payload(response).sender.accountFingerprint, f.accountFingerprint);
   assert.equal(response.structuredContent.diagnostic.code, "ANTIGRAVITY_CLI_START_FAILED");
   assert.equal(response.structuredContent.diagnostic.phase, "startup");
   assert.equal(response.structuredContent.diagnostic.deliveryState, "not_sent");

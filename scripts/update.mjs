@@ -220,7 +220,7 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   if (setup?.configured !== true) throw failure("UPDATE_SETUP_INCOMPLETE", `The global bridge settings are incomplete. ${setupFailureSummary(setup) ?? SETUP_INSPECTION} ${RETRY}`, "verification");
   onProgress("Verifying the owned relay runtime.");
   const service = await awaitService(globalRoot, false, "verification");
-  return { updated: true, configured: true, version, previousVersion, migrated, service, opensApps: false, opensChats: false };
+  return { updated: true, configured: true, version, previousVersion, migrated, service, desktopConnectionsVerified: false, opensApps: false, opensChats: false };
 }
 
 export async function runUpdateCli(args = process.argv.slice(2)) {
@@ -228,7 +228,7 @@ export async function runUpdateCli(args = process.argv.slice(2)) {
     process.chdir(neutralDirectory([ROOT], process.env));
     const result = await runUpdate({ args, onProgress: message => process.stderr.write(`${message}\n`) });
     process.stdout.write(result.help ? `${result.help}\n` : args.includes("--json") ? `${JSON.stringify(result, null, 2)}\n`
-      : `Bridge ${result.version} updated; managed settings verified. Background relay ${result.service.ready ? "ready" : "remains intentionally disabled"}.\n`);
+      : `Bridge ${result.version} updated; managed settings verified. Background relay ${result.service.ready ? "ready" : "remains intentionally disabled"}.\nDesktop connections have not been verified. Check codex_bridge_status, claude_bridge_status and antigravity_bridge_status in the existing apps.\n`);
   } catch (error) {
     const options = { component: "bridge-update", operation: "update", deliveryState: "not_applicable" };
     if (args.includes("--json")) process.stdout.write(JSON.stringify({ updated: false, pending: error.pending === true, diagnostic: bridgeDiagnostic(error, options) }, null, 2) + "\n");

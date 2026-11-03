@@ -355,6 +355,18 @@ test("uncertain Claude delivery retains original account binding and native mess
   }
 });
 
+test("a pending Claude receipt cannot be rebound to a different Antigravity sender", async (t) => {
+  const f = fixture(t);
+  await f.claudeSend();
+  f.state.peerError = Object.assign(new Error("Earlier message awaits a reply"), { code: "PEER_REPLY_PENDING", sent: false, msgId: "fixture-message" });
+  const id = crypto.randomUUID();
+  const otherSender = { ...f.sender, id, conversationId: id };
+  await assert.rejects(f.claudeSend({ sender: otherSender, beforeSend: async () => otherSender }), { code: "PEER_REPLY_PENDING", deliveryState: "not_sent" });
+  const receipt = await f.backend.read({ target: "claude", msgId: "fixture-message", sender: f.sender });
+  assert.equal(receipt.reply, "fixture reply");
+  await assert.rejects(f.backend.read({ target: "claude", msgId: "fixture-message", sender: otherSender }), /does not belong/);
+});
+
 test("quiescent target reload preserves native receipts, sender scope and account binding without resending", async (t) => {
   const previous = fixture(t);
   await previous.claudeSend();

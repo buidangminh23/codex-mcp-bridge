@@ -64,6 +64,29 @@ export class AntigravityDeliveries {
     this.write(record);
   }
 
+  captureObservation(requestId, observation) {
+    if (!this.active.has(requestId)) throw new Error("Cannot prepare inactive delivery observation");
+    if (observation?.version !== 1 || !["ready", "unavailable"].includes(observation.status)
+        || !/^[a-f0-9]{64}$/.test(observation.promptSha256 ?? "") || typeof observation.projectId !== "string"
+        || observation.status === "ready" && (!UUID.test(observation.trajectoryId ?? "") || !Number.isSafeInteger(observation.beforeStepIndex) || observation.beforeStepIndex < -1)) throw new Error("Invalid native observation boundary");
+    const record = this.read(requestId);
+    record.nativeObservation = { version: 1, status: observation.status, promptSha256: observation.promptSha256, projectId: observation.projectId,
+      ...(observation.status === "ready" ? { trajectoryId: observation.trajectoryId, beforeStepIndex: observation.beforeStepIndex } : { code: "ANTIGRAVITY_TRANSCRIPT_UNAVAILABLE" }) };
+    this.write(record);
+  }
+
+  async refresh(requestId, observe) {
+    const record = this.read(requestId);
+    if (!record || this.active.has(requestId)) return record;
+    const refreshed = await observe(record);
+    if (!refreshed || refreshed.requestId !== record.requestId || refreshed.digest !== record.digest || refreshed.cwd !== record.cwd
+        || refreshed.conversationId !== record.conversationId || refreshed.surface !== record.surface || JSON.stringify(refreshed.sender) !== JSON.stringify(record.sender)) throw new Error("Observation changed the delivery identity");
+    const current = this.read(requestId);
+    if (this.active.has(requestId) || JSON.stringify(current) !== JSON.stringify(record)) return current;
+    if (refreshed.status === "reply_received") this.write(refreshed);
+    return refreshed;
+  }
+
   write(record) {
     const temporary = `${this.file(record.requestId)}.${process.pid}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify(record), { flag: "wx", mode: 0o600 });
@@ -91,7 +114,7 @@ export class AntigravityDeliveries {
     }
     this.active.add(requestId);
     void Promise.resolve().then(operation).then((result) => {
-      record.status = ["accepted", "sent_unconfirmed", "held", "refused"].includes(result?.status) ? result.status : result?.status && result.status !== "SUCCESS" ? "failed" : "completed";
+      record.status = ["accepted", "sent_unconfirmed", "held", "refused", "reply_received"].includes(result?.status) ? result.status : result?.status && result.status !== "SUCCESS" ? "failed" : "completed";
       record.result = result;
       record.conversationId = result?.conversationId ?? result?.conversation_id ?? record.conversationId;
       if (record.status === "failed") {
@@ -107,7 +130,9 @@ export class AntigravityDeliveries {
     }).finally(() => {
       record.finishedAt = new Date().toISOString();
       try {
-        record.conversationId ??= this.read(requestId)?.conversationId;
+        const previous = this.read(requestId);
+        record.conversationId ??= previous?.conversationId;
+        record.nativeObservation ??= previous?.nativeObservation;
         this.write(record);
       } catch (error) { process.stderr.write(`Could not persist Antigravity delivery outcome: ${error.code ?? "WRITE_FAILED"}\n`); }
       this.active.delete(requestId);

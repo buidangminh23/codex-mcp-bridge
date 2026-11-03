@@ -43,7 +43,7 @@ const INSTALL_TIMEOUT_MS = 60000;
  * installer writes, and the test would pass or fail according to whose
  * machine it ran on.
  */
-function installOutput({ config, env = {}, args = [] }) {
+function installOutput({ config, env = {}, args = [], cwd }) {
   return execFileSync(process.execPath, [installer, ...args], {
     env: {
       PATH: process.env.PATH ?? "",
@@ -56,6 +56,7 @@ function installOutput({ config, env = {}, args = [] }) {
       ...env,
     },
     encoding: "utf8",
+    cwd,
     stdio: "pipe",
     timeout: INSTALL_TIMEOUT_MS,
   });
@@ -78,6 +79,24 @@ it("rejects a linked Desktop config without changing its target", { skip: proces
   fs.symlinkSync(target, config);
   assert.throws(() => install({ config }), /unsafe|regular file/i);
   assert.deepEqual(JSON.parse(fs.readFileSync(target, "utf8")), { preserved: true });
+});
+
+it("keeps relative configuration overrides and their exact backups in the selected directory", () => {
+  const directory = path.join(sandbox, "relative configuration");
+  fs.mkdirSync(path.join(directory, "nested"), { recursive: true });
+  const config = path.join(directory, "config.json");
+  const before = Buffer.from('{"preserved":true}\n');
+  fs.writeFileSync(config, before);
+  const options = { config: `nested${path.sep}..${path.sep}config.json`, cwd: directory, args: ["--quiet", "--setup"] };
+  installOutput(options);
+  assert.equal(JSON.parse(fs.readFileSync(config, "utf8")).preserved, true);
+  const backups = fs.readdirSync(directory).filter(name => name.startsWith("config.json.bak-"));
+  assert.equal(backups.length, 1);
+  assert.deepEqual(fs.readFileSync(path.join(directory, backups[0])), before);
+  assert.deepEqual(fs.readdirSync(path.join(directory, "nested")), []);
+  assert.equal(fs.readdirSync(directory).some(name => name.endsWith(".tmp")), false);
+  assert.equal(JSON.parse(installOutput(options)).changed, false);
+  assert.deepEqual(fs.readdirSync(directory).filter(name => name.startsWith("config.json.bak-")), backups);
 });
 
 it("preserves a concurrent Desktop configuration update", () => {
@@ -538,6 +557,35 @@ describe("claude desktop installer", () => {
       assert.throws(() => install({ config, args: ["--entry-name", "codex-bridge-desktop", "--quiet", "--setup"] }), /preferences must be a JSON object/);
       assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), original);
     }
+  });
+
+  it("setup retargets a renamed verified source checkout with an exact backup", () => {
+    const previous = path.join(sandbox, "renamed-desktop-source");
+    fs.mkdirSync(path.join(previous, "src"), { recursive: true });
+    fs.writeFileSync(path.join(previous, "package.json"), JSON.stringify({ name: "@minhspark/codex-mcp-bridge", version: "1.26.0" }));
+    for (const name of ["index.mjs", "mcp-supervisor.mjs"]) fs.writeFileSync(path.join(previous, "src", name), "export {};\n");
+    const config = configWith({ mcpServers: { "codex-bridge-desktop": { command: process.execPath,
+      args: [path.join(previous, "src", "mcp-supervisor.mjs"), "index.mjs"], disabled: true,
+      env: { CODEX_BRIDGE_ALLOWED_ROOTS: "/limited", CODEX_BRIDGE_APPROVAL: "deny", CUSTOM_TOKEN: "preserve" } } } });
+    const before = fs.readFileSync(config);
+    const earlierBackup = `${config}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge`;
+    const earlierContents = Buffer.from('{"older":true}\n');
+    fs.writeFileSync(earlierBackup, earlierContents);
+    const args = ["--entry-name", "codex-bridge-desktop", "--quiet", "--setup"];
+    const saved = install({ config, args }).mcpServers["codex-bridge-desktop"];
+    assert.deepEqual(saved.args, [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"]);
+    assert.equal(saved.disabled, true);
+    assert.equal(saved.env.CODEX_BRIDGE_ALLOWED_ROOTS, "/limited");
+    assert.equal(saved.env.CODEX_BRIDGE_APPROVAL, "deny");
+    assert.equal(saved.env.CUSTOM_TOKEN, "preserve");
+    const backups = fs.readdirSync(sandbox).filter(name => name.startsWith(`${path.basename(config)}.bak-`));
+    assert.equal(backups.length, 2);
+    assert.deepEqual(fs.readFileSync(earlierBackup), earlierContents);
+    const newestBackup = path.join(sandbox, backups.find(name => name !== path.basename(earlierBackup)));
+    assert.deepEqual(fs.readFileSync(newestBackup), before);
+    if (process.platform !== "win32") assert.equal(fs.statSync(newestBackup).mode & 0o777, 0o600);
+    assert.equal(JSON.parse(installOutput({ config, args })).changed, false);
+    assert.equal(fs.readdirSync(sandbox).filter(name => name.startsWith(`${path.basename(config)}.bak-`)).length, 2);
   });
 
   it("refuses invalid requested names or conflicting shared entries without touching configuration", () => {

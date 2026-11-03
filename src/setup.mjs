@@ -12,6 +12,56 @@ import { resolveClaudeDesktopConfigRoot } from "./desktop-account-context.mjs";
 const ROOT = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const CODEX_PACKAGE = "@openai/codex@0.166.0";
 const MAX_CONFIG = 16 * 1024 * 1024;
+export const SETUP_INSPECTION = "Inspect locally with codex-bridge-setup --check --json.";
+const SETUP_COMPONENTS = new Set([
+  "Setup preflight", "Claude Desktop data directory", "Codex CLI", "Codex / claude-bridge",
+  "Codex / codex-native-relay", "Codex / codex-native-relay and executor", "Codex / antigravity-bridge",
+  "Claude Code / codex-bridge", "Claude Desktop / codex-bridge-desktop", "Claude Code / antigravity-bridge",
+  "Claude Desktop / background preference", "Antigravity / agent-bridge", "Antigravity / codex-bridge sidecar",
+  "Antigravity / all components", "Native relay executor", "Claude registration names", "Independent background relay",
+]);
+const SETUP_FAILURES = Object.freeze({
+  CLAUDE_DESKTOP_DATA_ROOT_AMBIGUOUS: "Multiple active directories; set CLAUDE_DESKTOP_USER_DATA to the active Claude data directory.",
+  CLAUDE_DESKTOP_DATA_ROOT_UNAVAILABLE: "Data directory unavailable; check access and the CLAUDE_DESKTOP_USER_DATA override.",
+  SETUP_ENTRYPOINT_CONFLICT: "Existing entrypoint could not be verified; review the preserved registration before migration.",
+  SETUP_SIDECAR_DEFINITION_MISSING: "Sidecar settings remain without a verified definition; review both sidecar configuration files.",
+  SETUP_COMPONENT_INCOMPLETE: "Configuration could not be completed or verified.",
+});
+
+function failureCode(error) {
+  return typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : "SETUP_COMPONENT_INCOMPLETE";
+}
+
+function failedComponent(name, error) {
+  return { name, status: "incomplete", code: failureCode(error), detail: error.message };
+}
+
+export function setupFailureResult(error) {
+  const selected = failureCode(error);
+  const code = Object.hasOwn(SETUP_FAILURES, selected) ? selected : "SETUP_COMPONENT_INCOMPLETE";
+  const name = code === "CLAUDE_DESKTOP_DATA_ROOT_AMBIGUOUS" || code === "CLAUDE_DESKTOP_DATA_ROOT_UNAVAILABLE"
+    ? "Claude Desktop data directory" : "Setup preflight";
+  return { configured: false, liveVerified: false, components: [{ name, status: "incomplete", code, detail: SETUP_FAILURES[code] }], nextActions: [SETUP_INSPECTION] };
+}
+
+export function setupFailureSummary(value) {
+  if (typeof value === "string") {
+    if (Buffer.byteLength(value) > 128 * 1024) return null;
+    try { value = JSON.parse(value); } catch { return null; }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.configured !== false) return null;
+  const failures = new Map();
+  for (const items of [value.components, value.verification]) {
+    if (!Array.isArray(items)) continue;
+    for (const item of items.slice(0, 128)) {
+      if (!item || item.status !== "incomplete" || !SETUP_COMPONENTS.has(item.name) || failures.has(item.name)) continue;
+      const code = typeof item.code === "string" && Object.hasOwn(SETUP_FAILURES, item.code) ? item.code : "SETUP_COMPONENT_INCOMPLETE";
+      failures.set(item.name, `${item.name}: ${SETUP_FAILURES[code]}`);
+    }
+  }
+  if (!failures.size) return null;
+  return `${SETUP_INSPECTION} ${[...failures.values()].slice(0, 6).join(" ")}${failures.size > 6 ? " Additional incomplete components are listed by that command." : ""}`;
+}
 
 export function setupArguments(args) {
   const allowed = new Set(["--postinstall", "--check", "--dry-run", "--json", "--no-download", "--help"]);
@@ -56,6 +106,7 @@ export function setupProcessFailure(command, args, result) {
   try { structured = JSON.parse(String(result.stdout || "")); } catch {}
   const validCode = value => typeof value === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(value);
   const codes = [structured?.code, structured?.service?.code, structured?.permissions?.code, structured?.diagnostic?.code,
+    ...String(result.stderr || "").split(/\r?\n/).map(line => /^(?:Error: )?([A-Z][A-Z0-9_]{0,79}):/.exec(line)?.[1]).filter(code => Object.hasOwn(SETUP_FAILURES, code ?? "")),
     ...String(result.stderr || "").split(/\r?\n/).map(line => /^([A-Z][A-Z0-9_]{0,79}) \| /.exec(line)?.[1])].filter(validCode);
   const lines = String(result.stderr || "").split(/\r?\n/).filter(line => /^Error:|^(?:Expected|Refusing|Invalid|Unknown|Shared|Claude|Codex|Configuration|The existing|Missing|Unsafe)/.test(line)
     && !/Command failed|--env|password|secret|token|authorization/i.test(line));
@@ -99,7 +150,7 @@ export function setupEnvironment(env, paths, codex) {
 
 function configurationCheck(label, check, components) {
   try { const details = check(); components.push({ name: label, status: "configured", ...details }); }
-  catch (error) { components.push({ name: label, status: "incomplete", detail: error.message }); }
+  catch (error) { components.push(failedComponent(label, error)); }
 }
 
 function assertEntry(entry, worker, root, { caller } = {}) {
@@ -107,7 +158,7 @@ function assertEntry(entry, worker, root, { caller } = {}) {
   const args = entry.args ?? [];
   const expected = ["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs", "antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs"].includes(worker)
     ? [path.join(root, "src", "mcp-supervisor.mjs"), worker] : [path.join(root, "src", worker)];
-  if (JSON.stringify(args) !== JSON.stringify(expected)) throw new Error("MCP entry points to a different installation or unsupported launcher");
+  if (JSON.stringify(args) !== JSON.stringify(expected)) throw Object.assign(new Error("MCP entry points to a different installation or unsupported launcher"), { code: "SETUP_ENTRYPOINT_CONFLICT" });
   if (caller && entry.env?.ANTIGRAVITY_BRIDGE_CALLER !== caller) throw new Error("Antigravity caller registration is missing or conflicting");
   if (entry.enabled === false || entry.disabled === true) return { deliveryEnabled: false,
     notices: ["This MCP registration is intentionally disabled. Its saved choice was preserved; delivery through this connector is disabled."] };
@@ -201,7 +252,7 @@ export function runSetup({ args = [], env = process.env, platform = process.plat
         ...(typeof details.liveVerified === "boolean" ? { liveVerified: details.liveVerified, transportReady: details.transportReady === true } : {}),
         ...(details.backgroundPreference ? { backgroundPreference: details.backgroundPreference } : {}) });
       return true;
-    } catch (error) { components.push({ name, status: "incomplete", detail: error.message }); return false; }
+    } catch (error) { components.push(failedComponent(name, error)); return false; }
   };
   const code = install(planned[0], "install-claude-code.mjs", ["--install", "--setup", "--desktop-config", paths.desktop], {
     ...base, CODEX_BRIDGE_DESKTOP_TASKS: native ? "1" : "0", CODEX_BRIDGE_AUTOSTART: native ? "0" : "1", CODEX_BRIDGE_THREAD_POLICY: "roots",

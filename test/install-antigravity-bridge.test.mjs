@@ -39,6 +39,14 @@ function write(home, relative, value) {
 
 function read(file) { return JSON.parse(fs.readFileSync(file, "utf8")); }
 
+function previousInstallation(directory) {
+  write(directory, "package.json", { name: "@minhspark/codex-mcp-bridge", version: "1.26.0" });
+  const source = path.join(directory, "src");
+  fs.mkdirSync(source, { recursive: true });
+  for (const name of ["antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs", "antigravity-sidecar.mjs", "mcp-supervisor.mjs"]) fs.writeFileSync(path.join(source, name), "export {};\n");
+  return source;
+}
+
 test("plans both client registrations and an app-managed sidecar without writing files", () => {
   const options = fixture();
   const plan = planAntigravityInstallation(options);
@@ -56,7 +64,7 @@ test("preserves Claude preferences, other servers and bridge-specific settings",
     projects: { example: { allowedTools: ["Read"] } },
     mcpServers: {
       unrelated: { command: "other" },
-      "antigravity-bridge": { command: "old-node", args: [entry], custom: 4, env: { KEEP: "yes", ANTIGRAVITY_BRIDGE_CALLER: "claude" } },
+      "antigravity-bridge": { command: node, args: [entry], custom: 4, env: { KEEP: "yes", ANTIGRAVITY_BRIDGE_CALLER: "claude" } },
     },
   });
   applyJsonEdits(planAntigravityInstallation({ ...options, targets: ["claude"] }).edits);
@@ -118,10 +126,10 @@ test("CLI setup uses HOME and CLAUDE_CONFIG_DIR consistently on every platform",
 test("automatic setup preserves a disabled sidecar and custom display and restart settings", () => {
   const options = fixture();
   const definitionPath = write(options.home, ".gemini/config/sidecars/codex-bridge/sidecar.json", {
-    command: "old-node", args: [sidecarEntry], display_name: "Custom bridge name", restart_policy: "never", custom: { keep: true },
+    command: node, args: [sidecarEntry], display_name: "Custom bridge name", restart_policy: "never", custom: { keep: true },
   });
   const configPath = write(options.home, ".gemini/config/config.json", { sidecars: { "codex-bridge": { enabled: false, custom: 3 } }, userSettings: { permissions: "ask" } });
-  const mcpPath = write(options.home, ".gemini/config/mcp_config.json", { mcpServers: { "agent-bridge": { command: "old-node", args: [outboundEntry], disabled: true, timeoutSeconds: 70 } } });
+  const mcpPath = write(options.home, ".gemini/config/mcp_config.json", { mcpServers: { "agent-bridge": { command: node, args: [outboundEntry], disabled: true, timeoutSeconds: 70 } } });
   const plan = planAntigravityInstallation({ ...options, targets: ["desktop"], setup: true });
   assert.ok(plan.notices.some((notice) => notice.includes("disabled")));
   applyJsonEdits(plan.edits);
@@ -328,6 +336,63 @@ test("rejects occupied registration and sidecar names before writing any file", 
   }
 });
 
+test("setup migrates renamed package registrations and saves exact backups", () => {
+  const options = fixture();
+  const previous = path.join(options.home, "bridge-checkout-old");
+  previousInstallation(previous);
+  const codexExisting = { disabled_tools: ["send_to_antigravity"], enabled: false, transport: { type: "stdio", command: node,
+    args: [path.join(previous, "src", "antigravity-bridge.mjs")], env: { ANTIGRAVITY_BRIDGE_CALLER: "codex" } } };
+  const files = [
+    write(options.home, ".claude.json", { keep: "value", mcpServers: { "antigravity-bridge": { command: node, args: [path.join(previous, "src", "mcp-supervisor.mjs"), "antigravity-bridge.mjs"], disabled: true, env: { CUSTOM: "preserve" } } } }),
+    write(options.home, ".gemini/config/mcp_config.json", { mcpServers: { "agent-bridge": { command: node, args: [path.join(previous, "src", "antigravity-outbound-bridge.mjs")], disabled: true, timeoutSeconds: 90 } } }),
+    write(options.home, ".gemini/config/sidecars/codex-bridge/sidecar.json", { command: node, args: [path.join(previous, "src", "antigravity-sidecar.mjs")], restart_policy: "never", display_name: "Preserved" }),
+  ];
+  write(options.home, ".gemini/config/config.json", { sidecars: { "codex-bridge": { enabled: false } }, permissions: { mode: "ask" } });
+  const originals = files.map(file => fs.readFileSync(file));
+  const plan = planAntigravityInstallation({ ...options, setup: true, codexExisting });
+  assert.equal(plan.codex.mode, "retarget");
+  assert.deepEqual(plan.codex.commandArgs, inboundArgs);
+  applyJsonEdits(plan.edits);
+  for (const [index, file] of files.entries()) {
+    const backups = fs.readdirSync(path.dirname(file)).filter(name => name.startsWith(`${path.basename(file)}.backup-`));
+    assert.equal(backups.length, 1);
+    assert.deepEqual(fs.readFileSync(path.join(path.dirname(file), backups[0])), originals[index]);
+  }
+  assert.equal(read(files[0]).mcpServers["antigravity-bridge"].disabled, true);
+  assert.equal(read(files[0]).mcpServers["antigravity-bridge"].env.CUSTOM, "preserve");
+  assert.equal(read(files[1]).mcpServers["agent-bridge"].timeoutSeconds, 90);
+  assert.equal(read(files[2]).restart_policy, "never");
+  const repeated = planAntigravityInstallation({ ...options, setup: true, codexExisting });
+  assert.equal(repeated.edits.length, 0);
+  applyJsonEdits(repeated.edits);
+  assert.equal(fs.readdirSync(path.dirname(files[0])).filter(name => name.startsWith(".claude.json.backup-")).length, 1);
+});
+
+test("setup repairs only a plain orphan sidecar preference and preserves its disabled state", () => {
+  for (const settings of [{}, { enabled: true }, { enabled: false }]) {
+    const options = fixture();
+    const file = write(options.home, ".gemini/config/config.json", { sidecars: { "codex-bridge": settings, unrelated: { enabled: true } }, permissions: { tools: "ask" } });
+    const plan = planAntigravityInstallation({ ...options, targets: ["desktop"], setup: true });
+    applyJsonEdits(plan.edits);
+    assert.equal(read(file).sidecars["codex-bridge"].enabled, settings.enabled ?? true);
+    assert.deepEqual(read(file).sidecars.unrelated, { enabled: true });
+    assert.deepEqual(read(file).permissions, { tools: "ask" });
+    assert.deepEqual(read(path.join(options.home, ".gemini/config/sidecars/codex-bridge/sidecar.json")).args, [sidecarEntry]);
+    assert.equal(planAntigravityInstallation({ ...options, targets: ["desktop"], setup: true }).edits.length, 0);
+  }
+});
+
+test("orphan sidecar custom settings remain unchanged with targeted recovery guidance", () => {
+  for (const settings of [{ enabled: "false" }, { enabled: false, builtin: true }, { enabled: true, custom: 1 }]) {
+    const options = fixture();
+    const file = write(options.home, ".gemini/config/config.json", { sidecars: { "codex-bridge": settings } });
+    const before = fs.readFileSync(file);
+    assert.throws(() => planAntigravityInstallation({ ...options, targets: ["desktop"], setup: true }), /SETUP_SIDECAR_DEFINITION_MISSING.*config\.json.*sidecar\.json/);
+    assert.deepEqual(fs.readFileSync(file), before);
+    assert.equal(fs.existsSync(path.join(options.home, ".gemini/config/mcp_config.json")), false);
+  }
+});
+
 test("refuses a conflicting configured caller identity", () => {
   const options = fixture();
   write(options.home, ".claude.json", { mcpServers: { "antigravity-bridge": { command: node, args: [entry], env: { ANTIGRAVITY_BRIDGE_CALLER: "codex" } } } });
@@ -336,7 +401,7 @@ test("refuses a conflicting configured caller identity", () => {
 
 test("retargets recognized Codex entries without resetting custom settings", () => {
   const options = fixture();
-  const codexExisting = { enabled: false, disabled_tools: ["send_to_antigravity"], tool_timeout_sec: 90, transport: { type: "stdio", command: "old-node", args: [entry], env: { ANTIGRAVITY_BRIDGE_CALLER: "codex", CUSTOM: "yes" }, cwd: options.home } };
+  const codexExisting = { enabled: false, disabled_tools: ["send_to_antigravity"], tool_timeout_sec: 90, transport: { type: "stdio", command: node, args: [entry], env: { ANTIGRAVITY_BRIDGE_CALLER: "codex", CUSTOM: "yes" }, cwd: options.home } };
   const plan = planAntigravityInstallation({ ...options, targets: ["codex"], codexExisting });
   assert.equal(plan.codex.mode, "retarget");
   assert.equal(plan.codex.environment.CUSTOM, "yes");
@@ -347,7 +412,7 @@ test("retargets recognized Codex entries without resetting custom settings", () 
 
 test("automatic setup migrates recognized package entries and preserves existing access settings", () => {
   const options = fixture();
-  const source = path.join(options.home, "tools", "codex-mcp-bridge", "src");
+  const source = previousInstallation(path.join(options.home, "tools", "codex-mcp-bridge"));
   const oldEntry = path.join(source, "antigravity-bridge.mjs");
   const codexExisting = { enabled: false, disabled_tools: ["send_to_antigravity"], tool_timeout_sec: 90, transport: { type: "stdio", command: node, args: [oldEntry], env: { ANTIGRAVITY_BRIDGE_CALLER: "codex", CUSTOM: "yes" }, cwd: options.home } };
   const originalCodex = structuredClone(codexExisting);
@@ -373,7 +438,7 @@ test("automatic setup migrates recognized package entries and preserves existing
 
 test("managed Antigravity registrations remain idempotent and migrate recognized supervisor paths", () => {
   const options = fixture();
-  const previous = path.join(options.home, "previous", "codex-mcp-bridge", "src", "mcp-supervisor.mjs");
+  const previous = path.join(previousInstallation(path.join(options.home, "previous", "codex-mcp-bridge")), "mcp-supervisor.mjs");
   const codexExisting = { disabled_tools: ["start_antigravity_cli_session"], transport: { type: "stdio", command: node, args: [previous, "antigravity-bridge.mjs"], env: { ANTIGRAVITY_BRIDGE_CALLER: "codex" } } };
   const claudePath = write(options.home, ".claude.json", { mcpServers: { "antigravity-bridge": { command: node, args: [previous, "antigravity-bridge.mjs"], disabled: true } } });
   const outboundPath = write(options.home, ".gemini/config/mcp_config.json", { mcpServers: { "agent-bridge": { command: node, args: [previous, "antigravity-outbound-bridge.mjs"], disabledTools: ["send_to_agent_task"] }, other: { command: "keep" } } });
@@ -408,7 +473,7 @@ test("supervised entry collisions fail without touching either native configurat
 });
 
 test("automatic setup refuses unknown package paths, scripts, launchers and extra arguments before writing", () => {
-  const source = path.join(sandbox, "previous", "codex-mcp-bridge", "src");
+  const source = previousInstallation(path.join(sandbox, "previous", "codex-mcp-bridge"));
   const cases = [
     { command: "python", args: [path.join(source, "antigravity-bridge.mjs")] },
     { command: path.join(sandbox, "custom-launcher"), args: [path.join(source, "antigravity-bridge.mjs")] },
@@ -416,6 +481,8 @@ test("automatic setup refuses unknown package paths, scripts, launchers and extr
     { command: node, args: [path.join(source, "antigravity-sidecar.mjs")] },
     { command: node, args: [path.join(sandbox, "other-package", "src", "antigravity-bridge.mjs")] },
     { command: node, args: [path.join("codex-mcp-bridge", "src", "antigravity-bridge.mjs")] },
+    { command: "custom-wrapper", args: [entry] },
+    { command: node, args: [path.join(sandbox, "missing", "codex-mcp-bridge", "src", "antigravity-bridge.mjs")] },
   ];
   for (const existing of cases) {
     const options = fixture();
@@ -552,7 +619,7 @@ test("outbound updates preserve custom settings and report copied bridges withou
   const options = fixture();
   const copied = { command: "node", args: ["some-source-bridge.mjs"], env: { CODEX_BRIDGE_DESKTOP_TASKS: "1" } };
   const config = write(options.home, ".gemini/config/mcp_config.json", { mcpServers: {
-    "agent-bridge": { command: "old-node", args: [outboundEntry], disabled: true, timeoutSeconds: 120, env: { CUSTOM: "keep" } },
+    "agent-bridge": { command: node, args: [outboundEntry], disabled: true, timeoutSeconds: 120, env: { CUSTOM: "keep" } },
     "codex-bridge": copied,
     "claude-bridge": copied,
   } });

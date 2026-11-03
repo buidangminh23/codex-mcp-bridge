@@ -172,15 +172,41 @@ test("comprehensive setup migrates window-opening settings without changing rest
   assert.equal(initialPlan({ setup: true }).entry.env.CODEX_BRIDGE_OPEN_IN_APP, "0");
 });
 
-test("first-install update retargets known package installations and refuses an unrelated or customized command", () => {
-  const old = { ...entry(), args: [path.resolve("old/codex-mcp-bridge/src/index.mjs")] };
+test("first-install update retargets known package installations and refuses an unrelated or customized command", (t) => {
+  const previous = fs.mkdtempSync(path.join(os.tmpdir(), "known-bridge-source-"));
+  t.after(() => fs.rmSync(previous, { recursive: true, force: true }));
+  const source = path.join(previous, "codex-mcp-bridge", "src");
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, "..", "package.json"), JSON.stringify({ name: "@minhspark/codex-mcp-bridge", version: "1.26.0" }));
+  fs.writeFileSync(path.join(source, "index.mjs"), "export {};\n");
+  const old = { ...entry(), args: [path.join(source, "index.mjs")] };
   assert.deepEqual(initialPlan({ code: { mcpServers: { "codex-bridge": old } } }).entry.args, [path.resolve("src/mcp-supervisor.mjs"), "index.mjs"]);
   for (const conflicting of [
     { command: "custom", args: [] },
     { ...entry(), args: [path.resolve("unrelated/src/index.mjs")] },
     { ...entry(), args: [path.resolve("src/index.mjs"), "--custom"] },
+    { ...entry(), args: [path.resolve("missing/codex-mcp-bridge/src/index.mjs")] },
+    { ...entry(), command: "custom-wrapper" },
     { type: "http", url: "https://example.invalid/mcp" },
   ]) assert.throws(() => initialPlan({ code: { mcpServers: { "codex-bridge": conflicting } } }), /conflicting|unrecognized|customized/);
+});
+
+test("setup migrates a renamed verified source checkout and preserves its access settings", (t) => {
+  const previous = fs.mkdtempSync(path.join(os.tmpdir(), "renamed-bridge-source-"));
+  t.after(() => fs.rmSync(previous, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(previous, "src"));
+  fs.writeFileSync(path.join(previous, "package.json"), JSON.stringify({ name: "@minhspark/codex-mcp-bridge", version: "1.26.0" }));
+  for (const name of ["index.mjs", "codex-bridge-launcher.mjs", "mcp-supervisor.mjs"]) fs.writeFileSync(path.join(previous, "src", name), "export {};\n");
+  for (const args of [["index.mjs"], ["codex-bridge-launcher.mjs"], ["mcp-supervisor.mjs", "index.mjs"]]) {
+    const prior = { ...entry(), args: [path.join(previous, "src", args[0]), ...args.slice(1)], disabled: true,
+      env: { CODEX_BRIDGE_ALLOWED_ROOTS: "/limited", CUSTOM_TOKEN: "preserve" } };
+    const plan = initialPlan({ code: { mcpServers: { "codex-bridge": prior } }, setup: true });
+    assert.deepEqual(plan.entry.args, [path.resolve("src/mcp-supervisor.mjs"), "index.mjs"]);
+    assert.equal(plan.entry.disabled, true);
+    assert.equal(plan.entry.env.CODEX_BRIDGE_ALLOWED_ROOTS, "/limited");
+    assert.equal(plan.entry.env.CUSTOM_TOKEN, "preserve");
+    assert.deepEqual(initialPlan({ code: plan.code, setup: true }).changes, []);
+  }
 });
 
 test("moving shared native registration into Code preserves restrictions and implicit owned scope", () => {

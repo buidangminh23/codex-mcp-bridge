@@ -10,12 +10,12 @@ import { desktopTasksConfigured } from "../src/native-relay.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
 import { enableCodexFullAccess, fullAccessEnabled } from "../src/codex-full-access.mjs";
-import { stableInstallPath, stableNodeBin } from "../src/install-paths.mjs";
+import { bridgeEntrypointConflict, isBridgeSource, isNodeLauncher, stableInstallPath, stableNodeBin } from "../src/install-paths.mjs";
 
 exitForVersionRequest(import.meta.url);
 
 const root = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
-const cfgPath = process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath();
+const cfgPath = path.resolve(process.env.CLAUDE_DESKTOP_CONFIG ?? claudeDesktopConfigPath());
 const entryOption = process.argv.indexOf("--entry-name");
 const requestedEntryName = entryOption < 0 ? undefined : process.argv[entryOption + 1];
 if (entryOption >= 0 && !["codex-bridge", "codex-bridge-desktop"].includes(requestedEntryName)) throw new Error("--entry-name must be codex-bridge or codex-bridge-desktop");
@@ -113,14 +113,12 @@ const entryName = requestedEntryName ?? bridgeEntries[0] ?? "codex-bridge";
 if ((requestedEntryName || setup) && cfg.mcpServers[entryName] !== undefined) {
   const existing = cfg.mcpServers[entryName];
   const script = existing?.args?.[0];
-  const source = typeof script === "string" && path.isAbsolute(script) ? path.dirname(script) : null;
-  const ownedSource = source && (sourceDirectories.has(source)
-    || path.basename(source) === "src" && path.basename(path.dirname(source)).toLowerCase() === "codex-mcp-bridge");
+  const ownedSource = isBridgeSource(script, sourceDirectories, ["index.mjs"]);
   const supervised = existing?.args?.length === 2 && path.basename(script ?? "") === "mcp-supervisor.mjs" && existing.args[1] === "index.mjs";
   const direct = existing?.args?.length === 1 && ["index.mjs", "codex-bridge-launcher.mjs"].includes(path.basename(script ?? ""));
-  if (!existing || typeof existing !== "object" || Array.isArray(existing) || !ownedSource || !(supervised || direct)
+  if (!existing || typeof existing !== "object" || Array.isArray(existing) || !ownedSource || !(supervised || direct) || !isNodeLauncher(existing.command)
       || existing.type !== undefined && existing.type !== "stdio" || ["url", "httpUrl", "serverUrl"].some((key) => existing[key] !== undefined)) {
-    throw new Error(`Desktop ${entryName} has an unrecognized or customized entrypoint; no configuration was changed`);
+    throw bridgeEntrypointConflict(`Desktop ${entryName}`, nodeBin, [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"]);
   }
   if (existing.env !== undefined && (!existing.env || typeof existing.env !== "object" || Array.isArray(existing.env)
       || Object.values(existing.env).some((value) => typeof value !== "string"))) throw new Error(`Desktop ${entryName} environment must contain string values`);
@@ -193,13 +191,20 @@ if (setup) cfg.preferences = { ...cfg.preferences, menuBarEnabled: true };
 createReleaseSnapshot(root, { cache: snapshotRoot({ ...process.env, ...cfg.mcpServers[entryName].env }) });
 
 const changed = original === null || JSON.stringify(JSON.parse(original.data.toString("utf8"))) !== JSON.stringify(cfg);
+function configSibling(suffix) {
+  const directory = path.resolve(path.dirname(cfgPath));
+  const file = path.resolve(directory, `${path.basename(cfgPath)}.${suffix}`);
+  const relative = path.relative(directory, file);
+  if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`) || path.dirname(file) !== directory) throw new Error("Unsafe Desktop configuration sibling path");
+  return file;
+}
+
 if (changed) {
-  const backup = `${cfgPath}.bak-${new Date().toISOString().slice(0, 10)}-codexbridge`;
+  const backup = configSibling(`bak-${new Date().toISOString().slice(0, 10)}-codexbridge-${randomUUID()}`);
   if (original) {
-    try { fs.writeFileSync(backup, original.data, { flag: "wx", mode: 0o600 }); }
-    catch (error) { if (error.code !== "EEXIST") throw error; }
+    fs.writeFileSync(backup, original.data, { flag: "wx", mode: 0o600 });
   }
-  const temporary = `${cfgPath}.${randomUUID()}.tmp`;
+  const temporary = configSibling(`${randomUUID()}.tmp`);
   try {
     fs.writeFileSync(temporary, `${JSON.stringify(cfg, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     const current = readConfig();

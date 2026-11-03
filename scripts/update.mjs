@@ -12,6 +12,7 @@ import { isMainModule } from "../src/install-paths.mjs";
 import { readRegularConfigFile } from "../src/project-policy.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { bridgeDiagnostic, withBridgeDiagnostic } from "../src/recipient-preflight.mjs";
+import { SETUP_INSPECTION, setupFailureSummary } from "../src/setup.mjs";
 
 const PACKAGE = "@minhspark/codex-mcp-bridge";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -86,7 +87,7 @@ function neutralDirectory(roots, env) {
   throw failure("UPDATE_DIRECTORY_UNAVAILABLE", "No working directory outside the package installation is available.", "preflight");
 }
 
-function childFailure(result, phase) {
+function childFailure(result, phase, setupCommand = false) {
   const match = /npm\s+(?:ERR!|error)\s+code\s+([A-Z][A-Z0-9_]{0,79}|\d{1,10})\b/.exec(String(result?.stderr ?? ""));
   const signal = result?.error?.signal ?? result?.signal;
   const value = match?.[1] ?? result?.error?.code ?? (signal ? null : result?.status ?? result?.exitCode);
@@ -96,11 +97,13 @@ function childFailure(result, phase) {
     : /^SIG[A-Z0-9]{1,20}$/.test(signal ?? "") ? `SIGNAL_${signal}` : null;
   const cause = code ? Object.assign(new Error("The child command reported a failure."), { code }) : undefined;
   const permissionDenied = phase === "installation" && ["EPERM", "EACCES"].includes(code);
+  const setupSummary = setupCommand && phase === "verification" && !signal && !timedOut ? setupFailureSummary(result?.stdout) : null;
   return failure(permissionDenied ? "UPDATE_INSTALL_PERMISSION" : code === "EBUSY" ? "UPDATE_PACKAGE_BUSY" : timedOut ? "UPDATE_COMMAND_TIMEOUT" : phase === "verification" ? "UPDATE_SETUP_INCOMPLETE" : "UPDATE_NPM_FAILED",
     permissionDenied ? "npm could not write to the installation directory. Run codex-bridge-update --user to install and configure the bridge in your user account without administrator rights. Existing work and receipts were preserved."
       : timedOut ? `The update command exceeded its deadline. ${RETRY}`
       : code === "EBUSY" ? `The installed package is still held open by another process. No process was stopped. ${RETRY}`
-      : `The ${phase === "verification" ? "installed setup verification" : "npm command"} did not complete. ${RETRY}`, phase, cause);
+      : setupSummary ? `The global bridge settings are incomplete. ${setupSummary} ${RETRY}`
+      : `The ${phase === "verification" ? "installed setup verification" : "npm command"} did not complete. ${setupCommand ? `${SETUP_INSPECTION} ` : ""}${RETRY}`, phase, cause);
 }
 
 function serviceQuiescent(config) {
@@ -138,13 +141,13 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   const prefixArgs = userPrefix ? ["--prefix", userPrefix] : [];
   let cwd = neutralDirectory([root], env);
   let childEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !/^AGENT_RELAY_(?!DIRECTORY$)/i.test(name)));
-  const command = async (arguments_, phase, timeout = 600000, environment = childEnv) => {
+  const command = async (arguments_, phase, timeout = 600000, environment = childEnv, setupCommand = false) => {
     let result;
     try {
       result = await run(process.execPath, arguments_, { env: environment, cwd, encoding: "utf8", windowsHide: true,
         shell: false, timeout, maxBuffer: 8 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
-    } catch (error) { throw childFailure({ error, stderr: error.stderr }, phase); }
-    if (result?.error || (result?.status ?? result?.exitCode ?? 0) !== 0) throw childFailure(result, phase);
+    } catch (error) { throw childFailure({ error, stdout: error.stdout, stderr: error.stderr }, phase, setupCommand); }
+    if (result?.error || (result?.status ?? result?.exitCode ?? 0) !== 0) throw childFailure(result, phase, setupCommand);
     return String(result?.stdout ?? "");
   };
   const modules = (await command([npm, "root", "--global", ...prefixArgs], "preflight", 30000)).trim();
@@ -203,9 +206,9 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   for (const check of [false, true]) {
     onProgress(check ? "Verifying the global bridge settings and owned relay runtime." : "Applying managed settings from the installed bridge.");
     let setup;
-    try { setup = JSON.parse(await command([path.join(globalRoot, "scripts", "setup.mjs"), ...(check ? ["--check"] : []), "--json"], "verification")); }
-    catch (error) { if (error?.code) throw error; throw failure("UPDATE_SETUP_INCOMPLETE", `Global setup did not return a verifiable result. ${RETRY}`, "verification"); }
-    if (setup?.configured !== true) throw failure("UPDATE_SETUP_INCOMPLETE", `The global bridge settings are incomplete. ${RETRY}`, "verification");
+    try { setup = JSON.parse(await command([path.join(globalRoot, "scripts", "setup.mjs"), ...(check ? ["--check"] : []), "--json"], "verification", 600000, childEnv, true)); }
+    catch (error) { if (error?.code) throw error; throw failure("UPDATE_SETUP_INCOMPLETE", `Global setup did not return a verifiable result. ${SETUP_INSPECTION} ${RETRY}`, "verification"); }
+    if (setup?.configured !== true) throw failure("UPDATE_SETUP_INCOMPLETE", `The global bridge settings are incomplete. ${setupFailureSummary(setup) ?? SETUP_INSPECTION} ${RETRY}`, "verification");
   }
   const service = await awaitService(globalRoot, false, "verification");
   return { updated: true, configured: true, version, previousVersion, migrated, service, opensApps: false, opensChats: false };

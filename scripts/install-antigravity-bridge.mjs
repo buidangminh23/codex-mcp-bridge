@@ -3,8 +3,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { applyStdioMcpRegistration, stdioMcpRegistration } from "../src/codex-mcp-registration.mjs";
-import { isMainModule, stableInstallPath, stableNodeBin } from "../src/install-paths.mjs";
+import { bridgeEntrypointConflict, isBridgeSource, isMainModule, isNodeLauncher, stableInstallPath, stableNodeBin } from "../src/install-paths.mjs";
+import { backupRegularConfigFile } from "../src/project-policy.mjs";
 import { homeDir, resolveCodexBin, spawnEnv } from "../src/platform.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { createReleaseSnapshot, snapshotRoot } from "../src/release-snapshot.mjs";
@@ -60,27 +62,25 @@ export function validateCodexExecutable(executable, { platform = process.platfor
   return resolved;
 }
 
-function ownEntry(entry, expected, label, retarget = false, supervised = false) {
+function ownEntry(entry, expected, label, retarget = false, supervised = false, node = stableNodeBin()) {
   if (entry === undefined || entry === null) return;
   object(entry, label);
   const script = entry.args?.[0];
   const managed = supervised && Array.isArray(entry.args) && entry.args.length === 2
     && typeof script === "string" && path.basename(script) === "mcp-supervisor.mjs" && entry.args[1] === path.basename(expected);
+  const commandArgs = supervised ? [path.join(path.dirname(expected), "mcp-supervisor.mjs"), path.basename(expected)] : [expected];
+  const conflict = detail => bridgeEntrypointConflict(label, node, commandArgs, detail);
   if (!Array.isArray(entry.args) || !managed && entry.args.length !== 1 || typeof script !== "string") {
-    throw new Error(`${label} is already configured with a different entrypoint; it was not changed`);
+    throw conflict("a different entrypoint");
   }
   const target = managed ? path.join(path.dirname(expected), "mcp-supervisor.mjs") : expected;
-  if (path.resolve(script) === path.resolve(target) && !managed) return;
-  const source = path.dirname(script);
-  if (!path.isAbsolute(script) || script.includes("\0") || path.resolve(script) !== path.resolve(target)
-    && (!retarget || path.basename(script) !== path.basename(target)
-      || path.basename(source) !== "src" || path.basename(path.dirname(source)).toLowerCase() !== "codex-mcp-bridge")) {
-    throw new Error(`${label} is already configured with a different entrypoint; it was not changed`);
+  const current = path.isAbsolute(script) && path.relative(target, script) === "";
+  if (!current && (!retarget || path.basename(script) !== path.basename(target)
+    || !isBridgeSource(script, [], [path.basename(expected)])) || script.includes("\0")) {
+    throw conflict("a different entrypoint");
   }
-  const command = entry.command;
-  if (typeof command !== "string" || command.includes("\0") || !/^(?:node|node\.exe)$/i.test(path.basename(command))
-    || !path.isAbsolute(command) && command !== path.basename(command)) {
-    throw new Error(`${label} is already configured with a different launcher; it was not changed`);
+  if (!isNodeLauncher(entry.command)) {
+    throw conflict("a different launcher");
   }
 }
 
@@ -105,7 +105,7 @@ export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = 
   let codex = null;
   if (targets.includes("codex")) {
     if (codexExisting && codexExisting.transport?.type !== "stdio") throw new Error("The existing Antigravity MCP transport is not stdio");
-    ownEntry(codexExisting?.transport, entry, "Codex Antigravity bridge", retarget, true);
+    ownEntry(codexExisting?.transport, entry, "Codex Antigravity bridge", retarget, true, node);
     const existingCaller = codexExisting?.transport?.env?.ANTIGRAVITY_BRIDGE_CALLER;
     if (existingCaller !== undefined && existingCaller !== "codex") throw new Error("The existing Codex bridge has a conflicting caller identity");
     codex = remove ? { remove: Boolean(codexExisting) } : stdioMcpRegistration({ name: NAME, existing: codexExisting, node, entry: supervisorEntry, entryArgs: [path.basename(entry)], envOverrides: { ANTIGRAVITY_BRIDGE_CALLER: "codex" } });
@@ -116,7 +116,7 @@ export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = 
     const value = structuredClone(original.value);
     if (value.mcpServers !== undefined) object(value.mcpServers, "Claude mcpServers");
     const existing = value.mcpServers?.[NAME];
-    ownEntry(existing, entry, "Claude Antigravity bridge", retarget, true);
+    ownEntry(existing, entry, "Claude Antigravity bridge", retarget, true, node);
     if (existing?.type !== undefined && existing.type !== "stdio") throw new Error("The existing Claude bridge transport is not stdio");
     if (existing?.env !== undefined) object(existing.env, "Claude bridge environment");
     if (existing?.env?.ANTIGRAVITY_BRIDGE_CALLER !== undefined && existing.env.ANTIGRAVITY_BRIDGE_CALLER !== "claude") throw new Error("The existing Claude bridge has a conflicting caller identity");
@@ -135,7 +135,7 @@ export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = 
     const mcp = structuredClone(originalMcp.value);
     if (mcp.mcpServers !== undefined) object(mcp.mcpServers, "Antigravity mcpServers");
     const outbound = mcp.mcpServers?.[OUTBOUND];
-    ownEntry(outbound, outboundEntry, "Antigravity outbound bridge", retarget, true);
+    ownEntry(outbound, outboundEntry, "Antigravity outbound bridge", retarget, true, node);
     if (outbound?.type !== undefined && outbound.type !== "stdio" || outbound?.url !== undefined || outbound?.serverUrl !== undefined || outbound?.httpUrl !== undefined) throw new Error("The existing Antigravity outbound bridge transport is not stdio");
     if (outbound?.env !== undefined) object(outbound.env, "Antigravity outbound bridge environment");
     if (Object.keys(outbound?.env ?? {}).some((name) => /^(?:CLAUDE|CODEX_|ANTIGRAVITY_BRIDGE_CALLER$)/i.test(name))) throw new Error("The existing Antigravity outbound bridge contains a foreign caller environment; review it before installation");
@@ -151,12 +151,17 @@ export function planAntigravityInstallation({ home = homeDir(), codeConfigDir = 
     const mcpEdit = changed(originalMcp, mcp);
     if (mcpEdit) edits.push(mcpEdit);
     const originalSidecar = snapshot(path.join(configRoot, "sidecars", SIDECAR, "sidecar.json"));
-    if (originalSidecar.text !== null) ownEntry(originalSidecar.value, sidecarEntry, "Antigravity sidecar", retarget);
+    if (originalSidecar.text !== null) ownEntry(originalSidecar.value, sidecarEntry, "Antigravity sidecar", retarget, false, node);
     const originalConfig = snapshot(path.join(configRoot, "config.json"));
     const config = structuredClone(originalConfig.value);
     if (config.sidecars !== undefined) object(config.sidecars, "Antigravity sidecars");
     if (config.sidecars?.[SIDECAR] !== undefined) object(config.sidecars[SIDECAR], "Antigravity bridge sidecar settings");
-    if (originalSidecar.text === null && config.sidecars?.[SIDECAR] !== undefined) throw new Error("An Antigravity sidecar with this name exists without a matching bridge definition");
+    if (originalSidecar.text === null && config.sidecars?.[SIDECAR] !== undefined) {
+      const settings = config.sidecars[SIDECAR];
+      const plain = Object.keys(settings).every(key => key === "enabled") && (settings.enabled === undefined || typeof settings.enabled === "boolean");
+      if (!setup || remove || !plain) throw new Error('SETUP_SIDECAR_DEFINITION_MISSING: Antigravity config.json still contains sidecars["codex-bridge"] without sidecar.json. Restore the previous bridge definition, or back up config.json and remove only the stale sidecars["codex-bridge"] entry before rerunning setup.');
+      notices.push("Restored the missing bridge sidecar definition and preserved its saved enabled preference.");
+    }
     let definition = null;
     if (remove) { if (config.sidecars) delete config.sidecars[SIDECAR]; }
     else {
@@ -202,8 +207,11 @@ function assertCurrent(edit) {
 export function applyJsonEdits(edits) {
   for (const edit of edits) assertCurrent(edit);
   const completed = [];
+  const suffix = randomUUID();
   try {
     for (const edit of edits) {
+      assertCurrent(edit);
+      if (edit.text !== null) backupRegularConfigFile(edit.file, `${edit.file}.backup-${suffix}`, edit.text, 16 * 1024 * 1024);
       assertCurrent(edit);
       if (edit.next === null) fs.unlinkSync(edit.file);
       else {

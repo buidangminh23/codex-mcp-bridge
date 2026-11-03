@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { it } from "node:test";
 
-import { isMainModule, stableInstallPath } from "../src/install-paths.mjs";
+import { isBridgeSource, isMainModule, isNodeLauncher, stableInstallPath } from "../src/install-paths.mjs";
 
 const posixOnly = { skip: process.platform === "win32" && "Homebrew kegs and opt aliases are POSIX-only" };
 
@@ -82,4 +82,57 @@ it("recognises the main module when the path is spelled differently from disk", 
   assert.equal(fs.existsSync(respelled), true);
   assert.equal(isMainModule(respelled, pathToFileURL(fs.realpathSync(respelled)).href), true);
   assert.equal(isMainModule(respelled, pathToFileURL(real).href), true);
+});
+
+it("recognizes relocated bridge sources only with their package identity and regular worker files", (t) => {
+  const { root } = prefix(t);
+  const source = path.join(root, "renamed-checkout", "src");
+  fs.mkdirSync(source, { recursive: true });
+  const script = path.join(source, "mcp-supervisor.mjs");
+  const worker = path.join(source, "index.mjs");
+  const manifest = path.join(source, "..", "package.json");
+  const metadata = { name: "@minhspark/codex-mcp-bridge", version: "1.26.0" };
+  fs.writeFileSync(script, "export {};\n");
+  fs.writeFileSync(worker, "export {};\n");
+  for (const contents of [null, "{", "[]", JSON.stringify({ ...metadata, name: "other-package" }), JSON.stringify({ ...metadata, version: "invalid" }), " ".repeat(128 * 1024 + 1)]) {
+    if (contents !== null) fs.writeFileSync(manifest, contents);
+    assert.equal(isBridgeSource(script, [], ["index.mjs"]), false);
+  }
+  fs.writeFileSync(manifest, JSON.stringify(metadata));
+  assert.equal(isBridgeSource(script, [], ["index.mjs"]), true);
+  const relative = path.relative(root, script);
+  assert.equal(path.isAbsolute(relative), false);
+  assert.equal(isBridgeSource(relative, [], ["index.mjs"]), false);
+  assert.equal(isBridgeSource(script, [], ["../index.mjs"]), false);
+  fs.unlinkSync(worker);
+  assert.equal(isBridgeSource(script, [], ["index.mjs"]), false);
+  fs.mkdirSync(worker);
+  assert.equal(isBridgeSource(script, [], ["index.mjs"]), false);
+});
+
+it("rejects linked relocated bridge manifests and workers", { skip: process.platform === "win32" && "file symlinks require elevated privileges" }, (t) => {
+  const { root } = prefix(t);
+  const source = path.join(root, "source", "src");
+  fs.mkdirSync(source, { recursive: true });
+  const script = path.join(source, "index.mjs");
+  const manifest = path.join(source, "..", "package.json");
+  const metadata = JSON.stringify({ name: "@minhspark/codex-mcp-bridge", version: "1.26.0" });
+  const target = path.join(root, "target");
+  fs.writeFileSync(target, metadata);
+  fs.writeFileSync(script, "export {};\n");
+  fs.symlinkSync(target, manifest);
+  assert.equal(isBridgeSource(script), false);
+  fs.unlinkSync(manifest);
+  fs.writeFileSync(manifest, metadata);
+  fs.unlinkSync(script);
+  fs.symlinkSync(target, script);
+  assert.equal(isBridgeSource(script), false);
+  fs.unlinkSync(script);
+  fs.linkSync(target, script);
+  assert.equal(isBridgeSource(script), false);
+});
+
+it("accepts only direct Node launchers without shell or wrapper syntax", () => {
+  for (const command of ["node", "node.exe", process.execPath]) assert.equal(isNodeLauncher(command), true);
+  for (const command of [undefined, "python", "node --inspect", "node\0", "./node", path.resolve("custom-wrapper")]) assert.equal(isNodeLauncher(command), false);
 });

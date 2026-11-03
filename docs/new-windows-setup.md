@@ -114,6 +114,57 @@ incomplete.
 has no bridge tools, inspect and reconnect `codex-bridge` using `/mcp` before
 attempting delivery.
 
+### Claude Desktop MSIX data migration
+
+Discovery includes `%LOCALAPPDATA%\Claude-Data\claude_*` as well as
+`%APPDATA%\Claude` and the older
+`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude` layout.
+Directories containing only regular `.user-data-left*` migration markers are
+ignored. An old directory link is ignored only when it points to another
+discovered marker-only directory. A marker beside real data does not make that
+data disposable, and setup never deletes these directories.
+
+If multiple directories still contain account data, setup refuses to guess.
+Select the actual directory used by the signed-in app for that invocation:
+
+```powershell
+$env:CLAUDE_DESKTOP_USER_DATA = 'C:\Users\YourUser\AppData\Local\Claude-Data\claude_YourPackageId'
+codex-bridge-setup.cmd --check --json
+```
+
+Replace the example with the existing directory; do not create an empty
+directory to bypass discovery. Explicit data-root and config-file overrides
+remain authoritative. Configuration discovery without account state does not
+establish a signed-in account or prove native delivery readiness.
+
+### Older source registrations and incomplete setup
+
+Managed setup can retarget a recognized older source installation, including a
+renamed checkout. Another installation must have the bridge's exact package
+identity and regular source files, with supported Node arguments. Custom
+launchers, extra arguments, unrelated packages and missing old source cannot
+be adopted automatically. Inspect the named registration before replacing its
+`command` and `args`; preserve its environment, project restrictions and
+disabled settings. Existing changed configuration files receive backups.
+
+If only Antigravity's `sidecars["codex-bridge"]` setting remains after its
+`sidecar.json` was removed, setup restores the definition when that setting is
+empty or contains only a boolean `enabled`. A saved `false` stays disabled.
+Custom residual settings still require inspection; deleting `sidecar.json`
+alone does not remove the registration in `.gemini\config\config.json`.
+
+The updater names recognized failed components and provides static recovery
+guidance. For the detailed local report, run:
+
+```powershell
+codex-bridge-setup.cmd --json
+```
+
+This command applies setup again; `--check --json` only inspects it. Review and
+redact local details before sharing them. After a successful migration, let
+active work finish and reconnect the affected MCP clients so direct processes
+load the new registration. A saved configuration change does not restart them.
+
 Local `npm install` and `npm ci` do not configure apps. For a deliberate
 package-only installation, a direct global npm install can use
 `CODEX_BRIDGE_SKIP_SETUP=1` or `--ignore-scripts`. This differs from the

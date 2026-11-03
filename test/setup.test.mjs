@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { automaticSetupEnabled, checkSetup, printSetup, runSetup, setupArguments, setupEnvironment, setupPaths, setupProcessFailure } from "../src/setup.mjs";
+import { automaticSetupEnabled, checkSetup, printSetup, runSetup, setupArguments, setupEnvironment, setupFailureResult, setupFailureSummary, setupPaths, setupProcessFailure } from "../src/setup.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -19,6 +19,65 @@ test("one-command setup preserves structured service failure codes without copyi
     stderr: "Bridge diagnostic (include this block in a bug report)\nWORKER_STORAGE_UNSAFE | background-relay / setup\nReason: private account data\n" });
   assert.equal(diagnostic.code, "WORKER_STORAGE_UNSAFE");
   assert.doesNotMatch(diagnostic.message, /private account data/);
+});
+
+test("setup recognizes typed installer conflicts without copying their private details", () => {
+  for (const code of ["SETUP_ENTRYPOINT_CONFLICT", "SETUP_SIDECAR_DEFINITION_MISSING"]) {
+    const error = setupProcessFailure(process.execPath, ["install-antigravity-bridge.mjs"], {
+      status: 1, stderr: `Error: ${code}: custom registration at /Users/<user>/config with private-value\n`,
+    });
+    assert.equal(error.code, code);
+    assert.match(error.message, new RegExp(code));
+    assert.doesNotMatch(error.message, /private-value|\/Users\/<user>/);
+  }
+});
+
+test("setup JSON failures remain parseable and do not expose preflight error text", (t) => {
+  const setup = fixture(t);
+  const child = spawnSync(process.execPath, [path.join(root, "scripts", "setup.mjs"), "--json", "--unknown-private-value"], {
+    env: { ...setup.env, SystemRoot: process.env.SystemRoot, PATH: "" }, encoding: "utf8", windowsHide: true,
+  });
+  assert.equal(child.status, 1);
+  const result = JSON.parse(child.stdout);
+  assert.equal(result.configured, false);
+  assert.equal(result.components[0].name, "Setup preflight");
+  assert.equal(result.components[0].code, "SETUP_COMPONENT_INCOMPLETE");
+  assert.equal(child.stderr, "");
+  assert.doesNotMatch(child.stdout, /private-value/);
+});
+
+test("setup retains typed component failure codes for updater inspection", (t) => {
+  const setup = fixture(t);
+  const run = setup.run;
+  setup.run = (command, args, env) => {
+    if (path.basename(args[0]) === "install-claude-code.mjs") {
+      throw Object.assign(new Error("Custom registration remains unchanged"), { code: "SETUP_ENTRYPOINT_CONFLICT" });
+    }
+    return run(command, args, env);
+  };
+  const result = runSetup({ ...setup, args: ["--no-download"], platform: "win32", root });
+  assert.equal(result.configured, false);
+  assert.equal(result.components.find(item => item.name === "Claude Code / codex-bridge").code, "SETUP_ENTRYPOINT_CONFLICT");
+  assert.ok(result.verification.filter(item => item.status === "incomplete").every(item => item.code === "SETUP_COMPONENT_INCOMPLETE"));
+});
+
+test("safe setup diagnostics preserve root categories and bound the public summary", () => {
+  for (const code of ["CLAUDE_DESKTOP_DATA_ROOT_AMBIGUOUS", "CLAUDE_DESKTOP_DATA_ROOT_UNAVAILABLE"]) {
+    const result = setupFailureResult(Object.assign(new Error("private-value /Users/<user>/data"), { code }));
+    assert.equal(result.components[0].code, code);
+    assert.equal(result.components[0].name, "Claude Desktop data directory");
+    assert.match(setupFailureSummary(result), /CLAUDE_DESKTOP_USER_DATA/);
+    assert.doesNotMatch(JSON.stringify(result), /private-value|\/Users\/<user>/);
+  }
+  const names = ["Codex CLI", "Codex / claude-bridge", "Codex / codex-native-relay", "Codex / antigravity-bridge",
+    "Claude Code / codex-bridge", "Claude Desktop / codex-bridge-desktop", "Antigravity / all components"];
+  const summary = setupFailureSummary({ configured: false, components: names.map(name => ({ name, status: "incomplete", code: "SETUP_ENTRYPOINT_CONFLICT" })) });
+  assert.match(summary, /Additional incomplete components/);
+  assert.ok(summary.length < 1200);
+  assert.doesNotMatch(summary, /Antigravity \/ all components/);
+  for (const value of ["{", "x".repeat(128 * 1024 + 1), {}, null, [], { configured: true }, { configured: false, components: {} }]) {
+    assert.equal(setupFailureSummary(value), null);
+  }
 });
 
 function fixture(t) {
@@ -104,6 +163,30 @@ test("setup targets the Microsoft Store Claude data root and respects explicit p
   assert.equal(setupPaths({ ...env, CLAUDE_DESKTOP_USER_DATA: customRoot, CLAUDE_DESKTOP_CONFIG: customFile }, "win32").desktop, customFile);
   assert.ok(runSetup({ ...setup, env, args: ["--dry-run"], platform: "win32", root }).files.includes(desktop));
   assert.equal(setup.calls.length, 0);
+});
+
+test("setup preview selects migrated Claude data without touching linked retired directories", (t) => {
+  const setup = fixture(t);
+  const local = path.join(setup.home, "local");
+  const legacy = path.join(local, "Packages", "Claude_test", "LocalCache", "Roaming", "Claude");
+  const migrated = path.join(local, "Claude-Data", "claude_test");
+  const ordinary = path.join(setup.env.APPDATA, "Claude");
+  const desktop = path.join(migrated, "claude_desktop_config.json");
+  const marker = ".user-data-left.claude_test";
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.mkdirSync(setup.env.APPDATA, { recursive: true });
+  fs.writeFileSync(path.join(legacy, marker), "migration marker");
+  fs.symlinkSync(legacy, ordinary, process.platform === "win32" ? "junction" : "dir");
+  setup.write(desktop, { preferences: { theme: "dark" } });
+  const env = { ...setup.env, LOCALAPPDATA: local };
+  assert.equal(setupPaths(env, "win32").desktop, desktop);
+  const preview = runSetup({ ...setup, env, args: ["--dry-run"], platform: "win32", root });
+  assert.ok(preview.files.includes(desktop));
+  assert.equal(setup.calls.length, 0);
+  assert.deepEqual(fs.readdirSync(legacy), [marker]);
+  assert.equal(fs.readFileSync(path.join(legacy, marker), "utf8"), "migration marker");
+  assert.equal(fs.lstatSync(ordinary).isSymbolicLink(), true);
+  assert.deepEqual(fs.readdirSync(migrated), ["claude_desktop_config.json"]);
 });
 
 test("setup refuses ambiguous Claude roots and follows the uniquely identified account root", (t) => {

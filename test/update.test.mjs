@@ -413,6 +413,81 @@ test("managed setup failure preserves the completed installation and never claim
   }
 });
 
+test("update identifies failed setup components without exposing private child output", async t => {
+  for (const status of [0, 1]) {
+    const f = fixture(t);
+    const run = f.options.run;
+    const component = { name: "Claude Code / codex-bridge", status: "incomplete", code: "SETUP_ENTRYPOINT_CONFLICT",
+      detail: "private-value /Users/<user>/config token=hidden", nextAction: "Run private-command" };
+    f.options.run = async (command, args, settings) => args[0].endsWith("setup.mjs") ? {
+      status, stderr: "private-stderr", stdout: JSON.stringify({ configured: false, components: [component],
+        verification: [component, { name: "Antigravity / codex-bridge sidecar", status: "incomplete", code: "SETUP_SIDECAR_DEFINITION_MISSING" }],
+        nextActions: ["private-command"], token: "private-token" }),
+    } : run(command, args, settings);
+    await assert.rejects(runUpdate(f.options), error => {
+      assert.equal(error.code, "UPDATE_SETUP_INCOMPLETE");
+      assert.equal(error.phase, "verification");
+      assert.match(error.message, /Claude Code \/ codex-bridge/);
+      assert.match(error.message, /Antigravity \/ codex-bridge sidecar/);
+      assert.match(error.message, /entrypoint/i);
+      assert.match(error.message, /definition/i);
+      assert.match(error.message, /codex-bridge-setup --check --json/);
+      assert.equal(error.message.match(/Claude Code \/ codex-bridge/g).length, 1);
+      assert.doesNotMatch(error.message, /private-|hidden|\/Users\//);
+      if (status) assert.equal(error.cause.code, "EXIT_1");
+      return true;
+    });
+    assert.equal(f.calls.some(item => item.kind === "service"), false);
+  }
+});
+
+test("update explains typed Desktop root ambiguity from setup preflight", async t => {
+  const f = fixture(t);
+  const run = f.options.run;
+  f.options.run = async (command, args, settings) => args[0].endsWith("setup.mjs") ? {
+    status: 1, stdout: JSON.stringify({ configured: false, components: [{ name: "Claude Desktop data directory", status: "incomplete", code: "CLAUDE_DESKTOP_DATA_ROOT_AMBIGUOUS" }] }),
+  } : run(command, args, settings);
+  await assert.rejects(runUpdate(f.options), error => error.code === "UPDATE_SETUP_INCOMPLETE"
+    && /Claude Desktop data directory/.test(error.message) && /CLAUDE_DESKTOP_USER_DATA/.test(error.message));
+});
+
+test("update ignores untrusted setup names, codes and details", async t => {
+  const f = fixture(t);
+  const run = f.options.run;
+  f.options.run = async (command, args, settings) => args[0].endsWith("setup.mjs") ? {
+    status: 1, stdout: JSON.stringify({ configured: false, components: [
+      { name: "private-component", status: "incomplete", code: "SETUP_ENTRYPOINT_CONFLICT" },
+      { name: "Codex CLI", status: "incomplete", code: "PRIVATE_CODE", detail: "private-detail" },
+      { name: "Codex / claude-bridge\u001b[2J", status: "incomplete", code: "SETUP_ENTRYPOINT_CONFLICT" },
+    ] }), stderr: "private-stderr",
+  } : run(command, args, settings);
+  await assert.rejects(runUpdate(f.options), error => {
+    assert.match(error.message, /Codex CLI/);
+    assert.match(error.message, /codex-bridge-setup --check --json/);
+    assert.doesNotMatch(error.message, /private|PRIVATE|\u001b|entrypoint/i);
+    return true;
+  });
+});
+
+test("setup JSON cannot override timeout, signal or failing exit semantics", async t => {
+  for (const [extra, configured, code, detailed] of [
+    [{ error: { code: "ETIMEDOUT" } }, false, "UPDATE_COMMAND_TIMEOUT", false],
+    [{ signal: "SIGINT", error: { signal: "SIGINT" } }, false, "UPDATE_SETUP_INCOMPLETE", false],
+    [{}, true, "UPDATE_SETUP_INCOMPLETE", false],
+  ]) {
+    const f = fixture(t);
+    const run = f.options.run;
+    f.options.run = async (command, args, settings) => args[0].endsWith("setup.mjs") ? {
+      status: 1, ...extra, stdout: JSON.stringify({ configured, components: [{ name: "Claude Code / codex-bridge", status: "incomplete", code: "SETUP_ENTRYPOINT_CONFLICT" }] }),
+    } : run(command, args, settings);
+    await assert.rejects(runUpdate(f.options), error => {
+      assert.equal(error.code, code);
+      assert.equal(error.message.includes("Claude Code / codex-bridge"), detailed);
+      return true;
+    });
+  }
+});
+
 test("global setup verification failure does not claim the update completed", async t => {
   const f = fixture(t);
   const run = f.options.run;

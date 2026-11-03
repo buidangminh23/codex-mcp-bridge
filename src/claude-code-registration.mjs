@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { bridgeEntrypointConflict, isBridgeSource, isNodeLauncher } from "./install-paths.mjs";
 
 const PACKAGE_SOURCE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -31,7 +32,7 @@ function configurationObject(value, label) {
   return value;
 }
 
-function initialBridgeEntry(entry, root, label) {
+function initialBridgeEntry(entry, root, node, label) {
   configurationObject(entry, label);
   if (entry.type !== undefined && entry.type !== "stdio" || ["url", "serverUrl", "httpUrl"].some((key) => entry[key] !== undefined)) {
     throw new Error(`${label} has a conflicting transport; no configuration was changed`);
@@ -41,11 +42,9 @@ function initialBridgeEntry(entry, root, label) {
   const leaf = typeof script === "string" ? path.basename(script) : null;
   const supervised = args?.length === 2 && leaf === "mcp-supervisor.mjs" && args[1] === "index.mjs";
   const direct = args?.length === 1 && ["index.mjs", "codex-bridge-launcher.mjs"].includes(leaf);
-  const source = typeof script === "string" && path.isAbsolute(script) ? path.dirname(path.resolve(script)) : null;
-  const ownSource = source && (source === PACKAGE_SOURCE || source === path.join(root, "src")
-    || path.basename(source) === "src" && path.basename(path.dirname(source)).toLowerCase() === "codex-mcp-bridge");
-  if (!Array.isArray(args) || !(supervised || direct) || !ownSource) {
-    throw new Error(`${label} is already configured with an unrecognized or customized entrypoint; no configuration was changed`);
+  const ownSource = isBridgeSource(script, [PACKAGE_SOURCE, path.join(root, "src")], ["index.mjs"]);
+  if (!Array.isArray(args) || !(supervised || direct) || !ownSource || !isNodeLauncher(entry.command)) {
+    throw bridgeEntrypointConflict(label, node, [path.join(root, "src", "mcp-supervisor.mjs"), "index.mjs"]);
   }
   if (entry.env !== undefined) {
     configurationObject(entry.env, `${label} environment`);
@@ -67,7 +66,7 @@ export function planInitialCodeRegistration({ code, desktop, root, node, environ
   const sharedNative = desktop.mcpServers?.[name] ?? desktop.mcpServers?.[`${name}-desktop`];
   const inheritedShared = originalCode === undefined && sharedNative?.env?.CODEX_BRIDGE_DESKTOP_TASKS === "1";
   const source = inheritedShared ? sharedNative : originalCode;
-  if (source !== undefined) initialBridgeEntry(source, root, `Claude Code ${name}`);
+  if (source !== undefined) initialBridgeEntry(source, root, node, `Claude Code ${name}`);
   const defaults = Object.fromEntries(INITIAL_ENVIRONMENT_KEYS.filter((key) => environment[key] !== undefined).map((key) => [key, environment[key]]));
   if (Object.values(defaults).some((value) => typeof value !== "string")) throw new Error("Bridge environment defaults must be strings");
   const scopeKeys = ["CODEX_BRIDGE_THREAD_POLICY", "CODEX_BRIDGE_ALLOWED_ROOTS", "CODEX_BRIDGE_PROJECT_POLICY", "CODEX_BRIDGE_ALLOWED_THREADS", "CODEX_BRIDGE_HARDENED"];
@@ -94,7 +93,7 @@ export function planInitialCodeRegistration({ code, desktop, root, node, environ
   if (JSON.stringify(originalCode) !== JSON.stringify(replacement)) changes.push({ kind: originalCode ? "update-user-code-entry" : "create-user-code-entry", name });
   const shared = updatedDesktop.mcpServers?.[name];
   if (shared !== undefined) {
-    initialBridgeEntry(shared, root, `Shared Desktop ${name}`);
+    initialBridgeEntry(shared, root, node, `Shared Desktop ${name}`);
     const destination = `${name}-desktop`;
     if (Object.hasOwn(updatedDesktop.mcpServers, destination)) {
       throw new Error(`Shared Desktop ${destination} already exists; resolve the name collision before installation`);

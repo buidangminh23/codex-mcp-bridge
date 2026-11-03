@@ -4,6 +4,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+## [1.26.7] - 2026-11-03
+
+### Fixed
+
+- Isolate setup test filesystem targets beneath their temporary fixture directory and independently verify configuration discovery. This removes the data flow reported by 12 CodeQL path-injection alerts in the setup tests.
+- Isolate the postinstall failure test from installed Claude executables so authentication probes cannot create unrelated configuration files in its temporary home.
+
+### Verification
+
+- Setup tests and the complete Node 22/24 CI matrix pass on Windows, macOS and Linux. CodeQL reports no findings on the fix pull request. This release changes test isolation and version metadata only; application runtime behavior is unchanged.
+
 ## [1.26.6] - 2026-11-02
 
 ### Added

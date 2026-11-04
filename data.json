@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-11-04T09:16:10.999Z",
+  "updatedAt": "2026-11-04T17:21:08.189Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -27124,7 +27124,7 @@
       }
     },
     {
-      "collectedAt": "2026-11-04T09:16:10.999Z",
+      "collectedAt": "2026-11-04T17:21:08.189Z",
       "views": {
         "count": 399,
         "uniques": 98,
@@ -27283,13 +27283,9 @@
         "subscribers": 0
       },
       "npm": {
-        "start": "2026-10-04",
-        "end": "2026-11-02",
+        "start": "2026-10-05",
+        "end": "2026-11-03",
         "downloads": [
-          {
-            "day": "2026-10-04",
-            "downloads": 113
-          },
           {
             "day": "2026-10-05",
             "downloads": 26
@@ -27405,6 +27401,10 @@
           {
             "day": "2026-11-02",
             "downloads": 566
+          },
+          {
+            "day": "2026-11-03",
+            "downloads": 879
           }
         ]
       },
@@ -27858,11 +27858,11 @@
         }
       ],
       "sourceCollectedAt": {
-        "views": "2026-11-04T09:16:10.999Z",
-        "clones": "2026-11-04T09:16:10.999Z",
-        "npm": "2026-11-04T09:16:10.999Z",
-        "repository": "2026-11-04T09:16:10.999Z",
-        "releases": "2026-11-04T09:16:10.999Z"
+        "views": "2026-11-04T17:21:08.189Z",
+        "clones": "2026-11-04T17:21:08.189Z",
+        "npm": "2026-11-04T17:21:08.189Z",
+        "repository": "2026-11-04T17:21:08.189Z",
+        "releases": "2026-11-04T17:21:08.189Z"
       }
     }
   ],
@@ -28727,11 +28727,14 @@
       },
       "2026-11-02": {
         "downloads": 566
+      },
+      "2026-11-03": {
+        "downloads": 879
       }
     }
   },
   "usage": {
-    "collectedAt": "2026-11-04T09:16:13Z",
+    "collectedAt": "2026-11-04T17:21:10Z",
     "active": {
       "day": 0,
       "week": 0,

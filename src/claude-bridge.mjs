@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { CodexAppServerClient } from "./app-server-client.mjs";
 import { PLATFORM_LABEL } from "./platform.mjs";
-import { PeerEndpoint, assertClaudeSessionCwd, assertClaudeSessionProcess, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
+import { readTranscriptOutcome, PeerEndpoint, assertClaudeSessionCwd, assertClaudeSessionProcess, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
 import { createThreadDelivery } from "./thread-delivery.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { desktopTasksConfigured, NativeDesktopRelay, desktopTaskSocketPath, accountRelaySocketPath } from "./native-relay.mjs";
@@ -18,6 +18,7 @@ import { ReplyForwarder } from "./reply-forwarder.mjs";
 import { assertRoutingReload, clientReloadReason, createReloadControl, exitWhenClientCloses } from "./reload-control.mjs";
 import { readClaudeAccountContext } from "./desktop-account-context.mjs";
 import { assertAccountIdentity, bindUnsolicitedClaudeMessageAccount, publicAccountState, readBridgeAccounts, requireBridgeAccounts, sameAccountIdentity } from "./bridge-account-context.mjs";
+import { createQueuedDeliveryStore, publicQueueReceipt, QUEUE_STATES, queuedDeliveryEnabled } from "./queued-claude-delivery.mjs";
 import { recoverClaudeDesktopSession, resolveClaudeDesktopSession, sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
 import { createHardenedRootPolicy, rootPolicyAccessScope } from "./hardened-root-policy.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
@@ -27,7 +28,7 @@ import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./backgroun
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "2.1.1";
+const VERSION = "2.2.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
@@ -117,6 +118,41 @@ function readReceipt(msgId) {
     try { recheckScopeBindings(receipt?.scopeBindings); } catch { return null; }
   }
   return receipt ? { ...receipt, forwarding: replyForwarder.read(msgId) ?? receipt.forwardingError ?? null } : null;
+}
+
+const queuedDeliveries = createQueuedDeliveryStore({ log });
+
+async function queueDormantDelivery(error, { message, expectedCwd, sender, accounts, meta }) {
+  if (error?.preflight?.code !== "CLAUDE_SESSION_NOT_READY" || !error.taskId || !sender || rootPolicy.enabled || !queuedDeliveryEnabled()) return null;
+  if (readClaudeInboundPolicy(expectedCwd).value !== "accept") return null;
+  const active = await assertSender(meta);
+  if (JSON.stringify(active) !== JSON.stringify(sender)) throw preflightFailure("CODEX_SENDER_CONTEXT_CHANGED", "The sender's active turn or permissions changed before this message could be queued.");
+  assertAccountIdentity(requireBridgeAccounts(accounts));
+  const { entry, duplicate } = queuedDeliveries.enqueue({
+    message,
+    sender: { threadId: active.threadId, turnId: active.turnId, cwd: active.cwd, accountFingerprint: accounts.codex.fingerprint },
+    recipient: { taskId: error.taskId, title: error.title ?? null, cwd: expectedCwd, accountFingerprint: accounts.claude.fingerprint },
+  });
+  const receipt = { ...publicQueueReceipt(entry), duplicate, nextAction: "read_claude_delivery" };
+  return { ...textResult(`Queued for Claude Desktop task "${entry.recipient.title ?? entry.recipient.taskId}" because its session is not running. Nothing was opened and nothing has been sent yet.\nThe codex-bridge inside that session delivers this when the user next opens the session, if it can verify the session and the recipient's crossSessionInbound setting is still accept. It expires at ${new Date(entry.expiresAt).toISOString()}.\nQueue id: ${entry.id}\nDo not resend. Inspect read_claude_delivery with this queue id.`), structuredContent: { receipt } };
+}
+
+function readQueuedReceipt(id) {
+  if (!desktopOnly || rootPolicy.enabled) return null;
+  const entry = queuedDeliveries.peek(id);
+  if (!entry || !sameAccountIdentity({ claude: entry.recipient.accountFingerprint, codex: entry.sender.accountFingerprint }, readBridgeAccounts())) return null;
+  const outcome = entry.state === QUEUE_STATES.sentUnconfirmed ? readTranscriptOutcome(entry.sessionId, entry.recipient.cwd, entry.msgId) : null;
+  const receipt = {
+    ...publicQueueReceipt(entry),
+    ...(outcome?.reply ? { status: "reply_received", reply: outcome.reply.text, source: outcome.reply.source, ...(outcome.reply.absorbed ? { replyAbsorbed: true } : {}) } : {}),
+    ...(outcome?.status === "interrupted" ? { status: "interrupted", outcome: "unknown" } : {}),
+  };
+  const result = { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { receipt } };
+  if (![QUEUE_STATES.refused, QUEUE_STATES.expired, QUEUE_STATES.unknown].includes(entry.state)) return result;
+  return withBridgeDiagnostic({ ...result, isError: true }, new Error(entry.reason ?? `Queued delivery status: ${entry.state}`), {
+    component: "claude-bridge", operation: "read_claude_delivery", code: entry.reasonCode ?? `CLAUDE_QUEUE_${entry.state.toUpperCase()}`,
+    deliveryState: entry.state === QUEUE_STATES.unknown ? "unknown" : "not_sent", msgId: entry.id,
+  });
 }
 
 const textResult = (text, isError = false) => ({
@@ -245,7 +281,7 @@ const server = new McpServer(
       NO_UI_DELIVERY_FALLBACK +
       "The host's current MCP turn metadata identifies the sender; unknown or stale permission context blocks sending. " +
       "Accounts and live session identities are rediscovered on every call. Use target auto with the exact expectedCwd to select the current account's only matching Desktop task; specify expectedTaskId when multiple tasks exist. " +
-      "list_claude_sessions includes saved tasks, but a saved task is not proof of a live receiving endpoint. target auto with expectedTaskId rediscovers only the exact task without opening an app or chat; an already-live session is sent directly without opening a composer. A dormant task returns CLAUDE_SESSION_NOT_READY with sent false. There is no supported silent cold-start API. The bridge never creates a Claude session and never prefills the Desktop composer or presses Send: the user opens the session in Claude Desktop, then retry with target auto. " +
+      "list_claude_sessions includes saved tasks, but a saved task is not proof of a live receiving endpoint. target auto with expectedTaskId rediscovers only the exact task without opening an app or chat; an already-live session is sent directly without opening a composer. With the exact expectedTaskId and a recipient crossSessionInbound setting of accept, a dormant task returns status queued with sent false and the bridge in that session delivers it when the user next opens the session; do not resend. Otherwise a dormant task returns CLAUDE_SESSION_NOT_READY with sent false. There is no supported silent cold-start API. The bridge never creates a Claude session and never prefills the Desktop composer or presses Send: the user opens the session in Claude Desktop, then retry with target auto. " +
       "The sender class follows the verified approval policy; automated review flags are reported but never change it. " +
       "A Desktop recipient whose settings refuse or hold inbound messages, or whose task metadata shows a different permission class without an explicit accept, is refused before sending, because Claude Desktop cannot show the approval dialog. " +
       "Never launch a CLI session or an external app-server as a substitute for an existing Desktop task. A receipt confirms a reply, not visual verification in the app. " +
@@ -335,10 +371,10 @@ registerTool(
       NO_UI_DELIVERY_FALLBACK +
       "This tool only delivers to a running session; it never creates one. target new is refused with CLAUDE_SESSION_CREATION_REMOVED and sent false: the user opens the session in Claude Desktop, then retry with target auto. " +
       "A socket write alone does not confirm that Claude received the message. Set waitSec to 0 to send without confirmation. " +
-      "Every send is refused while earlier messages to that session still await replies, including waitSec 0; " +
+      "Every send to a running session is refused while earlier messages to that session still await replies, including waitSec 0; " +
       "wait for those replies and read_claude_inbox before trying again. Desktop-only mode refuses CLI or unknown " +
       "entrypoints, partial names, ambiguous targets, and a missing or mismatched expectedCwd or expectedTaskId before sending. Use target auto and expectedCwd for automatic current-account discovery; expectedTaskId is optional only when auto finds exactly one matching task. " +
-      "target auto rediscovers the exact native endpoint without opening an app or chat. With no running session in expectedCwd, target auto or an exact identity returns CLAUDE_SESSION_NOT_READY and sent false; there is no supported silent cold-start API. An exact identity that no longer matches while another session runs in that project returns CLAUDE_SESSION_NOT_FOUND; reinspect it. Report the diagnostic and ask the user to open the session in Claude Desktop instead of trying to load a relay through a chat. The sender's current permissions are verified per call; it never substitutes another task.",
+      "target auto rediscovers the exact native endpoint without opening an app or chat. With target auto, the exact expectedTaskId and a recipient crossSessionInbound setting of accept, a dormant task returns status queued with sent false; it is delivered when the user next opens the session, expires after 7 days, and must not be resent. Inspect it with read_claude_delivery. Otherwise, with no running session in expectedCwd, target auto or an exact identity returns CLAUDE_SESSION_NOT_READY and sent false; there is no supported silent cold-start API. An exact identity that no longer matches while another session runs in that project returns CLAUDE_SESSION_NOT_FOUND; reinspect it. Report the diagnostic and ask the user to open the session in Claude Desktop instead of trying to load a relay through a chat. The sender's current permissions are verified per call; it never substitutes another task.",
     inputSchema: {
       target: z.string().describe("Use auto for current-account discovery in expectedCwd, or an exact session identity"),
       message: z.string().describe(`The message text to deliver. ${PROMPT_FIELD_HINT}`),
@@ -384,7 +420,12 @@ registerTool(
           recheckScopeBindings(recoveryBindings);
           if (JSON.stringify(currentSender) !== JSON.stringify(recoverySender)) throw new Error("The sending turn changed during Desktop recovery");
         },
+      }).catch(async (error) => {
+        const queued = await queueDormantDelivery(error, { message, expectedCwd, sender: recoverySender, accounts, meta: extra?._meta });
+        if (queued) return { queued };
+        throw error;
       }) : { session: findClaudeSession(target, { desktopOnly }) };
+      if (resolved.queued) return resolved.queued;
       const found = resolved.session;
       if (!found) return textResult(desktopOnly ? missingDesktopSession : `No live Claude session matches "${target}".`, true);
       const session = desktopOnly ? { ...found, inbound: readClaudeInboundPolicy(found.cwd) } : withDesktopContext(found);
@@ -496,12 +537,14 @@ registerTool(
   "read_claude_delivery",
   {
     title: "Inspect a Claude message receipt without resending",
-    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process. An interrupted receipt ends only reply waiting: task outcome remains unknown and background work may still run. Inspect the existing task before any scoped follow-up; never resend the original action automatically. Ordinary timeouts remain pending. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
+    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process, or the state of a queued delivery by its queue id. An interrupted receipt ends only reply waiting: task outcome remains unknown and background work may still run. Inspect the existing task before any scoped follow-up; never resend the original action automatically. Ordinary timeouts remain pending. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
     inputSchema: { msgId: z.string().describe("The original message ID returned by send_to_claude_session") },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   async ({ msgId }) => {
     const receipt = readReceipt(msgId);
+    const queued = receipt ? null : readQueuedReceipt(msgId);
+    if (queued) return queued;
     if (!receipt) return failure(Object.assign(new Error("This MCP process has no receipt for that message ID. It may belong to a previous process; do not infer failure or resend. Inspect the original delivery through bridge diagnostics."), { code: "CLAUDE_RECEIPT_UNAVAILABLE", msgId, deliveryState: "unknown" }));
     const result = { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { receipt } };
     if (["send_failed", "held", "refused", "expired", "interrupted"].includes(receipt.status) || receipt.status === "sent_unconfirmed" && receipt.reasonCode) {

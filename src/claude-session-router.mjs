@@ -72,7 +72,7 @@ export async function recoverClaudeDesktopSession(args, { listTasks, listSession
   await assertTask();
   try { return { session: resolveClaudeDesktopSession({ ...args, sessions }) }; }
   catch (error) { if (error.preflight?.code !== "CLAUDE_SESSION_NOT_FOUND") throw error; }
-  throw sessionNotReady("The exact saved Claude Desktop task has no live native Code endpoint.", { taskId: task.taskId });
+  throw sessionNotReady("The exact saved Claude Desktop task has no live native Code endpoint.", { taskId: task.taskId, title: task.title ?? null });
 }
 
 export function sameClaudeDesktopRecipient(selected, current) {

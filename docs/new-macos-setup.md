@@ -78,6 +78,12 @@ The native Codex relay needs the trusted app-bundled Node runtime selected by
 setup; do not substitute an arbitrary Homebrew/nvm Node. Pipe forwarding saves
 only the `CODEX_APP_TOOLS_PIPE_PATH` variable name, never its temporary value.
 
+On macOS the relay runs only while Codex Desktop is open and showing a task,
+because Codex refuses any process it did not launch. Keep Codex Desktop running
+with a task open, for example as a login item, if Claude must reach it at any
+time. On launch it restores its last task, which brings the relay up without a
+click (measured at 22 seconds). Nothing here works while Codex Desktop is closed.
+
 Managed MCP supervisors adopt compatible updates when idle. An old direct MCP
 process remains stale until its host reconnects normally; setup does not open
 or create chats, restart apps or interrupt active work to load a relay. When the

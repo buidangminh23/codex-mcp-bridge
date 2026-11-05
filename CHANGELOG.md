@@ -2,6 +2,20 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.27.2] - 2026-11-05
+
+### Fixed
+
+- The native relay and the Antigravity sidecar now recover when an owner is killed between publishing its socket and removing the private name used to create it. That left the socket with a second hard link, which the safety check refused to remove, so every later start failed and `codex_bridge_status` kept reporting `RELAY_UNREACHABLE` with `ECONNREFUSED`, even after restarting Codex Desktop. Once a socket has refused a connection, a replacement removes only hard links of that same socket named like a private socket and owned by the same user. A socket with any other hard link is still refused, and a live owner that is confirmed by the probe is left alone. The removal is now bound to the socket that was probed, so an owner that replaces it during the probe keeps its socket and the replacement retries.
+
+### Verification and limits
+
+- Reproduced on macOS: Codex Desktop killed a relay companion that exceeded its 30-second startup limit under heavy load, and the relay stayed down until the extra link was removed by hand. Regression tests kill a real process inside that window, and also cover a live owner and a foreign hard link.
+- Private socket names left unlinked by earlier crashes stay in `~/.codex`. They are harmless and are not removed, because a live companion may be using a name of that form.
+- A running supervised companion loads the new version once idle and then recovers on its own; a companion without a supervisor needs its host to reconnect. This reload was checked with a test harness, not on a machine stuck in this state with live Codex Desktop.
+- A liveness probe that times out under heavy load still counts as a dead owner. That existing limit is unchanged.
+- Upgrade with `npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts`.
+
 ## [1.27.1] - 2026-11-05
 
 ### Fixed
@@ -15,7 +29,7 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 - Reproduced on v1.27.0 with `CODEX_BRIDGE_THREAD_POLICY=roots` and no policy: inspection said `needs_setup` while `codex_bridge_status` said `authorized=true` for the same directory.
 - Delivery enforcement is unchanged: authorization, same-project, receipt and project-match decisions make the same choices as before. Only diagnostics, one error code and the message text change. Without a policy, the Codex-to-Claude bridge has no directory allowlist and now says so.
-- The cause of the reported `No saved local Codex Desktop project` refusal is still unknown. The new status and message will identify it on the next occurrence; this release does not change which projects match.
+- The cause of the reported `No saved local Codex Desktop project` refusal is still unknown. The new status and message should narrow it down on the next occurrence; this release does not change which projects match.
 - Upgrade with `npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts`, then reconnect the MCP clients so they load the new version.
 
 ## [1.27.0] - 2026-11-05

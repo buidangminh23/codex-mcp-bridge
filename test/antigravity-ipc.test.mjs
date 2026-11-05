@@ -147,6 +147,47 @@ test("private desktop IPC preserves results, delivery uncertainty and frame boun
   });
 });
 
+test("Unix sidecar replaces a socket left with a private link by a killed owner", { skip: process.platform === "win32", timeout: 10000 }, async (t) => {
+  const directory = fixture(t);
+  const socketPath = antigravitySocket(directory);
+  const privatePath = path.join(path.dirname(socketPath), ".abcdef012345.sock");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", "import fs from 'node:fs'; import net from 'node:net'; const [priv, pub] = process.argv.slice(1); net.createServer().listen(priv, () => { fs.linkSync(priv, pub); process.kill(process.pid, 'SIGKILL'); });", privatePath, socketPath], { stdio: "ignore" });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  await new Promise((resolve) => child.once("exit", resolve));
+  assert.equal(fs.lstatSync(socketPath).nlink, 2);
+  const service = await serveAntigravityDesktop(async () => ({ recovered: true }), { directory });
+  t.after(() => service.close());
+  assert.equal(fs.existsSync(privatePath), false);
+  assert.equal(fs.lstatSync(socketPath).nlink, 1);
+  assert.deepEqual(await callAntigravityDesktop({ operation: "status" }, { directory, timeoutMs: 2000 }), { recovered: true });
+});
+
+test("Unix sidecar does not remove a live owner that replaces the stale socket during the probe", { skip: process.platform === "win32", timeout: 10000 }, async (t) => {
+  const directory = fixture(t);
+  const socketPath = antigravitySocket(directory);
+  const child = spawn(process.execPath, ["--input-type=module", "-e", "import net from 'node:net'; net.createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'));", socketPath], { stdio: "ignore" });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  await new Promise((resolve) => child.once("exit", resolve));
+  const ownerPrivate = path.join(path.dirname(socketPath), ".bbbbbbbbbbbb.sock");
+  const owner = net.createServer();
+  await new Promise((resolve) => owner.listen(ownerPrivate, resolve));
+  t.after(() => owner.close());
+  const originalConnect = net.createConnection;
+  t.after(() => { net.createConnection = originalConnect; });
+  net.createConnection = (...args) => {
+    const socket = originalConnect(...args);
+    socket.prependOnceListener("error", () => {
+      net.createConnection = originalConnect;
+      fs.rmSync(socketPath);
+      fs.linkSync(ownerPrivate, socketPath);
+      fs.rmSync(ownerPrivate);
+    });
+    return socket;
+  };
+  await assert.rejects(serveAntigravityDesktop(async () => "replacement", { directory }), /Unsafe relay socket file/);
+  await new Promise((resolve, reject) => { const probe = originalConnect(socketPath); probe.once("connect", () => { probe.destroy(); resolve(); }); probe.once("error", reject); });
+});
+
 test("Unix sidecar safely replaces the socket left by a crashed owner", { skip: process.platform === "win32", timeout: 10000 }, async (t) => {
   const directory = fixture(t);
   const socketPath = antigravitySocket(directory);

@@ -6,6 +6,7 @@ import { AntigravityDeliveries } from "./antigravity-deliveries.mjs";
 import { listAntigravityConversations, observeAntigravityDelivery, runAgentApi, sanitizeAntigravityMetadata } from "./antigravity-desktop.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { readProcessAncestry } from "./claude-sender-context.mjs";
+import { HUMAN_SENDER, humanDeliveryInput, humanReceipt, humanWorkspace } from "./antigravity-human.mjs";
 
 export async function createAntigravityParentGuard({ parentPid = process.ppid, inspect = readProcessAncestry } = {}) {
   if (!Number.isSafeInteger(parentPid) || parentPid <= 1 || parentPid > 0xffffffff) throw new Error("Antigravity sidecar parent is unavailable; relaunch it from the native app");
@@ -34,7 +35,7 @@ export async function createAntigravityParentGuard({ parentPid = process.ppid, i
   };
 }
 
-export async function startAntigravitySidecar({ directory = antigravityBridgeDirectory(), env = process.env, createParentGuard = createAntigravityParentGuard, serve = serveAntigravityDesktop, parentCheckIntervalMs = 5000, onParentLost = () => {}, runNative = runAgentApi, observeDelivery = observeAntigravityDelivery } = {}) {
+export async function startAntigravitySidecar({ directory = antigravityBridgeDirectory(), env = process.env, createParentGuard = createAntigravityParentGuard, serve = serveAntigravityDesktop, parentCheckIntervalMs = 5000, onParentLost = () => {}, list = listAntigravityConversations, runNative = runAgentApi, observeDelivery = observeAntigravityDelivery } = {}) {
   if (!env.ANTIGRAVITY_AGENTAPI_EXE || !env.ANTIGRAVITY_LS_ADDRESS) throw new Error("Antigravity must launch this sidecar. Do not run it as a replacement app server.");
   const assertParent = await createParentGuard();
   const deliveries = new AntigravityDeliveries(path.join(directory, "desktop-deliveries"));
@@ -59,7 +60,33 @@ export async function startAntigravitySidecar({ directory = antigravityBridgeDir
   sidecar = await serve(async (request) => {
     await checkParent();
     if (!request || typeof request !== "object") throw new Error("Invalid sidecar request");
-    if (request.operation === "status") return { available: true, transport: "native-agentapi", permissionPolicy: "native-unchanged" };
+    if (request.operation === "status") return { available: true, transport: "native-agentapi", permissionPolicy: "native-unchanged", humanDispatchVersion: 1 };
+    if (["human-inspect", "human-send", "human-receipt"].includes(request.operation)) {
+      const operation = request.operation.slice("human-".length);
+      const target = humanDeliveryInput(request, operation);
+      if (operation === "receipt") return humanReceipt(deliveries.read(target.requestId), target);
+      const inspect = async () => {
+        await checkParent();
+        const records = (await list({ surface: "desktop", limit: 1000 })).filter((record) => record.conversationId === target.conversationId);
+        if (records.length !== 1 || records[0].surface !== "desktop" || humanWorkspace(records[0].cwd) !== target.cwd) throw Object.assign(new Error("Exact Antigravity conversation and workspace are unavailable"), { code: "ANTIGRAVITY_RECIPIENT_MISSING", deliveryState: "not_sent" });
+        const record = records[0];
+        if (record.status !== "CASCADE_RUN_STATUS_IDLE") throw Object.assign(new Error("Antigravity conversation is busy; no message was sent"), { code: "ANTIGRAVITY_RECIPIENT_BUSY", deliveryState: "not_sent" });
+        const metadata = sanitizeAntigravityMetadata(await runNative({ command: "metadata", conversationId: target.conversationId, env }), target.conversationId);
+        if (humanWorkspace(metadata.cwd) !== target.cwd || metadata.projectId !== record.projectId) throw Object.assign(new Error("Native Antigravity workspace or project changed"), { code: "ANTIGRAVITY_METADATA_MISMATCH", deliveryState: "not_sent" });
+        await checkParent();
+        return { ...record, ...metadata, available: true };
+      };
+      if (operation === "inspect") return inspect();
+      return deliveries.dispatch({ ...target, surface: "desktop", sender: HUMAN_SENDER }, async () => {
+        await checkParent();
+        if (sending.has(target.conversationId)) throw Object.assign(new Error("Another delivery is pending for this conversation"), { deliveryState: "not_sent" });
+        sending.add(target.conversationId);
+        try {
+          await inspect();
+          return await runNative({ command: "send", conversationId: target.conversationId, expectedCwd: target.cwd, prompt: target.prompt, env });
+        } finally { sending.delete(target.conversationId); }
+      });
+    }
     if (request.operation === "list") return listAntigravityConversations({ surface: "desktop" });
     if (request.operation === "read") {
       const records = await listAntigravityConversations({ surface: "desktop" });

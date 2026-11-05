@@ -154,3 +154,7 @@ is still null. Continue with `wait_codex_reply`; do not create again to obtain t
 ID. The updated companion retains late creation acknowledgements. If it reports
 unsupported `get_creation_receipt`, reload both bridge workers after installing
 the update; that compatibility check occurs before any new task is dispatched.
+
+## Local human dashboards
+
+Local human dashboards can use `src/antigravity-human.mjs`: `inspectHumanConversation({ conversationId, cwd })`, `sendHumanMessage({ requestId, conversationId, cwd, prompt })`, and `readHumanReceipt({ requestId, conversationId, cwd })`. The native app must have launched an updated sidecar advertising `humanDispatchVersion: 1`. Requests use an existing desktop conversation UUID, its canonical workspace and a stable request UUID. The sender is fixed to `human-web` / `minh-spark-company`; caller-supplied agent identities are rejected. Reusing a request ID never resends it, and changed request contents are refused. Poll the receipt after an uncertain outcome. Native acceptance does not prove a reply or completion. This channel does not answer permission prompts or create conversations.

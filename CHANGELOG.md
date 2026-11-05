@@ -4,6 +4,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ## [Unreleased]
 
+### Added
+
+- A versioned local Antigravity human-dashboard channel with exact conversation/workspace validation, fixed human sender identity, durable idempotent request receipts and explicit preflight/uncertain delivery outcomes. It requires the app-launched sidecar and never treats native acceptance as a completed reply.
+
 ## [1.26.10] - 2026-11-03
 
 ### Fixed

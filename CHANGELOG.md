@@ -2,11 +2,16 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.27.0] - 2026-11-05
 
 ### Added
 
 - A versioned local Antigravity human-dashboard channel with exact conversation/workspace validation, fixed human sender identity, durable idempotent request receipts and explicit preflight/uncertain delivery outcomes. It requires the app-launched sidecar and never treats native acceptance as a completed reply.
+
+### Verification and limits
+
+- Unit tests cover preflight, idempotent receipts and refusal paths on Windows, macOS and Linux with Node 22 and 24. Delivery through a live Antigravity sidecar was not exercised before this release.
+- Upgrade with `npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts`, then restart Antigravity so its sidecar loads the new channel.
 
 ## [1.26.10] - 2026-11-03
 

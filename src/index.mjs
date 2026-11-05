@@ -30,6 +30,9 @@ import { exitForVersionRequest } from "./cli-version.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
 import { assertRoutingReload, clientReloadReason, createReloadControl } from "./reload-control.mjs";
 import { accountIdentity, assertAccountIdentity, publicAccountState, readBridgeAccounts, requireBridgeAccounts } from "./bridge-account-context.mjs";
+import { createQueuedDeliveryDrain, createQueuedDeliveryStore, queuedDeliveryEnabled } from "./queued-claude-delivery.mjs";
+import { PeerEndpoint, assertClaudeSessionCwd, listClaudeSessions, readTranscriptOutcome } from "./peer-protocol.mjs";
+import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
 import { assertClaudeSenderContext, readClaudeSenderContext, requireClaudeSenderContext, stopProcessInspectors } from "./claude-sender-context.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
 import { bridgeReadiness } from "./bridge-readiness.mjs";
@@ -44,7 +47,7 @@ import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./backgroun
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "2.1.0";
+const VERSION = "2.2.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -1119,8 +1122,22 @@ registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+const queuedDelivery = desktopTasksEnabled && !security.hardenedRoots.enabled && queuedDeliveryEnabled() ? createQueuedDeliveryDrain({
+  store: createQueuedDeliveryStore({ log }),
+  readAccounts: readBridgeAccounts,
+  readSender: readClaudeSenderContext,
+  readOutcome: readTranscriptOutcome,
+  listSessions: listClaudeSessions,
+  readInbound: readClaudeInboundPolicy,
+  assertCwd: assertClaudeSessionCwd,
+  createPeer: (options) => new PeerEndpoint(options),
+  schedule: (run) => reload.run(run),
+  log,
+}) : null;
+queuedDelivery?.start();
 let shutdownPromise;
 const shutdown = () => shutdownPromise ??= (async () => {
+  queuedDelivery?.stop();
   client?.close();
   await server.close();
   await stopProcessInspectors();

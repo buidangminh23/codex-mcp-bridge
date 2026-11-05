@@ -2,6 +2,27 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.2.0] - 2026-11-05
+
+### Added
+
+- `send_to_claude_session` can now queue a message for a Claude Desktop session that is not running. With `target: "auto"`, the exact `expectedTaskId` and a recipient `crossSessionInbound` of `accept`, it returns `status: "queued"` and `sent: false` instead of `CLAUDE_SESSION_NOT_READY`. The `codex-bridge` process inside that session delivers the message when the user next opens it. Nothing opens or wakes the session, and the composer and the Claude Desktop interface are not used.
+- `read_claude_delivery` accepts the returned `queueId` and reports `queued`, `dispatching`, `sent_unconfirmed`, `reply_received`, `refused`, `expired` or `unknown`.
+
+### Changed
+
+- The rule against using another process to make a blocked send succeed now has one exception, approved by the owner: this queued delivery. It claims no sender class, because the sending turn has ended, and it requires the recipient's explicit `accept`, which is checked again immediately before the write.
+
+### Verification and limits
+
+- Tests cover the store, dedupe, limits, expiry, file permissions, malformed and symlinked entries, ordering, at-most-once handling, policy and directory changes at delivery, and the queued result through the real tool. On macOS a frame without `from-mode` was written into a live Claude Desktop session, which showed it as a message from another session.
+- Delivery can start a turn as soon as the session opens, without anyone reading the message first. A recipient that uses `hold`, `refuse` or no explicit setting keeps getting `CLAUDE_SESSION_NOT_READY`. Hardened deployments and project-policy mode do not use queued delivery.
+- A queued message waits for the user to open the session. It cannot get an immediate answer, and the bridge still cannot wake a session. It expires after 7 days. The Antigravity outbound path is unchanged and still reports `CLAUDE_SESSION_NOT_READY`.
+- `sent_unconfirmed` means the frame was written to the session's socket. Claude's handling is confirmed only by `reply_received`, or by reading the session. A control receipt that Claude sends back while the frame is being delivered is not recorded.
+- A session whose `codex-bridge` cannot run or verify itself never drains, and its entries expire after 7 days.
+- macOS relay behaviour is unchanged: Codex Desktop still refuses any process it did not launch, and the bridge does not work around that. The macOS setup guide now says to keep Codex Desktop running with a task open.
+- Upgrade with `npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts`. A session's bridge picks up the new version when idle or when the session next opens.
+
 ## [2.1.0] - 2026-11-05
 
 ### Added

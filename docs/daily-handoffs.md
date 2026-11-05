@@ -39,7 +39,11 @@ Discovery does not rewrite Claude metadata, create grants or clear revocations.
 Use `send_to_claude_session` with a verified live task for every handoff. Without
 a running session in the project it returns `CLAUDE_SESSION_NOT_READY` with
 `sent: false`, for `target: "auto"` and for an exact identity; ask the user to open
-the session in Claude Desktop, then retry with `target: "auto"`. An exact identity
+the session in Claude Desktop, then retry with `target: "auto"`. The exception is
+`target: "auto"` with the exact `expectedTaskId` when the recipient's
+`crossSessionInbound` is `accept`: the message is queued and delivered when the
+session next opens, so do not resend it. See
+[queued delivery](../REFERENCE.md#queued-delivery-to-a-dormant-session). An exact identity
 that no longer matches while another session runs in that project returns
 `CLAUDE_SESSION_NOT_FOUND`, and nothing is redirected to that other session.
 

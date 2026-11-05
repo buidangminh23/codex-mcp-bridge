@@ -463,6 +463,21 @@ describe("Claude Desktop account switching", () => {
       assert.equal(idleStatus.structuredContent.diagnostic.code, "CLAUDE_SESSION_NOT_READY");
       assert.match(idleStatus.structuredContent.diagnostic.reason, OPEN_SESSION_TEXT);
       assert.equal(received.length, 4);
+      fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ crossSessionInbound: "accept" }));
+      const noTask = await send();
+      assert.equal(noTask.structuredContent?.preflight?.code, "CLAUDE_SESSION_NOT_READY", noTask.content?.[0]?.text);
+      const queued = await send("auto", destinations[0].taskId);
+      assert.equal(queued.isError, undefined, queued.content?.[0]?.text);
+      assert.equal(queued.structuredContent.receipt.status, "queued");
+      assert.equal(queued.structuredContent.receipt.sent, false);
+      assert.equal(queued.structuredContent.receipt.recipient.taskId, destinations[0].taskId);
+      assert.equal(queued.structuredContent.receipt.message, undefined);
+      const retried = await send("auto", destinations[0].taskId);
+      assert.equal(retried.structuredContent.receipt.duplicate, true);
+      assert.equal(retried.structuredContent.receipt.queueId, queued.structuredContent.receipt.queueId);
+      const queuedDelivery = await client.callTool({ name: "read_claude_delivery", arguments: { msgId: queued.structuredContent.receipt.queueId } });
+      assert.equal(queuedDelivery.structuredContent.receipt.status, "queued");
+      assert.equal(received.length, 4);
       if (handlerError) throw handlerError;
     } finally {
       await client.close();

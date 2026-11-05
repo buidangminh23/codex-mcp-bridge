@@ -35,7 +35,7 @@ import { createRuntimeState } from "./runtime-state.mjs";
 import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
 import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
-import { removeRelayFile, relayFileIdentity, verifyRelaySocketMode } from "./native-relay-files.mjs";
+import { releasePrivateSocketLinks, removeRelayFile, relayFileIdentity, staleSocketIdentity, verifyRelaySocketMode } from "./native-relay-files.mjs";
 
 import { NativeCreationReceipts, creationIdValid } from "./native-creation-receipts.mjs";
 import { registerRemoteCodexTools } from "./remote-codex-tools.mjs";
@@ -43,7 +43,7 @@ import { remoteCodexSocketPath, remoteNativeAdapter, remoteRequestResponse } fro
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.27.1";
+const VERSION = "1.27.2";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent, details) {
@@ -565,9 +565,13 @@ export class RelaySocketServer {
         try { fs.linkSync(privatePath, this.socketPath); break; }
         catch (error) {
           if (error.code !== "EEXIST") throw error;
-          if (!replaceStale || attempt || await this.#socketIsLive()) throw new Error(`another native relay companion already owns ${this.socketPath}`);
+          if (!replaceStale || attempt) throw new Error(`another native relay companion already owns ${this.socketPath}`);
+          const stale = staleSocketIdentity(this.socketPath);
+          if (stale === null) continue;
+          if (await this.#socketIsLive()) throw new Error(`another native relay companion already owns ${this.socketPath}`);
           this.log(`removing the stale relay socket left at ${this.socketPath}`);
-          removeRelayFile(this.socketPath);
+          releasePrivateSocketLinks(this.socketPath, stale);
+          removeRelayFile(this.socketPath, { expected: stale });
         }
       }
       const identity = fs.lstatSync(this.socketPath, { bigint: true });

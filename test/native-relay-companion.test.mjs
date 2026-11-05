@@ -4,6 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { it } from "node:test";
 
@@ -227,6 +228,90 @@ it("rejects a missing formerly owned listener when rebinding fails", async (t) =
   lifecycle.restore({ ownedSockets: [server.socketPath] });
   await assert.rejects(lifecycle.activate(), /could not reclaim its listening sockets/);
   assert.equal(await server.isListening(), false);
+});
+
+const IS_POSIX = process.platform !== "win32";
+const KILLED_WHILE_LINKING = "import fs from 'node:fs'; import net from 'node:net'; const [priv, pub] = process.argv.slice(1); net.createServer().listen(priv, () => { fs.linkSync(priv, pub); if (process.argv[3] === 'stay') process.stdout.write('ready\\n'); else process.kill(process.pid, 'SIGKILL'); });";
+
+function companionKilledWhileLinking(t, socketPath, mode = "kill") {
+  const privatePath = path.join(path.dirname(socketPath), `.${randomUUID().replaceAll("-", "").slice(0, 12)}.sock`);
+  const child = spawn(process.execPath, ["--input-type=module", "-e", KILLED_WHILE_LINKING, privatePath, socketPath, mode], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  const settled = mode === "stay" ? once(child.stdout, "data") : once(child, "exit");
+  return settled.then(() => ({ privatePath, child }));
+}
+
+it("reclaims a socket whose companion was killed between linking and removing its private name", { skip: !IS_POSIX }, async (t) => {
+  const socketPath = fixture(t);
+  const { privatePath } = await companionKilledWhileLinking(t, socketPath);
+  assert.equal(fs.lstatSync(socketPath).nlink, 2);
+  const unrelated = path.join(path.dirname(socketPath), ".aaaaaaaaaaaa.sock");
+  const other = net.createServer();
+  await new Promise((resolve) => other.listen(unrelated, resolve));
+  t.after(() => other.close());
+  const server = new RelaySocketServer(relayOptions(socketPath));
+  t.after(async () => { server.stop(); await server.closed; });
+  await server.start();
+  assert.equal(server.started, true);
+  assert.equal(fs.lstatSync(socketPath).nlink, 1);
+  assert.equal(fs.existsSync(privatePath), false);
+  assert.equal(fs.existsSync(unrelated), true);
+  assert.equal(await server.isListening(), true);
+});
+
+it("leaves a live companion's socket and private name alone while it is still linking", { skip: !IS_POSIX }, async (t) => {
+  const socketPath = fixture(t);
+  const { privatePath } = await companionKilledWhileLinking(t, socketPath, "stay");
+  const replacement = new RelaySocketServer(relayOptions(socketPath));
+  t.after(async () => { replacement.stop(); await replacement.closed; });
+  await assert.rejects(replacement.start(), /already owns/);
+  assert.equal(fs.lstatSync(socketPath).nlink, 2);
+  assert.equal(fs.existsSync(privatePath), true);
+});
+
+for (const keepPrivateLink of [false, true]) {
+  it(`does not remove a live owner that replaces the stale socket during the probe (${keepPrivateLink ? "still linking" : "fully published"})`, { skip: !IS_POSIX }, async (t) => {
+    const socketPath = fixture(t);
+    await companionKilledWhileLinking(t, socketPath);
+    const ownerPrivate = path.join(path.dirname(socketPath), ".bbbbbbbbbbbb.sock");
+    const owner = net.createServer();
+    await new Promise((resolve) => owner.listen(ownerPrivate, resolve));
+    t.after(() => owner.close());
+    const originalConnect = net.connect;
+    t.after(() => { net.connect = originalConnect; });
+    net.connect = (...args) => {
+      const socket = originalConnect(...args);
+      socket.prependOnceListener("error", () => {
+        net.connect = originalConnect;
+        fs.rmSync(socketPath);
+        fs.linkSync(ownerPrivate, socketPath);
+        if (!keepPrivateLink) fs.rmSync(ownerPrivate);
+      });
+      return socket;
+    };
+    const replacement = new RelaySocketServer(relayOptions(socketPath));
+    t.after(async () => { replacement.stop(); await replacement.closed; });
+    const ownerInode = () => fs.lstatSync(socketPath).ino;
+    await assert.rejects(replacement.start(), /Unsafe relay socket file/);
+    const inode = ownerInode();
+    assert.equal(fs.existsSync(ownerPrivate), keepPrivateLink);
+    assert.equal(fs.lstatSync(socketPath).nlink, keepPrivateLink ? 2 : 1);
+    await new Promise((resolve, reject) => { const probe = originalConnect({ path: socketPath }); probe.once("connect", () => { probe.destroy(); resolve(); }); probe.once("error", reject); });
+    assert.equal(ownerInode(), inode);
+  });
+}
+
+it("still refuses a dead socket that has a hard link outside the private naming pattern", { skip: !IS_POSIX }, async (t) => {
+  const socketPath = fixture(t);
+  const { privatePath } = await companionKilledWhileLinking(t, socketPath);
+  const foreign = path.join(path.dirname(socketPath), "kept-by-someone-else.sock");
+  fs.linkSync(socketPath, foreign);
+  const replacement = new RelaySocketServer(relayOptions(socketPath));
+  t.after(async () => { replacement.stop(); await replacement.closed; });
+  await assert.rejects(replacement.start(), /Unsafe relay socket file/);
+  assert.equal(fs.existsSync(foreign), true);
+  assert.equal(fs.existsSync(socketPath), true);
+  assert.equal(fs.existsSync(privatePath), false);
 });
 
 it("rejects failed native connectivity even when another companion owns the listener", async (t) => {

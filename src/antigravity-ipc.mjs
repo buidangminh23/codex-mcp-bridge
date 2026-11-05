@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
-import { relayFileIdentity, removeRelayFile } from "./native-relay-files.mjs";
+import { releasePrivateSocketLinks, relayFileIdentity, removeRelayFile, staleSocketIdentity } from "./native-relay-files.mjs";
 import { bridgeDiagnostic } from "./recipient-preflight.mjs";
 
 const LIMIT = 2 * 1024 * 1024;
@@ -131,9 +131,12 @@ export async function serveAntigravityDesktop(handler, { directory = antigravity
       try { fs.linkSync(privatePath, socketPath); }
       catch (error) {
         if (error.code !== "EEXIST") throw error;
-        const existing = relayFileIdentity(socketPath, "socket");
-        if (!await socketRefused(socketPath)) throw new Error("Another Antigravity sidecar owns the socket");
-        removeRelayFile(socketPath, { expected: existing });
+        const existing = staleSocketIdentity(socketPath);
+        if (existing !== null) {
+          if (!await socketRefused(socketPath)) throw new Error("Another Antigravity sidecar owns the socket");
+          releasePrivateSocketLinks(socketPath, existing);
+          removeRelayFile(socketPath, { expected: existing });
+        }
         fs.linkSync(privatePath, socketPath);
       }
       fs.unlinkSync(privatePath);

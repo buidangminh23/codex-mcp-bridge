@@ -23,7 +23,7 @@ import { readClaudeAccountContext } from "./desktop-account-context.mjs";
 import { assertAccountIdentity, bindUnsolicitedClaudeMessageAccount, publicAccountState, readBridgeAccounts, requireBridgeAccounts, sameAccountIdentity } from "./bridge-account-context.mjs";
 import { recoverClaudeDesktopSession, resolveClaudeDesktopSession, sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
 import { submitClaudeCodeComposer, trustClaudeCodeComposer } from "./claude-composer-submit.mjs";
-import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
+import { createHardenedRootPolicy, rootPolicyAuthorization } from "./hardened-root-policy.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
 import { registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
 import { discoverClaudeProject } from "./claude-project-discovery.mjs";
@@ -31,7 +31,7 @@ import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./backgroun
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.27.0";
+const VERSION = "1.27.1";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
@@ -349,7 +349,7 @@ function registerTool(name, definition, handler) {
 
 registerBackgroundTools(registerTool);
 
-registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "codex" }, beforePrepare: async (extra) => {
+registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "codex", evaluateAuthorization: (cwd) => rootPolicyAuthorization(rootPolicy, cwd) ?? { mode: "no-root-restriction", authorized: true } }, beforePrepare: async (extra) => {
   runtime.assertCurrent();
   if (!desktopOnly) throw new Error("Project onboarding requires a verified Desktop caller");
   await assertSender(extra?._meta);

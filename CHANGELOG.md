@@ -2,6 +2,22 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [1.27.1] - 2026-11-05
+
+### Fixed
+
+- `inspect_bridge_project` no longer reports `needs_setup` or recommends installing a project policy when the bridge process already authorizes the directory by another supported mode. `communicationAuthorization` now reports the effective `mode` and result for the calling process (`project-policy`, `allowed-roots`, `all-directories`, `pinned-roots`, `no-root-restriction`), and a new `projectPolicy` field reports the policy file separately. Installing a policy appears as `projectPolicy.optionalMigration` for an authorized directory unless policy mode is actually in force. A configured policy stays authoritative and still fails closed. Under thread policy `owned`, `existingTasks` and the detail state that existing tasks stay unreachable until they are allowlisted or the policy changes. `bridge-projects inspect` now reports `not_evaluated`, because it reads only the policy file. Hardened deployments can now be inspected through MCP without being prepared or migrated, and inspection of a directory outside their pinned roots returns only the refusal.
+- Inspection now marks the same-project and new-task checks as `not_checked` and explains that a grant or allowed root does not replace them. A directory outside the allowed roots asks for an owner decision instead of a policy.
+- `codex_bridge_status({cwd})` reports `authorizationMode`, `existingTasks` and, for a verified sender in the same project, `readiness.target.savedProject` (`matched`, `absent`, `rejected`, `ambiguous`, `unresolved`, `not_checked`) for creating a new Codex Desktop task. It checks the same resolved directory a delegation uses, so a mapped path can now report its resolved target. Outside hardened deployments this does not change `ready`, because sending to an existing task does not need a saved project. In `pinned-roots` mode every native operation needs one, so an unusable result makes `ready` false with `NATIVE_SCOPE_UNVERIFIED`. A refusal for a directory outside the allowed roots no longer points at the project policy.
+- A failed saved-project match now separates an absent project from one rejected for its kind, host or missing ID, and counts saved projects that could not be compared, with code `DESKTOP_PROJECT_UNMATCHED`. The message does not name other saved projects.
+
+### Verification and limits
+
+- Reproduced on v1.27.0 with `CODEX_BRIDGE_THREAD_POLICY=roots` and no policy: inspection said `needs_setup` while `codex_bridge_status` said `authorized=true` for the same directory.
+- Delivery enforcement is unchanged: authorization, same-project, receipt and project-match decisions make the same choices as before. Only diagnostics, one error code and the message text change. Without a policy, the Codex-to-Claude bridge has no directory allowlist and now says so.
+- The cause of the reported `No saved local Codex Desktop project` refusal is still unknown. The new status and message will identify it on the next occurrence; this release does not change which projects match.
+- Upgrade with `npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts`, then reconnect the MCP clients so they load the new version.
+
 ## [1.27.0] - 2026-11-05
 
 ### Added

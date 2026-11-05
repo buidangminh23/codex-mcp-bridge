@@ -44,7 +44,7 @@ import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./backgroun
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.27.0";
+const VERSION = "1.27.1";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -533,7 +533,7 @@ registerDesktopReadTools(registerTool, {
   assertThreadAccess, normalizeThreadCwd, textResult, replyResult, failure,
 });
 
-registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "claude-code" }, beforePrepare: async () => {
+registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "claude-code", evaluateAuthorization: (cwd) => security.effectiveAuthorization(cwd) }, beforePrepare: async () => {
   if (!desktopTasksEnabled || !desktopOperation.getStore()?.caller) throw new Error("Project onboarding requires a verified Desktop caller.");
   await assertDesktopOperation(desktopOperation.getStore(), { verifyProcess: true });
 } });
@@ -1040,9 +1040,12 @@ registerTool(
   async ({ cwd }) => {
     const summary = security.summary();
     if (desktopTasksEnabled) {
-      const native = await desktopTasks.status();
+      const targetCwd = cwd ? resolveWorkspacePath(cwd).path : undefined;
+      const authorization = security.effectiveAuthorization(targetCwd);
+      const native = await desktopTasks.status({ cwd: targetCwd });
       const sender = await readClaudeSenderContext({ account: readBridgeAccounts().claude });
-      const readiness = bridgeReadiness({ sender, scope: security.hardenedRoots.mode === "project-policy" ? security.hardenedRoots : { assert: (candidate) => { security.assertCwd(candidate); return candidate; } }, targetCwd: cwd, nativeAvailable: native.available, nativeDiagnostic: native.diagnostic, verifyTargetProject: captureProjectScope });
+      const readiness = bridgeReadiness({ sender, scope: security.hardenedRoots.mode === "project-policy" ? security.hardenedRoots : { assert: (candidate) => { security.assertCwd(candidate); return candidate; } }, targetCwd, nativeAvailable: native.available, nativeDiagnostic: native.diagnostic, verifyTargetProject: captureProjectScope, authorizationMode: authorization.mode, existingTasks: authorization.existingTasks, savedProject: native.targetProject });
+      const { targetProject: _targetProject, ...nativeStatus } = native;
       return { ...textResult([
         `platform:       ${PLATFORM_LABEL} (${process.platform}/${process.arch})`,
         `bridge version: ${VERSION}`,
@@ -1058,9 +1061,11 @@ registerTool(
         `claude desktop config: ${claudeDesktopConfigPath()}`,
         `sender context: ${sender.status}${sender.taskId ? `; task ${sender.taskId}` : ""}`,
         ...(readiness.projectPolicy ? [`project policy: ${readiness.projectPolicy.file}; revision ${readiness.projectPolicy.revision ?? "unavailable"}; changes apply on the next operation`] : []),
+        `authorization:  ${readiness.authorizationMode}; existing tasks ${readiness.existingTasks}`,
         ...(readiness.target ? [`target: ${readiness.target.cwd}; authorized=${readiness.target.authorized}${readiness.target.authorizedBy ? `; via ${readiness.target.authorizedBy.kind} ${readiness.target.authorizedBy.path}` : ""}`] : []),
+        ...(readiness.target?.savedProject ? [`new task target: ${readiness.target.savedProject.status}; ${readiness.target.savedProject.detail}`] : []),
         ...readiness.issues.map((issue) => `${issue.code}: ${issue.detail ?? ""} ${issue.action}`),
-      ].join("\n"), !readiness.ready), structuredContent: { readiness, native, ...(native.diagnostic ? { diagnostic: native.diagnostic } : !readiness.ready ? { error: { code: readiness.issues[0]?.code, message: readiness.issues[0]?.detail } } : {}), projectScope: { enabled: true, policy: "verified-sender-same-project", match: "canonical-directory-or-git-repository", checkedBeforeMutation: true } } };
+      ].join("\n"), !readiness.ready), structuredContent: { readiness, native: nativeStatus, ...(native.diagnostic ? { diagnostic: native.diagnostic } : !readiness.ready ? { error: { code: readiness.issues[0]?.code, message: readiness.issues[0]?.detail } } : {}), projectScope: { enabled: true, policy: "verified-sender-same-project", match: "canonical-directory-or-git-repository", checkedBeforeMutation: true } } };
     }
     const up = await client.isServerUp();
     let liveThreads = null;

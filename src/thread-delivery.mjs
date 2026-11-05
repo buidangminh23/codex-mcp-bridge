@@ -57,22 +57,62 @@ function sameAccountContext(expected, current) {
     typeof expected[provider] === "string" && expected[provider] === current[provider]));
 }
 
-export function matchDesktopProject(projects, cwd, { canonicalize = realpathSync.native, paths = path } = {}) {
+const PROJECT_REJECTION_TEXT = { kind: "its project kind is not local", host: "its host is not local", metadata: "its project ID is missing" };
+
+const projectRejections = (project) => [
+  project.projectKind !== "local" && "kind",
+  project.hostId !== "local" && "host",
+  !project.projectId && "metadata",
+].filter(Boolean);
+
+export function classifyDesktopProject(projects, cwd, { canonicalize = realpathSync.native, paths = path } = {}) {
   const requested = canonicalize(cwd);
-  const matches = projects.filter((project) => {
-    if (project.projectKind !== "local" || project.hostId !== "local" || !project.path || !project.projectId) return false;
-    try {
-      return paths.relative(requested, canonicalize(project.path)) === "";
-    } catch {
-      return false;
+  const eligible = [];
+  const rejected = new Set();
+  let uncomparable = 0;
+  for (const project of projects) {
+    const remote = (project?.projectKind && project.projectKind !== "local") || (project?.hostId && project.hostId !== "local");
+    let saved = null;
+    if (typeof project?.path === "string" && project.path) {
+      try { saved = canonicalize(project.path); }
+      catch { saved = remote ? project.path : null; }
     }
-  });
-  if (matches.length !== 1) {
-    throw new Error(matches.length
-      ? `Multiple Codex Desktop projects match ${cwd}; keep one saved project for this directory before delegating.`
-      : `No saved local Codex Desktop project exactly matches ${cwd}. Choose an existing saved project's directory or continue an existing task in this workspace. The bridge will not create a project or substitute a different directory.`);
+    if (saved === null) {
+      if (!remote) uncomparable += 1;
+      continue;
+    }
+    if (paths.relative(requested, saved) !== "") continue;
+    const reasons = projectRejections(project);
+    if (reasons.length) reasons.forEach((reason) => rejected.add(reason));
+    else eligible.push(project);
   }
-  return matches[0];
+  if (eligible.length === 1) return { status: "matched", project: eligible[0], reasons: [], uncomparable };
+  if (eligible.length) return { status: "ambiguous", reasons: [], uncomparable };
+  return { status: rejected.size ? "rejected" : "absent", reasons: [...rejected], uncomparable };
+}
+
+function describeProjectMatch({ status, reasons, uncomparable }) {
+  if (status === "matched") return "One saved local project matches this exact directory.";
+  if (status === "ambiguous") return "More than one saved local project matches this exact directory.";
+  const uncompared = uncomparable ? ` ${uncomparable} saved project${uncomparable === 1 ? " was" : "s were"} not compared because the saved path is missing or no longer resolves.` : "";
+  if (status === "rejected") return `A saved project has this exact path but is not eligible: ${reasons.map((reason) => PROJECT_REJECTION_TEXT[reason]).join(", ")}.${uncompared}`;
+  return `No saved project has this exact path.${uncompared}`;
+}
+
+export function savedProjectStatus(projects, cwd, options) {
+  let match;
+  try { match = classifyDesktopProject(projects, cwd, options); }
+  catch { return { status: "unresolved", reasons: [], uncomparable: 0, detail: "The requested directory could not be resolved, so its saved project was not checked." }; }
+  const { project, ...summary } = match;
+  return { ...summary, ...(project ? { projectId: project.projectId } : {}), detail: describeProjectMatch(match) };
+}
+
+export function matchDesktopProject(projects, cwd, options) {
+  const match = classifyDesktopProject(projects, cwd, options);
+  if (match.status === "matched") return match.project;
+  throw Object.assign(new Error(match.status === "ambiguous"
+    ? `Multiple Codex Desktop projects match ${cwd}; keep one saved project for this directory before delegating.`
+    : `No saved local Codex Desktop project exactly matches ${cwd}. ${describeProjectMatch(match)} Choose an existing saved project's directory or continue an existing task in this workspace. The bridge will not create a project or substitute a different directory.`), { code: "DESKTOP_PROJECT_UNMATCHED", projectMatch: { status: match.status, reasons: match.reasons, uncomparable: match.uncomparable } });
 }
 
 export const RELAY_DOWN_GUIDANCE = "The Codex Desktop native relay is not listening after waiting for silent recovery. Its Desktop-owned supervisor restarts crashed relay workers without replaying requests. An unloaded native host cannot be cold-started by this bridge. Inspect codex_bridge_status and include its diagnostic in a report. Never open an app or an old, new, empty or failed chat to load a relay.";
@@ -194,7 +234,7 @@ export class DesktopTaskDelivery {
     }
   }
 
-  async status() {
+  async status({ cwd } = {}) {
     const accountContext = this.accountContext?.();
     const socketPath = this.relay.status?.({ accountContext })?.socketPath ?? this.relay.socketPath;
     if (this.accountContext && !accountContext) {
@@ -204,7 +244,7 @@ export class DesktopTaskDelivery {
     try {
       const response = await this.request("list_projects", {});
       if (!Array.isArray(response?.projects)) throw new Error("Desktop returned no project list");
-      return { available: true, socketPath, localProjects: response.projects.filter((project) => project.projectKind === "local" && project.hostId === "local").length };
+      return { available: true, socketPath, localProjects: response.projects.filter((project) => project.projectKind === "local" && project.hostId === "local").length, ...(cwd ? { targetProject: savedProjectStatus(response.projects, cwd) } : {}) };
     } catch (err) {
       const diagnostic = bridgeDiagnostic(err, { component: "codex-bridge", operation: "codex_bridge_status", readOnly: true });
       return { available: false, socketPath, code: diagnostic.code, reason: err.message, diagnostic };

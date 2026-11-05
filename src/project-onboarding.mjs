@@ -9,8 +9,8 @@ const object = value => value && typeof value === "object" && !Array.isArray(val
 const samePath = (a, b) => path.relative(a, b) === "";
 const inside = (a, b) => { const r = path.relative(a, b); return r === "" || (!path.isAbsolute(r) && r !== ".." && !r.startsWith(`..${path.sep}`)); };
 
-export function onboardingPaths(env = process.env, { requirePolicy = true } = {}) {
-  if (env.CODEX_BRIDGE_HARDENED === "1") throw new Error("Project onboarding cannot change a hardened deployment's pinned roots.");
+export function onboardingPaths(env = process.env, { requirePolicy = true, allowHardened = false } = {}) {
+  if (env.CODEX_BRIDGE_HARDENED === "1" && !allowHardened) throw new Error("Project onboarding cannot change a hardened deployment's pinned roots.");
   const policyFile = env.CODEX_BRIDGE_PROJECT_POLICY && path.isAbsolute(env.CODEX_BRIDGE_PROJECT_POLICY) ? env.CODEX_BRIDGE_PROJECT_POLICY : null;
   if (!policyFile && requirePolicy) throw new Error("Configure the shared CODEX_BRIDGE_PROJECT_POLICY before onboarding projects.");
   const home = env.HOME ?? env.USERPROFILE ?? os.homedir();
@@ -74,12 +74,12 @@ function loadPolicy(file, project, options, tolerant) {
 }
 
 function load(cwd, options, { inspect = false } = {}) {
-  const files = onboardingPaths(options.env, { requirePolicy: !inspect });
+  const files = onboardingPaths(options.env, { requirePolicy: !inspect, allowHardened: inspect && Boolean(options.evaluateAuthorization) });
   const project = target(cwd, { ...options, home: files.home });
   const configRaw = read(files.configFile);
   const config = parse(configRaw);
   const trust = trustEntry(config, project);
-  return { files, project, configRaw, config, trust, policyRegistration: options.policyRegistration, ...loadPolicy(files.policyFile, project, options, inspect) };
+  return { files, project, configRaw, config, trust, policyRegistration: options.policyRegistration, evaluateAuthorization: options.evaluateAuthorization, ...loadPolicy(files.policyFile, project, options, inspect) };
 }
 
 const POLICY_REGISTRATION = {
@@ -87,28 +87,96 @@ const POLICY_REGISTRATION = {
   codex: file => `register that file by running claude-mcp-bridge-install with CODEX_BRIDGE_PROJECT_POLICY="${file}" set, then restart Codex Desktop once so this MCP server loads it`,
 };
 
-function policyActions(state) {
-  if (!state.policyProblem) return [{ tool: "prepare_bridge_project", cwd: state.project.directory.path }];
+const AUTHORIZATION_MODE_DETAIL = {
+  "allowed-roots": "This bridge process authorizes native delivery by CODEX_BRIDGE_ALLOWED_ROOTS.",
+  "all-directories": "CODEX_BRIDGE_ALLOWED_ROOTS allows every directory in this bridge process.",
+  "pinned-roots": "This hardened deployment authorizes native delivery by its pinned CODEX_BRIDGE_ALLOWED_ROOTS.",
+  "no-root-restriction": "This bridge process applies no directory allowlist without a project policy; CODEX_BRIDGE_ALLOWED_ROOTS is not consulted here.",
+};
+
+const POLICY_FILE_ONLY = "This result reads only the policy file and does not show what a running bridge enforces. Use inspect_bridge_project in the calling session before treating it as a prerequisite.";
+const EXISTING_TASK_LIMIT = "Existing tasks this bridge did not create need CODEX_BRIDGE_THREAD_POLICY=roots or an allowlisted thread ID.";
+const OUTSIDE_SCOPE_ACTION = { setting: "CODEX_BRIDGE_ALLOWED_ROOTS", ownerDecision: true, then: "This directory is outside this bridge's authorized scope. Ask the user whether it belongs in scope; changing the bridge registration needs their decision and a reconnect. Never widen scope to work around a refusal." };
+const UNTESTED_CONNECTION = { status: "not_tested", ready: null, detail: "Saved configuration does not prove a live sender, target, tool permission or successful round trip." };
+const joinDetail = (...parts) => parts.filter(Boolean).join(" ");
+
+const LIVE_CHECKS = {
+  "claude-code": {
+    senderDestination: "Each native Codex Desktop delivery separately requires the verified Claude sender and the destination to share a directory or registered Git repository. A project grant or allowed root does not replace this. Check codex_bridge_status with this cwd in the calling session.",
+    creationTarget: "Creating a new Codex Desktop task separately requires exactly one saved local project at this exact directory. Check codex_bridge_status with this cwd.",
+    existingTasks: "Sending to an existing task does not need this match.",
+    pinnedExistingTasks: "In this hardened deployment, every native operation on an existing task needs the same match for that task's directory.",
+  },
+  codex: {
+    senderDestination: "Each Claude delivery separately verifies the Codex sender, the recipient session, its permission class and the accounts. A project grant does not replace these checks. Check claude_bridge_status in the calling task.",
+    creationTarget: "Creating a new Claude session is confirmed separately through read_claude_creation; this inspection does not open or check one.",
+  },
+};
+
+function communicationAuthorization(state) {
+  const file = state.files.policyFile;
+  const live = state.evaluateAuthorization?.(state.project.directory.path);
+  const threads = live?.existingTasks ? { threadPolicy: live.threadPolicy, existingTasks: live.existingTasks } : {};
+  const taskLimit = live?.existingTasks === "owned-or-allowlisted" ? EXISTING_TASK_LIMIT : "";
+  if (live && live.mode !== "project-policy") {
+    return { mode: live.mode, status: live.authorized ? "authorized" : "outside_allowed_roots", detail: joinDetail(AUTHORIZATION_MODE_DETAIL[live.mode], taskLimit), ...threads, file: null };
+  }
+  const decided = state.policyProblem ?? { status: state.authorized ? "authorized" : state.denials.length ? "revoked" : "missing" };
+  const detail = joinDetail(decided.detail, taskLimit, live ? "" : POLICY_FILE_ONLY);
+  return { mode: live?.mode ?? "not_evaluated", ...decided, ...(detail ? { detail } : {}), ...threads, file };
+}
+
+const usesPolicyForNativeDelivery = authorization => authorization.mode === "project-policy" || authorization.mode === "not_evaluated";
+
+function suggestedPolicySetup(state) {
   const suggestedFile = path.join(state.files.home, ".config", "GptClaudeBridge", "projects.json");
-  if (state.policyProblem.status === "policy_invalid") return [{ setting: "CODEX_BRIDGE_PROJECT_POLICY", file: state.files.policyFile, then: "Repair or restore this policy file from a backup; prepare_bridge_project does not overwrite an unreadable policy. Run inspect_bridge_project again afterwards." }];
   const registration = POLICY_REGISTRATION[state.policyRegistration ?? "claude-code"];
   if (!registration) throw new Error(`Unknown project policy registration: ${state.policyRegistration}`);
-  return [{ setting: "CODEX_BRIDGE_PROJECT_POLICY", suggestedFile, then: `Run bridge-projects prepare "${state.project.directory.path}" --file "${suggestedFile}", ${registration(suggestedFile)}. prepare_bridge_project is available once the setting is loaded.` }];
+  return { setting: "CODEX_BRIDGE_PROJECT_POLICY", suggestedFile, then: `Run bridge-projects prepare "${state.project.directory.path}" --file "${suggestedFile}", ${registration(suggestedFile)}. prepare_bridge_project is available once the setting is loaded.` };
+}
+
+function projectPolicyState(state, authorization) {
+  const status = state.policyProblem?.status === "policy_invalid" ? "invalid" : !state.files.policyFile ? "not_configured" : state.policyRaw === null ? "file_missing" : "configured";
+  const canMigrate = status === "not_configured" && authorization.status === "authorized" && !usesPolicyForNativeDelivery(authorization) && authorization.mode !== "pinned-roots";
+  return {
+    status,
+    file: state.files.policyFile,
+    requiredForNativeDelivery: authorization.mode === "not_evaluated" ? null : authorization.mode === "project-policy",
+    backgroundWorkers: "Independent background workers use their own explicit project grant; check worker_status for them.",
+    ...(canMigrate ? { optionalMigration: { ...suggestedPolicySetup(state), detail: "Optional configuration migration for a shared project policy. It is not needed to restore native communication and needs the user's request." } } : {}),
+  };
+}
+
+function policyActions(state) {
+  if (!state.policyProblem) return [{ tool: "prepare_bridge_project", cwd: state.project.directory.path }];
+  if (state.policyProblem.status === "policy_invalid") return [{ setting: "CODEX_BRIDGE_PROJECT_POLICY", file: state.files.policyFile, then: "Repair or restore this policy file from a backup; prepare_bridge_project does not overwrite an unreadable policy. Run inspect_bridge_project again afterwards." }];
+  return [suggestedPolicySetup(state)];
+}
+
+function setupActions(state, authorization) {
+  if (usesPolicyForNativeDelivery(authorization)) return policyActions(state);
+  return [
+    ...(authorization.status === "authorized" ? [] : [OUTSIDE_SCOPE_ACTION]),
+    ...(state.trust.trusted ? [] : [{ setting: "workspaceTrust", ownerDecision: true, then: "Claude has not recorded workspace trust for this project. Ask the user to open it in Claude Code and accept the trust prompt." }]),
+  ];
 }
 
 function report(state, taskCards, extra = {}) {
-  const configured = state.trust.trusted && state.authorized;
+  const authorization = communicationAuthorization(state);
+  const configured = state.trust.trusted && authorization.status === "authorized";
+  const liveChecks = LIVE_CHECKS[state.policyRegistration] ?? LIVE_CHECKS["claude-code"];
+  const existingTaskMatch = authorization.mode === "pinned-roots" ? liveChecks.pinnedExistingTasks : liveChecks.existingTasks;
   return {
     status: configured ? "configured" : "needs_setup",
     project: { cwd: state.project.directory.path, root: state.project.root.path, kind: state.project.repo ? "git" : "directory", repository: state.project.repo?.common.path ?? null },
     workspaceTrust: { status: state.trust.trusted ? "configured" : "missing", file: state.files.configFile, key: state.trust.key },
-    communicationAuthorization: state.policyProblem
-      ? { ...state.policyProblem, file: state.files.policyFile }
-      : { status: state.authorized ? "authorized" : state.denials.length ? "revoked" : "missing", file: state.files.policyFile },
-    connection: { status: "not_tested", ready: null, detail: "Saved configuration does not prove a live sender, target, tool permission or successful round trip." },
+    communicationAuthorization: authorization,
+    projectPolicy: projectPolicyState(state, authorization),
+    connection: UNTESTED_CONNECTION,
+    liveChecks: { senderDestination: { status: "not_checked", detail: liveChecks.senderDestination }, creationTarget: { status: "not_checked", detail: joinDetail(liveChecks.creationTarget, existingTaskMatch) } },
     taskCards: { status: taskCards ? "requires_extension_check" : "not_requested", detail: "The card extension owns its authorization and connection; this tool does not edit its settings or restart it." },
     nextActions: [
-      ...(!configured ? policyActions(state) : []),
+      ...(!configured ? setupActions(state, authorization) : []),
       ...(taskCards ? [{ component: "Local Card Bridge Desktop", tool: "list_projects", cwd: state.project.root.path, then: "If absent, use authorize_project for this exact project under the user's onboarding request; verify desktop_bridge_info after saving. Stop on any denial or disconnected extension." }] : []),
       { tools: ["claude_bridge_status", "codex_bridge_status"], then: "Check in the actual calling sessions, then perform one authorized round trip in each direction. Do not create a new conversation without user authorization." },
     ],
@@ -116,7 +184,18 @@ function report(state, taskCards, extra = {}) {
   };
 }
 
+function outsidePinnedRoots() {
+  return {
+    status: "needs_setup",
+    communicationAuthorization: { mode: "pinned-roots", status: "outside_allowed_roots", detail: AUTHORIZATION_MODE_DETAIL["pinned-roots"], file: null },
+    connection: UNTESTED_CONNECTION,
+    nextActions: [OUTSIDE_SCOPE_ACTION],
+  };
+}
+
 export function inspectBridgeProject({ cwd, taskCards = false }, options = {}) {
+  const requested = options.evaluateAuthorization?.(cwd);
+  if (requested?.mode === "pinned-roots" && !requested.authorized) return outsidePinnedRoots();
   return report(load(cwd, options, { inspect: true }), taskCards);
 }
 

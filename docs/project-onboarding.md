@@ -102,6 +102,60 @@ node scripts/bridge-projects.mjs inspect /absolute/projects/example
 node scripts/bridge-projects.mjs prepare /absolute/projects/example
 ```
 
+Through MCP, the inspection reports what the calling bridge process actually
+enforces. Read `communicationAuthorization` for the effective result and
+`projectPolicy` for the state of the shared policy file:
+
+| `communicationAuthorization.mode` | Decided by | Policy needed for native delivery |
+|---|---|---|
+| `project-policy` | `CODEX_BRIDGE_PROJECT_POLICY` grants and revocations | Yes |
+| `allowed-roots` | `CODEX_BRIDGE_ALLOWED_ROOTS` in the Claude-to-Codex bridge | No |
+| `all-directories` | `CODEX_BRIDGE_ALLOWED_ROOTS` allowing every directory | No |
+| `pinned-roots` | A hardened deployment's pinned roots | Not accepted |
+| `no-root-restriction` | No directory allowlist in the Codex-to-Claude bridge | No |
+| `not_evaluated` | `bridge-projects inspect`, which reads only the policy file | Unknown |
+
+`status: "configured"` needs workspace trust and an authorized directory. A
+missing policy file becomes a prerequisite only in `project-policy` mode, where
+`nextActions` lists it. In the `allowed-roots`, `all-directories` and
+`no-root-restriction` modes, `projectPolicy.optionalMigration` describes an
+optional move to the shared policy for an authorized directory, which needs the
+user's request. Independent background workers keep their own explicit grant;
+check `worker_status` for them.
+
+An authorized directory does not always make existing tasks reachable. In the
+Claude-to-Codex bridge, `existingTasks: "owned-or-allowlisted"` means thread
+policy `owned` is in force: new tasks can be created, but tasks this bridge did
+not create need `CODEX_BRIDGE_THREAD_POLICY=roots` or an allowlisted thread ID.
+
+A hardened deployment can be inspected through MCP but not prepared or migrated.
+For a directory outside its pinned roots, inspection returns only the refusal.
+
+`liveChecks` stays `not_checked` because a saved configuration cannot prove a
+live caller. Claude-to-Codex delivery still requires the verified sender and
+destination to share a project, and neither a grant nor an allowed root replaces
+that. `codex_bridge_status({cwd})` checks it, and also reports
+`readiness.target.savedProject` for creating a new task:
+
+| `savedProject.status` | Meaning |
+|---|---|
+| `matched` | One eligible saved project has this exact directory |
+| `absent` | No saved project has this exact path |
+| `rejected` | A saved project has this path but its kind, host or ID makes it ineligible |
+| `ambiguous` | More than one eligible saved project has this path |
+| `unresolved` | The requested directory could not be resolved |
+| `not_checked` | The native project list was unavailable |
+
+The result is shown only after a verified sender and the destination are
+confirmed to share a project; otherwise it stays `not_checked`. The status checks
+the same resolved directory a delegation would use.
+
+Outside hardened deployments this status does not change `ready`, because sending
+to an existing task does not need a saved-project match. In `pinned-roots` mode
+every native operation needs one, so an unusable result makes `ready` false with
+`NATIVE_SCOPE_UNVERIFIED`. A failed creation reports the same reason with code
+`DESKTOP_PROJECT_UNMATCHED`, without naming other saved projects.
+
 Changes are backed up and verified. Concurrent changes abort; failed rollback
 returns `partial_needs_review` and remaining files. `configured` does not mean
 live communication passed. Project preparation does not approve tools, change

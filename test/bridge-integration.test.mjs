@@ -223,7 +223,8 @@ describe("Desktop task MCP integration", () => {
       const inspected = await client.callTool({ name: "inspect_bridge_project", arguments: { cwd: project } });
       assert.equal(inspected.isError, undefined, inspected.content[0].text);
       assert.equal(inspected.structuredContent.onboarding.status, "needs_setup");
-      assert.equal(inspected.structuredContent.onboarding.communicationAuthorization.status, "policy_not_configured");
+      assert.equal(inspected.structuredContent.onboarding.communicationAuthorization.status, "authorized");
+      assert.equal(inspected.structuredContent.onboarding.projectPolicy.status, "not_configured");
       assert.equal(server.connections, 0);
     });
   });
@@ -830,6 +831,7 @@ describe("Desktop task MCP integration", () => {
     const calls = [];
     let oversized = false;
     let relay;
+    let savedProjectPath = null;
     const socketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dt-"));
     const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\desktop-diagnostics-${randomUUID()}` : path.join(socketRoot, "d.sock");
     try {
@@ -839,6 +841,28 @@ describe("Desktop task MCP integration", () => {
         assert.match(status.content[0].text, /native relay:   available; verified/);
         assert.match(status.content[0].text, /autostart:      off/);
         assert.doesNotMatch(status.content[0].text, /Start one with/);
+        const targeted = await client.callTool({ name: "codex_bridge_status", arguments: { cwd: home } });
+        const readiness = targeted.structuredContent.readiness;
+        assert.equal(readiness.authorizationMode, "allowed-roots");
+        assert.equal(readiness.target.savedProject.status, "matched");
+        assert.equal(readiness.target.savedProject.projectId, "project-id");
+        assert.equal(targeted.structuredContent.native.targetProject, undefined);
+        assert.match(targeted.content[0].text, /authorization:  allowed-roots/);
+        assert.match(targeted.content[0].text, /new task target: matched; One saved local project/);
+        const unsaved = path.join(home, "unsaved");
+        fs.mkdirSync(unsaved);
+        savedProjectPath = unsaved;
+        const absent = await client.callTool({ name: "codex_bridge_status", arguments: { cwd: home } });
+        savedProjectPath = null;
+        assert.equal(absent.structuredContent.readiness.target.savedProject.status, "absent");
+        const crossProject = await client.callTool({ name: "codex_bridge_status", arguments: { cwd: unsaved } });
+        assert.equal(crossProject.structuredContent.readiness.target.sameProject, false);
+        assert.equal(crossProject.structuredContent.readiness.target.savedProject.status, "not_checked");
+        const outside = await client.callTool({ name: "codex_bridge_status", arguments: { cwd: path.dirname(home) } });
+        assert.equal(outside.structuredContent.readiness.target.authorized, false);
+        assert.equal(outside.structuredContent.readiness.target.savedProject, undefined);
+        assert.equal(outside.structuredContent.native.targetProject, undefined);
+        calls.length = 1;
         const listed = await client.callTool({ name: "list_codex_threads", arguments: { cwd: home, searchTerm: "TARGET", limit: 5 } });
         assert.equal(listed.isError, undefined, JSON.stringify(listed.content));
         assert.match(listed.content[0].text, /1 Codex thread\(s\) via Codex Desktop/);
@@ -873,7 +897,7 @@ describe("Desktop task MCP integration", () => {
           calls.push(operation);
           const target = { id: "target", kind: "codex", hostId: "local", cwd: home, title: "Target task", summary: "misleading-summary", status: "active", updatedAt: 1788597586 };
           let result;
-          if (operation === "list_projects") result = { projects: [{ projectId: "project-id", projectKind: "local", hostId: "local", path: home }] };
+          if (operation === "list_projects") result = { projects: [{ projectId: "project-id", projectKind: "local", hostId: "local", path: savedProjectPath ?? home }] };
           else if (operation === "list_threads") result = { pinnedThreads: [target], threads: [target, { ...target, id: "hidden-remote", hostId: "remote" }, { ...target, id: "hidden-chat", kind: "chatgpt" }, { ...target, id: "hidden-outside", cwd: root }] };
           else if (operation === "read_thread") {
             assert.equal(args.includeOutputs, false);

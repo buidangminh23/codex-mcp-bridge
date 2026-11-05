@@ -79,13 +79,21 @@ export function startDesktopRelayHost({ env = process.env, enabled = relayHostEn
   let stopped = !enabled;
   let timer = null;
   let ticking = Promise.resolve();
+  let reportedSockets = 0;
+  const ownedSockets = () => runtime?.relays.filter((relay) => relay.started).length ?? 0;
+  const status = () => ({ state, reason, pid: runtime?.pid ?? null, ownedSockets: ownedSockets() });
   const setState = (next, detail = null) => {
-    if (state === next && reason === detail) return;
+    if (state === next && reason === detail && reportedSockets === ownedSockets()) return;
     state = next;
     reason = detail;
+    reportedSockets = ownedSockets();
     onState(status());
   };
-  const status = () => ({ state, reason, pid: runtime?.pid ?? null, ownedSockets: runtime?.relays.filter((relay) => relay.started).length ?? 0 });
+  const reportHosted = () => {
+    const next = ownedSockets() ? "listening" : "standby";
+    if (next !== state) log(next === "listening" ? `hosting the native relay for Codex Desktop app-server ${runtime.pid}` : `standing by for Codex Desktop app-server ${runtime.pid} while loaded conversations own the relay sockets`);
+    setState(next);
+  };
   const retire = async () => {
     const current = runtime;
     runtime = null;
@@ -98,7 +106,7 @@ export function startDesktopRelayHost({ env = process.env, enabled = relayHostEn
   const tick = async () => {
     try {
       if (runtime) {
-        if (alive(runtime.pid)) return;
+        if (alive(runtime.pid)) { reportHosted(); return; }
         log("Codex Desktop stopped; closing the hosted relay until it returns");
         await retire();
       }
@@ -107,8 +115,7 @@ export function startDesktopRelayHost({ env = process.env, enabled = relayHostEn
       if (!found) { setState("waiting-for-desktop"); return; }
       runtime = createRuntime({ found, discover, env, log });
       await runtime.lifecycle.activate();
-      setState("listening");
-      log(`hosting the native relay for Codex Desktop app-server ${found.pid}`);
+      reportHosted();
     } catch (error) {
       log(`native relay host could not start: ${error.message}`);
       await retire().catch((stopError) => log(`native relay host cleanup failed: ${stopError.message}`));

@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.1.1] - 2026-11-05
+
+### Fixed
+
+- The Windows relay host no longer reports `listening` while loaded conversations still own the relay sockets. `desktop-relay-host.json` now says `standby` in that case and is rewritten when the host takes the sockets over, so `ownedSockets` stays accurate. Relay behavior itself is unchanged: the host already waited behind those conversations and took over when they left, which is now covered by a test and was measured at 326 ms against a running Codex Desktop.
+
 ## [2.1.0] - 2026-11-05
 
 ### Added

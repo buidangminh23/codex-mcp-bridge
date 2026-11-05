@@ -8,6 +8,7 @@ import { it } from "node:test";
 
 import { desktopAppServerCandidates, relayHostEnabled, startDesktopRelayHost } from "../src/desktop-relay-host.mjs";
 import { accountRelaySocketPath, relaySocketPath } from "../src/native-relay.mjs";
+import { createRelayServers } from "../src/native-relay-companion.mjs";
 
 const socketName = (directory, name) => process.platform === "win32" ? `\\\\.\\pipe\\relay-host-${randomUUID()}` : path.join(directory, name);
 
@@ -111,6 +112,43 @@ it("does not take the sockets from a companion that already owns them", async (t
   t.after(() => host.stop());
   await eventually(() => logs.some((line) => line.includes("already owns")), () => logs.join("\n"));
   assert.equal(owner.listening, true);
+});
+
+it("stands by behind loaded conversations, then takes over and reports it when they leave", async (t) => {
+  const { directory, env } = environment(t);
+  const desktop = nativeDesktop(t, directory);
+  await desktop.listen();
+  const sockets = [...new Set(createRelayServers({ nativeTools: {}, env, signalExit: false }).relays.map((relay) => relay.socketPath))];
+  const owners = await Promise.all(sockets.map((socketPath) => new Promise((resolve) => {
+    const owner = net.createServer((socket) => socket.on("error", () => {}));
+    owner.listen(socketPath, () => resolve(owner));
+  })));
+  const reports = [];
+  const host = startDesktopRelayHost({ env, enabled: true, pollMs: 25, drainMs: 200, alive: () => true,
+    discover: async () => ({ pipe: desktop.pipe, pid: 4242 }), onState: (state) => reports.push(state) });
+  t.after(() => host.stop());
+
+  await eventually(() => host.status().state === "standby", () => JSON.stringify(reports));
+  assert.equal(host.status().ownedSockets, 0);
+  assert.equal(reports.at(-1).state, "standby");
+  assert.ok(owners.every((owner) => owner.listening));
+  assert.equal(reports.some((report) => report.state === "listening"), false);
+
+  await Promise.all(owners.map((owner) => new Promise((resolve) => owner.close(resolve))));
+  await eventually(() => host.status().state === "listening", () => JSON.stringify(reports));
+  await eventually(() => reports.at(-1).ownedSockets === host.status().ownedSockets, () => JSON.stringify(reports));
+  assert.ok(host.status().ownedSockets >= 1);
+  assert.equal(reports.at(-1).state, "listening");
+
+  const reply = await new Promise((resolve, reject) => {
+    const client = net.connect({ path: relaySocketPath(env) });
+    let data = "";
+    client.on("data", (chunk) => { data += chunk; });
+    client.on("end", () => resolve(JSON.parse(data)));
+    client.on("error", reject);
+    client.write(`${JSON.stringify({ v: 1, operation: "list_projects", arguments: {} })}\n`);
+  });
+  assert.equal(reply.ok, true, JSON.stringify(reply));
 });
 
 it("leaves everything alone until Desktop appears and never throws from a failed discovery", async (t) => {

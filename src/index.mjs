@@ -533,7 +533,7 @@ registerDesktopReadTools(registerTool, {
   assertThreadAccess, normalizeThreadCwd, textResult, replyResult, failure,
 });
 
-registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "claude-code", evaluateAuthorization: (cwd) => security.effectiveAuthorization(cwd) }, beforePrepare: async () => {
+registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "claude-code", evaluateAuthorization: (cwd) => security.effectiveAccessScope(cwd) }, beforePrepare: async () => {
   if (!desktopTasksEnabled || !desktopOperation.getStore()?.caller) throw new Error("Project onboarding requires a verified Desktop caller.");
   await assertDesktopOperation(desktopOperation.getStore(), { verifyProcess: true });
 } });
@@ -1041,7 +1041,7 @@ registerTool(
     const summary = security.summary();
     if (desktopTasksEnabled) {
       const targetCwd = cwd ? resolveWorkspacePath(cwd).path : undefined;
-      const authorization = security.effectiveAuthorization(targetCwd);
+      const authorization = security.effectiveAccessScope(targetCwd);
       const native = await desktopTasks.status({ cwd: targetCwd });
       const sender = await readClaudeSenderContext({ account: readBridgeAccounts().claude });
       const readiness = bridgeReadiness({ sender, scope: security.hardenedRoots.mode === "project-policy" ? security.hardenedRoots : { assert: (candidate) => { security.assertCwd(candidate); return candidate; } }, targetCwd, nativeAvailable: native.available, nativeDiagnostic: native.diagnostic, verifyTargetProject: captureProjectScope, authorizationMode: authorization.mode, existingTasks: authorization.existingTasks, savedProject: native.targetProject });

@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
-import { createHardenedRootPolicy, rootPolicyAuthorization } from "./hardened-root-policy.mjs";
+import { createHardenedRootPolicy, rootPolicyAccessScope } from "./hardened-root-policy.mjs";
 
 const APPROVAL_POLICIES = new Set(["untrusted", "on-failure", "on-request", "never"]);
 const SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
@@ -211,9 +211,9 @@ export class BridgeSecurityPolicy {
     throw new Error(`Working directory is outside CODEX_BRIDGE_ALLOWED_ROOTS: ${cwd}`);
   }
 
-  effectiveAuthorization(cwd) {
+  effectiveAccessScope(cwd) {
     const threads = { threadPolicy: this.threadPolicy, existingTasks: this.allowAllThreads || this.threadPolicy === "roots" ? "in-scope" : "owned-or-allowlisted" };
-    const pinned = rootPolicyAuthorization(this.hardenedRoots, cwd);
+    const pinned = rootPolicyAccessScope(this.hardenedRoots, cwd);
     if (pinned) return { ...pinned, ...threads };
     return { mode: this.allowAllRoots ? "all-directories" : "allowed-roots", authorized: this.isCwdAuthorized(cwd), ...threads };
   }

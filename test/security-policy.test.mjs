@@ -12,17 +12,17 @@ describe("bridge security policy", () => {
     const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-effective-")));
     try {
       const scoped = new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: root, CODEX_BRIDGE_THREAD_POLICY: "roots" });
-      assert.deepEqual(scoped.effectiveAuthorization(root), { mode: "allowed-roots", authorized: true, threadPolicy: "roots", existingTasks: "in-scope" });
-      assert.equal(scoped.effectiveAuthorization(outside).authorized, false);
+      assert.deepEqual(scoped.effectiveAccessScope(root), { mode: "allowed-roots", authorized: true, threadPolicy: "roots", existingTasks: "in-scope" });
+      assert.equal(scoped.effectiveAccessScope(outside).authorized, false);
       assert.throws(() => scoped.assertCwd(outside), /outside/);
-      assert.deepEqual(new BridgeSecurityPolicy({}).effectiveAuthorization(outside), { mode: "all-directories", authorized: true, threadPolicy: "owned", existingTasks: "owned-or-allowlisted" });
-      assert.equal(new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_THREADS: "*" }).effectiveAuthorization(root).existingTasks, "in-scope");
+      assert.deepEqual(new BridgeSecurityPolicy({}).effectiveAccessScope(outside), { mode: "all-directories", authorized: true, threadPolicy: "owned", existingTasks: "owned-or-allowlisted" });
+      assert.equal(new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_THREADS: "*" }).effectiveAccessScope(root).existingTasks, "in-scope");
       const empty = new BridgeSecurityPolicy({ CODEX_BRIDGE_ALLOWED_ROOTS: "" });
-      assert.deepEqual(empty.effectiveAuthorization(root), { mode: "allowed-roots", authorized: false, threadPolicy: "owned", existingTasks: "owned-or-allowlisted" });
+      assert.deepEqual(empty.effectiveAccessScope(root), { mode: "allowed-roots", authorized: false, threadPolicy: "owned", existingTasks: "owned-or-allowlisted" });
       assert.throws(() => empty.assertCwd(root), /No authorized workspace roots/);
       const policy = path.join(root, "projects.json");
-      assert.equal(new BridgeSecurityPolicy({ CODEX_BRIDGE_PROJECT_POLICY: policy }).effectiveAuthorization(root).mode, "project-policy");
-      assert.equal(new BridgeSecurityPolicy({ CODEX_BRIDGE_PROJECT_POLICY: policy }).effectiveAuthorization(root).authorized, false);
+      assert.equal(new BridgeSecurityPolicy({ CODEX_BRIDGE_PROJECT_POLICY: policy }).effectiveAccessScope(root).mode, "project-policy");
+      assert.equal(new BridgeSecurityPolicy({ CODEX_BRIDGE_PROJECT_POLICY: policy }).effectiveAccessScope(root).authorized, false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(outside, { recursive: true, force: true });

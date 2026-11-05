@@ -99,7 +99,7 @@ export function createHardenedRootPolicy(env = process.env) {
 
 export function hardenedBridgeEnabled(env = process.env) { return enabled(env); }
 
-export function rootPolicyAuthorization(policy, cwd) {
+export function rootPolicyAccessScope(policy, cwd) {
   if (policy.mode === "project-policy") return { mode: "project-policy", authorized: policy.allows(cwd) };
   if (policy.enabled) return { mode: "pinned-roots", authorized: policy.allows(cwd) };
   return null;

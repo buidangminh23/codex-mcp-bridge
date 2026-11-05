@@ -9,7 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { inspectBridgeProject, prepareBridgeProject, onboardingPaths } from "../src/project-onboarding.mjs";
 import { registerProjectOnboardingTools } from "../src/project-onboarding-tools.mjs";
 import { createProjectScope, editProjectGrant, updateProjectPolicy } from "../src/project-policy.mjs";
-import { createHardenedRootPolicy, rootPolicyAuthorization } from "../src/hardened-root-policy.mjs";
+import { createHardenedRootPolicy, rootPolicyAccessScope } from "../src/hardened-root-policy.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 function fixture(t) {
@@ -364,12 +364,12 @@ test("hardened inspection discloses nothing about a directory outside its pinned
   const env = { ...noPolicy(f), CODEX_BRIDGE_HARDENED: "1", CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_REMAP: "0", CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_ALLOWED_ROOTS: pinnedRoot };
   delete env.CODEX_BRIDGE_PATH_MAP; delete env.CODEX_BRIDGE_ALLOWED_THREADS;
   const policy = createHardenedRootPolicy(env);
-  const result = inspectBridgeProject({ cwd: outside }, { env, evaluateAuthorization: cwd => rootPolicyAuthorization(policy, cwd) });
+  const result = inspectBridgeProject({ cwd: outside }, { env, evaluateAuthorization: cwd => rootPolicyAccessScope(policy, cwd) });
   assert.deepEqual([result.status, result.communicationAuthorization.mode, result.communicationAuthorization.status], ["needs_setup", "pinned-roots", "outside_allowed_roots"]);
   assert.equal(result.project, undefined);
   assert.equal(result.workspaceTrust, undefined);
   assert.equal(JSON.stringify(result).includes(path.basename(outside)), false);
-  assert.equal(inspectBridgeProject({ cwd: pinnedRoot }, { env, evaluateAuthorization: cwd => rootPolicyAuthorization(policy, cwd) }).communicationAuthorization.status, "authorized");
+  assert.equal(inspectBridgeProject({ cwd: pinnedRoot }, { env, evaluateAuthorization: cwd => rootPolicyAccessScope(policy, cwd) }).communicationAuthorization.status, "authorized");
 });
 
 test("preparing still requires a project policy under roots authorization", t => {

@@ -4,7 +4,7 @@ const SAVED_PROJECT_NOT_CHECKED = { status: "not_checked", detail: "The native p
 const SAVED_PROJECT_UNVERIFIED = { status: "not_checked", detail: "The saved project is shown only after a verified sender and this destination are confirmed to share a project." };
 const UNUSABLE_SAVED_PROJECT = new Set(["absent", "rejected", "ambiguous"]);
 
-function targetAuthorizationAction(scope) {
+function outOfScopeGuidance(scope) {
   return scope?.status
     ? "Authorize this project or its parent directory once in the shared project policy."
     : "This bridge authorizes by CODEX_BRIDGE_ALLOWED_ROOTS. Ask the user whether this directory belongs in scope; never widen scope to work around a refusal.";
@@ -21,7 +21,7 @@ export function bridgeReadiness({ sender, scope, targetCwd, nativeAvailable = tr
       const binding = scope.capture?.(targetCwd);
       target = { ...(binding ?? {}), cwd: binding?.path ?? scope.assert(targetCwd), authorized: true };
     }
-    catch (error) { target = { cwd: targetCwd, authorized: false }; issues.push({ code: "TARGET_NOT_AUTHORIZED", detail: error.message, action: targetAuthorizationAction(scope) }); }
+    catch (error) { target = { cwd: targetCwd, authorized: false }; issues.push({ code: "TARGET_NOT_AUTHORIZED", detail: error.message, action: outOfScopeGuidance(scope) }); }
   }
   if (target?.authorized && sender?.status === "verified" && verifyTargetProject) {
     try { verifyTargetProject(sender.cwd, target.cwd); target.sameProject = true; }

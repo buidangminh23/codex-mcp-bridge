@@ -22,23 +22,34 @@ const PRIVATE_SOCKET_LINK = /^\.[0-9a-f]{12}\.sock$/;
 const ownedSocket = (stat) => stat.isSocket() && (typeof process.getuid !== "function" || stat.uid === BigInt(process.getuid()));
 
 export function staleSocketIdentity(target) {
+  let root;
+  try { root = fs.realpathSync.native(path.dirname(target)); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  const file = path.resolve(root, path.basename(target));
+  if (!file.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`)) throw new Error("Relay file escaped its directory");
   let current;
-  try { current = fs.lstatSync(target, { bigint: true }); }
+  try { current = fs.lstatSync(file, { bigint: true }); }
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
   if (!ownedSocket(current)) throw new Error(`Unsafe relay socket file: ${target}`);
   return { dev: current.dev, ino: current.ino };
 }
 
 export function releasePrivateSocketLinks(target, expected) {
-  const directory = path.dirname(target);
+  let root;
+  try { root = fs.realpathSync.native(path.dirname(target)); }
+  catch (error) { if (error.code === "ENOENT") return 0; throw error; }
+  const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  const file = path.resolve(root, path.basename(target));
+  if (!file.startsWith(prefix)) throw new Error("Relay file escaped its directory");
   let current;
-  try { current = fs.lstatSync(target, { bigint: true }); }
+  try { current = fs.lstatSync(file, { bigint: true }); }
   catch (error) { if (error.code === "ENOENT") return 0; throw error; }
   if (current.nlink === 1n || !ownedSocket(current) || current.dev !== expected.dev || current.ino !== expected.ino) return 0;
   let released = 0;
-  for (const name of fs.readdirSync(directory)) {
+  for (const name of fs.readdirSync(root)) {
     if (!PRIVATE_SOCKET_LINK.test(name)) continue;
-    const link = path.join(directory, name);
+    const link = path.resolve(root, name);
+    if (!link.startsWith(prefix)) continue;
     let stat;
     try { stat = fs.lstatSync(link, { bigint: true }); }
     catch (error) { if (error.code === "ENOENT") continue; throw error; }

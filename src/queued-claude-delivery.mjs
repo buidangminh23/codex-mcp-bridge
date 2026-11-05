@@ -1,10 +1,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { accountIdentity } from "./bridge-account-context.mjs";
 import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
-import { homeDir } from "./platform.mjs";
 import { preflightFailure } from "./recipient-preflight.mjs";
 
 const SCHEMA_VERSION = 1;
@@ -86,7 +86,7 @@ export function publicQueueReceipt(entry) {
   return { ...visible, queueId: entry.id, status: entry.state, sent: entry.state === QUEUE_STATES.sentUnconfirmed ? true : entry.state === QUEUE_STATES.dispatching || entry.state === QUEUE_STATES.unknown ? null : false };
 }
 
-export function createQueuedDeliveryStore({ root = path.join(homeDir(), ".claude", "bridge-delivery-queue"), now = Date.now, log = () => {} } = {}) {
+export function createQueuedDeliveryStore({ root = path.join(os.homedir(), ".claude", "bridge-delivery-queue"), now = Date.now, log = () => {} } = {}) {
   const fileFor = (id) => path.join(root, `${id}.json`);
   const claimFor = (id) => path.join(root, `${id}.claim`);
 
@@ -101,15 +101,18 @@ export function createQueuedDeliveryStore({ root = path.join(homeDir(), ".claude
   };
 
   const readFile = (name) => {
-    const file = path.join(root, name);
+    let handle;
     try {
-      const stat = fs.lstatSync(file);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > QUEUE_LIMITS.maxEntryBytes) return null;
+      handle = fs.openSync(path.join(root, name), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+      const stat = fs.fstatSync(handle);
+      if (!stat.isFile() || stat.size > QUEUE_LIMITS.maxEntryBytes) return null;
       if (process.platform !== "win32" && stat.uid !== process.getuid()) return null;
-      const entry = JSON.parse(fs.readFileSync(file, "utf8"));
+      const entry = JSON.parse(fs.readFileSync(handle, "utf8"));
       return validEntry(entry) && `${entry.id}.json` === name ? entry : null;
     } catch {
       return null;
+    } finally {
+      if (handle !== undefined) fs.closeSync(handle);
     }
   };
 

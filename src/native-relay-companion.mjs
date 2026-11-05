@@ -892,7 +892,7 @@ export function createRelayServers({ nativeTools, env = process.env, signalExit 
   if (hardened && !desktopTasksConfigured(env)) throw new Error("CODEX_BRIDGE_HARDENED=1 requires CODEX_BRIDGE_DESKTOP_TASKS=1; legacy relay listeners are disabled");
   const dispatch = (args, options) => nativeTools.dispatch(args, options);
   const dispatchDesktop = (args, options) => nativeTools.dispatchDesktop(args, options);
-  const shared = { signalExit, log: logFn };
+  const shared = { signalExit, log: logFn, resolveExecutor: () => resolveRelayThreadId(env) };
   const relay = new RelaySocketServer({ socketPath: relaySocketPath(env), dispatch, dispatchDesktop, ...shared });
   const desktopRelay = desktopTaskSocketPath(env) === relay.socketPath ? relay : new RelaySocketServer({ socketPath: desktopTaskSocketPath(env), dispatchDesktop, ...shared });
   const accountRelay = new RelaySocketServer({

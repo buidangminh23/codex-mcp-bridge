@@ -778,7 +778,7 @@ export function nativeRelayStatus(env = process.env) {
       mode,
       socketPath,
       code: "RELAY_UNREACHABLE",
-      reason: `The native relay endpoint is unavailable at ${socketPath}. Its Desktop-owned host may be unloaded or disconnected; socket absence alone cannot distinguish these causes. Silent worker recovery requires a running native supervisor. Do not open or create chats to load the relay; include the bridge diagnostic in a report.`,
+      reason: `The native relay endpoint is unavailable at ${socketPath}. Codex Desktop may be closed or still starting, the background relay service may not be running, or on macOS no Codex conversation may be loaded; socket absence alone cannot distinguish these causes. Do not open or create chats to load the relay; include the bridge diagnostic in a report.`,
     };
   }
   return { enabled: true, mode, socketPath, reason: null };

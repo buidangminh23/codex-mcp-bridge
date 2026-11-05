@@ -27,7 +27,7 @@ import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./backgroun
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "2.0.0";
+const VERSION = "2.1.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;

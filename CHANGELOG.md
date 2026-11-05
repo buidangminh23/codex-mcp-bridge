@@ -2,6 +2,25 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.1.0] - 2026-11-05
+
+### Added
+
+- On Windows, the always-on background relay service now hosts the native Codex relay whenever Codex Desktop is running. Claude no longer needs a Codex conversation opened first, new or old, for the relay to answer. The service finds the running Desktop by itself, checks that the endpoint belongs to it, and closes the relay when Desktop exits. A relay already owned by a Codex-launched companion is left alone. An update reloads the host with the service, without opening anything.
+- `autoReload.clientToolList` in status results says whether the tool list a client received at connection is still current: `current`, `stale`, `refreshed` or `unknown`, with the added, removed and changed tool names. Status text adds a warning when it differs. Automatic reload replaces the running code, but a conversation opened before an update can still show its old list, and `automatic reload: current` alone did not reveal that.
+
+### Fixed
+
+- A crashed native relay worker now recovers when the update it restarts into changes the tool list, and the client is told through `notifications/tools/list_changed`. It previously stopped at the recovery limit with `The replacement tool catalog requires an explicit client reconnect`. A client that did not declare `tools.listChanged` still has to reconnect.
+
+### Limitations
+
+- macOS is unchanged: a Codex conversation still has to be loaded before the relay answers. Codex Desktop on macOS refuses any process it did not launch (`dynamic_app_tools_peer_rejected reason=untrusted-process-ancestry`, measured on the app-signed Node as well), and the bridge does not work around that check.
+- On Windows, the relay cannot run while Codex Desktop is fully closed. The host needs the background relay service and a configured Desktop relay. It stays off for a hardened profile, which keeps its Codex-launched companion.
+- This covers delivery into Codex only. A dormant Claude Code session still returns `CLAUDE_SESSION_NOT_READY`, because the bridge has no way to wake it silently.
+- An open conversation keeps its old tool list until a new one is started. The bridge reports this; it cannot refresh that list.
+- Code of a running supervisor and of `vscode-bridge` still changes only when their client reconnects.
+
 ## [2.0.0] - 2026-11-05
 
 ### Removed

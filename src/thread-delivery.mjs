@@ -115,7 +115,7 @@ export function matchDesktopProject(projects, cwd, options) {
     : `No saved local Codex Desktop project exactly matches ${cwd}. ${describeProjectMatch(match)} Choose an existing saved project's directory or continue an existing task in this workspace. The bridge will not create a project or substitute a different directory.`), { code: "DESKTOP_PROJECT_UNMATCHED", projectMatch: { status: match.status, reasons: match.reasons, uncomparable: match.uncomparable } });
 }
 
-export const RELAY_DOWN_GUIDANCE = "The Codex Desktop native relay is not listening after waiting for silent recovery. Its Desktop-owned supervisor restarts crashed relay workers without replaying requests. An unloaded native host cannot be cold-started by this bridge. Inspect codex_bridge_status and include its diagnostic in a report. Never open an app or an old, new, empty or failed chat to load a relay.";
+export const RELAY_DOWN_GUIDANCE = "The Codex Desktop native relay is not listening after waiting for silent recovery. On Windows the background relay service keeps it ready whenever Codex Desktop is running, with no conversation open; allow up to 30 seconds after Desktop starts. On macOS it needs a loaded Codex conversation, because Desktop refuses any process it did not launch. Inspect codex_bridge_status and include its diagnostic in a report. Never open an app or an old, new, empty or failed chat to load a relay.";
 
 function relayUnreachable(error) {
   return error?.code === "RELAY_UNREACHABLE" && error.sent === false;

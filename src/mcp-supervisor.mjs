@@ -16,6 +16,7 @@ const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_QUEUE = 256;
 const RETIRE_GRACE_MS = 6000;
 const CLIENT_CLOSE_GRACE_MS = CLIENT_CLOSE_DRAIN_MS + CLIENT_CLOSE_STOP_MS + 1000;
+const MAX_LISTED_TOOLS = 20;
 const hasId = (message) => Object.hasOwn(message, "id");
 const idKey = (id) => JSON.stringify(id);
 const errorMessage = (id, message, options = {}) => {
@@ -29,6 +30,29 @@ export function supervisorInterval(value, fallback) {
   if (parsed < 100) return 100;
   if (parsed > 2147483647) return 2147483647;
   return parsed;
+}
+
+export function clientToolListState(connected, current, relisted) {
+  const empty = { added: [], removed: [], changed: [] };
+  if (!Array.isArray(connected)) return { state: "unknown", ...empty };
+  if (!Array.isArray(current)) return { state: "current", ...empty };
+  const before = new Map(connected.map((tool) => [tool.name, JSON.stringify(tool)]));
+  const after = new Map(current.map((tool) => [tool.name, JSON.stringify(tool)]));
+  const added = [...after.keys()].filter((name) => !before.has(name)).sort();
+  const removed = [...before.keys()].filter((name) => !after.has(name)).sort();
+  const changed = [...after.keys()].filter((name) => before.has(name) && before.get(name) !== after.get(name)).sort();
+  if (!added.length && !removed.length && !changed.length) return { state: "current", ...empty };
+  return { state: relisted ? "refreshed" : "stale", added, removed, changed };
+}
+
+function clientToolListSummary({ state, added, removed, changed }) {
+  if (state !== "stale" && state !== "refreshed") return null;
+  const names = [["added", added], ["removed", removed], ["changed", changed]]
+    .filter(([, list]) => list.length)
+    .map(([label, list]) => `${label}: ${list.slice(0, MAX_LISTED_TOOLS).join(", ")}${list.length > MAX_LISTED_TOOLS ? ", ..." : ""}`)
+    .join("; ");
+  const advice = state === "stale" ? "The client has not listed the tools again, so" : "The client listed the tools again, but";
+  return `client tool list: ${state} (${names}). ${advice} a conversation opened before this update can still show its old list. To use the current tools, start a new conversation; do not call a removed tool.`;
 }
 
 function lines(stream, receive, failed) {
@@ -192,6 +216,15 @@ export async function runSupervisor(entry, options = {}) {
   let recoveryAttempts = 0;
   let recoveryAt = 0;
   let activeSince = Date.now();
+  let connectedTools = null;
+  let currentTools = null;
+  let catalogGeneration = 0;
+  let listedGeneration = 0;
+  const recordCatalog = (tools, changed) => {
+    currentTools = tools;
+    if (changed) catalogGeneration++;
+  };
+  const clientToolList = () => clientToolListState(connectedTools, currentTools, listedGeneration === catalogGeneration && catalogGeneration > 0);
   const recoveryDelayMs = Math.min(30000, supervisorInterval(env.CODEX_BRIDGE_RECOVERY_DELAY_MS, 1000));
   const recoveryLimit = 5;
   const canRecover = () => recoverable && ready && initializeResult && initializeCatalog;
@@ -207,7 +240,7 @@ export async function runSupervisor(entry, options = {}) {
     revision: active?.release.revision ?? null, availableRevision: observed,
     routingConfiguration: active?.routingConfiguration ?? null, availableRoutingConfiguration: observedRouting,
     pending: Boolean(observed && (observed !== active?.release.revision || observedRouting !== active?.routingConfiguration)),
-    state: failure ? canRecover() && recoveryAttempts < recoveryLimit ? "recovering" : "failed" : switching ? "reloading" : reason ? "deferred" : "current", reason: failure ?? reason, reloads, recoveries, recoveryAttempts });
+    state: failure ? canRecover() && recoveryAttempts < recoveryLimit ? "recovering" : "failed" : switching ? "reloading" : reason ? "deferred" : "current", reason: failure ?? reason, reloads, recoveries, recoveryAttempts, clientToolList: clientToolList() });
 
   const handlers = {
     message(worker, message) {
@@ -226,6 +259,11 @@ export async function runSupervisor(entry, options = {}) {
       worker.clientPending.delete(message.id);
       requests.delete(idKey(pending.id));
       const respond = async () => {
+        if (pending.method === "tools/list" && Array.isArray(message.result?.tools)) {
+          connectedTools ??= message.result.tools;
+          currentTools ??= message.result.tools;
+          listedGeneration = catalogGeneration;
+        }
         if (pending.method === "initialize" && !message.error) {
           initializeResult = message.result;
           if (recoverable) {
@@ -238,7 +276,8 @@ export async function runSupervisor(entry, options = {}) {
         if (message.result && ["codex_bridge_status", "claude_bridge_status", "native_relay_status", "antigravity_bridge_status", "agent_bridge_status"].includes(pending.tool)) {
           const structured = message.result.structuredContent;
           if (structured && typeof structured === "object" && !Array.isArray(structured)) message.result.structuredContent = { ...structured, autoReload: diagnostics() };
-          message.result.content = [...(message.result.content ?? []), { type: "text", text: `automatic reload: ${diagnostics().state}\nsupervisor pid: ${process.pid}\nworker pid: ${worker.process.pid}\nreload count: ${reloads}\nrecovery count: ${recoveries}${reason ? `\nreload detail: ${reason}` : ""}` }];
+          const toolListSummary = clientToolListSummary(clientToolList());
+          message.result.content = [...(message.result.content ?? []), { type: "text", text: `automatic reload: ${diagnostics().state}\nsupervisor pid: ${process.pid}\nworker pid: ${worker.process.pid}\nreload count: ${reloads}\nrecovery count: ${recoveries}${reason ? `\nreload detail: ${reason}` : ""}${toolListSummary ? `\n${toolListSummary}` : ""}` }];
         }
         output({ ...message, id: pending.id });
       };
@@ -298,12 +337,13 @@ export async function runSupervisor(entry, options = {}) {
         const catalog = await candidate.rpc("tools/list", {});
         if (!Array.isArray(catalog.tools) || !catalog.tools.length || catalog.nextCursor) throw new Error("The replacement tool catalog is incomplete");
         const catalogChanged = JSON.stringify(catalog) !== JSON.stringify(initializeCatalog);
-        if (catalogChanged && (!ANTIGRAVITY_ENTRIES.has(entry) || initializeResult.capabilities?.tools?.listChanged !== true)) throw new Error("The replacement tool catalog requires an explicit client reconnect");
+        if (catalogChanged && initializeResult.capabilities?.tools?.listChanged !== true) throw new Error("The replacement tool catalog requires an explicit client reconnect");
         await candidate.control("activate");
         if (stopping || candidate.closed) throw new Error("The relay replacement stopped before activation completed");
         active = candidate;
         candidate = null;
         initializeCatalog = catalog;
+        recordCatalog(catalog.tools, catalogChanged);
         activeSince = Date.now();
         failure = null;
         reason = null;
@@ -367,11 +407,13 @@ export async function runSupervisor(entry, options = {}) {
       active = candidate;
       candidate = null;
       initializeCatalog = catalog;
+      const catalogChanged = JSON.stringify(catalog) !== JSON.stringify(oldCatalog);
+      recordCatalog(catalog.tools, catalogChanged);
       activeSince = Date.now();
       failure = null;
       reloads++;
       reason = null;
-      if (JSON.stringify(catalog) !== JSON.stringify(oldCatalog)) output({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+      if (catalogChanged) output({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
       await previous.stop().catch((error) => log(`retired ${entry} worker: ${error.message}`));
       workers.delete(previous);
       log(`activated ${entry} revision ${revision.slice(0, 12)}; client connection retained`);

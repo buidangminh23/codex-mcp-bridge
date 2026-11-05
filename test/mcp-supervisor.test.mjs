@@ -11,7 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ListRootsRequestSchema, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createReleaseSnapshot, sourceRevision } from "../src/release-snapshot.mjs";
-import { supervisorInterval } from "../src/mcp-supervisor.mjs";
+import { clientToolListState, supervisorInterval } from "../src/mcp-supervisor.mjs";
 import { createProcessReaper, processAlive, waitForExit } from "./helpers/process-reaper.mjs";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,7 +44,7 @@ readline.createInterface({input: process.stdin}).on('line', async line => {
   if (!Object.hasOwn(msg, 'id')) return;
   try {
     let result;
-    if (msg.method === 'initialize') result = {protocolVersion:msg.params.protocolVersion,capabilities:{tools:{listChanged:true}},serverInfo:{name:'fixture',version:VERSION}};
+    if (msg.method === 'initialize') result = {protocolVersion:msg.params.protocolVersion,capabilities:{tools:process.env.TEST_NO_LIST_CHANGED ? {} : {listChanged:true}},serverInfo:{name:'fixture',version:VERSION}};
     else if (msg.method === 'tools/list') result = {tools:[{name:STATUS,description:VERSION === 'CHANGED_CATALOG' ? 'Changed tools' : 'Read test worker',inputSchema:{type:'object'}}]};
     else if (msg.method === 'ping') result = {};
     else result = await control.run(async () => {
@@ -174,7 +174,37 @@ for (const entry of ["index.mjs", "claude-bridge.mjs", "native-relay-companion.m
   });
 }
 
-for (const entry of ["antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs"]) {
+it("reports what changed in the tool list a client already holds", () => {
+  const status = { name: "status", description: "old" };
+  const removed = { name: "start_session" };
+  const added = { name: "new_tool" };
+  assert.deepEqual(clientToolListState(null, [status], false), { state: "unknown", added: [], removed: [], changed: [] });
+  assert.deepEqual(clientToolListState([status], null, false), { state: "current", added: [], removed: [], changed: [] });
+  assert.deepEqual(clientToolListState([status], [{ ...status }], false), { state: "current", added: [], removed: [], changed: [] });
+  assert.deepEqual(clientToolListState([status, removed], [{ ...status, description: "new" }, added], false),
+    { state: "stale", added: ["new_tool"], removed: ["start_session"], changed: ["status"] });
+  assert.equal(clientToolListState([removed], [], true).state, "refreshed");
+});
+
+it("warns that an open conversation can hold an old tool list after a reload", async t => {
+  const fixture = installation(t);
+  const api = await connect(t, fixture);
+  await api.client.listTools();
+  const before = await api.call();
+  assert.equal(before.structuredContent.autoReload.clientToolList.state, "current");
+  assert.doesNotMatch(before.content.at(-1).text, /client tool list/);
+  fixture.update("CHANGED_CATALOG");
+  const after = await eventually(api.call, value => value.structuredContent.version === "CHANGED_CATALOG", api.stderr);
+  assert.equal(after.structuredContent.autoReload.state, "current");
+  assert.deepEqual(after.structuredContent.autoReload.clientToolList, { state: "stale", added: [], removed: [], changed: ["codex_bridge_status"] });
+  assert.match(after.content.at(-1).text, /client tool list: stale.*changed: codex_bridge_status.*start a new conversation/s);
+  await api.client.listTools();
+  const refreshed = await api.call();
+  assert.equal(refreshed.structuredContent.autoReload.clientToolList.state, "refreshed");
+  assert.match(refreshed.content.at(-1).text, /client tool list: refreshed.*opened before this update/s);
+});
+
+for (const entry of ["antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs", "native-relay-companion.mjs"]) {
   it(`recovers ${entry} after a dispatched write without replay and refreshes its tool catalog`, async t => {
     const fixture = installation(t, entry);
     const api = await connect(t, fixture, { CODEX_BRIDGE_RECOVERY_DELAY_MS: "600", CODEX_BRIDGE_DESKTOP_TASKS: "0" });
@@ -402,10 +432,10 @@ it("does not restart a native relay after its MCP client closes during recovery 
   assert.equal(fs.readFileSync(activations, "utf8").trim().split("\n").length, 1);
 });
 
-it("rejects an incompatible native relay replacement catalog before activation", async t => {
+it("rejects a changed native relay catalog before activation when the client cannot be told", async t => {
   const fixture = installation(t, "native-relay-companion.mjs");
   const activations = path.join(fixture.root, "activations.txt");
-  const api = await connect(t, fixture, { CODEX_BRIDGE_RECOVERY_DELAY_MS: "300", TEST_ACTIVATIONS: activations });
+  const api = await connect(t, fixture, { CODEX_BRIDGE_RECOVERY_DELAY_MS: "300", TEST_ACTIVATIONS: activations, TEST_NO_LIST_CHANGED: "1" });
   await assert.rejects(api.call("crash", { value: "once" }), /not retried/);
   fixture.update("CHANGED_CATALOG");
   await eventually(async () => api.stderr(), value => value.includes("replacement tool catalog requires an explicit client reconnect"), api.stderr);

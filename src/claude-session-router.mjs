@@ -1,6 +1,8 @@
 import { assertClaudeSessionCwd } from "./peer-protocol.mjs";
 import { preflightFailure } from "./recipient-preflight.mjs";
 
+const OPEN_SESSION_GUIDANCE = "Ask the user to open the session in Claude Desktop, then retry with target auto.";
+
 function assertCwd(session, expectedCwd) {
   try {
     assertClaudeSessionCwd(session, expectedCwd);
@@ -23,10 +25,36 @@ function uniqueLiveSessions(sessions) {
   return [...unique.values()];
 }
 
+function targetSelector(target) {
+  return typeof target === "string" || typeof target === "number" ? String(target).trim() : "";
+}
+
+function isInProject(session, expectedCwd) {
+  try {
+    assertClaudeSessionCwd(session, expectedCwd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasRunningProjectSession(sessions, expectedCwd) {
+  return uniqueLiveSessions(sessions ?? []).some((session) => session.entrypoint === "claude-desktop" && isInProject(session, expectedCwd));
+}
+
+function sessionNotReady(subject, details = {}) {
+  return Object.assign(preflightFailure("CLAUDE_SESSION_NOT_READY", `${subject} Background delivery requires that endpoint; this bridge has no supported silent cold-start API. No app or chat was opened. Inspect claude_bridge_status and report this diagnostic; do not create or open a chat to load the relay. ${OPEN_SESSION_GUIDANCE}`), { phase: "recipient_discovery", ...details });
+}
+
 export async function recoverClaudeDesktopSession(args, { listTasks, listSessions, beforeInspect }) {
   try { return { session: resolveClaudeDesktopSession(args) }; }
   catch (error) {
-    if (error.preflight?.code !== "CLAUDE_SESSION_NOT_FOUND" || args.target !== "auto" || !args.expectedTaskId) throw error;
+    if (error.preflight?.code !== "CLAUDE_SESSION_NOT_FOUND") throw error;
+    const selector = targetSelector(args.target);
+    if (!selector) throw error;
+    const automatic = selector === "auto";
+    if (!automatic && hasRunningProjectSession(args.sessions, args.expectedCwd)) throw error;
+    if (!automatic || !args.expectedTaskId) throw sessionNotReady("No running Claude Desktop session with a native Code endpoint matches the current account and intended project.");
   }
   const assertTask = async () => {
     await beforeInspect();
@@ -44,7 +72,7 @@ export async function recoverClaudeDesktopSession(args, { listTasks, listSession
   await assertTask();
   try { return { session: resolveClaudeDesktopSession({ ...args, sessions }) }; }
   catch (error) { if (error.preflight?.code !== "CLAUDE_SESSION_NOT_FOUND") throw error; }
-  throw Object.assign(preflightFailure("CLAUDE_SESSION_NOT_READY", "The exact saved Claude Desktop task has no live native Code endpoint. Background delivery requires that endpoint; this bridge has no supported silent cold-start API. No app or chat was opened. Inspect claude_bridge_status and report this diagnostic; do not create or open a chat to load the relay."), { taskId: task.taskId, phase: "recipient_discovery" });
+  throw sessionNotReady("The exact saved Claude Desktop task has no live native Code endpoint.", { taskId: task.taskId });
 }
 
 export function sameClaudeDesktopRecipient(selected, current) {
@@ -65,7 +93,7 @@ export function resolveClaudeDesktopSession({ target, expectedCwd, expectedTaskI
     throw preflightFailure("CLAUDE_ACCOUNT_UNVERIFIED", account?.reason ?? "The current Claude Desktop account is not confirmed.");
   }
   assertCwd({ cwd: expectedCwd }, expectedCwd);
-  const needle = typeof target === "string" || typeof target === "number" ? String(target).trim() : "";
+  const needle = targetSelector(target);
   const automatic = needle === "auto";
   if (!needle) throw preflightFailure("CLAUDE_SESSION_NOT_FOUND", "Provide an exact Claude Desktop session identity or target auto.");
   const assertExpectedTaskId = () => {
@@ -91,7 +119,7 @@ export function resolveClaudeDesktopSession({ target, expectedCwd, expectedTaskI
       throw preflightFailure("CLAUDE_SESSION_AMBIGUOUS", "The exact target identifies multiple live sessions; use an unambiguous sessionId or pid.");
     }
     if (!matches.length) {
-      throw preflightFailure("CLAUDE_SESSION_NOT_FOUND", "No live Claude Desktop session matches the exact target. Reinspect the existing task and use its current sessionId or pid.");
+      throw preflightFailure("CLAUDE_SESSION_NOT_FOUND", `No live Claude Desktop session matches the exact target. Reinspect the existing task and use its current sessionId or pid. If the intended session is not running: ${OPEN_SESSION_GUIDANCE}`);
     }
     if (matches.length === 1) {
       const found = matches[0];
@@ -114,11 +142,7 @@ export function resolveClaudeDesktopSession({ target, expectedCwd, expectedTaskI
   const candidates = [];
   for (const candidate of live) {
     if (candidate.entrypoint !== "claude-desktop") continue;
-    try {
-      assertClaudeSessionCwd(candidate, expectedCwd);
-    } catch {
-      continue;
-    }
+    if (!isInProject(candidate, expectedCwd)) continue;
     const session = contextualize(candidate);
     if (session.desktop?.status === "matched" && taskMatches(session, expectedTaskId)) candidates.push(session);
   }
@@ -126,7 +150,7 @@ export function resolveClaudeDesktopSession({ target, expectedCwd, expectedTaskI
     throw preflightFailure("CLAUDE_SESSION_AMBIGUOUS", "Multiple live Claude Desktop sessions match the current account and intended project/task; inspect the intended task and provide its exact identity.");
   }
   if (!candidates.length) {
-    throw preflightFailure("CLAUDE_SESSION_NOT_FOUND", "No live Claude Desktop session matches the current account and intended project/task. Inspect list_claude_sessions and claude_bridge_status; do not open or create a chat to load the relay.");
+    throw preflightFailure("CLAUDE_SESSION_NOT_FOUND", "No live Claude Desktop session matches the current account and intended project/task. Inspect list_claude_sessions and claude_bridge_status; do not open or create a chat to load the relay. If no session is running, ask the user to open it in Claude Desktop.");
   }
   return candidates[0];
 }

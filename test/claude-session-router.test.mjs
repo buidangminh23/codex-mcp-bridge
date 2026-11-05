@@ -29,6 +29,23 @@ function fixture() {
   return { args, records, sessions };
 }
 
+const OPEN_SESSION_TEXT = /open the session in Claude Desktop.*target auto/;
+
+function noInspection() {
+  const unexpected = async () => assert.fail("must not inspect saved tasks");
+  return { listTasks: unexpected, listSessions: unexpected, beforeInspect: unexpected, open: unexpected };
+}
+
+function assertNotReady(error) {
+  assert.equal(error.code, "CLAUDE_SESSION_NOT_READY");
+  assert.equal(error.preflight?.code, "CLAUDE_SESSION_NOT_READY");
+  assert.equal(error.sent, false);
+  assert.equal(error.deliveryState, "not_sent");
+  assert.equal(error.phase, "recipient_discovery");
+  assert.match(error.message, OPEN_SESSION_TEXT);
+  return true;
+}
+
 function blocked(callback, code) {
   assert.throws(callback, (error) => {
     assert.equal(error.preflight?.code, code);
@@ -55,6 +72,7 @@ describe("Claude Desktop session rediscovery", () => {
       assert.equal(error.sent, false);
       assert.equal(error.deliveryState, "not_sent");
       assert.match(error.message, /no supported silent cold-start API/);
+      assert.match(error.message, OPEN_SESSION_TEXT);
       return true;
     });
     for (const tasks of [[], [task, task], [{ ...task, isArchived: true }], [{ ...task, fileTaskId: "other" }]]) {
@@ -62,6 +80,44 @@ describe("Claude Desktop session rediscovery", () => {
     }
     await assert.rejects(recoverClaudeDesktopSession({ ...args, sessions: [], expectedTaskId: "task-a" }, { ...deps, beforeInspect: async () => { throw new Error("Sender changed"); }, open: async () => assert.fail("must not open") }), /Sender changed/);
   });
+  it("reports not ready for target auto without a task when no session is running", async () => {
+    const { args } = fixture();
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, sessions: [] }, noInspection()), assertNotReady);
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, target: " auto ", sessions: [] }, noInspection()), assertNotReady);
+  });
+
+  it("reports not ready for target auto when live sessions belong to another account or project", async () => {
+    const { args } = fixture();
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, account: { status: "verified", accountId: "account-c" } }, noInspection()), assertNotReady);
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, expectedCwd: otherProject }, noInspection()), assertNotReady);
+  });
+
+  it("reports not ready for an exact target when no session runs in the project", async () => {
+    const { args, sessions } = fixture();
+    const exact = { ...args, target: "cli-gone", expectedTaskId: "task-a" };
+    await assert.rejects(recoverClaudeDesktopSession({ ...exact, sessions: [] }, noInspection()), assertNotReady);
+    await assert.rejects(recoverClaudeDesktopSession({ ...exact, sessions: sessions.map((session) => ({ ...session, alive: false })) }, noInspection()), assertNotReady);
+    await assert.rejects(recoverClaudeDesktopSession({ ...exact, expectedCwd: otherProject }, noInspection()), assertNotReady);
+    await assert.rejects(recoverClaudeDesktopSession({ ...exact, sessions: sessions.map((session) => ({ ...session, entrypoint: "cli" })) }, noInspection()), assertNotReady);
+  });
+
+  it("keeps not found for an exact target while another session runs in the project", async () => {
+    const { args } = fixture();
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, target: "cli-gone", expectedTaskId: "task-a" }, noInspection()), (error) => {
+      assert.equal(error.code, "CLAUDE_SESSION_NOT_FOUND");
+      assert.equal(error.sent, false);
+      assert.match(error.message, OPEN_SESSION_TEXT);
+      return true;
+    });
+  });
+
+  it("does not turn other refusals into not ready", async () => {
+    const { args } = fixture();
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, target: "", sessions: [] }, noInspection()), { code: "CLAUDE_SESSION_NOT_FOUND" });
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, sessions: [], account: { status: "unverified" } }, noInspection()), { code: "CLAUDE_ACCOUNT_UNVERIFIED" });
+    await assert.rejects(recoverClaudeDesktopSession({ ...args, sessions: [], expectedCwd: "relative" }, noInspection()), { code: "CLAUDE_SESSION_CWD_MISMATCH" });
+  });
+
   it("follows A to B to A without reusing the other account's lingering process", () => {
     const { args } = fixture();
     for (const accountId of ["account-a", "account-b", "account-a", "account-b", "account-a"]) {

@@ -21,7 +21,6 @@ import {
   readTranscriptOutcome,
   readPeerProcessIdentity,
   assertClaudeSessionProcess,
-  readInitialTranscriptMessage,
 } from "../src/peer-protocol.mjs";
 
 /**
@@ -375,28 +374,12 @@ describe("transcript reading", () => {
     t.mock.method(fs, "readFileSync", function (file, ...args) { reads.push(file); return readFile.call(this, file, ...args); });
     for (const sessionId of ["../../escaped-transcript", "..\\..\\escaped-transcript", "/escaped-transcript", "C:\\escaped-transcript", "session/name", "session\\name", "session:stream", "session\0id", "session.id", "session\n", "session\r\n", "a".repeat(129), "", undefined, null, {}]) {
       assert.deepEqual(readTranscript(sessionId, "").messages, [], String(sessionId));
-      assert.deepEqual(readInitialTranscriptMessage(sessionId, "").messages, [], String(sessionId));
       assert.equal(readTranscriptOutcome(sessionId, "", "request"), null, String(sessionId));
       assert.equal(readTranscriptReply(sessionId, "", "request"), null, String(sessionId));
     }
     assert.deepEqual(reads, [], "invalid transcript identities must never reach a file read");
   });
 
-  it("checks the first user prompt rather than a later matching message or assistant echo", () => {
-    const directory = path.join(projectsDir, "initial-message");
-    fs.mkdirSync(directory, { recursive: true });
-    const file = path.join(directory, "creation.jsonl");
-    const rows = [
-      { isMeta: true, message: { role: "user", content: "metadata" } },
-      { message: { role: "user", content: "original request" } },
-      ...Array.from({ length: 120 }, () => ({ message: { role: "assistant", content: "later request" } })),
-      { message: { role: "user", content: "later request" } },
-    ];
-    fs.writeFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
-    assert.deepEqual(readInitialTranscriptMessage("creation", "unused").messages, [{ role: "user", text: "original request" }]);
-    fs.writeFileSync(file, '{"message":');
-    assert.deepEqual(readInitialTranscriptMessage("creation", "unused").messages, []);
-  });
   /**
    * Claude Code slugifies the cwd into the project directory name and the
    * rewrite is lossy (/mnt/dev_disk becomes -mnt-dev-disk), so the transcript

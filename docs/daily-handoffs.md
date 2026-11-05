@@ -14,12 +14,10 @@ repository, even when two unrelated projects are both authorized.
 
 ## Establish one collaboration conversation
 
-When the user authorizes a new Claude conversation, prefer the plus button next
-to its project in the Code sidebar. On some observed Windows builds, a
-`claude://code/new?folder=...` prefilled link displays the intended project but
-creates the conversation in a scratch directory. This branch does not repair
-Claude's client. See the [link documentation](https://support.claude.com/en/articles/14729294-open-claude-desktop-with-a-link)
-and [reported directory behavior](https://github.com/anthropics/claude-code/issues/92210).
+The bridge does not create Claude conversations. It delivers only through the
+direct relay to a running session, and it never opens or prefills the Claude
+Desktop composer or presses Send. The user opens the conversation with the plus
+button next to its project in the Code sidebar.
 
 Wait for project/branch selection to finish. First request only the actual cwd,
 session identity, Git root if applicable, and Remote Control state. Compare
@@ -33,17 +31,17 @@ resolver finds one writable replacement authorized by the shared project policy.
 Revoked original paths, revoked targets, ambiguous replacements and existing old
 directories do not qualify. Hardened deployments do not remap projects.
 
-The candidate can establish the project for an explicitly authorized new Code
-conversation. It cannot resume the old task or authorize a live session: the
-new native task, account, process, actual cwd and initial message must still match.
+The candidate tells the user where to open a new Code conversation. It cannot
+resume the old task or authorize a live session: the new native task, account,
+process and actual cwd must still match before delivery.
 Discovery does not rewrite Claude metadata, create grants or clear revocations.
-The saved source and its authorization are rechecked before opening, trusting and
-submitting, including after a pending request is restored.
 
-Native composer creation submits an initial user prompt; it is not a peer
-message and does not establish a native sender label. If a handoff requires the
-recipient's peer sender attribution, use `send_to_claude_session` with a verified
-live task. Do not substitute composer submission or a text header for that route.
+Use `send_to_claude_session` with a verified live task for every handoff. Without
+a running session in the project it returns `CLAUDE_SESSION_NOT_READY` with
+`sent: false`, for `target: "auto"` and for an exact identity; ask the user to open
+the session in Claude Desktop, then retry with `target: "auto"`. An exact identity
+that no longer matches while another session runs in that project returns
+`CLAUDE_SESSION_NOT_FOUND`, and nothing is redirected to that other session.
 
 Peer messages include the bridge's advertised name through Claude's supported
 `from-name` envelope field. Claude determines the native wording and verifies
@@ -52,15 +50,6 @@ uses its own fixed `Sent by ... from another chat` label and exposes no sender-n
 override. Keep the actual `[From Claude ...]` or `[From Codex ...]` author header
 in the message. A body header does not rename a native badge, and applications'
 private data must not be patched to make that claim.
-
-If a link was already opened, retain its requestId and inspect its receipt.
-`promptSubmitted=false` with `submissionStatus=not_observed` means submission
-was not verified, not that nothing was delivered. A wrong-directory task can
-be outside the authorized search scope. Inspect existing conversations before
-canceling a pending creation or starting again. Do not broaden grants to make
-an accidental scratch conversation fit. `awaiting_project_confirmation` means
-submission was seen but the workspace does not match; `created` requires the
-new task, account, process, prompt and directory to match.
 
 ## Send, execute, receive
 

@@ -2,18 +2,15 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { createHash } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 
 import { CodexAppServerClient } from "./app-server-client.mjs";
-import { PLATFORM_LABEL, openClaudeCodeComposer } from "./platform.mjs";
-import { PeerEndpoint, assertClaudeSessionCwd, assertClaudeSessionProcess, findClaudeSession, listClaudeSessions, readTranscript, readInitialTranscriptMessage } from "./peer-protocol.mjs";
+import { PLATFORM_LABEL } from "./platform.mjs";
+import { PeerEndpoint, assertClaudeSessionCwd, assertClaudeSessionProcess, findClaudeSession, listClaudeSessions, readTranscript } from "./peer-protocol.mjs";
 import { createThreadDelivery } from "./thread-delivery.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { desktopTasksConfigured, NativeDesktopRelay, desktopTaskSocketPath, accountRelaySocketPath } from "./native-relay.mjs";
 import { createRuntimeState } from "./runtime-state.mjs";
 import { readClaudeDesktopContext, readClaudeDesktopTasks } from "./claude-desktop-context.mjs";
-import { ClaudeSessionCreation } from "./claude-session-creation.mjs";
 import { readClaudeInboundPolicy } from "./claude-inbound-policy.mjs";
 import { assertRecipientClass, preflightFailure, withBridgeDiagnostic } from "./recipient-preflight.mjs";
 import { resolveCodexSenderContext } from "./codex-sender-context.mjs";
@@ -22,7 +19,6 @@ import { assertRoutingReload, clientReloadReason, createReloadControl, exitWhenC
 import { readClaudeAccountContext } from "./desktop-account-context.mjs";
 import { assertAccountIdentity, bindUnsolicitedClaudeMessageAccount, publicAccountState, readBridgeAccounts, requireBridgeAccounts, sameAccountIdentity } from "./bridge-account-context.mjs";
 import { recoverClaudeDesktopSession, resolveClaudeDesktopSession, sameClaudeDesktopRecipient } from "./claude-session-router.mjs";
-import { submitClaudeCodeComposer, trustClaudeCodeComposer } from "./claude-composer-submit.mjs";
 import { createHardenedRootPolicy, rootPolicyAccessScope } from "./hardened-root-policy.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs";
 import { registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
@@ -31,7 +27,7 @@ import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./backgroun
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "1.27.2";
+const VERSION = "2.0.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
@@ -69,26 +65,6 @@ const forwarding = {
   threadId: process.env.CODEX_THREAD_ID ?? null,
 };
 
-const creationRootBindings = new Map();
-
-const creations = new ClaudeSessionCreation({
-  open: openClaudeCodeComposer,
-  submit: submitClaudeCodeComposer,
-  trust: trustClaudeCodeComposer,
-  settle: () => delay(2500),
-  listTasks: (account) => readClaudeDesktopTasks({ account }),
-  resolveProject: (task) => discoverClaudeProject(task, { policy: rootPolicy })?.cwd ?? null,
-  listSessions: () => listClaudeSessions().filter((session) => rootPolicy.allows(session.cwd)),
-  readContext: (session, account) => readClaudeDesktopContext(session, { account }),
-  readTranscript: (...args) => {
-    const binding = rootPolicy.capture(args[1], "Claude creation transcript working directory");
-    const transcript = readInitialTranscriptMessage(...args);
-    rootPolicy.recheck(binding, "Claude creation transcript working directory");
-    return transcript;
-  },
-  readAccount: readClaudeAccountContext,
-  assertProcess: assertClaudeSessionProcess,
-});
 function recheckScopeBindings(bindings) {
   if (!rootPolicy.enabled) return;
   if (!bindings?.sender || !bindings?.recipient) throw Object.assign(new Error("Hardened bridge record has no original sender and recipient root binding"), { code: "ROOT_BINDING_MISSING" });
@@ -120,7 +96,7 @@ const reload = createReloadControl({
   entry: "claude-bridge.mjs",
   inspect: () => peer.reloadReason() ?? replyForwarder.reloadReason() ?? clientReloadReason(codex),
   quiesce: async () => { await peer.quiesce(); codex.close(); },
-  exportState: () => ({ desktopOnly, peer: peer.exportReloadState(), forwarding: replyForwarder.exportReloadState(), threadId: forwarding.threadId, creations: creations.exportState(), creationRootBindings: [...creationRootBindings] }),
+  exportState: () => ({ desktopOnly, peer: peer.exportReloadState(), forwarding: replyForwarder.exportReloadState(), threadId: forwarding.threadId }),
   restore: (state) => {
     assertRoutingReload(state.desktopOnly, desktopOnly);
     if (state.threadId !== null && (typeof state.threadId !== "string" || !state.threadId.trim())) {
@@ -129,14 +105,6 @@ const reload = createReloadControl({
     peer.restoreReloadState(state.peer);
     replyForwarder.restoreReloadState(state.forwarding);
     forwarding.threadId = state.threadId;
-    if (state.creations !== undefined) creations.restoreState(state.creations);
-    if (state.creationRootBindings !== undefined) {
-      if (!Array.isArray(state.creationRootBindings) || state.creationRootBindings.length > 32) throw new Error("Invalid Claude creation root bindings");
-      for (const entry of state.creationRootBindings) {
-        if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || creationRootBindings.has(entry[0]) || !creations.requests.has(entry[0])) throw new Error("Invalid Claude creation root binding");
-        creationRootBindings.set(entry[0], entry[1]);
-      }
-    }
   },
   activate: () => peer.start(),
   resume: () => peer.resume(),
@@ -162,7 +130,7 @@ const failure = (err) => withBridgeDiagnostic({
     : err?.preflight ? { structuredContent: { preflight: err.preflight } } : {}),
 }, err, { component: "claude-bridge" });
 
-const missingDesktopSession = "CLAUDE_SESSION_NOT_READY: No live Claude Desktop session with a native Code endpoint matches the intended task. Inspect claude_bridge_status. Silent cold-start is unavailable; do not open or create chats to load the relay or launch a replacement CLI session.";
+const missingDesktopSession = "CLAUDE_SESSION_NOT_READY: No live Claude Desktop session with a native Code endpoint matches the intended task. Inspect claude_bridge_status. Silent cold-start is unavailable; do not open or create chats to load the relay or launch a replacement CLI session. Ask the user to open the session in Claude Desktop, then retry with target auto.";
 
 function formatSessionRow(s) {
   const started = s.startedAt ? new Date(s.startedAt).toISOString().replace("T", " ").slice(0, 16) : "?";
@@ -243,55 +211,6 @@ async function assertSender(meta) {
   return sender;
 }
 
-function assertCreationRoots(requestId, sender) {
-  if (!rootPolicy.enabled) return;
-  rootPolicy.assert(sender.cwd, "Codex sender working directory");
-  recheckScopeBindings(creationRootBindings.get(requestId));
-}
-
-async function startClaudeCreation({ requestId, cwd, prompt, autoSubmit = process.platform === "win32", trustProject = process.env.CLAUDE_BRIDGE_AUTO_TRUST_PROJECTS === "1" }, meta) {
-  runtime.assertCurrent();
-  if (!desktopOnly) throw new Error("New Claude sessions require Desktop-only mode");
-  const sender = await assertSender(meta);
-  const accounts = readBridgeAccounts();
-  const selectedAccounts = requireBridgeAccounts(accounts);
-  if (rootPolicy.enabled && creations.requests.has(requestId)) assertCreationRoots(requestId, sender);
-  const scopeBindings = rootPolicy.enabled ? creationRootBindings.get(requestId) ?? {
-    sender: rootPolicy.capture(sender.cwd, "Codex sender working directory"),
-    recipient: rootPolicy.capture(cwd, "Claude creation working directory"),
-  } : null;
-  let receipt;
-  try {
-    receipt = await creations.start({ requestId, cwd, prompt, autoSubmit, trustProject, account: accounts.claude, senderThreadId: sender.threadId,
-      beforeOpen: async () => {
-        runtime.assertCurrent();
-        assertAccountIdentity(selectedAccounts);
-        recheckScopeBindings(scopeBindings);
-        if (rootPolicy.enabled && !rootPolicy.same(cwd, scopeBindings.recipient.path)) throw new Error("The Claude creation working directory changed before opening Desktop");
-        const current = await assertSender(meta);
-        if (JSON.stringify(current) !== JSON.stringify(sender)) throw new Error("The calling Codex turn changed before opening Claude Desktop");
-        runtime.assertCurrent();
-        assertAccountIdentity(selectedAccounts);
-        recheckScopeBindings(scopeBindings);
-        if (rootPolicy.enabled && !rootPolicy.same(cwd, scopeBindings.recipient.path)) throw new Error("The Claude creation working directory changed before opening Desktop");
-      },
-    });
-  } finally {
-    if (rootPolicy.enabled && creations.requests.has(requestId) && !creationRootBindings.has(requestId)) creationRootBindings.set(requestId, scopeBindings);
-  }
-  return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { creation: receipt } };
-}
-
-async function inspectClaudeCreation(requestId, meta) {
-  const sender = await assertSender(meta);
-  assertCreationRoots(requestId, sender);
-  const accounts = readBridgeAccounts();
-  requireBridgeAccounts(accounts);
-  const receipt = await creations.inspect(requestId, { account: accounts.claude, senderThreadId: sender.threadId });
-  assertCreationRoots(requestId, sender);
-  return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { creation: receipt } };
-}
-
 function forwardToCodexThread(record) {
   const threadId = record.replyThreadId ?? (desktopOnly ? null : forwarding.threadId);
   if (!threadId) return;
@@ -326,7 +245,7 @@ const server = new McpServer(
       NO_UI_DELIVERY_FALLBACK +
       "The host's current MCP turn metadata identifies the sender; unknown or stale permission context blocks sending. " +
       "Accounts and live session identities are rediscovered on every call. Use target auto with the exact expectedCwd to select the current account's only matching Desktop task; specify expectedTaskId when multiple tasks exist. " +
-      "list_claude_sessions includes saved tasks, but a saved task is not proof of a live receiving endpoint. target auto with expectedTaskId rediscovers only the exact task without opening an app or chat; an already-live session is sent directly without opening a composer. A dormant task returns CLAUDE_SESSION_NOT_READY with sent false. There is no supported silent cold-start API. For independent new work authorized by the user or standing instructions, use start_claude_session; never use creation to warm a relay. Use trustProject only with explicit or standing authorization to trust that project. " +
+      "list_claude_sessions includes saved tasks, but a saved task is not proof of a live receiving endpoint. target auto with expectedTaskId rediscovers only the exact task without opening an app or chat; an already-live session is sent directly without opening a composer. A dormant task returns CLAUDE_SESSION_NOT_READY with sent false. There is no supported silent cold-start API. The bridge never creates a Claude session and never prefills the Desktop composer or presses Send: the user opens the session in Claude Desktop, then retry with target auto. " +
       "The sender class follows the verified approval policy; automated review flags are reported but never change it. " +
       "A Desktop recipient whose settings refuse or hold inbound messages, or whose task metadata shows a different permission class without an explicit accept, is refused before sending, because Claude Desktop cannot show the approval dialog. " +
       "Never launch a CLI session or an external app-server as a substitute for an existing Desktop task. A receipt confirms a reply, not visual verification in the app. " +
@@ -355,52 +274,6 @@ registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "c
   await assertSender(extra?._meta);
   requireBridgeAccounts(readBridgeAccounts());
 } });
-
-registerTool(
-  "start_claude_session",
-  {
-    title: "Start a new Claude Desktop Code session",
-    description: "Use for independent new work authorized explicitly or by standing user instructions. Open the official Code composer in the existing project and invoke Send after verifying its exact prompt and directory. Retain requestId across turns and inspect read_claude_creation until the native task, process and first message are verified. Opening or clicking alone does not confirm creation. Never replace unfinished work with a new task or launch a CLI session.",
-    inputSchema: {
-      requestId: z.string().describe("Stable UUID for this creation; reuse exactly when inspecting or retrying"),
-      cwd: z.string().describe("Exact absolute directory of the existing Claude Desktop project"),
-      prompt: z.string().describe(`Initial prompt for the NEW conversation; shown for user confirmation. ${PROMPT_FIELD_HINT}`),
-      autoSubmit: z.boolean().optional().describe("Invoke native Send after exact composer verification (Windows default true; other platforms default false); false only prefills"),
-      trustProject: z.boolean().optional().describe("Handle the native trust dialog for this exact existing project before Send, when explicitly or through standing instructions authorized; default follows CLAUDE_BRIDGE_AUTO_TRUST_PROJECTS"),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  },
-  async (args, extra) => startClaudeCreation(args, extra?._meta),
-);
-
-registerTool(
-  "read_claude_creation",
-  {
-    title: "Verify a new Claude Desktop session",
-    description: "Inspect an existing creation request without reopening or sending. A created receipt requires a new native task, matching account/project, live process identity, and the exact initial user prompt. awaiting_project_confirmation means the prompt arrived in a new task but its folder still differs; the user must adopt the requested project before creation can be confirmed. An old task resumed with a new process never counts as a new session.",
-    inputSchema: { requestId: z.string().describe("Original requestId returned by start_claude_session") },
-    annotations: { readOnlyHint: true, openWorldHint: false },
-  },
-  async ({ requestId }, extra) => inspectClaudeCreation(requestId, extra?._meta),
-);
-
-registerTool(
-  "abandon_claude_creation",
-  {
-    title: "Release a cancelled Claude creation request",
-    description: "Use only when the user explicitly cancels a pending creation request. Release its composer reservation while retaining the receipt. This does not close Claude Desktop or prove that the prefilled prompt was never submitted; the old request remains inspectable.",
-    inputSchema: { requestId: z.string().describe("Exact creation requestId the user cancelled") },
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  },
-  async ({ requestId }, extra) => {
-    const sender = await assertSender(extra?._meta);
-    assertCreationRoots(requestId, sender);
-    const accounts = readBridgeAccounts();
-    requireBridgeAccounts(accounts);
-    const receipt = await creations.abandon(requestId, { account: accounts.claude, senderThreadId: sender.threadId });
-    return { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { creation: receipt } };
-  },
-);
 
 registerTool(
   "list_claude_sessions",
@@ -444,7 +317,7 @@ registerTool(
         : discovery.excluded.length
           ? `Found ${discovery.candidateCount} registered Claude Desktop candidate(s) with messaging endpoints, but their Desktop task identities could not be verified. Delivery remains blocked.`
           : desktopOnly ? missingDesktopSession : "No live Claude Code session found.";
-      return { ...textResult([summary, ...discoveryDetails(discovery), ...(savedTasks.length ? [`Saved Desktop tasks (alive false means the receiving endpoint is unavailable):\n${JSON.stringify(savedTasks, null, 2)}`] : []), ...(relocatedProjects.length ? [`Relocated project candidates (new conversation only when authorized; old tasks are not verified or resumable at the new path):\n${JSON.stringify(relocatedProjects, null, 2)}`] : [])].join("\n")),
+      return { ...textResult([summary, ...discoveryDetails(discovery), ...(savedTasks.length ? [`Saved Desktop tasks (alive false means the receiving endpoint is unavailable):\n${JSON.stringify(savedTasks, null, 2)}`] : []), ...(relocatedProjects.length ? [`Relocated project candidates (the user must open a new Code session there in Claude Desktop; old tasks are not verified or resumable at the new path):\n${JSON.stringify(relocatedProjects, null, 2)}`] : [])].join("\n")),
         structuredContent: { account: publicAccountState(account), sessions: sessions.map(({ socket, bridgeSessionId, ...session }) => session), savedTasks, relocatedProjects, discovery } };
     } catch (err) {
       return failure(err);
@@ -460,20 +333,17 @@ registerTool(
       "Send a message to a running Claude Code session's peer transport and wait for its reply. " +
       EXISTING_SESSION_ROUTING +
       NO_UI_DELIVERY_FALLBACK +
-      "For independent work authorized explicitly or by standing instructions, target new lets this tool open and submit the exact native composer; use a stable requestId across turns. It returns a creation receipt, not a delivery receipt. " +
+      "This tool only delivers to a running session; it never creates one. target new is refused with CLAUDE_SESSION_CREATION_REMOVED and sent false: the user opens the session in Claude Desktop, then retry with target auto. " +
       "A socket write alone does not confirm that Claude received the message. Set waitSec to 0 to send without confirmation. " +
       "Every send is refused while earlier messages to that session still await replies, including waitSec 0; " +
       "wait for those replies and read_claude_inbox before trying again. Desktop-only mode refuses CLI or unknown " +
       "entrypoints, partial names, ambiguous targets, and a missing or mismatched expectedCwd or expectedTaskId before sending. Use target auto and expectedCwd for automatic current-account discovery; expectedTaskId is optional only when auto finds exactly one matching task. " +
-      "target auto rediscovers the exact native endpoint without opening an app or chat. A dormant task returns CLAUDE_SESSION_NOT_READY and sent false; there is no supported silent cold-start API. Report its diagnostic instead of trying to load a relay through a chat. The sender's current permissions are verified per call; it never substitutes another task.",
+      "target auto rediscovers the exact native endpoint without opening an app or chat. With no running session in expectedCwd, target auto or an exact identity returns CLAUDE_SESSION_NOT_READY and sent false; there is no supported silent cold-start API. An exact identity that no longer matches while another session runs in that project returns CLAUDE_SESSION_NOT_FOUND; reinspect it. Report the diagnostic and ask the user to open the session in Claude Desktop instead of trying to load a relay through a chat. The sender's current permissions are verified per call; it never substitutes another task.",
     inputSchema: {
-      target: z.string().describe("Use auto for current-account discovery in expectedCwd, an exact session identity, or new for an authorized separate Desktop conversation"),
+      target: z.string().describe("Use auto for current-account discovery in expectedCwd, or an exact session identity"),
       message: z.string().describe(`The message text to deliver. ${PROMPT_FIELD_HINT}`),
       expectedCwd: z.string().optional().describe("Exact absolute project directory independently verified by the caller; required in Desktop-only mode"),
       expectedTaskId: z.string().optional().describe("Exact native Claude Desktop task ID from list_claude_sessions; verify its returned title and cwd, using read_claude_transcript for context when needed. No UI interaction is required."),
-      requestId: z.string().optional().describe("Stable creation UUID for target new; retain across retries and turns"),
-      autoSubmit: z.boolean().optional().describe("For target new: invoke verified native Send (Windows default true; other platforms false)"),
-      trustProject: z.boolean().optional().describe("For target new: explicitly authorized trust for this saved project only"),
       waitSec: z
         .number()
         .int()
@@ -489,15 +359,10 @@ registerTool(
       openWorldHint: true,
     },
   },
-  async ({ target, message, waitSec, expectedCwd, expectedTaskId, requestId, autoSubmit, trustProject }, extra) => {
+  async ({ target, message, waitSec, expectedCwd, expectedTaskId }, extra) => {
     try {
+      if (String(target).trim().toLowerCase() === "new") throw preflightFailure("CLAUDE_SESSION_CREATION_REMOVED", "The bridge no longer creates Claude sessions; target new was removed in 2.0.0. Nothing was opened. Ask the user to open the session in Claude Desktop, then retry with target auto.");
       runtime.assertCurrent();
-      if (target === "new") {
-        if (expectedTaskId !== undefined) throw new Error("A new Claude conversation cannot target an existing task ID");
-        const sender = await assertSender(extra?._meta);
-        const creationId = requestId ?? createHash("sha256").update(JSON.stringify([sender.threadId, expectedCwd, message])).digest("hex");
-        return await startClaudeCreation({ requestId: creationId, cwd: expectedCwd, prompt: message, autoSubmit, trustProject }, extra?._meta);
-      }
       const accounts = desktopOnly ? readBridgeAccounts() : null;
       const selectedAccounts = desktopOnly ? requireBridgeAccounts(accounts) : null;
       let recoverySender = null;
@@ -631,12 +496,11 @@ registerTool(
   "read_claude_delivery",
   {
     title: "Inspect a Claude message receipt without resending",
-    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process. An interrupted receipt ends only reply waiting: task outcome remains unknown and background work may still run. Inspect the existing task before any scoped follow-up; never resend the original action automatically. Ordinary timeouts remain pending. Also accepts the 64-character requestId returned by target new to inspect creation without reopening. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
+    description: "Read the latest recipient control receipt or correlated reply for a message sent by this MCP process. An interrupted receipt ends only reply waiting: task outcome remains unknown and background work may still run. Inspect the existing task before any scoped follow-up; never resend the original action automatically. Ordinary timeouts remain pending. Unknown IDs do not prove non-delivery; retain the original receipt after a reconnect and inspect the existing Claude session before any resend.",
     inputSchema: { msgId: z.string().describe("The original message ID returned by send_to_claude_session") },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
-  async ({ msgId }, extra) => {
-    if (/^[0-9a-f]{64}$/i.test(msgId)) return inspectClaudeCreation(msgId, extra?._meta);
+  async ({ msgId }) => {
     const receipt = readReceipt(msgId);
     if (!receipt) return failure(Object.assign(new Error("This MCP process has no receipt for that message ID. It may belong to a previous process; do not infer failure or resend. Inspect the original delivery through bridge diagnostics."), { code: "CLAUDE_RECEIPT_UNAVAILABLE", msgId, deliveryState: "unknown" }));
     const result = { ...textResult(JSON.stringify(receipt, null, 2)), structuredContent: { receipt } };

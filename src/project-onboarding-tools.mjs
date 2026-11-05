@@ -12,7 +12,7 @@ export function registerProjectOnboardingTools(register, { beforePrepare, option
   const failed = error => ({ content: [{ type: "text", text: error.message }], isError: true, structuredContent: { onboarding: error.onboarding ?? { status: "failed", connection: { status: "not_tested", ready: null } } } });
   register("inspect_bridge_project", {
     title: "Check project onboarding",
-    description: "Read workspace trust and shared messaging authorization without changing files. Distinguishes configured files from untested live connections. Card extension authorization is a separate check. Does not send messages or create conversations.",
+    description: "Read workspace trust and this bridge process's effective messaging authorization without changing files. Reports the authorization mode separately from shared project-policy state; a missing policy is a prerequisite only when nextActions says so. Distinguishes configured files from untested live connections. Same-project and new-task checks are reported as not checked here. Card extension authorization is a separate check. Does not send messages or create conversations.",
     inputSchema: fields,
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   }, async args => {

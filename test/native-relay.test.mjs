@@ -38,7 +38,7 @@ import {
   accountRelaySocketPath,
 } from "../src/native-relay.mjs";
 import { RelaySocketServer, handleRelayRequest, startRelayWhenAvailable } from "../src/native-relay-companion.mjs";
-import { APP_SERVER_BACKEND, NATIVE_BACKEND, createThreadDelivery, DesktopTaskDelivery, matchDesktopProject } from "../src/thread-delivery.mjs";
+import { APP_SERVER_BACKEND, NATIVE_BACKEND, createThreadDelivery, DesktopTaskDelivery, matchDesktopProject, savedProjectStatus } from "../src/thread-delivery.mjs";
 import { BridgeSecurityPolicy } from "../src/security-policy.mjs";
 import { DesktopTaskReceipts } from "../src/desktop-task-receipts.mjs";
 
@@ -99,6 +99,38 @@ describe("Desktop project task delivery", () => {
     assert.equal(matchDesktopProject([exact], "C:\\alias", options), exact);
     assert.throws(() => matchDesktopProject([exact], "C:\\PCC4SH\\web", options), /No saved local/);
     assert.throws(() => matchDesktopProject([exact, { ...exact, projectId: "duplicate" }], "C:\\PCC4SH", options), /Multiple/);
+  });
+
+  it("explains an unmatched saved project without exposing other projects", () => {
+    const options = { canonicalize: (value) => { if (value.includes("gone")) throw new Error("ENOENT"); return value; }, paths: path.posix };
+    const exact = { projectId: "exact-id", projectKind: "local", hostId: "local", path: "/work/app", label: "Exact" };
+    const unrelated = { projectId: "secret-id", projectKind: "local", hostId: "local", path: "/private/other", label: "Secret label" };
+    const fails = (projects) => { try { matchDesktopProject(projects, "/work/app", options); } catch (error) { return error; } assert.fail("expected no match"); };
+
+    const absent = fails([unrelated]);
+    assert.match(absent.message, /No saved local.*No saved project has this exact path\..*will not create a project/);
+    assert.equal(absent.code, "DESKTOP_PROJECT_UNMATCHED");
+    assert.deepEqual(absent.projectMatch, { status: "absent", reasons: [], uncomparable: 0 });
+    assert.doesNotMatch(absent.message, /secret|\/private\/other/i);
+
+    assert.match(fails([{ ...exact, hostId: "remote" }]).message, /not eligible: its host is not local\./);
+    assert.match(fails([{ ...exact, projectKind: "worktree" }]).message, /not eligible: its project kind is not local\./);
+    assert.match(fails([{ ...exact, projectId: "" }]).message, /not eligible: its project ID is missing\./);
+    assert.deepEqual(fails([{ ...exact, hostId: undefined, projectId: undefined }]).projectMatch.reasons, ["host", "metadata"]);
+
+    const stale = fails([{ ...unrelated, path: "/private/gone" }, { ...unrelated, path: undefined }]);
+    assert.match(stale.message, /2 saved projects were not compared/);
+    assert.doesNotMatch(stale.message, /gone/);
+    assert.equal(fails([{ ...exact, hostId: "remote", path: "/remote/gone" }]).projectMatch.uncomparable, 0);
+    assert.deepEqual(fails([{ ...exact, hostId: "remote", path: "/work/app" }]).projectMatch.reasons, ["host"]);
+
+    assert.equal(savedProjectStatus([exact, unrelated], "/work/app", options).projectId, "exact-id");
+    const matched = savedProjectStatus([exact, unrelated], "/work/app", options);
+    assert.equal(matched.status, "matched");
+    assert.equal(matched.project, undefined);
+    assert.equal(savedProjectStatus([exact, { ...exact, projectId: "two" }], "/work/app", options).status, "ambiguous");
+    assert.equal(savedProjectStatus([unrelated], "/work/app", options).status, "absent");
+    assert.equal(savedProjectStatus([exact], "/work/gone", options).status, "unresolved");
   });
 
   it("rejects arbitrary proxy operations, remote targets, unsupported worktrees, and extra arguments", async () => {

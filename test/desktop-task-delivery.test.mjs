@@ -904,6 +904,11 @@ describe("Desktop creation receipts and deadlines", () => {
     f.delivery.relay.status = ({ accountContext }) => ({ socketPath: accountContext ? "account-endpoint" : "legacy-endpoint" });
     assert.deepEqual(await f.delivery.status(), { available: true, socketPath: "account-endpoint", localProjects: 1 });
     assert.deepEqual(f.calls[0].options.accountContext, accounts);
+    const targeted = await f.delivery.status({ cwd: f.cwd });
+    assert.equal(targeted.targetProject.status, "matched");
+    assert.equal(targeted.targetProject.project, undefined);
+    assert.equal((await f.delivery.status({ cwd: path.join(f.cwd, "missing") })).targetProject.status, "unresolved");
+    f.calls.length = 1;
     accounts = null;
     const unavailable = await f.delivery.status();
     assert.equal(unavailable.available, false);

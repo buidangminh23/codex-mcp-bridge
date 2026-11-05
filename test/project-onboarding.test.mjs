@@ -9,6 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { inspectBridgeProject, prepareBridgeProject, onboardingPaths } from "../src/project-onboarding.mjs";
 import { registerProjectOnboardingTools } from "../src/project-onboarding-tools.mjs";
 import { createProjectScope, editProjectGrant, updateProjectPolicy } from "../src/project-policy.mjs";
+import { createHardenedRootPolicy, rootPolicyAccessScope } from "../src/hardened-root-policy.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 function fixture(t) {
@@ -237,20 +238,27 @@ for (const entry of ['index.mjs', 'claude-bridge.mjs']) test(`${entry} exposes r
   } finally { await client.close(); }
 });
 
-for (const entry of ['index.mjs', 'claude-bridge.mjs']) test(`${entry} reports a missing project policy through MCP inspection`, async t => {
+for (const entry of ['index.mjs', 'claude-bridge.mjs']) test(`${entry} reports its effective authorization and an optional policy migration through MCP inspection`, async t => {
   const f = fixture(t);
+  fs.writeFileSync(f.config, JSON.stringify({ projects: { [key(f.cwd)]: { hasTrustDialogAccepted: true } } }));
   const client = new Client({ name: 'onboarding-transport-test', version: '1' });
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'src', entry)], env: {
     PATH: process.env.PATH ?? '', HOME: f.home, USERPROFILE: f.home, CLAUDE_CONFIG_DIR: '', CODEX_HOME: path.join(f.home, '.codex'),
+    CODEX_BRIDGE_ALLOWED_ROOTS: f.home, CODEX_BRIDGE_THREAD_POLICY: 'roots',
     CODEX_BRIDGE_DESKTOP_TASKS: '0', CODEX_BRIDGE_AUTOSTART: '0', CODEX_APP_SERVER_URL: 'ws://127.0.0.1:9',
   }, stderr: 'ignore' });
   try {
     await client.connect(transport);
     const inspected = await client.callTool({ name: 'inspect_bridge_project', arguments: { cwd: f.cwd } });
     assert.equal(inspected.isError, undefined);
-    assert.equal(inspected.structuredContent.onboarding.status, 'needs_setup');
-    assert.equal(inspected.structuredContent.onboarding.communicationAuthorization.status, 'policy_not_configured');
-    const setup = inspected.structuredContent.onboarding.nextActions.find(action => action.setting === 'CODEX_BRIDGE_PROJECT_POLICY');
+    const onboarding = inspected.structuredContent.onboarding;
+    assert.equal(onboarding.status, 'configured');
+    assert.equal(onboarding.communicationAuthorization.status, 'authorized');
+    assert.equal(onboarding.communicationAuthorization.mode, entry === 'index.mjs' ? 'allowed-roots' : 'no-root-restriction');
+    assert.equal(onboarding.projectPolicy.status, 'not_configured');
+    assert.equal(onboarding.projectPolicy.requiredForNativeDelivery, false);
+    assert.equal(onboarding.nextActions.some(action => action.setting === 'CODEX_BRIDGE_PROJECT_POLICY'), false);
+    const setup = onboarding.projectPolicy.optionalMigration;
     if (entry === 'index.mjs') {
       assert.match(setup.then, /codex-bridge-code-install --policy "/);
       assert.doesNotMatch(setup.then, /claude-mcp-bridge-install/);
@@ -259,4 +267,113 @@ for (const entry of ['index.mjs', 'claude-bridge.mjs']) test(`${entry} reports a
       assert.doesNotMatch(setup.then, /codex-bridge-code-install/);
     }
   } finally { await client.close(); }
+});
+
+const trusted = f => fs.writeFileSync(f.config, JSON.stringify({ projects: { [key(f.cwd)]: { hasTrustDialogAccepted: true } } }));
+const noPolicy = f => { const env = { ...f.env }; delete env.CODEX_BRIDGE_PROJECT_POLICY; return env; };
+
+test("an active allowed-roots authorization is not reported as missing setup", t => {
+  const f = fixture(t); trusted(f);
+  const result = inspectBridgeProject({ cwd: f.cwd }, { env: noPolicy(f), evaluateAuthorization: () => ({ mode: "allowed-roots", authorized: true, threadPolicy: "roots", existingTasks: "in-scope" }) });
+  assert.equal(result.status, "configured");
+  assert.deepEqual([result.communicationAuthorization.mode, result.communicationAuthorization.status, result.communicationAuthorization.threadPolicy, result.communicationAuthorization.existingTasks], ["allowed-roots", "authorized", "roots", "in-scope"]);
+  assert.doesNotMatch(result.communicationAuthorization.detail, /Existing tasks/);
+  assert.match(result.liveChecks.creationTarget.detail, /Sending to an existing task does not need this match/);
+  assert.equal(result.projectPolicy.status, "not_configured");
+  assert.equal(result.projectPolicy.requiredForNativeDelivery, false);
+  assert.match(result.projectPolicy.optionalMigration.detail, /Optional configuration migration/);
+  assert.equal(result.nextActions.some(action => action.setting || action.tool === "prepare_bridge_project"), false);
+  assert.equal(result.connection.status, "not_tested");
+  assert.equal(result.liveChecks.senderDestination.status, "not_checked");
+  assert.match(result.liveChecks.senderDestination.detail, /does not replace/);
+  assert.equal(result.liveChecks.creationTarget.status, "not_checked");
+  assert.match(result.liveChecks.creationTarget.detail, /exactly one saved local project/);
+});
+
+test("a directory outside allowed roots needs an owner decision and no policy prerequisite", t => {
+  const f = fixture(t); trusted(f);
+  const result = inspectBridgeProject({ cwd: f.cwd }, { env: noPolicy(f), evaluateAuthorization: () => ({ mode: "allowed-roots", authorized: false }) });
+  assert.equal(result.status, "needs_setup");
+  assert.equal(result.communicationAuthorization.status, "outside_allowed_roots");
+  const [action] = result.nextActions;
+  assert.equal(action.setting, "CODEX_BRIDGE_ALLOWED_ROOTS");
+  assert.equal(action.ownerDecision, true);
+  assert.match(action.then, /Never widen scope/);
+  assert.equal(result.nextActions.some(next => next.setting === "CODEX_BRIDGE_PROJECT_POLICY"), false);
+  assert.equal(result.projectPolicy.optionalMigration, undefined);
+});
+
+test("owned thread policy says existing tasks are not reachable through the root", t => {
+  const f = fixture(t); trusted(f);
+  const result = inspectBridgeProject({ cwd: f.cwd }, { env: noPolicy(f), evaluateAuthorization: () => ({ mode: "allowed-roots", authorized: true, threadPolicy: "owned", existingTasks: "owned-or-allowlisted" }) });
+  assert.equal(result.communicationAuthorization.existingTasks, "owned-or-allowlisted");
+  assert.match(result.communicationAuthorization.detail, /CODEX_BRIDGE_THREAD_POLICY=roots or an allowlisted thread ID/);
+});
+
+test("the policy-file CLI path does not claim to know the running bridge's mode", t => {
+  const f = fixture(t); trusted(f);
+  const result = inspectBridgeProject({ cwd: f.cwd }, f.options);
+  assert.equal(result.communicationAuthorization.mode, "not_evaluated");
+  assert.match(result.communicationAuthorization.detail, /reads only the policy file/);
+  assert.equal(result.projectPolicy.status, "file_missing");
+  assert.equal(result.projectPolicy.requiredForNativeDelivery, null);
+});
+
+test("missing workspace trust stays a setup step when roots authorize the project", t => {
+  const f = fixture(t);
+  const result = inspectBridgeProject({ cwd: f.cwd }, { env: noPolicy(f), evaluateAuthorization: () => ({ mode: "allowed-roots", authorized: true }) });
+  assert.equal(result.status, "needs_setup");
+  assert.equal(result.communicationAuthorization.status, "authorized");
+  assert.equal(result.nextActions[0].setting, "workspaceTrust");
+  assert.equal(result.nextActions.some(next => next.setting === "CODEX_BRIDGE_PROJECT_POLICY"), false);
+});
+
+test("a configured project policy stays authoritative over any root evaluation", t => {
+  const f = fixture(t); trusted(f);
+  const options = { ...f.options, evaluateAuthorization: () => ({ mode: "project-policy", authorized: false }) };
+  const missing = inspectBridgeProject({ cwd: f.cwd }, options);
+  assert.equal(missing.status, "needs_setup");
+  assert.deepEqual([missing.communicationAuthorization.mode, missing.communicationAuthorization.status], ["project-policy", "missing"]);
+  assert.equal(missing.projectPolicy.requiredForNativeDelivery, true);
+  assert.equal(missing.projectPolicy.optionalMigration, undefined);
+  assert.equal(missing.nextActions[0].tool, "prepare_bridge_project");
+  updateProjectPolicy(f.file, p => editProjectGrant(p, "revoke", f.cwd));
+  assert.equal(inspectBridgeProject({ cwd: f.cwd }, options).communicationAuthorization.status, "revoked");
+  fs.writeFileSync(f.file, "not json");
+  const invalid = inspectBridgeProject({ cwd: f.cwd }, options);
+  assert.deepEqual([invalid.status, invalid.communicationAuthorization.status, invalid.projectPolicy.status], ["needs_setup", "policy_invalid", "invalid"]);
+});
+
+test("a hardened deployment can be inspected but never prepared or migrated", t => {
+  const f = fixture(t); trusted(f);
+  const env = { ...noPolicy(f), CODEX_BRIDGE_HARDENED: "1" };
+  const options = { env, evaluateAuthorization: () => ({ mode: "pinned-roots", authorized: true }) };
+  const result = inspectBridgeProject({ cwd: f.cwd }, options);
+  assert.equal(result.status, "configured");
+  assert.equal(result.communicationAuthorization.mode, "pinned-roots");
+  assert.equal(result.projectPolicy.optionalMigration, undefined);
+  assert.match(result.liveChecks.creationTarget.detail, /every native operation on an existing task needs the same match/);
+  assert.doesNotMatch(result.liveChecks.creationTarget.detail, /does not need this match/);
+  assert.throws(() => prepareBridgeProject({ cwd: f.cwd }, options), /hardened/);
+  assert.throws(() => inspectBridgeProject({ cwd: f.cwd }, { env }), /hardened/);
+});
+
+test("hardened inspection discloses nothing about a directory outside its pinned roots", t => {
+  const f = fixture(t), pinnedRoot = path.join(f.home, "pinned"), outside = makeRepo(f);
+  fs.mkdirSync(pinnedRoot);
+  const env = { ...noPolicy(f), CODEX_BRIDGE_HARDENED: "1", CODEX_BRIDGE_DESKTOP_TASKS: "1", CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_REMAP: "0", CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_ALLOWED_ROOTS: pinnedRoot };
+  delete env.CODEX_BRIDGE_PATH_MAP; delete env.CODEX_BRIDGE_ALLOWED_THREADS;
+  const policy = createHardenedRootPolicy(env);
+  const result = inspectBridgeProject({ cwd: outside }, { env, evaluateAuthorization: cwd => rootPolicyAccessScope(policy, cwd) });
+  assert.deepEqual([result.status, result.communicationAuthorization.mode, result.communicationAuthorization.status], ["needs_setup", "pinned-roots", "outside_allowed_roots"]);
+  assert.equal(result.project, undefined);
+  assert.equal(result.workspaceTrust, undefined);
+  assert.equal(JSON.stringify(result).includes(path.basename(outside)), false);
+  assert.equal(inspectBridgeProject({ cwd: pinnedRoot }, { env, evaluateAuthorization: cwd => rootPolicyAccessScope(policy, cwd) }).communicationAuthorization.status, "authorized");
+});
+
+test("preparing still requires a project policy under roots authorization", t => {
+  const f = fixture(t);
+  assert.throws(() => prepareBridgeProject({ cwd: f.cwd }, { env: noPolicy(f), evaluateAuthorization: () => ({ mode: "allowed-roots", authorized: true }) }), /Configure the shared CODEX_BRIDGE_PROJECT_POLICY/);
+  assert.equal(fs.existsSync(f.config), false);
 });

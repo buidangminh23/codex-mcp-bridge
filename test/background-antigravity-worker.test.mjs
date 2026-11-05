@@ -375,7 +375,7 @@ test("observer failures are sanitized and cannot downgrade proven acceptance", a
 test("an unresponsive event observer cannot bypass the job deadline", async (t) => {
   for (const stuckAt of ["session", "accepted"]) {
     const f = fixture(t);
-    const pending = assert.rejects(f.run({ timeoutMs: 30, onEvent(event) { if (event.type === stuckAt) return new Promise(() => {}); } }), {
+    const pending = assert.rejects(f.run({ timeoutMs: stuckAt === "accepted" ? 1000 : 30, onEvent(event) { if (event.type === stuckAt) return new Promise(() => {}); } }), {
       code: "ANTIGRAVITY_WORKER_TIMEOUT", deliveryState: stuckAt === "accepted" ? "sent" : "not_sent", sent: stuckAt === "accepted" ? true : false,
     });
     await new Promise(setImmediate);

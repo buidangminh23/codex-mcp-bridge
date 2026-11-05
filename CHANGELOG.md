@@ -2,7 +2,7 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
-## [2.2.0] - 2026-11-05
+## [2.2.0] - 2026-11-06
 
 ### Added
 
@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 - A session whose `codex-bridge` cannot run or verify itself never drains, and its entries expire after 7 days.
 - macOS relay behaviour is unchanged: Codex Desktop still refuses any process it did not launch, and the bridge does not work around that. The macOS setup guide now says to keep Codex Desktop running with a task open.
 - Upgrade with `npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts`. A session's bridge picks up the new version when idle or when the session next opens.
+
+## [2.1.1] - 2026-11-05
+
+### Fixed
+
+- The Windows relay host no longer reports `listening` while loaded conversations still own the relay sockets. `desktop-relay-host.json` now says `standby` in that case and is rewritten when the host takes the sockets over, so `ownedSockets` stays accurate. Relay behavior itself is unchanged: the host already waited behind those conversations and took over when they left, which is now covered by a test and was measured at 326 ms against a running Codex Desktop.
 
 ## [2.1.0] - 2026-11-05
 

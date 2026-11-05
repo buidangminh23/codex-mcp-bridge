@@ -263,6 +263,7 @@ it("leaves a live companion's socket and private name alone while it is still li
   const socketPath = fixture(t);
   const { privatePath } = await companionKilledWhileLinking(t, socketPath, "stay");
   const replacement = new RelaySocketServer(relayOptions(socketPath));
+  t.after(async () => { replacement.stop(); await replacement.closed; });
   await assert.rejects(replacement.start(), /already owns/);
   assert.equal(fs.lstatSync(socketPath).nlink, 2);
   assert.equal(fs.existsSync(privatePath), true);
@@ -289,6 +290,7 @@ for (const keepPrivateLink of [false, true]) {
       return socket;
     };
     const replacement = new RelaySocketServer(relayOptions(socketPath));
+    t.after(async () => { replacement.stop(); await replacement.closed; });
     const ownerInode = () => fs.lstatSync(socketPath).ino;
     await assert.rejects(replacement.start(), /Unsafe relay socket file/);
     const inode = ownerInode();
@@ -305,6 +307,7 @@ it("still refuses a dead socket that has a hard link outside the private naming 
   const foreign = path.join(path.dirname(socketPath), "kept-by-someone-else.sock");
   fs.linkSync(socketPath, foreign);
   const replacement = new RelaySocketServer(relayOptions(socketPath));
+  t.after(async () => { replacement.stop(); await replacement.closed; });
   await assert.rejects(replacement.start(), /Unsafe relay socket file/);
   assert.equal(fs.existsSync(foreign), true);
   assert.equal(fs.existsSync(socketPath), true);

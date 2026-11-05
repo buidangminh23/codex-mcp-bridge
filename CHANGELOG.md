@@ -6,14 +6,15 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](ht
 
 ### Fixed
 
-- The native relay and the Antigravity sidecar now recover when an owner is killed between publishing its socket and removing the private name used to create it. That left the socket with a second hard link, which the safety check refused to remove, so every later start failed and `codex_bridge_status` kept reporting `RELAY_UNREACHABLE` with `ECONNREFUSED`, even after restarting Codex Desktop. Once a socket has refused a connection, a replacement removes only hard links of that same socket named like a private socket and owned by the same user. A socket with any other hard link is still refused, and a live owner that is confirmed by the probe is left alone. The removal is now bound to the socket that was probed, so an owner that replaces it during the probe keeps its socket and the replacement retries.
+- The native relay and the Antigravity sidecar now recover when an owner is killed between publishing its socket and removing the private name used to create it. That left the socket with a second hard link, which the safety check refused to remove, so every later start failed and `codex_bridge_status` kept reporting `RELAY_UNREACHABLE` with `ECONNREFUSED`, even after restarting Codex Desktop. Once a socket has refused a connection, a replacement removes only hard links of that same socket named like a private socket and owned by the same user. A socket with any other hard link is still refused, and a live owner that is confirmed by the probe is left alone. The removal is now bound to the socket that was probed, so an owner that replaces it during the probe keeps its socket. The native relay then retries, and the Antigravity sidecar start fails without touching that owner.
 
 ### Verification and limits
 
 - Reproduced on macOS: Codex Desktop killed a relay companion that exceeded its 30-second startup limit under heavy load, and the relay stayed down until the extra link was removed by hand. Regression tests kill a real process inside that window, and also cover a live owner and a foreign hard link.
 - Private socket names left unlinked by earlier crashes stay in `~/.codex`. They are harmless and are not removed, because a live companion may be using a name of that form.
 - A running supervised companion loads the new version once idle and then recovers on its own; a companion without a supervisor needs its host to reconnect. This reload was checked with a test harness, not on a machine stuck in this state with live Codex Desktop.
-- A liveness probe that times out under heavy load still counts as a dead owner. That existing limit is unchanged.
+- In the native relay, a liveness probe that fails or times out under heavy load still counts as a dead owner. That existing limit is unchanged and now also covers an owner still inside the brief link step. The Antigravity sidecar treats a timeout as a live owner.
+- `codex-native-relay-install --remove` still stops with `Unsafe relay socket file` on a socket in this state. Starting a companion recovers it, or the leftover private name can be removed by hand.
 - Upgrade with `npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts`.
 
 ## [1.27.1] - 2026-11-05

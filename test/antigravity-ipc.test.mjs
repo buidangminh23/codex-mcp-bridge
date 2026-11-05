@@ -184,7 +184,9 @@ test("Unix sidecar does not remove a live owner that replaces the stale socket d
     });
     return socket;
   };
-  await assert.rejects(serveAntigravityDesktop(async () => "replacement", { directory }), /Unsafe relay socket file/);
+  const attempt = serveAntigravityDesktop(async () => "replacement", { directory });
+  t.after(async () => { const service = await attempt.catch(() => null); await service?.close(); });
+  await assert.rejects(attempt, /Unsafe relay socket file/);
   await new Promise((resolve, reject) => { const probe = originalConnect(socketPath); probe.once("connect", () => { probe.destroy(); resolve(); }); probe.once("error", reject); });
 });
 

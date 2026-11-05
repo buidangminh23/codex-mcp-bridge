@@ -2,6 +2,40 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.0.0] - 2026-11-05
+
+### Removed
+
+- The bridge no longer creates Claude sessions. It never opens or prefills the Claude Desktop composer and never presses Send. The composer helpers, the native folder selection and the trust dialog handling are gone.
+- The tools `start_claude_session`, `read_claude_creation` and `abandon_claude_creation`.
+- The `requestId`, `autoSubmit` and `trustProject` inputs of `send_to_claude_session`, the `CLAUDE_BRIDGE_AUTO_TRUST_PROJECTS` setting, and the 64-character creation ID lookup in `read_claude_delivery`.
+
+### Changed
+
+- Claude delivery now happens only through the direct relay to a running session with `send_to_claude_session`.
+- `send_to_claude_session` with `target: "new"` is refused with `CLAUDE_SESSION_CREATION_REMOVED` and `sent: false`, in any case and with surrounding spaces. It opens nothing and is never treated as a session name, even when a session is named `new`.
+- With no running session in `expectedCwd`, `send_to_claude_session` returns `CLAUDE_SESSION_NOT_READY` with `sent: false` and asks the user to open the session in Claude Desktop. This now covers `target: "auto"` without `expectedTaskId` and an exact identity, both of which returned `CLAUDE_SESSION_NOT_FOUND` before.
+- An exact identity that no longer matches while another session runs in that project still returns `CLAUDE_SESSION_NOT_FOUND`, and nothing is redirected to that other session.
+- The collaboration rule written by `configure-message-automation.mjs` no longer treats a handoff that arrived through Computer Use as already authorized.
+- Tool descriptions, `inspect_bridge_project` and the documentation now say that the user opens Claude sessions.
+- Codex-side creation with `start_codex_thread` and `delegate_to_codex` is unchanged.
+
+### Migration
+
+- Codex can no longer open a new Claude conversation by itself. Open the session in Claude Desktop, then send with `target: "auto"` and `expectedCwd`, adding `expectedTaskId` when several tasks match.
+- Remove `CLAUDE_BRIDGE_AUTO_TRUST_PROJECTS` from your configuration. It no longer does anything.
+- If you enabled message automation, run `node scripts/configure-message-automation.mjs --apply --approve-message-automation` again. An installed collaboration rule keeps the old text until you do, and `--check` reports it as out of date.
+- A saved `requestId` from an earlier creation can no longer be inspected. Look for the conversation in Claude Desktop instead of sending it again.
+- A running 1.x bridge can hand its state to this version. Pending creation requests in that state are dropped and do not resume or reopen anything.
+- Upgrade with `npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts`.
+
+### Verification and limits
+
+- Tests check that the removed tools and inputs are not registered, that `target: "new"` is refused in both routing modes without reaching a session named `new`, and that a worker restored from a state holding pending or invalid creation data starts normally and resumes nothing.
+- The reload test uses real worker processes with a crafted 1.x state. A live 1.x to 2.0.0 reload with Claude Desktop and Codex Desktop was not run.
+- After a worker crash, the supervisor treats the smaller tool list as needing an explicit client reconnect, as it does for any catalog change in `claude-bridge`.
+- Clients that have not refreshed their tool list get a tool-not-found error when they call a removed tool.
+
 ## [1.27.2] - 2026-11-05
 
 ### Fixed

@@ -149,6 +149,9 @@ sender verification before any UI action. A regression checks rejection both
 before opening and between opening and automatic trust/submission. No installed
 runtime or client configuration was replaced for this merge.
 
+Version 2.0.0 removed Claude composer creation and submission. Claude delivery
+now uses only the direct relay to a running session.
+
 
 ### Native creation acknowledgement continuation
 

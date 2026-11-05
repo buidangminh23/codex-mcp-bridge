@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, fork } from "node:child_process";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import net from "node:net";
@@ -14,6 +14,7 @@ import { buildFrame, parseFrame, peerKeyPath } from "../src/peer-protocol.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_SECTIONS } from "../src/prompt-guidance.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const OPEN_SESSION_TEXT = /open the session in Claude Desktop.*target auto/;
 
 const CODEX_TOOLS = [
   "worker_status", "list_workers", "send_to_worker", "read_worker_delivery",
@@ -35,9 +36,6 @@ const CLAUDE_TOOLS = [
   "worker_status", "list_workers", "send_to_worker", "read_worker_delivery",
   "inspect_bridge_project",
   "prepare_bridge_project",
-  "start_claude_session",
-  "read_claude_creation",
-  "abandon_claude_creation",
   "list_claude_sessions",
   "send_to_claude_session",
   "read_claude_inbox",
@@ -455,6 +453,16 @@ describe("Claude Desktop account switching", () => {
       assert.equal(restarted.structuredContent.receipt.sessionId, destinations[0].sessionId);
       assert.equal(received.length, 4);
       assert.equal(new Set(received.map((message) => message.msgId)).size, 4);
+      for (const destination of destinations) fs.rmSync(path.join(registry, destination.accountId + ".json"));
+      for (const notRunning of [await send(), await send(destinations[0].sessionId, destinations[0].taskId)]) {
+        assert.equal(notRunning.structuredContent?.preflight?.code, "CLAUDE_SESSION_NOT_READY", notRunning.content?.[0]?.text);
+        assert.equal(notRunning.structuredContent.preflight.sent, false);
+        assert.match(notRunning.content[0].text, OPEN_SESSION_TEXT);
+      }
+      const idleStatus = await client.callTool({ name: "claude_bridge_status", arguments: {}, _meta: meta });
+      assert.equal(idleStatus.structuredContent.diagnostic.code, "CLAUDE_SESSION_NOT_READY");
+      assert.match(idleStatus.structuredContent.diagnostic.reason, OPEN_SESSION_TEXT);
+      assert.equal(received.length, 4);
       if (handlerError) throw handlerError;
     } finally {
       await client.close();
@@ -463,55 +471,178 @@ describe("Claude Desktop account switching", () => {
   });
 });
 
-describe("Claude creation hardened roots", () => {
-  it("rejects an out-of-root sender or destination before opening the composer", async () => {
-    const home = fs.mkdtempSync(path.join(sandboxHome, "creation-roots-"));
-    const allowed = path.join(home, "allowed");
-    const forbidden = path.join(home, "forbidden");
-    const userData = path.join(home, "claude-user-data");
-    const codexHome = path.join(home, ".codex");
-    const rollouts = path.join(codexHome, "sessions", "2026", "09", "07");
-    for (const directory of [allowed, forbidden, userData, rollouts]) fs.mkdirSync(directory, { recursive: true });
-    fs.writeFileSync(path.join(userData, "config.json"), JSON.stringify({ lastKnownAccountUuid: "44444444-4444-4444-8444-444444444444", windowSizeWasSignedIn: true }));
-    const idToken = `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "fixture-user" })).toString("base64url")}.fixture`;
-    fs.writeFileSync(path.join(codexHome, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { account_id: "fixture-account", id_token: idToken } }));
-    const callerId = "22222222-2222-4222-8222-222222222222";
-    const turnId = "33333333-3333-4333-8333-333333333333";
-    const meta = { "x-codex-turn-metadata": { thread_id: callerId, turn_id: turnId, thread_source: "user", auto_review_enabled: false, node_repl_auto_review_required: false } };
-    const setSender = (cwd) => fs.writeFileSync(path.join(rollouts, `rollout-fixture-${callerId}.jsonl`), [
-      { type: "session_meta", payload: { id: callerId, originator: "Codex Desktop", source: "vscode", cwd } },
-      { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
-      { type: "turn_context", payload: { turn_id: turnId, cwd, approval_policy: "never", approvals_reviewer: "user", permission_profile: { type: "disabled" }, sandbox_policy: { type: "danger-full-access" } } },
-    ].map(JSON.stringify).join("\n") + "\n");
-    setSender(allowed);
-    const client = new Client({ name: "creation-root-test", version: "1" });
-    const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: {
-      PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "", HOME: home, USERPROFILE: home,
-      APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"),
-      CODEX_HOME: codexHome, CLAUDE_DESKTOP_USER_DATA: userData, CODEX_NATIVE_RELAY_SOCKET: unavailableRelaySocket(home),
-      CODEX_BRIDGE_HARDENED: "1", CODEX_BRIDGE_ALLOWED_ROOTS: allowed, CODEX_BRIDGE_DESKTOP_TASKS: "1",
-      CODEX_BRIDGE_THREAD_POLICY: "roots", CODEX_BRIDGE_REMAP: "0", CODEX_BRIDGE_AUTOSTART: "0",
-    }, stderr: "ignore" });
-    try {
-      await client.connect(transport);
-      const create = (cwd) => client.callTool({ name: "start_claude_session", arguments: { requestId: crypto.randomUUID(), cwd, prompt: "Must never open the composer" }, _meta: meta });
-      const destination = await create(forbidden);
-      assert.equal(destination.isError, true);
-      assert.match(destination.content[0].text, /Claude creation working directory is outside CODEX_BRIDGE_ALLOWED_ROOTS/);
-      setSender(forbidden);
-      const sender = await create(allowed);
-      assert.equal(sender.isError, true);
-      assert.match(sender.content[0].text, /Codex sender working directory is outside CODEX_BRIDGE_ALLOWED_ROOTS/);
-      setSender(allowed);
-      for (const name of ["read_claude_creation", "abandon_claude_creation"]) {
-        const unbound = await client.callTool({ name, arguments: { requestId: crypto.randomUUID() }, _meta: meta });
-        assert.equal(unbound.isError, true);
-        assert.match(unbound.content[0].text, /no original sender and recipient root binding/);
-      }
-    } finally {
-      await client.close();
-    }
+const REMOVED_CREATION_TOOLS = ["start_claude_session", "read_claude_creation", "abandon_claude_creation"];
+const REMOVED_SEND_INPUTS = ["requestId", "autoSubmit", "trustProject"];
+const CREATION_REMOVED_CODE = "CLAUDE_SESSION_CREATION_REMOVED";
+const TARGET_NEW_SPELLINGS = ["new", "New", "NEW", " new", "new "];
+const REMOVED_COMPOSER_FILES = ["src/claude-composer-submit.mjs", "src/claude-composer-submit.ps1", "src/claude-session-creation.mjs"];
+
+function filesUnder(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(directory, entry.name);
+    return entry.isDirectory() ? filesUnder(entryPath) : [entryPath];
   });
+}
+
+function assertTargetNewRefused(result) {
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.preflight.code, CREATION_REMOVED_CODE);
+  assert.equal(result.structuredContent.preflight.sent, false);
+  assert.equal(result.structuredContent.diagnostic.code, CREATION_REMOVED_CODE);
+  assert.equal(result.structuredContent.diagnostic.sent, false);
+  assert.equal(result.structuredContent.diagnostic.deliveryState, "not_sent");
+  assert.match(result.content[0].text, OPEN_SESSION_TEXT);
+}
+
+function refusedTargetNewArguments(cwd, target = "new") {
+  return { target, message: "Must never reach a composer", expectedCwd: cwd, requestId: crypto.randomUUID(), autoSubmit: true, trustProject: true };
+}
+
+function claudeBridgeEnv(home, desktopTasks) {
+  return {
+    PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "", HOME: home, USERPROFILE: home,
+    APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"),
+    CODEX_HOME: path.join(home, ".codex"), CODEX_NATIVE_RELAY_SOCKET: unavailableRelaySocket(home), CODEX_APP_SERVER_URL: "ws://127.0.0.1:9",
+    CODEX_BRIDGE_DESKTOP_TASKS: desktopTasks, CODEX_BRIDGE_REMAP: "0", CODEX_BRIDGE_AUTOSTART: "0", DO_NOT_TRACK: "1", CODEX_BRIDGE_TELEMETRY: "0",
+  };
+}
+
+describe("Claude session creation removal", () => {
+  it("registers no creation tools or creation inputs and exposes no composer opener", async () => {
+    const { tools, instructions } = await inspectServer("claude-bridge.mjs");
+    for (const name of REMOVED_CREATION_TOOLS) {
+      assert.equal(tools.some((tool) => tool.name === name), false, name);
+      assert.doesNotMatch(instructions, new RegExp(name));
+    }
+    const send = tools.find((tool) => tool.name === "send_to_claude_session");
+    for (const input of REMOVED_SEND_INPUTS) assert.equal(send.inputSchema.properties[input], undefined, input);
+    assert.match(send.description, /target new is refused/);
+    assert.match(instructions, /the user opens the session in Claude Desktop/);
+    const platform = await import("../src/platform.mjs");
+    assert.equal(platform.openClaudeCodeComposer, undefined);
+    assert.doesNotMatch(fs.readFileSync(path.join(root, "src", "claude-bridge.mjs"), "utf8"), /claude:\/\/|execFile|node:child_process/);
+    for (const file of REMOVED_COMPOSER_FILES) assert.equal(fs.existsSync(path.join(root, file)), false, file);
+    const composerLinks = [...filesUnder(path.join(root, "src")), ...filesUnder(path.join(root, "scripts"))]
+      .filter((file) => fs.readFileSync(file, "latin1").includes("claude://"))
+      .map((file) => path.relative(root, file));
+    assert.deepEqual(composerLinks, []);
+  });
+
+  for (const desktopTasks of ["0", "1"]) {
+    it(`refuses target new without opening anything or matching a session named new (Desktop tasks ${desktopTasks})`, async () => {
+      const home = fs.mkdtempSync(path.join(sandboxHome, "target-new-"));
+      const registryDir = path.join(home, ".claude", "sessions");
+      fs.mkdirSync(registryDir, { recursive: true });
+      const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\LOCAL\\cc-msg-${crypto.randomBytes(16).toString("hex")}` : path.join(home, "named-new.sock");
+      fs.writeFileSync(path.join(registryDir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, name: "new", sessionId: "named-new", cwd: home, messagingSocketPath: socketPath, kind: "interactive", entrypoint: "claude-desktop", status: "idle" }));
+      fs.writeFileSync(path.join(registryDir, path.basename(peerKeyPath(process.pid, socketPath))), JSON.stringify({ peerToken: crypto.randomBytes(16).toString("hex") }));
+      let connections = 0;
+      const peer = net.createServer((socket) => { connections += 1; socket.destroy(); });
+      await new Promise((resolve) => peer.listen(socketPath, resolve));
+      const client = new Client({ name: "target-new-test", version: "1" });
+      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: claudeBridgeEnv(home, desktopTasks), stderr: "ignore" });
+      try {
+        await client.connect(transport);
+        for (const target of TARGET_NEW_SPELLINGS) assertTargetNewRefused(await client.callTool({ name: "send_to_claude_session", arguments: refusedTargetNewArguments(home, target) }));
+        assert.equal(connections, 0);
+        for (const name of REMOVED_CREATION_TOOLS) {
+          const removed = await client.callTool({ name, arguments: { requestId: crypto.randomUUID(), cwd: home, prompt: "Must never open" } }).catch((error) => ({ isError: true, content: [{ text: error.message }] }));
+          assert.equal(removed.isError, true, name);
+          assert.match(removed.content[0].text, /not found/i, name);
+        }
+        const creationId = crypto.randomBytes(32).toString("hex");
+        const receipt = await client.callTool({ name: "read_claude_delivery", arguments: { msgId: creationId } });
+        assert.equal(receipt.isError, true);
+        assert.equal(receipt.structuredContent.diagnostic.code, "CLAUDE_RECEIPT_UNAVAILABLE");
+      } finally {
+        await client.close();
+        await new Promise((resolve) => peer.close(resolve));
+      }
+    });
+  }
+
+  function startReloadWorker(home, staged) {
+    const child = fork(path.join(root, "src", "claude-bridge.mjs"), [], {
+      env: { ...claudeBridgeEnv(home, "1"), CODEX_BRIDGE_WORKER: "1", ...(staged ? { CODEX_BRIDGE_STAGED: "1" } : {}) },
+      stdio: ["pipe", "pipe", "pipe", "ipc"],
+    });
+    let controlId = 0;
+    let rpcId = 0;
+    let output = "";
+    const waiting = new Map();
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      for (let end = output.indexOf("\n"); end >= 0; end = output.indexOf("\n")) {
+        const message = JSON.parse(output.slice(0, end));
+        output = output.slice(end + 1);
+        waiting.get(message.id)?.(message);
+      }
+    });
+    return {
+      child,
+      ready: new Promise((resolve, reject) => {
+        let stderr = "";
+        child.stderr.on("data", (chunk) => { stderr += chunk; if (/ready on/.test(stderr)) resolve(); });
+        child.once("exit", () => reject(new Error(`The reload worker exited early: ${stderr}`)));
+      }),
+      control: (action, data) => new Promise((resolve, reject) => {
+        const id = ++controlId;
+        const listener = (message) => {
+          if (message?.type !== "bridge:control-result" || message.id !== id) return;
+          child.off("message", listener);
+          if (message.error) reject(new Error(message.error));
+          else resolve(message.result);
+        };
+        child.on("message", listener);
+        child.send({ type: "bridge:control", id, action, data });
+      }),
+      rpc: (method, params) => new Promise((resolve) => {
+        const id = ++rpcId;
+        waiting.set(id, (message) => resolve(message.result));
+        child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      }),
+      notify: (method) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`),
+      stop: () => new Promise((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) return resolve();
+        child.once("exit", resolve);
+        child.kill("SIGKILL");
+      }),
+    };
+  }
+
+  const pendingCreationId = crypto.randomBytes(32).toString("hex");
+  const legacyCreationStates = {
+    "a pending 1.x request": {
+      creations: { requests: [{ requestId: pendingCreationId, status: "awaiting_user", cwd: "/must-not-reopen", prompt: "Must never resume", submissionAttempted: false }] },
+      creationRootBindings: [[pendingCreationId, { sender: { path: "/must-not-reopen" }, recipient: { path: "/must-not-reopen" } }]],
+    },
+    "values 1.x would have rejected": { creations: "invalid", creationRootBindings: 7 },
+  };
+  for (const [label, legacyState] of Object.entries(legacyCreationStates)) {
+    it(`ignores ${label} in reload state from a running bridge`, async (t) => {
+      const home = fs.mkdtempSync(path.join(sandboxHome, "reload-creation-"));
+      const previous = startReloadWorker(home, false);
+      const next = startReloadWorker(home, true);
+      t.after(() => Promise.all([previous.stop(), next.stop()]));
+      await Promise.all([previous.ready, next.ready]);
+      const { state } = await previous.control("quiesce");
+      assert.equal(state.payload.creations, undefined);
+      assert.equal(state.payload.creationRootBindings, undefined);
+      await previous.stop();
+      assert.deepEqual(await next.control("restore", { ...state, payload: { ...state.payload, ...legacyState } }), { restored: true, schema: 1 });
+      assert.deepEqual(await next.control("activate"), { active: true, schema: 1 });
+      await next.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "reload-creation-test", version: "1" } });
+      next.notify("notifications/initialized");
+      const { tools } = await next.rpc("tools/list", {});
+      for (const name of REMOVED_CREATION_TOOLS) assert.equal(tools.some((tool) => tool.name === name), false, name);
+      const receipt = await next.rpc("tools/call", { name: "read_claude_delivery", arguments: { msgId: pendingCreationId } });
+      assert.equal(receipt.structuredContent.diagnostic.code, "CLAUDE_RECEIPT_UNAVAILABLE");
+      assertTargetNewRefused(await next.rpc("tools/call", { name: "send_to_claude_session", arguments: refusedTargetNewArguments(home) }));
+      const { state: exported } = await next.control("quiesce");
+      assert.equal(exported.payload.creations, undefined);
+      assert.equal(exported.payload.creationRootBindings, undefined);
+    });
+  }
 });
 
 describe("Claude Desktop destination enforcement", () => {
@@ -817,7 +948,7 @@ describe("claude-bridge tool contract", async () => {
 
   it("marks the tools that only read as read-only", () => {
     const readOnly = tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name);
-    assert.deepEqual(readOnly.sort(), ["inspect_bridge_project", "list_claude_sessions", "list_workers", "read_claude_creation", "read_claude_delivery", "read_claude_transcript", "read_worker_delivery", "worker_status"]);
+    assert.deepEqual(readOnly.sort(), ["inspect_bridge_project", "list_claude_sessions", "list_workers", "read_claude_delivery", "read_claude_transcript", "read_worker_delivery", "worker_status"]);
   });
 });
 
@@ -877,7 +1008,6 @@ describe("agent prompt guidance", async () => {
       [codex, "send_to_codex_thread", "prompt"],
       [codex, "start_codex_thread", "prompt"],
       [claude, "send_to_claude_session", "message"],
-      [claude, "start_claude_session", "prompt"],
     ];
     for (const [server, name, field] of fields) {
       const description = server.tools.find((t) => t.name === name)?.inputSchema.properties[field]?.description ?? "";

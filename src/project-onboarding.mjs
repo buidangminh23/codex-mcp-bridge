@@ -109,7 +109,7 @@ const LIVE_CHECKS = {
   },
   codex: {
     senderDestination: "Each Claude delivery separately verifies the Codex sender, the recipient session, its permission class and the accounts. A project grant does not replace these checks. Check claude_bridge_status in the calling task.",
-    creationTarget: "Creating a new Claude session is confirmed separately through read_claude_creation; this inspection does not open or check one.",
+    creationTarget: "The bridge does not create Claude sessions. The user opens a new session in Claude Desktop; this inspection does not open or check one.",
   },
 };
 

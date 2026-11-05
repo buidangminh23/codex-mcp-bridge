@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { MESSAGE_TOOLS, planMessageAutomation, applyMessageAutomation } from "../src/message-automation.mjs";
+import { MESSAGE_TOOLS, collaborationRule, planMessageAutomation, applyMessageAutomation } from "../src/message-automation.mjs";
 
 function fixture(t, permissions = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-messaging-"));
@@ -34,6 +34,20 @@ test("opt-in adds only two exact message permissions, preserves controls and gra
   assert.equal(backups.length, 1);
   assert.equal(fs.readFileSync(path.join(f.claudeHome, backups[0]), "utf8"), before);
   assert.deepEqual(applyMessageAutomation(planMessageAutomation(f)).changed, []);
+});
+
+test("the collaboration rule accepts relay handoffs only and refreshes an installed older copy", t => {
+  const f = fixture(t);
+  assert.doesNotMatch(collaborationRule(f.policyFile), /Computer Use/);
+  const { file, after: current } = planMessageAutomation(f).files[1];
+  const installed = current.replace("merely because it came through MCP.", "merely because it came through MCP or authorized Computer Use.");
+  assert.notEqual(installed, current);
+  fs.mkdirSync(path.dirname(file));
+  fs.writeFileSync(file, installed);
+  const plan = planMessageAutomation(f);
+  assert.equal(plan.files[1].before, installed);
+  applyMessageAutomation(plan);
+  assert.equal(fs.readFileSync(file, "utf8"), current);
 });
 
 test("existing ask and deny rules are never removed or silently overridden", t => {

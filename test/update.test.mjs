@@ -632,6 +632,57 @@ test("a current updater stays on its version and an unreachable registry does no
   }
 });
 
+test("a stale updater hands over to the newer installed bridge instead of refusing", async t => {
+  for (const published of [LATEST, new Error("offline")]) {
+    const f = fixture(t, LATEST);
+    withLatest(f, published);
+    const progress = [];
+    const result = await runUpdate({ ...f.options, followLatest: true, onProgress: message => progress.push(message) });
+    assert.equal(result.version, LATEST);
+    assert.equal(f.installCalls().length, 0);
+    assert.equal(f.calls.filter(item => item.kind === "handoff").length, 1);
+    assert.equal(f.calls.some(item => item.kind === "service"), false);
+    assert.equal(progress.some(message => message.includes(`Bridge ${LATEST} is already installed`)), true);
+  }
+});
+
+test("a stale updater still refuses when it cannot hand over", async t => {
+  const handedOver = fixture(t, LATEST);
+  withLatest(handedOver);
+  await assert.rejects(runUpdate({ ...handedOver.options, env: { ...handedOver.env, CODEX_BRIDGE_UPDATE_HANDOFF: "1" }, followLatest: true }), { code: "UPDATE_DOWNGRADE_REFUSED" });
+  assert.equal(handedOver.calls.some(item => item.kind === "handoff"), false);
+  const library = fixture(t, LATEST);
+  await assert.rejects(runUpdate(library.options), { code: "UPDATE_DOWNGRADE_REFUSED" });
+});
+
+test("a failed handover reports the reason from the updater that took over", async t => {
+  const f = fixture(t, VERSION);
+  withLatest(f);
+  const inner = f.options.run;
+  const script = path.join(f.globalRoot, "scripts", "update.mjs");
+  const reason = "The global bridge settings are incomplete. Independent background relay: not ready.";
+  f.options.run = async (command, args, settings) => args[0] === script
+    ? { status: 1, stdout: JSON.stringify({ updated: false, diagnostic: { code: "UPDATE_SETUP_INCOMPLETE", reason, causeCodes: ["EXIT_1"] } }), stderr: "" }
+    : inner(command, args, settings);
+  await assert.rejects(runUpdate({ ...f.options, followLatest: true }), error => {
+    assert.equal(error.code, "UPDATE_SETUP_INCOMPLETE");
+    assert.equal(error.message, reason);
+    assert.equal(error.cause?.code, "EXIT_1");
+    return true;
+  });
+  const opaque = fixture(t, VERSION);
+  withLatest(opaque);
+  const opaqueInner = opaque.options.run;
+  opaque.options.run = async (command, args, settings) => args[0] === path.join(opaque.globalRoot, "scripts", "update.mjs")
+    ? { status: 1, stdout: "not json", stderr: "" }
+    : opaqueInner(command, args, settings);
+  await assert.rejects(runUpdate({ ...opaque.options, followLatest: true }), error => {
+    assert.equal(error.code, "UPDATE_SETUP_INCOMPLETE");
+    assert.equal(error.message.includes("codex-bridge-setup --check"), false);
+    return true;
+  });
+});
+
 test("other installations move to the same version and one that cannot be written is reported", async t => {
   const f = fixture(t, VERSION);
   const outdated = path.join(f.directory, "machine prefix", "node_modules", "@minhspark", "codex-mcp-bridge");

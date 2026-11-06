@@ -47,7 +47,7 @@ import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./backgroun
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "2.3.1";
+const VERSION = "2.3.2";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 

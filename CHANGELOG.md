@@ -2,6 +2,20 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.3.2] - 2026-11-06
+
+### Fixed
+
+- An update no longer stops the background relay on a machine with more than one Node installation. Setup moved the relay to whichever Node ran the updater, so it had to re-register the relay's scheduled task. When that task belongs to Administrators, a normal terminal gets `Access denied`, and the update failed with `UPDATE_SETUP_INCOMPLETE` after npm had already replaced the package the relay was running from. The relay stayed down until someone repaired it. Setup now keeps the Node the relay already uses, as long as that Node still exists, runs, and meets the package's `engines` requirement.
+- `codex-bridge-update` no longer refuses with `UPDATE_DOWNGRADE_REFUSED` when an older copy comes first on `PATH` and a newer bridge is installed. That older copy hands the update to the newer one, or installs the latest published version first if there is a newer one. Refusal still applies when no handover is possible.
+- A failed handover now reports the reason from the updater that took over, instead of only `EXIT_1`.
+
+### Verification and limits
+
+- Tests cover keeping the relay's Node, moving away from one that is too old, broken or removed, the handover from an older copy with and without npm access, and the reported reason. Reverting each change turns its tests red.
+- A copy older than this version still refuses as before, so an older copy that cannot be overwritten has to be updated once from an administrator terminal, or bypassed with `npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update --user`.
+- A relay task that belongs to Administrators still cannot be changed from a normal terminal. This only matters if the relay's Node or package folder has to change, and the update then still fails with `TASK_SCHEDULER_UNAVAILABLE`.
+
 ## [2.3.1] - 2026-11-06
 
 ### Fixed

@@ -82,7 +82,19 @@ function neutralDirectory(roots, env) {
   throw failure("UPDATE_DIRECTORY_UNAVAILABLE", "No working directory outside the package installation is available.", "preflight");
 }
 
+function handedFailure(stdout, phase) {
+  let diagnostic;
+  try { ({ diagnostic } = JSON.parse(String(stdout ?? ""))); } catch { return null; }
+  if (typeof diagnostic?.code !== "string" || !/^UPDATE_[A-Z_]+$/.test(diagnostic.code) || typeof diagnostic.reason !== "string" || !diagnostic.reason) return null;
+  const causes = (Array.isArray(diagnostic.causeCodes) ? diagnostic.causeCodes : []).filter(code => typeof code === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(code));
+  return failure(diagnostic.code, diagnostic.reason, phase, causes[0] ? Object.assign(new Error("The handed-over updater reported a failure."), { code: causes[0] }) : undefined);
+}
+
 function childFailure(result, phase, setupCommand = false) {
+  if (setupCommand === "handoff") {
+    const handed = handedFailure(result?.stdout, phase);
+    if (handed) return handed;
+  }
   const match = /npm\s+(?:ERR!|error)\s+code\s+([A-Z][A-Z0-9_]{0,79}|\d{1,10})\b/.exec(String(result?.stderr ?? ""));
   const signal = result?.error?.signal ?? result?.signal;
   const value = match?.[1] ?? result?.error?.code ?? (signal ? null : result?.status ?? result?.exitCode);
@@ -92,13 +104,14 @@ function childFailure(result, phase, setupCommand = false) {
     : /^SIG[A-Z0-9]{1,20}$/.test(signal ?? "") ? `SIGNAL_${signal}` : null;
   const cause = code ? Object.assign(new Error("The child command reported a failure."), { code }) : undefined;
   const permissionDenied = phase === "installation" && ["EPERM", "EACCES"].includes(code);
-  const setupSummary = setupCommand && phase === "verification" && !signal && !timedOut ? setupFailureSummary(result?.stdout) : null;
+  const setupCheck = setupCommand === true;
+  const setupSummary = setupCheck && phase === "verification" && !signal && !timedOut ? setupFailureSummary(result?.stdout) : null;
   return failure(permissionDenied ? "UPDATE_INSTALL_PERMISSION" : code === "EBUSY" ? "UPDATE_PACKAGE_BUSY" : timedOut ? "UPDATE_COMMAND_TIMEOUT" : phase === "verification" ? "UPDATE_SETUP_INCOMPLETE" : "UPDATE_NPM_FAILED",
     permissionDenied ? "npm could not write to the installation directory. Run codex-bridge-update --user to install and configure the bridge in your user account without administrator rights. Existing work and receipts were preserved."
       : timedOut ? `The update command exceeded its deadline. ${RETRY}`
       : code === "EBUSY" ? `The installed package is still held open by another process. No process was stopped. ${RETRY}`
       : setupSummary ? `The global bridge settings are incomplete. ${setupSummary} ${RETRY}`
-      : `The ${phase === "verification" ? "installed setup verification" : "npm command"} did not complete. ${setupCommand ? `${SETUP_INSPECTION} ` : ""}${RETRY}`, phase, cause);
+      : `The ${phase === "verification" ? "installed setup verification" : "npm command"} did not complete. ${setupCheck ? `${SETUP_INSPECTION} ` : ""}${RETRY}`, phase, cause);
 }
 
 function serviceQuiescent(config) {
@@ -156,21 +169,31 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   const globalRoot = path.join(modules, "@minhspark", "codex-mcp-bridge");
   cwd = neutralDirectory([root, globalRoot], env);
   const previousVersion = packageVersion(globalRoot, true);
-  if (previousVersion && newerVersion(previousVersion, version)) throw failure("UPDATE_DOWNGRADE_REFUSED", "The global bridge is newer than this updater. Run the update command with the latest published package.", "preflight");
-  if (followLatest && env.CODEX_BRIDGE_UPDATE_HANDOFF !== "1") {
-    let latest = null;
-    try { latest = (await command([npm, "view", `${PACKAGE}@latest`, "version"], "preflight", 60000)).trim(); }
-    catch { onProgress(`npm could not report the latest bridge; continuing with ${version}.`); }
-    if (latest && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?$/.test(latest) && newerVersion(latest, version)) {
-      onProgress(`Bridge ${latest} is available and this updater is ${version}. Installing it and handing over.`);
-      await command([npm, "install", "--global", "--prefix", prefix, `${PACKAGE}@${latest}`, "--ignore-scripts"], "installation", 600000, { ...childEnv, CODEX_BRIDGE_SKIP_SETUP: "1" });
-      if (packageVersion(globalRoot) !== latest) throw failure("UPDATE_VERSION_MISMATCH", "The global package version does not match the latest published version. Rerun the same update command.", "verification");
+  const installedNewer = Boolean(previousVersion && newerVersion(previousVersion, version));
+  const canHandOver = followLatest && env.CODEX_BRIDGE_UPDATE_HANDOFF !== "1";
+  if (installedNewer && !canHandOver) throw failure("UPDATE_DOWNGRADE_REFUSED", "The global bridge is newer than this updater. Run the update command with the latest published package.", "preflight");
+  if (canHandOver) {
+    const handOver = async () => {
       const handoff = [path.join(globalRoot, "scripts", "update.mjs"), ...args.filter(arg => arg !== "--json"), "--json"];
-      const output = await command(handoff, "verification", 1200000, { ...childEnv, CODEX_BRIDGE_UPDATE_HANDOFF: "1" }, false, line => { if (line) onProgress(line); });
+      const output = await command(handoff, "verification", 1200000, { ...childEnv, CODEX_BRIDGE_UPDATE_HANDOFF: "1" }, "handoff", line => { if (line) onProgress(line); });
       let handed;
       try { handed = JSON.parse(output); } catch {}
       if (handed?.updated !== true) throw failure("UPDATE_SETUP_INCOMPLETE", `The latest bridge updater did not return a verifiable result. ${RETRY}`, "verification");
       return handed;
+    };
+    let latest = null;
+    try { latest = (await command([npm, "view", `${PACKAGE}@latest`, "version"], "preflight", 60000)).trim(); }
+    catch { onProgress(`npm could not report the latest bridge; continuing with ${installedNewer ? previousVersion : version}.`); }
+    const newest = installedNewer ? previousVersion : version;
+    if (latest && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?$/.test(latest) && newerVersion(latest, newest)) {
+      onProgress(`Bridge ${latest} is available and this updater is ${version}. Installing it and handing over.`);
+      await command([npm, "install", "--global", "--prefix", prefix, `${PACKAGE}@${latest}`, "--ignore-scripts"], "installation", 600000, { ...childEnv, CODEX_BRIDGE_SKIP_SETUP: "1" });
+      if (packageVersion(globalRoot) !== latest) throw failure("UPDATE_VERSION_MISMATCH", "The global package version does not match the latest published version. Rerun the same update command.", "verification");
+      return handOver();
+    }
+    if (installedNewer) {
+      onProgress(`Bridge ${previousVersion} is already installed and this updater is ${version}. Handing over.`);
+      return handOver();
     }
   }
   const config = readConfig({ env: childEnv, platform, missing: true });

@@ -336,6 +336,22 @@ async function installLinux(context) {
   return { configured, enabled, changed, started, registration: label };
 }
 
+async function relayNode(kept, current, engine, invoke) {
+  if (typeof kept !== "string" || !path.isAbsolute(kept) || kept === current) return current;
+  try { if (!fs.statSync(kept).isFile()) return current; } catch { return current; }
+  let reported;
+  try {
+    const answer = await invoke(kept, ["--version"]);
+    if (answer.status !== 0) return current;
+    reported = /^v(\d+)\.(\d+)\./.exec(answer.stdout.trim());
+  } catch { return current; }
+  if (!reported) return current;
+  const required = /^>=\s*(\d+)\.(\d+)/.exec(typeof engine === "string" ? engine : "");
+  if (!required) return kept;
+  const [major, minor, wantedMajor, wantedMinor] = [reported[1], reported[2], required[1], required[2]].map(Number);
+  return major > wantedMajor || major === wantedMajor && minor >= wantedMinor ? kept : current;
+}
+
 export async function installBackgroundRelay({ env = process.env, platform = process.platform, root = ROOT, run = execute,
   dryRun = false, check = false, health = callBackgroundRelay, sleep = pause, pollAttempts = 15, uid = process.getuid?.() } = {}) {
   const base = { configured: false, enabled: false, started: false, liveVerified: false, ready: false };
@@ -346,14 +362,14 @@ export async function installBackgroundRelay({ env = process.env, platform = pro
     if (!["win32", "darwin", "linux"].includes(platform)) return { ...base, code: "SERVICE_PLATFORM_UNSUPPORTED", reason: "Background relay user startup is unsupported on this platform" };
     if (!path.isAbsolute(root)) throw installFailure("SERVICE_RUNTIME_MISSING");
     root = fs.realpathSync.native(root);
-    const node = stableNodeBin(env);
     const service = path.join(root, "src", "background-relay-service.mjs");
     if (!path.isAbsolute(root) || !fs.existsSync(service) || !fs.existsSync(path.join(root, "src", "background-relay-daemon.mjs"))) throw installFailure("SERVICE_RUNTIME_MISSING");
     let packageVersion;
-    try { packageVersion = JSON.parse(readRegularConfigFile(path.join(root, "package.json"), { maxBytes: 128 * 1024 })).version; }
+    let nodeEngine;
+    try { ({ version: packageVersion, engines: { node: nodeEngine } = {} } = JSON.parse(readRegularConfigFile(path.join(root, "package.json"), { maxBytes: 128 * 1024 }))); }
     catch { throw installFailure("SERVICE_RUNTIME_INVALID"); }
     if (typeof packageVersion !== "string" || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?$/.test(packageVersion) || packageVersion.length > 96) throw installFailure("SERVICE_RUNTIME_INVALID");
-    if ([root, config.paths.root, node].some((value) => /[\u0000-\u001f\u007f]/.test(value))) throw installFailure("SERVICE_LAUNCH_PATH_UNSUPPORTED");
+    if ([root, config.paths.root].some((value) => /[\u0000-\u001f\u007f]/.test(value))) throw installFailure("SERVICE_LAUNCH_PATH_UNSUPPORTED");
     const hash = createHash("sha256").update(platform === "win32" ? config.paths.root.toLowerCase() : config.paths.root).digest("hex").slice(0, 12);
     const label = platform === "win32" ? `MinhSpark Agent Relay ${hash}` : `com.minhspark.agent-relay.${hash}`;
     const invoke = async (command, args, extra = {}) => {
@@ -373,6 +389,8 @@ export async function installBackgroundRelay({ env = process.env, platform = pro
       return value;
     };
     const previousRuntime = readRuntime();
+    const node = await relayNode(previousRuntime?.nodeExecutable, stableNodeBin(env), nodeEngine, invoke);
+    if (/[\u0000-\u001f\u007f]/.test(node)) throw installFailure("SERVICE_LAUNCH_PATH_UNSUPPORTED");
     const installedEnv = check && previousRuntime ? {
       ...Object.fromEntries(Object.entries(env).filter(([name]) => !RUNTIME_ENVIRONMENT_KEYS.includes(name))),
       ...previousRuntime.environment,

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { installBackgroundRelay } from "../scripts/install-background-relay.mjs";
-import { configureRelay } from "../src/background-relay-config.mjs";
+import { configureRelay, writeRelayJson } from "../src/background-relay-config.mjs";
 import { RELAY_SERVICE_OWNER, relayServiceRuntimeId } from "../src/background-relay-service.mjs";
 
 const SECRET = "never-persist-worker-or-account-secret";
@@ -233,8 +233,8 @@ test("installed-environment checks still detect changed runtime and startup owne
 function keptNodeRuntime(f, runtime = {}) {
   const node = path.join(f.directory, "kept node.exe");
   fs.writeFileSync(node, "");
-  fs.writeFileSync(path.join(f.config.paths.root, "service-runtime.json"), JSON.stringify({ schemaVersion: 1, owner: RELAY_SERVICE_OWNER,
-    packageRoot: fs.realpathSync.native(f.root), nodeExecutable: node, packageVersion: healthy.version, environment: {}, ...runtime }));
+  writeRelayJson(path.join(f.config.paths.root, "service-runtime.json"), { schemaVersion: 1, owner: RELAY_SERVICE_OWNER,
+    packageRoot: fs.realpathSync.native(f.root), nodeExecutable: node, packageVersion: healthy.version, environment: {}, ...runtime });
   return node;
 }
 const savedNode = (f) => JSON.parse(fs.readFileSync(path.join(f.config.paths.root, "service-runtime.json"))).nodeExecutable;

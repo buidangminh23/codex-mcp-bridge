@@ -2,6 +2,17 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.3.1] - 2026-11-06
+
+### Fixed
+
+- A relay call no longer fails with `BRIDGE_ACCOUNT_CHANGED` because Claude Desktop touched an unrelated file in its data directory. The account reader compared the directory's modification time, so any file created or removed there during a read counted as an account change. It now compares the directory's identity, and the account file's own version and contents still have to match. If a read still catches the account file mid-change, it reads again up to three more times over about 75 ms before reporting the account as unavailable.
+
+### Verification and limits
+
+- With a process creating and removing a file in the data directory every 5 ms, 125 of 1,500 reads failed on 2.3.0 and 0 of 3,000 failed on this version. Tests cover unrelated directory changes, a replaced directory, an account changing once during a read, and a file that stays unreadable.
+- An account that is really signed out or changed is still reported, and a second data directory with account state appearing during a read is still reported as `ambiguous`, with no account selected.
+
 ## [2.3.0] - 2026-11-06
 
 ### Fixed

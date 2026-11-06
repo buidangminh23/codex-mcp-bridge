@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { awaitBridgeRuntimes, classifyBridgeRuntimes, discoverBridgeInstalls, installPrefix, probeNativeRelay } from "../src/bridge-installs.mjs";
 import { activeClaudeDataRoot, claudeDataPinUsable, relayClaudeDataPin, repairClaudeDataPin } from "../src/claude-data-pin.mjs";
-import { currentInstallFile, isManagedInstall, newerVersion, readCurrentInstall, writeCurrentInstall } from "../src/current-install.mjs";
+import { isManagedInstall, newerVersion, readCurrentInstall, writeCurrentInstall } from "../src/current-install.mjs";
 
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -53,14 +53,14 @@ test("a half-installed, foreign or malformed target is never followed", (t) => {
   fs.rmSync(path.join(newer, "src", "mcp-supervisor.mjs"));
   assert.equal(readCurrentInstall({ env, ownRoot: own }), null);
   for (const text of ["not json", JSON.stringify({ schemaVersion: 1, packageRoot: "relative" }), JSON.stringify({ schemaVersion: 2, packageRoot: own })]) {
-    fs.writeFileSync(currentInstallFile(env), text);
+    fs.writeFileSync(path.join(directory, ".codex", "bridge-current-install.json"), text);
     assert.equal(readCurrentInstall({ env, ownRoot: own }), null);
   }
   const foreign = path.join(directory, "foreign");
   fs.mkdirSync(path.join(foreign, "src"), { recursive: true });
   fs.writeFileSync(path.join(foreign, "src", "mcp-supervisor.mjs"), "");
   fs.writeFileSync(path.join(foreign, "package.json"), JSON.stringify({ name: "someone-else", version: "9.0.0" }));
-  fs.writeFileSync(currentInstallFile(env), JSON.stringify({ schemaVersion: 1, packageRoot: foreign }));
+  fs.writeFileSync(path.join(directory, ".codex", "bridge-current-install.json"), JSON.stringify({ schemaVersion: 1, packageRoot: foreign }));
   assert.equal(readCurrentInstall({ env, ownRoot: own }), null);
 });
 
@@ -72,7 +72,7 @@ test("a checkout is not recorded as the current installation", (t) => {
   fs.writeFileSync(path.join(checkout, "package.json"), JSON.stringify({ name: "@minhspark/codex-mcp-bridge", version: "9.0.0" }));
   assert.equal(isManagedInstall(checkout), false);
   assert.equal(writeCurrentInstall({ env, root: checkout }), false);
-  assert.equal(fs.existsSync(currentInstallFile(env)), false);
+  assert.equal(fs.existsSync(path.join(directory, ".codex", "bridge-current-install.json")), false);
   assert.equal(newerVersion("2.3.0", "2.2.9"), true);
   assert.equal(newerVersion("2.3.0-beta.1", "2.3.0"), false);
 });

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { installBackgroundRelay } from "../scripts/install-background-relay.mjs";
-import { configureRelay } from "../src/background-relay-config.mjs";
+import { configureRelay, writeRelayJson } from "../src/background-relay-config.mjs";
 import { RELAY_SERVICE_OWNER, relayServiceRuntimeId } from "../src/background-relay-service.mjs";
 
 const SECRET = "never-persist-worker-or-account-secret";
@@ -32,6 +32,7 @@ function fixture(t, platform = "win32") {
   const status = () => ({ ...healthy, runtimeId: JSON.parse(fs.readFileSync(path.join(config.paths.root, "service-status.json"))).runtimeId });
   const run = async (command, args, options) => {
     calls.push({ command, args, options });
+    if (args[0] === "--version") return { status: state.nodeStatus ?? 0, stdout: state.nodeVersion ?? "v24.1.0" };
     if (platform === "win32") {
       const request = JSON.parse(options.input);
       if (request.action === "register") {
@@ -227,6 +228,61 @@ test("installed-environment checks still detect changed runtime and startup owne
   fs.writeFileSync(file, JSON.stringify(saved));
   f.state.task.description = "foreign-owner";
   assert.equal((await f.install({ check: true })).code, "SERVICE_CONFIGURATION_CONFLICT");
+});
+
+function keptNodeRuntime(f, runtime = {}) {
+  const node = path.join(f.directory, "kept node.exe");
+  fs.writeFileSync(node, "");
+  writeRelayJson(path.join(f.config.paths.root, "service-runtime.json"), { schemaVersion: 1, owner: RELAY_SERVICE_OWNER,
+    packageRoot: fs.realpathSync.native(f.root), nodeExecutable: node, packageVersion: healthy.version, environment: {}, ...runtime });
+  return node;
+}
+const savedNode = (f) => JSON.parse(fs.readFileSync(path.join(f.config.paths.root, "service-runtime.json"))).nodeExecutable;
+const registrations = (f) => f.calls.filter(({ options }) => options.input && JSON.parse(options.input).action === "register").length;
+
+test("an update under another Node keeps the Node that already runs the relay", async (t) => {
+  const f = fixture(t);
+  const node = keptNodeRuntime(f);
+  const first = await f.install();
+  assert.equal(first.configured, true);
+  assert.equal(savedNode(f), node);
+  assert.equal(f.state.task.arguments.includes(node), true);
+  assert.equal(registrations(f), 1);
+  const second = await f.install();
+  assert.equal(second.configured, true);
+  assert.equal(second.changed, false);
+  assert.equal(savedNode(f), node);
+  assert.equal(registrations(f), 1);
+  assert.equal((await f.install({ check: true })).configured, true);
+});
+
+test("the relay moves to the current Node when the saved one cannot run this package", async (t) => {
+  const old = fixture(t);
+  fs.writeFileSync(path.join(old.root, "package.json"), JSON.stringify({ version: healthy.version, engines: { node: ">=22.13" } }));
+  const tooOld = keptNodeRuntime(old);
+  old.state.nodeVersion = "v22.12.9";
+  await old.install();
+  assert.notEqual(savedNode(old), tooOld);
+  assert.equal(savedNode(old), process.execPath);
+
+  const enough = fixture(t);
+  fs.writeFileSync(path.join(enough.root, "package.json"), JSON.stringify({ version: healthy.version, engines: { node: ">=22.13" } }));
+  const accepted = keptNodeRuntime(enough);
+  enough.state.nodeVersion = "v22.13.0";
+  await enough.install();
+  assert.equal(savedNode(enough), accepted);
+
+  const broken = fixture(t);
+  const failing = keptNodeRuntime(broken);
+  broken.state.nodeStatus = 1;
+  await broken.install();
+  assert.notEqual(savedNode(broken), failing);
+
+  const missing = fixture(t);
+  const removed = keptNodeRuntime(missing);
+  fs.rmSync(removed);
+  await missing.install();
+  assert.notEqual(savedNode(missing), removed);
 });
 
 test("saved configuration and live transport readiness are reported separately", async (t) => {

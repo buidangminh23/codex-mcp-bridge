@@ -34,7 +34,9 @@ export function requireBridgeAccounts(accounts) {
 
 export function assertAccountIdentity(expected, accounts = readBridgeAccounts()) {
   if (!sameAccountIdentity(expected, accounts)) {
-    const error = preflightFailure("BRIDGE_ACCOUNT_CHANGED", "The Claude or Codex account changed or signed out while this operation was pending. Its original destination was preserved; discover the current account before sending new work.");
+    const unverified = ["claude", "codex"].filter((provider) => accounts?.[provider]?.status !== "verified")
+      .map((provider) => `${provider === "claude" ? "Claude" : "Codex"} is ${accounts?.[provider]?.status ?? "unavailable"}: ${accounts?.[provider]?.reason ?? "No account evidence"}`);
+    const error = preflightFailure("BRIDGE_ACCOUNT_CHANGED", `The Claude or Codex account changed or signed out while this operation was pending.${unverified.length ? ` ${unverified.join("; ")}` : ""} Its original destination was preserved; discover the current account before sending new work.`);
     error.code = "BRIDGE_ACCOUNT_CHANGED";
     throw error;
   }

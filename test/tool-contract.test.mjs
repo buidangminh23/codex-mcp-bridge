@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { buildFrame, parseFrame, peerKeyPath } from "../src/peer-protocol.mjs";
+import { editProjectGrant, updateProjectPolicy } from "../src/project-policy.mjs";
 import { AGENT_PROMPT_GUIDANCE, PROMPT_SECTIONS } from "../src/prompt-guidance.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -417,9 +418,10 @@ describe("Claude Desktop account switching", () => {
         servers.push(server);
       }
       activate(destinations[0]);
-      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: {
+      const bridgeEnv = {
         PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"), CODEX_NATIVE_RELAY_SOCKET: unavailableRelaySocket(home), CLAUDE_DESKTOP_USER_DATA: userData, CODEX_BRIDGE_AUTOSTART: "0", CODEX_BRIDGE_DESKTOP_TASKS: "1",
-      }, stderr: "ignore" });
+      };
+      const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: bridgeEnv, stderr: "ignore" });
       await client.connect(transport);
       const send = (target = "auto", expectedTaskId) => client.callTool({ name: "send_to_claude_session", arguments: { target, message: "Account routing test", expectedCwd: home, expectedTaskId, waitSec: REPLY_WAIT_SEC }, _meta: meta });
       for (const index of [0, 1, 0]) {
@@ -477,6 +479,27 @@ describe("Claude Desktop account switching", () => {
       assert.equal(retried.structuredContent.receipt.queueId, queued.structuredContent.receipt.queueId);
       const queuedDelivery = await client.callTool({ name: "read_claude_delivery", arguments: { msgId: queued.structuredContent.receipt.queueId } });
       assert.equal(queuedDelivery.structuredContent.receipt.status, "queued");
+      assert.equal(received.length, 4);
+      const policyFile = path.join(home, "project-policy.json");
+      updateProjectPolicy(policyFile, (policy) => editProjectGrant(policy, "allow-project", home));
+      const scoped = new Client({ name: "project-policy-queue-test", version: "1" });
+      try {
+        await scoped.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(root, "src", "claude-bridge.mjs")], env: { ...bridgeEnv, CODEX_BRIDGE_PROJECT_POLICY: policyFile }, stderr: "ignore" }));
+        const scopedSend = () => scoped.callTool({ name: "send_to_claude_session", arguments: { target: "auto", message: "Queued under a project policy", expectedCwd: home, expectedTaskId: destinations[0].taskId, waitSec: REPLY_WAIT_SEC }, _meta: meta });
+        const policyQueued = await scopedSend();
+        assert.equal(policyQueued.isError, undefined, policyQueued.content?.[0]?.text);
+        assert.equal(policyQueued.structuredContent.receipt.status, "queued");
+        assert.equal(policyQueued.structuredContent.receipt.sent, false);
+        const queueId = policyQueued.structuredContent.receipt.queueId;
+        const readScoped = () => scoped.callTool({ name: "read_claude_delivery", arguments: { msgId: queueId } });
+        assert.equal((await readScoped()).structuredContent.receipt.status, "queued");
+        updateProjectPolicy(policyFile, (policy) => editProjectGrant(policy, "revoke", home));
+        assert.equal((await readScoped()).structuredContent?.receipt?.queueId, undefined);
+        const revoked = await scoped.callTool({ name: "send_to_claude_session", arguments: { target: "auto", message: "Queued after the grant was revoked", expectedCwd: home, expectedTaskId: destinations[0].taskId, waitSec: REPLY_WAIT_SEC }, _meta: meta });
+        assert.notEqual(revoked.structuredContent?.receipt?.status, "queued");
+      } finally {
+        await scoped.close();
+      }
       assert.equal(received.length, 4);
       if (handlerError) throw handlerError;
     } finally {

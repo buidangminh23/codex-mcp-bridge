@@ -63,7 +63,8 @@ function processIdentity(pid) {
 }
 
 export function relayServiceRuntimeId(runtime) {
-  return createHash("sha256").update(JSON.stringify([runtime.packageRoot, runtime.nodeExecutable, runtime.packageVersion ?? null, runtime.environment ?? {}])).digest("hex");
+  return createHash("sha256").update(JSON.stringify([runtime.packageRoot, runtime.nodeExecutable, runtime.packageVersion ?? null, runtime.environment ?? {},
+    ...(runtime.claudeDesktopUserData ? [runtime.claudeDesktopUserData] : [])])).digest("hex");
 }
 
 export function readRelayServiceRuntime(directory, { root = ROOT, nodeExecutable = stableNodeBin(), allowMissingFiles = false } = {}) {
@@ -75,7 +76,7 @@ export function readRelayServiceRuntime(directory, { root = ROOT, nodeExecutable
   try { value = JSON.parse(text); } catch { throw serviceFailure("SERVICE_RUNTIME_INVALID"); }
   if (value?.schemaVersion !== 1 || value.owner !== RELAY_SERVICE_OWNER
       || value.packageVersion !== undefined && (typeof value.packageVersion !== "string" || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?$/.test(value.packageVersion) || value.packageVersion.length > 96)
-      || ![value.packageRoot, value.nodeExecutable].every((entry) => typeof entry === "string" && path.isAbsolute(entry) && !/[\u0000-\u001f\u007f]/.test(entry))
+      || ![value.packageRoot, value.nodeExecutable, ...(value.claudeDesktopUserData === undefined ? [] : [value.claudeDesktopUserData])].every((entry) => typeof entry === "string" && path.isAbsolute(entry) && !/[\u0000-\u001f\u007f]/.test(entry))
       || value.environment !== undefined && (!value.environment || typeof value.environment !== "object" || Array.isArray(value.environment)
         || Object.entries(value.environment).some(([name, entry]) => !["HOME", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"].includes(name)
           || typeof entry !== "string" || !entry || /[\u0000-\u001f\u007f]/.test(entry)))) throw serviceFailure("SERVICE_RUNTIME_INVALID");
@@ -169,7 +170,7 @@ function wait(ms, signal) {
 
 function serviceEnvironment(env, root) {
   return { ...Object.fromEntries(Object.entries(env).filter(([name, value]) => value !== undefined
-    && !/^(?:AGENT_RELAY_|CODEX_BRIDGE_|CLAUDE_BRIDGE_|CODEX_NATIVE_RELAY_|CODEX_APP_TOOLS_PIPE_PATH$|CODEX_APP_SERVER_URL$|CODEX_INTERNAL_ORIGINATOR_OVERRIDE$|CODEX_THREAD_ID$|CODEX_SESSION_ID$|CODEX_RELAY_ID$)/i.test(name))), AGENT_RELAY_DIRECTORY: root };
+    && !/^(?:AGENT_RELAY_|CODEX_BRIDGE_|CLAUDE_BRIDGE_|CODEX_NATIVE_RELAY_|CODEX_APP_TOOLS_PIPE_PATH$|CODEX_APP_SERVER_URL$|CODEX_INTERNAL_ORIGINATOR_OVERRIDE$|CODEX_THREAD_ID$|CODEX_SESSION_ID$|CODEX_RELAY_ID$|CLAUDE_DESKTOP_USER_DATA$)/i.test(name))), AGENT_RELAY_DIRECTORY: root };
 }
 
 export async function runBackgroundRelayService({ env = process.env, platform = process.platform, root = ROOT,
@@ -200,7 +201,8 @@ export async function runBackgroundRelayService({ env = process.env, platform = 
         return { status: "reload", moduleFile: path.join(runtime.packageRoot, "src", "background-relay-service.mjs") };
       }
       const runtimeId = relayServiceRuntimeId(runtime);
-      const childEnv = { ...serviceEnvironment(env, config.paths.root), ...runtime.environment, AGENT_RELAY_RUNTIME_ID: runtimeId };
+      const childEnv = { ...serviceEnvironment(env, config.paths.root), ...runtime.environment,
+        ...(runtime.claudeDesktopUserData ? { CLAUDE_DESKTOP_USER_DATA: runtime.claudeDesktopUserData } : {}), AGENT_RELAY_RUNTIME_ID: runtimeId };
       const started = now();
       state("starting", { consecutiveFailures: failures, runtimeId });
       const outcome = await new Promise((resolve) => {

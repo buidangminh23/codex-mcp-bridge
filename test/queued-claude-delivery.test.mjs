@@ -342,3 +342,30 @@ test("a symlinked queue root is ignored", { skip: process.platform === "win32" }
   assert.deepEqual(store.pending(), []);
   assert.throws(() => enqueue("new"), /private directory/);
 });
+
+test("project policy changes during the wait refuse the message instead of delivering it", async (t) => {
+  let allowed = true;
+  const h = harness(t, { assertScope: () => { if (!allowed) throw new Error("revoked"); } });
+  const first = h.enqueue("Authorized brief").entry;
+  await h.drain.tick();
+  assert.equal(h.state.sends.length, 1);
+  assert.equal(h.store.peek(first.id).state, QUEUE_STATES.sentUnconfirmed);
+  allowed = false;
+  h.state.outcome = { status: "interrupted" };
+  const second = h.enqueue("Revoked brief").entry;
+  await h.drain.tick();
+  assert.equal(h.state.sends.length, 1);
+  const settled = h.store.peek(second.id);
+  assert.equal(settled.state, QUEUE_STATES.refused);
+  assert.equal(settled.reasonCode, "CLAUDE_QUEUE_SCOPE_REVOKED");
+});
+
+test("a grant revoked between the claim and the socket write is not sent", async (t) => {
+  let checks = 0;
+  const h = harness(t, { assertScope: () => { if (++checks > 1) throw new Error("revoked"); } });
+  const { entry } = h.enqueue("Racing brief");
+  await h.drain.tick();
+  assert.equal(h.state.sends.length, 0);
+  assert.equal(h.store.peek(entry.id).state, QUEUE_STATES.refused);
+  assert.equal(h.store.peek(entry.id).reasonCode, "CLAUDE_QUEUE_SCOPE_REVOKED");
+});

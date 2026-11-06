@@ -43,7 +43,7 @@ import { remoteCodexSocketPath, remoteNativeAdapter, remoteRequestResponse } fro
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "2.2.0";
+const VERSION = "2.3.0";
 const log = (msg) => process.stderr.write(`[native-relay] ${msg}\n`);
 
 function errorResponse(code, message, sent, details) {

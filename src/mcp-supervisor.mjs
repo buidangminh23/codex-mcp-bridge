@@ -8,6 +8,9 @@ import { desktopTasksConfigured } from "./native-relay.mjs";
 import { isMainModule, stableInstallPath } from "./install-paths.mjs";
 import { CLIENT_CLOSE_DRAIN_MS, CLIENT_CLOSE_STOP_MS } from "./reload-control.mjs";
 import { withBridgeDiagnostic } from "./recipient-preflight.mjs";
+import { claudeDataPinUsable } from "./claude-data-pin.mjs";
+import { isManagedInstall, readCurrentInstall } from "./current-install.mjs";
+import { hardenedBridgeEnabled } from "./hardened-root-policy.mjs";
 
 const WORKER_NODE = stableInstallPath(process.execPath);
 const ENTRIES = new Set(["index.mjs", "claude-bridge.mjs", "native-relay-companion.mjs", "antigravity-bridge.mjs", "antigravity-outbound-bridge.mjs"]);
@@ -178,7 +181,10 @@ class Worker {
 export async function runSupervisor(entry, options = {}) {
   if (!ENTRIES.has(entry)) throw new Error(`Expected one of: ${[...ENTRIES].join(", ")}`);
   const installRoot = stableInstallPath(fs.realpathSync.native(options.root ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")));
-  const currentRoot = () => fs.realpathSync.native(installRoot);
+  const env = { ...process.env, CODEX_BRIDGE_SOURCE_ROOT: installRoot };
+  const followInstall = options.followInstall ?? (isManagedInstall(installRoot) && !hardenedBridgeEnabled(env));
+  const followed = () => followInstall ? readCurrentInstall({ env, ownRoot: installRoot }) : null;
+  const currentRoot = () => fs.realpathSync.native(followed()?.packageRoot ?? installRoot);
   const root = currentRoot();
   if (process.argv.includes("--version") || process.argv.includes("-v")) {
     process.stdout.write(`${JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version}\n`);
@@ -186,7 +192,12 @@ export async function runSupervisor(entry, options = {}) {
   }
   const log = (message) => process.stderr.write(`[bridge-supervisor] ${message}\n`);
   const output = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
-  const env = { ...process.env, CODEX_BRIDGE_SOURCE_ROOT: installRoot };
+  const snapshot = (source, settings) => Object.assign(createReleaseSnapshot(source, settings), { sourceRoot: source });
+  const workerEnv = (release) => {
+    const claudeDataRoot = followed()?.claudeDataRoot;
+    const repin = claudeDataRoot && env.CLAUDE_DESKTOP_USER_DATA !== undefined && env.CLAUDE_DESKTOP_USER_DATA !== claudeDataRoot && !claudeDataPinUsable(env);
+    return { ...env, CODEX_BRIDGE_SOURCE_ROOT: release.sourceRoot ?? installRoot, ...(repin ? { CLAUDE_DESKTOP_USER_DATA: claudeDataRoot } : {}) };
+  };
   const recoverable = entry === "native-relay-companion.mjs" || ANTIGRAVITY_ENTRIES.has(entry);
   const routingConfiguration = () => recoverable ? null : desktopTasksConfigured(env);
   if (entry === "native-relay-companion.mjs" && !env.CODEX_APP_TOOLS_PIPE_PATH) {
@@ -305,7 +316,7 @@ export async function runSupervisor(entry, options = {}) {
     let worker;
     try {
       if (stopping) throw new Error("The MCP client disconnected before activation");
-      worker = new Worker(release, entry, env, handlers);
+      worker = new Worker(release, entry, workerEnv(release), handlers);
     } catch (error) {
       release.lease?.release();
       throw error;
@@ -327,7 +338,7 @@ export async function runSupervisor(entry, options = {}) {
         workers.delete(previous);
         if (stopping) return;
         const source = currentRoot();
-        const release = createReleaseSnapshot(source, { expectedRevision: sourceRevision(source), lease: true });
+        const release = snapshot(source, { expectedRevision: sourceRevision(source), lease: true });
         candidate = spawn(release, routingConfiguration());
         const initialized = await candidate.rpc("initialize", initializeParams);
         if (initialized.protocolVersion !== initializeResult.protocolVersion || JSON.stringify(initialized.capabilities) !== JSON.stringify(initializeResult.capabilities)) {
@@ -386,7 +397,7 @@ export async function runSupervisor(entry, options = {}) {
     try {
       const state = await previous.control("inspect");
       if (!state.reloadable) { reason = state.reason ?? "Pending deliveries prevent a safe reload"; return; }
-      const release = createReleaseSnapshot(source, { expectedRevision: revision, lease: true });
+      const release = snapshot(source, { expectedRevision: revision, lease: true });
       candidate = spawn(release, routing);
       const initialized = await candidate.rpc("initialize", initializeParams);
       if (initialized.protocolVersion !== initializeResult.protocolVersion || JSON.stringify(initialized.capabilities) !== JSON.stringify(initializeResult.capabilities)) {
@@ -489,7 +500,7 @@ export async function runSupervisor(entry, options = {}) {
   };
   const preparationStarted = performance.now();
   log(`preparing ${entry} runtime`);
-  const initial = createReleaseSnapshot(root, { lease: true });
+  const initial = snapshot(root, { lease: true });
   log(`prepared ${entry} runtime in ${Math.round(performance.now() - preparationStarted)} ms (${initial.copy})`);
   observed = initial.revision;
   observedRouting = routingConfiguration();

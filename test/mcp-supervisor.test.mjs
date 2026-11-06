@@ -806,3 +806,26 @@ it("keeps forking workers after Homebrew replaces its Node.js keg", { skip: proc
   assert.equal(after.structuredContent.autoReload.supervisorPid, before.structuredContent.autoReload.supervisorPid);
   assert.equal(after.structuredContent.autoReload.reloads, 1);
 });
+
+it("a supervisor started from an older installation moves its worker to the recorded newer one", async t => {
+  const fixture = installation(t);
+  const identity = version => JSON.stringify({ type: "module", name: "@minhspark/codex-mcp-bridge", version });
+  fs.writeFileSync(path.join(fixture.root, "package.json"), identity("2.2.0"));
+  fs.writeFileSync(path.join(fixture.root, "src", "mcp-supervisor.mjs"), "");
+  fs.writeFileSync(fixture.launcher, fs.readFileSync(fixture.launcher, "utf8").replace("{root:", "{followInstall:true,root:"));
+  const newer = path.join(fixture.root, "newer install");
+  fs.cpSync(path.join(fixture.root, "src"), path.join(newer, "src"), { recursive: true });
+  fs.mkdirSync(path.join(newer, "node_modules"));
+  fs.writeFileSync(path.join(newer, "package.json"), identity("2.3.0"));
+  fs.writeFileSync(path.join(newer, "src", fixture.entry), workerSource.replace("const VERSION = 'A'", "const VERSION = 'B'"));
+  const api = await connect(t, fixture);
+  assert.equal((await api.call()).structuredContent.version, "A");
+  const codexHome = path.join(fixture.root, ".codex");
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(path.join(codexHome, "bridge-current-install.json"), JSON.stringify({ schemaVersion: 1, packageRoot: newer, version: "2.3.0" }));
+  const moved = await eventually(api.call, value => value.structuredContent.version === "B", api.stderr);
+  assert.equal(moved.structuredContent.autoReload.state, "current");
+  fs.writeFileSync(path.join(fixture.root, "package.json"), identity("2.4.0"));
+  fixture.update("C");
+  await eventually(api.call, value => value.structuredContent.version === "C", api.stderr);
+});

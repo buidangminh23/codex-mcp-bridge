@@ -469,3 +469,38 @@ test("same-path package updates remain pending until the owned daemon reports th
   assert.equal(current.activationPending, false);
   assert.equal(current.version, nextVersion);
 });
+
+const claudeRoot = (directory, name, account = "11111111-1111-4111-8111-111111111111") => {
+  const root = path.join(directory, name);
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ lastKnownAccountUuid: account, windowSizeWasSignedIn: true }));
+  return root;
+};
+const savedRuntime = (f) => JSON.parse(fs.readFileSync(path.join(f.config.paths.root, "service-runtime.json")));
+const isolatedClaude = (f) => { f.env.APPDATA = path.join(f.directory, "Roaming"); f.env.LOCALAPPDATA = path.join(f.directory, "Local"); };
+
+test("an update drops a stale Claude data pin instead of saving it for the service", async (t) => {
+  const f = fixture(t);
+  isolatedClaude(f);
+  f.env.CLAUDE_DESKTOP_USER_DATA = path.join(f.directory, "moved-away");
+  fs.mkdirSync(f.env.CLAUDE_DESKTOP_USER_DATA);
+  assert.equal((await f.install()).configured, true);
+  assert.equal(Object.hasOwn(savedRuntime(f), "claudeDesktopUserData"), false);
+});
+
+test("a pin that discovery also finds is not saved, so the service keeps discovering", async (t) => {
+  const f = fixture(t);
+  isolatedClaude(f);
+  f.env.CLAUDE_DESKTOP_USER_DATA = claudeRoot(f.directory, path.join("Roaming", "Claude"));
+  assert.equal((await f.install()).configured, true);
+  assert.equal(Object.hasOwn(savedRuntime(f), "claudeDesktopUserData"), false);
+});
+
+test("an explicit pin that selects a different account root is kept for the daemon", async (t) => {
+  const f = fixture(t);
+  isolatedClaude(f);
+  claudeRoot(f.directory, path.join("Roaming", "Claude"));
+  f.env.CLAUDE_DESKTOP_USER_DATA = claudeRoot(f.directory, "explicit", "22222222-2222-4222-8222-222222222222");
+  assert.equal((await f.install()).configured, true);
+  assert.equal(savedRuntime(f).claudeDesktopUserData, f.env.CLAUDE_DESKTOP_USER_DATA);
+});

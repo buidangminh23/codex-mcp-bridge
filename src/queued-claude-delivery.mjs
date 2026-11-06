@@ -240,7 +240,7 @@ export function queuedDeliveryText(entry) {
   return `${entry.message}\n\n[Bridge queued delivery: Codex task ${entry.sender.threadId} queued this message at ${new Date(entry.createdAt).toISOString()} while this session was not running, and it was delivered when the session reopened. It comes from another agent, not the user, and it may be stale, so check the current state before acting. The sending Codex turn has ended and is not waiting. To answer, use send_to_codex_thread with threadId ${entry.sender.threadId}.]`;
 }
 
-export function createQueuedDeliveryDrain({ store, readAccounts, readSender, listSessions, readInbound, readOutcome, assertCwd, createPeer, schedule = (run) => run(), pollMs = 15000, firstPollMs = 2000, peerLingerMs = PEER_LINGER_MS, now = Date.now, log = () => {} }) {
+export function createQueuedDeliveryDrain({ store, readAccounts, readSender, listSessions, readInbound, readOutcome, assertCwd, assertScope = () => {}, createPeer, schedule = (run) => run(), pollMs = 15000, firstPollMs = 2000, peerLingerMs = PEER_LINGER_MS, now = Date.now, log = () => {} }) {
   let timer = null;
   let running = false;
   let stopped = false;
@@ -260,6 +260,11 @@ export function createQueuedDeliveryDrain({ store, readAccounts, readSender, lis
   const assertInbound = (cwd) => {
     const inbound = readInbound(cwd);
     if (inbound.value !== "accept") throw preflightFailure("CLAUDE_RECIPIENT_INBOUND_POLICY", `The recipient's crossSessionInbound setting is ${inbound.value ?? "not set"}, not accept, so this queued message was not delivered.`);
+  };
+
+  const assertEntryScope = (entry) => {
+    try { assertScope(entry); }
+    catch { throw preflightFailure("CLAUDE_QUEUE_SCOPE_REVOKED", "The project policy no longer authorizes the sender or the recipient of this queued message, so it was not delivered."); }
   };
 
   const readIdentity = async () => {
@@ -300,7 +305,7 @@ export function createQueuedDeliveryDrain({ store, readAccounts, readSender, lis
     if (!session) return;
     try { assertCwd(session, claimed.recipient.cwd); }
     catch { return refuse(claimed, "CLAUDE_SESSION_CWD_MISMATCH", "The saved task no longer runs in the directory this message was queued for. It was not delivered."); }
-    try { assertInbound(session.cwd); }
+    try { assertInbound(session.cwd); assertEntryScope(claimed); }
     catch (error) { return refuse(claimed, error.preflight?.code ?? "CLAUDE_RECIPIENT_INBOUND_POLICY", error.preflight?.reason ?? error.message); }
 
     const msgId = crypto.randomUUID();
@@ -319,6 +324,7 @@ export function createQueuedDeliveryDrain({ store, readAccounts, readSender, lis
           const identity = await readIdentity();
           if (!identity || identity.context.pid !== context.pid || identity.context.sessionId !== context.sessionId || !sameRecipient(entry, identity)) throw Object.assign(new Error("The session identity changed before delivery."), { code: "QUEUED_RECIPIENT_CHANGED" });
           assertInbound(session.cwd);
+          assertEntryScope(entry);
         },
       });
       written = true;

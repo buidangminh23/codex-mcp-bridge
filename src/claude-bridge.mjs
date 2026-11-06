@@ -28,7 +28,7 @@ import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./backgroun
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "2.2.0";
+const VERSION = "2.3.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
@@ -122,9 +122,12 @@ function readReceipt(msgId) {
 
 const queuedDeliveries = createQueuedDeliveryStore({ log });
 
-async function queueDormantDelivery(error, { message, expectedCwd, sender, accounts, meta }) {
-  if (error?.preflight?.code !== "CLAUDE_SESSION_NOT_READY" || !error.taskId || !sender || rootPolicy.enabled || !queuedDeliveryEnabled()) return null;
+const queueBlockedByRoots = () => rootPolicy.enabled && rootPolicy.mode !== "project-policy";
+
+async function queueDormantDelivery(error, { message, expectedCwd, sender, bindings, accounts, meta }) {
+  if (error?.preflight?.code !== "CLAUDE_SESSION_NOT_READY" || !error.taskId || !sender || queueBlockedByRoots() || !queuedDeliveryEnabled()) return null;
   if (readClaudeInboundPolicy(expectedCwd).value !== "accept") return null;
+  recheckScopeBindings(bindings);
   const active = await assertSender(meta);
   if (JSON.stringify(active) !== JSON.stringify(sender)) throw preflightFailure("CODEX_SENDER_CONTEXT_CHANGED", "The sender's active turn or permissions changed before this message could be queued.");
   assertAccountIdentity(requireBridgeAccounts(accounts));
@@ -138,9 +141,10 @@ async function queueDormantDelivery(error, { message, expectedCwd, sender, accou
 }
 
 function readQueuedReceipt(id) {
-  if (!desktopOnly || rootPolicy.enabled) return null;
+  if (!desktopOnly || queueBlockedByRoots()) return null;
   const entry = queuedDeliveries.peek(id);
   if (!entry || !sameAccountIdentity({ claude: entry.recipient.accountFingerprint, codex: entry.sender.accountFingerprint }, readBridgeAccounts())) return null;
+  if (rootPolicy.enabled && !(rootPolicy.allows(entry.sender.cwd) && rootPolicy.allows(entry.recipient.cwd))) return null;
   const outcome = entry.state === QUEUE_STATES.sentUnconfirmed ? readTranscriptOutcome(entry.sessionId, entry.recipient.cwd, entry.msgId) : null;
   const receipt = {
     ...publicQueueReceipt(entry),
@@ -421,7 +425,7 @@ registerTool(
           if (JSON.stringify(currentSender) !== JSON.stringify(recoverySender)) throw new Error("The sending turn changed during Desktop recovery");
         },
       }).catch(async (error) => {
-        const queued = await queueDormantDelivery(error, { message, expectedCwd, sender: recoverySender, accounts, meta: extra?._meta });
+        const queued = await queueDormantDelivery(error, { message, expectedCwd, sender: recoverySender, bindings: recoveryBindings, accounts, meta: extra?._meta });
         if (queued) return { queued };
         throw error;
       }) : { session: findClaudeSession(target, { desktopOnly }) };

@@ -1,6 +1,6 @@
 {
   "name": "@minhspark/codex-mcp-bridge",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Connect Claude, Codex, and Antigravity through MCP, with native Desktop handoffs and bridge-owned Antigravity CLI sessions.",
   "keywords": [
     "mcp",

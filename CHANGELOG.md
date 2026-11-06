@@ -2,6 +2,28 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.3.0] - 2026-11-06
+
+### Fixed
+
+- The background relay no longer inherits `CLAUDE_DESKTOP_USER_DATA` from its long-running service. A service started before Claude Desktop moved its data kept the old path for days, could not read the Claude account, and failed every Claude to Codex call with `BRIDGE_ACCOUNT_CHANGED` while its status still said `listening`. The daemon now finds the data directory itself. An explicit value is saved for it only when it selects a different directory that holds account state, and an explicit value stays authoritative everywhere else.
+- `BRIDGE_ACCOUNT_CHANGED` now names the provider and the reason when an account could not be read, instead of only saying it changed.
+- `codex-bridge-update` no longer reinstalls its own version when a newer one is published. It installs the latest version and hands the update over to it. If npm cannot be reached it continues with its own version and says so.
+- Setup replaces a `CLAUDE_DESKTOP_USER_DATA` value, from the shell or saved in a Claude or Codex entry, that points at a directory without account state. A value that still holds account state is kept.
+
+### Added
+
+- Queued delivery to a dormant Claude session now works with a project policy. It was switched off for the whole mode, so a machine using `bridge-projects` got `CLAUDE_SESSION_NOT_READY` even with `crossSessionInbound` set to `accept`. The policy must authorize the sender and the recipient directory, and both are checked again when the message is queued, immediately before it is written, and when its receipt is read. A grant revoked while a message waits ends it as `refused` with `CLAUDE_QUEUE_SCOPE_REVOKED`. Hardened deployments still do not use queued delivery.
+- `codex-bridge-update` now updates every other installation it finds on `PATH` or in a client's saved entry, waits up to a minute for running workers and the relay daemon to load the new version, and sends a read-only request through the relay to Codex Desktop. The result reports all three. An installation it cannot write is named, with the error, and does not fail the update.
+- Setup records the installed bridge in `bridge-current-install.json` under the Codex home. A supervisor started from another installation moves its worker to that one when it is at least as new, so a client that still points at a leftover copy, or a copy in a folder that needs administrator rights, gets the new version without a restart. Hardened deployments and checkouts do not follow it.
+
+### Verification and limits
+
+- Tests cover each of these paths, including a supervisor moving between installations and a project policy revoked while a message waits. The fixes were run on the Windows machine where the failure occurred.
+- A conversation already open in Codex Desktop can keep its old tool list, because Codex does not refresh it for that conversation. The tools it already has use the new version; a new tool needs a new conversation.
+- A supervisor process keeps its own code until its app restarts; only its worker moves. The Antigravity sidecar runs directly from its installation and also needs an Antigravity restart.
+- Installations older than this version do not read `bridge-current-install.json`, so the first update to it relies on updating those copies directly. An older `codex-bridge-update` still reinstalls itself: for this first update run `npm exec --yes --ignore-scripts --package=@minhspark/codex-mcp-bridge@latest -- codex-bridge-update`.
+
 ## [2.2.0] - 2026-11-06
 
 ### Added

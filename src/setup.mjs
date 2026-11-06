@@ -8,6 +8,8 @@ import { resolveCodexBin, resolvePackagedCodexBin } from "./platform.mjs";
 import { readRegularConfigFile } from "./project-policy.mjs";
 import { stableInstallPath } from "./install-paths.mjs";
 import { resolveClaudeDesktopConfigRoot } from "./desktop-account-context.mjs";
+import { activeClaudeDataRoot, repairClaudeDataPin } from "./claude-data-pin.mjs";
+import { writeCurrentInstall } from "./current-install.mjs";
 import { CODEX_MCP_TIMEOUT_MS } from "./codex-mcp-registration.mjs";
 
 const ROOT = stableInstallPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
@@ -241,6 +243,7 @@ export function runSetup({ args = [], env = process.env, platform = process.plat
   const options = setupArguments(args);
   if (options.help) return { help: `Usage: codex-bridge-setup [--check|--dry-run] [--json] [--no-download]\nUpdate the package and apply managed settings in an interactive terminal with: ${platform === "win32" ? "npx.cmd" : "npx"} -y @minhspark/codex-mcp-bridge@latest\nThe updater installs the package with lifecycle scripts disabled, then directly configures Claude Desktop, Claude Code, Codex, Antigravity and the independent worker relay. CODEX_BRIDGE_SKIP_SETUP=1 opts out. Saved configuration, background relay health and loaded native app connections are verified separately.` };
   if (options.postinstall && !automaticSetupEnabled(env)) return { skipped: true, reason: "Automatic configuration runs only for a global npm install; use codex-bridge-setup for manual setup." };
+  env = repairClaudeDataPin({ env, platform });
   if (options.check) return checkSetup({ env, platform, root, run, resolve });
   const native = platform === "win32" || platform === "darwin";
   const paths = setupPaths(env, platform);
@@ -249,6 +252,7 @@ export function runSetup({ args = [], env = process.env, platform = process.plat
   if (env.SUDO_USER && env.SUDO_USER !== "root" && typeof process.getuid === "function" && process.getuid() === 0) throw new Error("Run the global install without sudo in the account that runs the apps; setup will not write another account's configuration.");
   const runtime = ensureSetupCodex({ env, paths, platform, download: !options.noDownload, run, resolve });
   fs.mkdirSync(paths.codex, { recursive: true, mode: 0o700 });
+  writeCurrentInstall({ env: { ...env, CODEX_HOME: paths.codex }, root, claudeDataRoot: activeClaudeDataRoot(env, platform) });
   const base = setupEnvironment(env, paths, runtime.binary);
   const components = [];
   const install = (name, script, arguments_, environment = base) => {

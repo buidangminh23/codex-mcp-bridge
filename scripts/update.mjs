@@ -12,6 +12,9 @@ import { isMainModule } from "../src/install-paths.mjs";
 import { readRegularConfigFile } from "../src/project-policy.mjs";
 import { exitForVersionRequest } from "../src/cli-version.mjs";
 import { bridgeDiagnostic, withBridgeDiagnostic } from "../src/recipient-preflight.mjs";
+import { awaitBridgeRuntimes, discoverBridgeInstalls, installPrefix, probeNativeRelay } from "../src/bridge-installs.mjs";
+import { newerVersion } from "../src/current-install.mjs";
+import { repairClaudeDataPin } from "../src/claude-data-pin.mjs";
 import { SETUP_INSPECTION, setupFailureSummary } from "../src/setup.mjs";
 
 const PACKAGE = "@minhspark/codex-mcp-bridge";
@@ -33,23 +36,6 @@ function packageVersion(root, missing = false) {
     throw failure("UPDATE_PACKAGE_INVALID", "The bridge package identity or version could not be verified.", "preflight");
   }
   return value.version;
-}
-
-function newerVersion(left, right) {
-  const split = value => { const [core, ...suffix] = value.split("+")[0].split("-"); return { core: core.split(".").map(BigInt), suffix: suffix.join("-") }; };
-  const a = split(left);
-  const b = split(right);
-  for (let index = 0; index < 3; index++) if (a.core[index] !== b.core[index]) return a.core[index] > b.core[index];
-  if (!a.suffix || !b.suffix) return !a.suffix && Boolean(b.suffix);
-  const parts = [a.suffix.split("."), b.suffix.split(".")];
-  for (let index = 0; index < Math.max(...parts.map(part => part.length)); index++) {
-    const [x, y] = parts.map(part => part[index]);
-    if (x === y) continue;
-    if (x === undefined || y === undefined) return y === undefined;
-    const numeric = [x, y].map(value => /^\d+$/.test(value));
-    return numeric.every(Boolean) ? BigInt(x) > BigInt(y) : numeric[0] !== numeric[1] ? numeric[1] : x > y;
-  }
-  return false;
 }
 
 export function resolveUpdateNpm(env = process.env) {
@@ -133,9 +119,10 @@ function serviceQuiescent(config) {
 
 export async function runUpdate({ args = [], env = process.env, platform = process.platform, root = ROOT, run = execute,
   installService = installBackgroundRelay, readConfig = readRelayConfiguration, readRuntime = readRelayServiceRuntime,
-  quiescent = serviceQuiescent, now = Date.now, sleep = pause, waitMs = 120000, onProgress = () => {} } = {}) {
+  quiescent = serviceQuiescent, now = Date.now, sleep = pause, waitMs = 120000, onProgress = () => {},
+  followLatest = false, discoverInstalls = null, verifyRuntimes = null, verifyRelay = null } = {}) {
   if (args.some(arg => !["--help", "--json", "--user"].includes(arg))) throw failure("UPDATE_ARGUMENT_INVALID", "Usage: codex-bridge-update [--user] [--json] [--help]", "preflight");
-  if (args.includes("--help")) return { help: "Usage: codex-bridge-update [--user] [--json]\nSafely update the global bridge and all managed settings. --user selects the per-user npm prefix (Windows: AppData/Roaming/npm; macOS/Linux: ~/.local) without administrator rights. Legacy Windows relays migrate when existing work finishes; pending migrations can be retried with the same command." };
+  if (args.includes("--help")) return { help: "Usage: codex-bridge-update [--user] [--json]\nSafely update the global bridge to the latest published version, bring other installations and running processes to it, and test the relay. --user selects the per-user npm prefix (Windows: AppData/Roaming/npm; macOS/Linux: ~/.local) without administrator rights. Legacy Windows relays migrate when existing work finishes; pending migrations can be retried with the same command." };
   if (env.CODEX_BRIDGE_SKIP_SETUP === "1") throw failure("UPDATE_SETUP_DISABLED", "CODEX_BRIDGE_SKIP_SETUP=1 disables managed setup. Remove that explicit opt-out before requesting this complete update.", "preflight");
   if (!Number.isSafeInteger(waitMs) || waitMs < 1 || waitMs > 600000) throw failure("UPDATE_ARGUMENT_INVALID", "The update readiness deadline is invalid.", "preflight");
   root = fs.realpathSync.native(root);
@@ -170,6 +157,22 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   cwd = neutralDirectory([root, globalRoot], env);
   const previousVersion = packageVersion(globalRoot, true);
   if (previousVersion && newerVersion(previousVersion, version)) throw failure("UPDATE_DOWNGRADE_REFUSED", "The global bridge is newer than this updater. Run the update command with the latest published package.", "preflight");
+  if (followLatest && env.CODEX_BRIDGE_UPDATE_HANDOFF !== "1") {
+    let latest = null;
+    try { latest = (await command([npm, "view", `${PACKAGE}@latest`, "version"], "preflight", 60000)).trim(); }
+    catch { onProgress(`npm could not report the latest bridge; continuing with ${version}.`); }
+    if (latest && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?$/.test(latest) && newerVersion(latest, version)) {
+      onProgress(`Bridge ${latest} is available and this updater is ${version}. Installing it and handing over.`);
+      await command([npm, "install", "--global", "--prefix", prefix, `${PACKAGE}@${latest}`, "--ignore-scripts"], "installation", 600000, { ...childEnv, CODEX_BRIDGE_SKIP_SETUP: "1" });
+      if (packageVersion(globalRoot) !== latest) throw failure("UPDATE_VERSION_MISMATCH", "The global package version does not match the latest published version. Rerun the same update command.", "verification");
+      const handoff = [path.join(globalRoot, "scripts", "update.mjs"), ...args.filter(arg => arg !== "--json"), "--json"];
+      const output = await command(handoff, "verification", 1200000, { ...childEnv, CODEX_BRIDGE_UPDATE_HANDOFF: "1" }, false, line => { if (line) onProgress(line); });
+      let handed;
+      try { handed = JSON.parse(output); } catch {}
+      if (handed?.updated !== true) throw failure("UPDATE_SETUP_INCOMPLETE", `The latest bridge updater did not return a verifiable result. ${RETRY}`, "verification");
+      return handed;
+    }
+  }
   const config = readConfig({ env: childEnv, platform, missing: true });
   let runtime;
   if (config) {
@@ -212,6 +215,18 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   await command([npm, "install", "--global", "--prefix", prefix, `${PACKAGE}@${version}`, "--ignore-scripts"],
     "installation", 600000, { ...childEnv, CODEX_BRIDGE_SKIP_SETUP: "1" });
   if (packageVersion(globalRoot) !== version) throw failure("UPDATE_VERSION_MISMATCH", "The global package version does not match the updater version. Rerun the same update command.", "verification");
+  const otherInstalls = [];
+  for (const other of discoverInstalls ? discoverInstalls({ env: childEnv, platform, exclude: [globalRoot, root] }) : []) {
+    const before = packageVersion(other, true);
+    if (!before || !newerVersion(version, before)) { otherInstalls.push({ root: other, version: before, updated: false }); continue; }
+    onProgress(`Updating the other bridge installation at ${other}.`);
+    try {
+      await command([npm, "install", "--global", "--prefix", installPrefix(other, platform), `${PACKAGE}@${version}`, "--ignore-scripts"], "installation", 600000, { ...childEnv, CODEX_BRIDGE_SKIP_SETUP: "1" });
+      otherInstalls.push({ root: other, version: packageVersion(other, true), updated: true });
+    } catch (error) {
+      otherInstalls.push({ root: other, version: before, updated: false, code: error.cause?.code ?? error.code });
+    }
+  }
   onProgress("Applying and verifying managed settings from the installed bridge. Each step can take up to a minute while Codex CLI reads its configuration.");
   const setupProgress = line => { const step = SETUP_PROGRESS.exec(line)?.[1]; if (step) onProgress(`  ${step}`); };
   let setup;
@@ -220,15 +235,43 @@ export async function runUpdate({ args = [], env = process.env, platform = proce
   if (setup?.configured !== true) throw failure("UPDATE_SETUP_INCOMPLETE", `The global bridge settings are incomplete. ${setupFailureSummary(setup) ?? SETUP_INSPECTION} ${RETRY}`, "verification");
   onProgress("Verifying the owned relay runtime.");
   const service = await awaitService(globalRoot, false, "verification");
-  return { updated: true, configured: true, version, previousVersion, migrated, service, desktopConnectionsVerified: false, opensApps: false, opensChats: false };
+  if (verifyRuntimes) onProgress("Waiting for running bridge processes to load the new version.");
+  const runtimes = verifyRuntimes ? await verifyRuntimes({ version }) : null;
+  if (verifyRelay) onProgress("Testing the relay to Codex Desktop.");
+  const relay = verifyRelay ? await verifyRelay({ env: childEnv, platform }) : null;
+  return { updated: true, configured: true, version, previousVersion, migrated, service, desktopConnectionsVerified: relay?.state === "ready", opensApps: false, opensChats: false,
+    ...(discoverInstalls ? { otherInstalls } : {}), ...(runtimes ? { runtimes } : {}), ...(relay ? { relay } : {}) };
+}
+
+const RELAY_SUMMARY = {
+  ready: "Relay to Codex Desktop tested and working.",
+  not_listening: "Relay to Codex Desktop not tested: Codex Desktop is closed or its relay is not listening yet.",
+  not_applicable: "Relay to Codex Desktop does not apply on this platform.",
+  account_unverified: "Relay to Codex Desktop not tested: the Claude or Codex account could not be verified.",
+  failed: "Relay to Codex Desktop answered with an error.",
+};
+
+export function updateSummary(result) {
+  const pending = result.runtimes?.pending ?? [];
+  const stale = (result.otherInstalls ?? []).filter(install => install.version && install.version !== result.version);
+  return [`Bridge ${result.version} updated; managed settings verified. Background relay ${result.service.ready ? "ready" : "remains intentionally disabled"}.`,
+    ...(result.relay ? [`${RELAY_SUMMARY[result.relay.state] ?? "Relay to Codex Desktop state is unknown."}${result.relay.code ? ` (${result.relay.code})` : ""}`] : ["Desktop connections have not been verified."]),
+    ...(result.runtimes?.inspected ? [pending.length
+      ? `${pending.length} running bridge process(es) have not loaded ${result.version} yet: ${pending.map(item => `${item.entry} ${item.version ?? "unknown"}`).join(", ")}. They reload when their current work finishes; restart the app that owns them if they do not.`
+      : `All ${result.runtimes.current} running bridge process(es) loaded ${result.version}.`] : []),
+    ...stale.map(install => `Another installation stays at ${install.version} at ${install.root}${install.code ? ` (${install.code})` : ""}. Running processes follow ${result.version}; update it from an administrator terminal to remove it from this list.`),
+    "A conversation opened before this update can keep its old tool list; the tools it already has use the new version.",
+  ].join("\n") + "\n";
 }
 
 export async function runUpdateCli(args = process.argv.slice(2)) {
   try {
     process.chdir(neutralDirectory([ROOT], process.env));
-    const result = await runUpdate({ args, onProgress: message => process.stderr.write(`${message}\n`) });
-    process.stdout.write(result.help ? `${result.help}\n` : args.includes("--json") ? `${JSON.stringify(result, null, 2)}\n`
-      : `Bridge ${result.version} updated; managed settings verified. Background relay ${result.service.ready ? "ready" : "remains intentionally disabled"}.\nDesktop connections have not been verified. Check codex_bridge_status, claude_bridge_status and antigravity_bridge_status in the existing apps.\n`);
+    const result = await runUpdate({ args, onProgress: message => process.stderr.write(`${message}\n`), followLatest: true,
+      discoverInstalls: discoverBridgeInstalls, verifyRuntimes: awaitBridgeRuntimes,
+      verifyRelay: ({ env, platform }) => probeNativeRelay({ env: repairClaudeDataPin({ env, platform }), platform }) });
+    process.stdout.write(result.help ? `${result.help}\n` : args.includes("--json") ? `${JSON.stringify(result, null, 2)}\n` : updateSummary(result));
+    if (result.relay?.state === "failed" && process.env.CODEX_BRIDGE_UPDATE_HANDOFF !== "1") process.exitCode = 1;
   } catch (error) {
     const options = { component: "bridge-update", operation: "update", deliveryState: "not_applicable" };
     if (args.includes("--json")) process.stdout.write(JSON.stringify({ updated: false, pending: error.pending === true, diagnostic: bridgeDiagnostic(error, options) }, null, 2) + "\n");

@@ -133,13 +133,71 @@ describe("Claude Desktop persisted account identity", () => {
     let reads = 0;
     mock.method(fs, "readSync", (...args) => {
       const count = originalRead(...args);
-      if (++reads === 1) writeConfig(ACCOUNT_B);
+      writeConfig(++reads % 2 ? ACCOUNT_B : ACCOUNT_A);
       return count;
     });
     const state = resolve();
     expectHiddenIdentity(state, "unavailable");
     assert.match(state.reason, /changed during inspection/);
     assert.ok(reads >= 2);
+    assert.equal("transient" in state, false);
+  });
+
+  it("ignores unrelated changes to the data directory during inspection", () => {
+    writeConfig();
+    const originalLstat = fs.lstatSync;
+    let ticks = 0n;
+    mock.method(fs, "lstatSync", (target, ...args) => {
+      const stat = originalLstat(target, ...args);
+      if (target !== root) return stat;
+      ticks += 1n;
+      return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mtimeNs: stat.mtimeNs + ticks, ctimeNs: stat.ctimeNs + ticks });
+    });
+    const state = resolve();
+    assert.equal(state.status, "verified");
+    assert.equal(state.accountId, ACCOUNT_A);
+    assert.equal("transient" in state, false);
+    assert.ok(ticks >= 2n);
+  });
+
+  it("reads again when the directory is replaced during inspection", () => {
+    writeConfig();
+    const originalLstat = fs.lstatSync;
+    let calls = 0;
+    mock.method(fs, "lstatSync", (target, ...args) => {
+      const stat = originalLstat(target, ...args);
+      if (target !== root || ++calls !== 2) return stat;
+      return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { ino: stat.ino + 1n });
+    });
+    const state = resolve();
+    assert.equal(state.status, "verified");
+    assert.ok(calls > 2);
+  });
+
+  it("confirms the new account when it changes once during inspection", () => {
+    writeConfig();
+    const originalRead = fs.readSync;
+    let reads = 0;
+    mock.method(fs, "readSync", (...args) => {
+      const count = originalRead(...args);
+      if (++reads === 1) writeConfig(ACCOUNT_B);
+      return count;
+    });
+    const state = resolve();
+    assert.equal(state.status, "verified");
+    assert.equal(state.accountId, ACCOUNT_B);
+  });
+
+  it("stops reading after a bounded number of attempts when the file stays unreadable", () => {
+    writeConfig();
+    fs.writeFileSync(path.join(root, "config.json"), "{");
+    const originalRead = fs.readSync;
+    let reads = 0;
+    mock.method(fs, "readSync", (...args) => { reads += 1; return originalRead(...args); });
+    const state = resolve();
+    expectHiddenIdentity(state, "unavailable");
+    assert.match(state.reason, /could not be read completely/);
+    assert.equal(reads, 4);
   });
 
   it("rejects a regular config path replaced with a directory", () => {
@@ -230,7 +288,7 @@ describe("Claude Desktop account data discovery", () => {
     assert.equal(fs.existsSync(root), false);
   });
 
-  it("rejects a newly appearing migrated profile during account inspection", () => {
+  it("reports a migrated profile appearing during inspection as ambiguous", () => {
     const options = migratedWindows();
     const originalRead = fs.readSync;
     let created = false;
@@ -242,10 +300,10 @@ describe("Claude Desktop account data discovery", () => {
       }
       return count;
     });
-    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+    expectHiddenIdentity(readClaudeAccountContext(options), "ambiguous");
   });
 
-  it("rejects a legacy root becoming active during migrated account inspection", () => {
+  it("reports a legacy root becoming active during inspection as ambiguous", () => {
     const options = migratedWindows();
     const originalRead = fs.readSync;
     let activated = false;
@@ -257,7 +315,7 @@ describe("Claude Desktop account data discovery", () => {
       }
       return count;
     });
-    expectHiddenIdentity(readClaudeAccountContext(options), "unavailable");
+    expectHiddenIdentity(readClaudeAccountContext(options), "ambiguous");
   });
 
   it("rejects symbolic migrated profiles and bounds the number of discovered roots", () => {
@@ -307,7 +365,7 @@ describe("Claude Desktop account data discovery", () => {
     assert.equal(readClaudeAccountContext({ platform: "win32", env: { ...env, CLAUDE_DESKTOP_USER_DATA: root } }).accountId, ACCOUNT_A);
   });
 
-  it("rejects a newly appearing packaged root during discovery", () => {
+  it("reports a packaged root appearing during discovery as ambiguous", () => {
     const local = path.join(sandbox, "Local");
     const packages = path.join(local, "Packages");
     fs.mkdirSync(packages, { recursive: true });
@@ -322,7 +380,7 @@ describe("Claude Desktop account data discovery", () => {
       }
       return count;
     });
-    expectHiddenIdentity(readClaudeAccountContext({ platform: "win32", env: { HOME: sandbox, APPDATA: sandbox, LOCALAPPDATA: local } }), "unavailable");
+    expectHiddenIdentity(readClaudeAccountContext({ platform: "win32", env: { HOME: sandbox, APPDATA: sandbox, LOCALAPPDATA: local } }), "ambiguous");
   });
 
   it("does not traverse a symbolic Windows package directory", () => {

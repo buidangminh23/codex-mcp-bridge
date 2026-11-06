@@ -8,8 +8,11 @@ const PACKAGE_NAME = /^Claude_[a-z0-9._-]+$/i;
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const MAX_PACKAGES = 512;
 const MAX_ROOTS = 16;
+const READ_ATTEMPTS = 4;
+const READ_RETRY_MS = 25;
 const VERSION_FIELDS = ["size", "mtimeNs", "ctimeNs", "ino", "dev"];
 const sameVersion = (left, right) => VERSION_FIELDS.every((field) => left[field] === right[field]);
+const sameDirectory = (left, right) => left.ino === right.ino && left.dev === right.dev;
 const isMissing = (error) => error.code === "ENOENT";
 
 function result(status, reason, root = null, accountId = null) {
@@ -148,7 +151,7 @@ function readConfig(root) {
   } finally {
     fs.closeSync(descriptor);
   }
-  if (!sameVersion(rootStat, directoryStat(root))) throw new Error("root changed");
+  if (!sameDirectory(rootStat, directoryStat(root))) throw new Error("root changed");
   const config = JSON.parse(bytes.toString("utf8"));
   if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("invalid config");
   const hasAccount = Object.hasOwn(config, "lastKnownAccountUuid");
@@ -167,12 +170,12 @@ function readConfig(root) {
 
 function sameSnapshot(left, right) {
   return left.kind === right.kind &&
-    (!left.rootStat || right.rootStat && sameVersion(left.rootStat, right.rootStat)) &&
+    (!left.rootStat || right.rootStat && sameDirectory(left.rootStat, right.rootStat)) &&
     (!left.fileStat || right.fileStat && sameVersion(left.fileStat, right.fileStat)) &&
     (!left.bytes || right.bytes && left.bytes.equals(right.bytes));
 }
 
-export function readClaudeAccountContext({ platform = process.platform, env = process.env, root } = {}) {
+function inspectClaudeAccountContext({ platform, env, root }) {
   let roots;
   try {
     roots = candidateRoots({ platform, env, root });
@@ -180,7 +183,7 @@ export function readClaudeAccountContext({ platform = process.platform, env = pr
     const currentRoots = candidateRoots({ platform, env, root });
     if (roots.length !== currentRoots.length || roots.some((candidate, index) => candidate !== currentRoots[index]) ||
         roots.some((candidate, index) => !sameSnapshot(snapshots[index], readConfig(candidate)))) {
-      return result("unavailable", "Claude Desktop account state changed during inspection; inspect the existing session again.", roots.length === 1 ? roots[0] : null);
+      return { ...result("unavailable", "Claude Desktop account state changed during inspection; inspect the existing session again.", roots.length === 1 ? roots[0] : null), transient: true };
     }
     const credible = snapshots.map((snapshot, index) => ({ ...snapshot, root: roots[index] }))
       .filter((snapshot) => snapshot.kind === "verified" || snapshot.kind === "signed_out");
@@ -190,6 +193,14 @@ export function readClaudeAccountContext({ platform = process.platform, env = pr
     if (selected.kind === "signed_out") return result("signed_out", "Claude Desktop's persisted account state reports signed out; no destination is confirmed.", selected.root);
     return result("verified", "Claude Desktop's persisted signed-in account state identifies this account; destination session identity still requires verification.", selected.root, selected.accountId);
   } catch {
-    return result("unavailable", "Claude Desktop account state could not be read completely and consistently; no current account is confirmed.", roots?.length === 1 ? roots[0] : null);
+    return { ...result("unavailable", "Claude Desktop account state could not be read completely and consistently; no current account is confirmed.", roots?.length === 1 ? roots[0] : null), transient: true };
+  }
+}
+
+export function readClaudeAccountContext({ platform = process.platform, env = process.env, root } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    const { transient, ...context } = inspectClaudeAccountContext({ platform, env, root });
+    if (!transient || attempt >= READ_ATTEMPTS) return context;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, READ_RETRY_MS);
   }
 }

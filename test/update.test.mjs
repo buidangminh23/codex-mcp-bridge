@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { runUpdate, resolveUpdateNpm } from "../scripts/update.mjs";
+import { runUpdate, resolveUpdateNpm, updateSummary } from "../scripts/update.mjs";
 import { readRelayServiceRuntime, RELAY_SERVICE_OWNER } from "../src/background-relay-service.mjs";
 
 const PACKAGE = "@minhspark/codex-mcp-bridge";
@@ -584,4 +584,88 @@ test("CLI JSON failures stay parseable and contain safe typed diagnostics", () =
   assert.match(parsed.diagnostic.reportId, /^[a-f0-9-]+$/);
   assert.equal(result.stderr, "");
   assert.doesNotMatch(result.stdout, /never-report-cli-secret/);
+});
+
+const LATEST = "1.26.3";
+
+function withLatest(f, latest = LATEST) {
+  const original = f.options.run;
+  const handoffScript = path.join(f.globalRoot, "scripts", "update.mjs");
+  f.options.run = async (command, args, settings) => {
+    if (args[1] === "view") { f.calls.push({ kind: "command", command, args, settings }); return latest instanceof Error ? { status: 1, error: latest, stderr: "" } : { status: 0, stdout: `${latest}\n` }; }
+    if (args[1] === "install" && args.at(-2).endsWith(`@${LATEST}`)) { f.calls.push({ kind: "command", command, args, settings }); f.writePackage(f.globalRoot, LATEST); return { status: 0, stdout: "" }; }
+    if (args[0] === handoffScript) { f.calls.push({ kind: "handoff", args, settings }); return { status: 0, stdout: JSON.stringify({ updated: true, version: LATEST, service: { ready: true } }) }; }
+    return original(command, args, settings);
+  };
+}
+
+test("an installed updater moves to the latest published version and hands the update to it", async t => {
+  const f = fixture(t, VERSION);
+  withLatest(f);
+  const result = await runUpdate({ ...f.options, args: ["--user"].filter(() => false), followLatest: true });
+  assert.equal(result.version, LATEST);
+  assert.equal(f.installCalls().at(-1).args.includes(`${PACKAGE}@${LATEST}`), true);
+  assert.equal(f.installCalls().at(-1).settings.env.CODEX_BRIDGE_SKIP_SETUP, "1");
+  const handoff = f.calls.find(item => item.kind === "handoff");
+  assert.ok(handoff.args.includes("--json"));
+  assert.equal(handoff.settings.env.CODEX_BRIDGE_UPDATE_HANDOFF, "1");
+  assert.equal(f.calls.some(item => item.kind === "service"), false);
+});
+
+test("the handed-over updater does not look for a newer version again", async t => {
+  const f = fixture(t, VERSION);
+  withLatest(f);
+  const result = await runUpdate({ ...f.options, env: { ...f.env, CODEX_BRIDGE_UPDATE_HANDOFF: "1" }, followLatest: true });
+  assert.equal(result.version, VERSION);
+  assert.equal(f.calls.some(item => item.args?.[1] === "view"), false);
+});
+
+test("a current updater stays on its version and an unreachable registry does not stop the update", async t => {
+  for (const latest of [VERSION, "1.26.1", new Error("offline")]) {
+    const f = fixture(t, VERSION);
+    withLatest(f, latest);
+    const progress = [];
+    const result = await runUpdate({ ...f.options, followLatest: true, onProgress: message => progress.push(message) });
+    assert.equal(result.version, VERSION);
+    assert.equal(f.calls.some(item => item.kind === "handoff"), false);
+    assert.equal(progress.some(message => /could not report the latest/.test(message)), latest instanceof Error);
+  }
+});
+
+test("other installations move to the same version and one that cannot be written is reported", async t => {
+  const f = fixture(t, VERSION);
+  const outdated = path.join(f.directory, "machine prefix", "node_modules", "@minhspark", "codex-mcp-bridge");
+  const locked = path.join(f.directory, "locked prefix", "node_modules", "@minhspark", "codex-mcp-bridge");
+  const current = path.join(f.directory, "current prefix", "node_modules", "@minhspark", "codex-mcp-bridge");
+  f.writePackage(outdated, "1.26.1");
+  f.writePackage(locked, "1.26.1");
+  f.writePackage(current, VERSION);
+  const original = f.options.run;
+  f.options.run = async (command, args, settings) => {
+    const target = args[args.indexOf("--prefix") + 1];
+    if (args[1] === "install" && target === path.join(f.directory, "locked prefix")) { const error = Object.assign(new Error("denied"), { code: "EPERM" }); return { status: 1, error, stderr: "npm error code EPERM" }; }
+    if (args[1] === "install" && target === path.join(f.directory, "machine prefix")) { f.calls.push({ kind: "command", command, args, settings }); f.writePackage(outdated, VERSION); return { status: 0, stdout: "" }; }
+    return original(command, args, settings);
+  };
+  const result = await runUpdate({ ...f.options, discoverInstalls: () => [outdated, locked, current] });
+  assert.equal(result.updated, true);
+  assert.deepEqual(result.otherInstalls.map(item => [item.version, item.updated]), [[VERSION, true], ["1.26.1", false], [VERSION, false]]);
+  assert.equal(result.otherInstalls[1].code, "EPERM");
+  assert.match(updateSummary(result), /Another installation stays at 1\.26\.1/);
+});
+
+test("the update reports running processes and the relay test from the new version", async t => {
+  const f = fixture(t, VERSION);
+  const seen = {};
+  const result = await runUpdate({ ...f.options, verifyRuntimes: async request => { seen.runtimes = request; return { inspected: true, current: 3, pending: [{ entry: "index.mjs", version: "1.26.1" }] }; },
+    verifyRelay: async request => { seen.relay = request.platform; return { state: "ready" }; } });
+  assert.equal(seen.runtimes.version, VERSION);
+  assert.equal(seen.relay, "win32");
+  assert.equal(result.desktopConnectionsVerified, true);
+  const summary = updateSummary(result);
+  assert.match(summary, /Relay to Codex Desktop tested and working/);
+  assert.match(summary, /1 running bridge process\(es\) have not loaded 1\.26\.2 yet: index\.mjs 1\.26\.1/);
+  const failed = await runUpdate({ ...f.options, verifyRelay: async () => ({ state: "failed", code: "BRIDGE_ACCOUNT_CHANGED" }) });
+  assert.equal(failed.desktopConnectionsVerified, false);
+  assert.match(updateSummary(failed), /answered with an error\. \(BRIDGE_ACCOUNT_CHANGED\)/);
 });

@@ -168,3 +168,11 @@ it("refuses unverified receipt-time accounts and limits candidate inspection", (
   assert.equal(bindUnsolicitedClaudeMessageAccount(f.record, { ...f.options, listSessions: () => Array(8193).fill(f.session) }), false);
   assert.equal(f.checked.length, 0);
 });
+
+it("names the provider and reason when an account became unreadable instead of only claiming it changed", () => {
+  const identity = requireBridgeAccounts(signedIn());
+  const accounts = { ...signedIn(), claude: { status: "unavailable", reason: "Claude Desktop account state is unavailable; no current account is confirmed." } };
+  assert.throws(() => assertAccountIdentity(identity, accounts), (error) => error.code === "BRIDGE_ACCOUNT_CHANGED"
+    && /Claude is unavailable: Claude Desktop account state is unavailable/.test(error.message));
+  assert.throws(() => assertAccountIdentity(identity, signedIn("claude-b")), (error) => error.code === "BRIDGE_ACCOUNT_CHANGED" && !/ is unavailable/.test(error.message));
+});

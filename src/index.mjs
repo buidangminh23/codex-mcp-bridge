@@ -47,7 +47,7 @@ import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./backgroun
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "2.2.0";
+const VERSION = "2.3.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -1122,7 +1122,7 @@ registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-const queuedDelivery = desktopTasksEnabled && !security.hardenedRoots.enabled && queuedDeliveryEnabled() ? createQueuedDeliveryDrain({
+const queuedDelivery = desktopTasksEnabled && (!security.hardenedRoots.enabled || security.hardenedRoots.mode === "project-policy") && queuedDeliveryEnabled() ? createQueuedDeliveryDrain({
   store: createQueuedDeliveryStore({ log }),
   readAccounts: readBridgeAccounts,
   readSender: readClaudeSenderContext,
@@ -1130,6 +1130,10 @@ const queuedDelivery = desktopTasksEnabled && !security.hardenedRoots.enabled &&
   listSessions: listClaudeSessions,
   readInbound: readClaudeInboundPolicy,
   assertCwd: assertClaudeSessionCwd,
+  assertScope: (entry) => {
+    security.hardenedRoots.assert(entry.sender.cwd, "Queued Codex sender working directory");
+    security.hardenedRoots.assert(entry.recipient.cwd, "Queued Claude recipient working directory");
+  },
   createPeer: (options) => new PeerEndpoint(options),
   schedule: (run) => reload.run(run),
   log,

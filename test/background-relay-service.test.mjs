@@ -7,7 +7,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { acquireRelayServiceLock, readRelayServiceRuntime, RELAY_SERVICE_OWNER, runBackgroundRelayService } from "../src/background-relay-service.mjs";
+import { acquireRelayServiceLock, readRelayServiceRuntime, RELAY_SERVICE_OWNER, relayServiceRuntimeId, runBackgroundRelayService } from "../src/background-relay-service.mjs";
 
 const SECRET = "private-service-auth-value";
 
@@ -377,4 +377,29 @@ test("a same-path version update drains the current daemon and records a new run
   const running = f.writes.filter(({ value }) => value.status === "running");
   assert.notEqual(running[0].value.runtimeId, running[1].value.runtimeId);
   assert.ok(f.calls.every(({ child }) => child.stoppedWith === undefined));
+});
+
+test("the daemon never inherits a Claude data pin from the long-running service", async () => {
+  const stale = path.resolve("old-claude-root");
+  const f = fixture({ settings: { env: { HOME: "user-home", CLAUDE_DESKTOP_USER_DATA: stale } } });
+  await f.run();
+  assert.equal(Object.hasOwn(f.calls[0].settings.env, "CLAUDE_DESKTOP_USER_DATA"), false);
+});
+
+test("only a pin saved by the installer reaches the daemon and it changes the runtime identity", async () => {
+  const pinned = path.resolve("explicit-claude-root");
+  const runtime = { schemaVersion: 1, owner: RELAY_SERVICE_OWNER, packageRoot: process.cwd(), nodeExecutable: process.execPath };
+  const f = fixture({ settings: { env: { HOME: "user-home", CLAUDE_DESKTOP_USER_DATA: path.resolve("old-claude-root") },
+    readRuntime: () => ({ ...runtime, claudeDesktopUserData: pinned }) } });
+  await f.run();
+  assert.equal(f.calls[0].settings.env.CLAUDE_DESKTOP_USER_DATA, pinned);
+  assert.notEqual(relayServiceRuntimeId(runtime), relayServiceRuntimeId({ ...runtime, claudeDesktopUserData: pinned }));
+});
+
+test("a saved Claude data pin must be an absolute path", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-runtime-pin-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(directory, "service-runtime.json"), JSON.stringify({ schemaVersion: 1, owner: RELAY_SERVICE_OWNER,
+    packageRoot: process.cwd(), nodeExecutable: process.execPath, claudeDesktopUserData: "relative" }));
+  assert.throws(() => readRelayServiceRuntime(directory), { code: "SERVICE_RUNTIME_INVALID" });
 });

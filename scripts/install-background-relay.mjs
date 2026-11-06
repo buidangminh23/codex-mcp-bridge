@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { callBackgroundRelay } from "../src/background-relay-client.mjs";
 import { readRelayConfiguration, writeRelayJson } from "../src/background-relay-config.mjs";
 import { RELAY_SERVICE_OWNER, relayServiceRuntimeId } from "../src/background-relay-service.mjs";
+import { relayClaudeDataPin } from "../src/claude-data-pin.mjs";
 import { isMainModule, stableNodeBin } from "../src/install-paths.mjs";
 import { readRegularConfigFile } from "../src/project-policy.mjs";
 
@@ -376,9 +377,11 @@ export async function installBackgroundRelay({ env = process.env, platform = pro
       ...Object.fromEntries(Object.entries(env).filter(([name]) => !RUNTIME_ENVIRONMENT_KEYS.includes(name))),
       ...previousRuntime.environment,
     } : env;
+    const claudeDataPin = check && previousRuntime ? previousRuntime.claudeDesktopUserData : relayClaudeDataPin(env, platform);
     const desiredRuntime = { schemaVersion: 1, owner: RELAY_SERVICE_OWNER, packageRoot: root, nodeExecutable: node, packageVersion,
       environment: check && previousRuntime ? previousRuntime.environment ?? {}
-        : Object.fromEntries(Object.entries(savedEnvironment(env, config)).filter(([name]) => !name.startsWith("AGENT_RELAY_"))) };
+        : Object.fromEntries(Object.entries(savedEnvironment(env, config)).filter(([name]) => !name.startsWith("AGENT_RELAY_"))),
+      ...(claudeDataPin ? { claudeDesktopUserData: claudeDataPin } : {}) };
     const expectedRuntimeId = relayServiceRuntimeId(desiredRuntime);
     const runtimeChanged = JSON.stringify(previousRuntime) !== JSON.stringify(desiredRuntime);
     const prepareRuntime = async () => {

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-11-11T21:59:43.626Z",
+  "updatedAt": "2026-11-12T03:01:27.928Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -33321,6 +33321,788 @@
         "npm": "2026-11-11T21:59:43.626Z",
         "repository": "2026-11-11T21:59:43.626Z",
         "releases": "2026-11-11T21:59:43.626Z"
+      }
+    },
+    {
+      "collectedAt": "2026-11-12T03:01:27.928Z",
+      "views": {
+        "count": 398,
+        "uniques": 112,
+        "views": [
+          {
+            "timestamp": "2026-10-28T00:00:00Z",
+            "count": 43,
+            "uniques": 14
+          },
+          {
+            "timestamp": "2026-10-29T00:00:00Z",
+            "count": 56,
+            "uniques": 25
+          },
+          {
+            "timestamp": "2026-10-30T00:00:00Z",
+            "count": 30,
+            "uniques": 11
+          },
+          {
+            "timestamp": "2026-10-31T00:00:00Z",
+            "count": 42,
+            "uniques": 11
+          },
+          {
+            "timestamp": "2026-11-01T00:00:00Z",
+            "count": 36,
+            "uniques": 11
+          },
+          {
+            "timestamp": "2026-11-02T00:00:00Z",
+            "count": 29,
+            "uniques": 7
+          },
+          {
+            "timestamp": "2026-11-03T00:00:00Z",
+            "count": 40,
+            "uniques": 14
+          },
+          {
+            "timestamp": "2026-11-04T00:00:00Z",
+            "count": 29,
+            "uniques": 15
+          },
+          {
+            "timestamp": "2026-11-05T00:00:00Z",
+            "count": 18,
+            "uniques": 11
+          },
+          {
+            "timestamp": "2026-11-06T00:00:00Z",
+            "count": 16,
+            "uniques": 7
+          },
+          {
+            "timestamp": "2026-11-07T00:00:00Z",
+            "count": 10,
+            "uniques": 7
+          },
+          {
+            "timestamp": "2026-11-08T00:00:00Z",
+            "count": 12,
+            "uniques": 7
+          },
+          {
+            "timestamp": "2026-11-09T00:00:00Z",
+            "count": 10,
+            "uniques": 5
+          },
+          {
+            "timestamp": "2026-11-10T00:00:00Z",
+            "count": 27,
+            "uniques": 12
+          }
+        ]
+      },
+      "clones": {
+        "count": 2652,
+        "uniques": 526,
+        "clones": [
+          {
+            "timestamp": "2026-10-28T00:00:00Z",
+            "count": 243,
+            "uniques": 45
+          },
+          {
+            "timestamp": "2026-10-29T00:00:00Z",
+            "count": 174,
+            "uniques": 52
+          },
+          {
+            "timestamp": "2026-10-30T00:00:00Z",
+            "count": 99,
+            "uniques": 29
+          },
+          {
+            "timestamp": "2026-10-31T00:00:00Z",
+            "count": 132,
+            "uniques": 37
+          },
+          {
+            "timestamp": "2026-11-01T00:00:00Z",
+            "count": 430,
+            "uniques": 70
+          },
+          {
+            "timestamp": "2026-11-02T00:00:00Z",
+            "count": 333,
+            "uniques": 94
+          },
+          {
+            "timestamp": "2026-11-03T00:00:00Z",
+            "count": 268,
+            "uniques": 56
+          },
+          {
+            "timestamp": "2026-11-04T00:00:00Z",
+            "count": 71,
+            "uniques": 24
+          },
+          {
+            "timestamp": "2026-11-05T00:00:00Z",
+            "count": 455,
+            "uniques": 85
+          },
+          {
+            "timestamp": "2026-11-06T00:00:00Z",
+            "count": 256,
+            "uniques": 78
+          },
+          {
+            "timestamp": "2026-11-07T00:00:00Z",
+            "count": 58,
+            "uniques": 32
+          },
+          {
+            "timestamp": "2026-11-08T00:00:00Z",
+            "count": 51,
+            "uniques": 28
+          },
+          {
+            "timestamp": "2026-11-09T00:00:00Z",
+            "count": 40,
+            "uniques": 21
+          },
+          {
+            "timestamp": "2026-11-10T00:00:00Z",
+            "count": 42,
+            "uniques": 22
+          }
+        ]
+      },
+      "repository": {
+        "stars": 32,
+        "forks": 11,
+        "subscribers": 0
+      },
+      "npm": {
+        "start": "2026-10-12",
+        "end": "2026-11-10",
+        "downloads": [
+          {
+            "day": "2026-10-12",
+            "downloads": 360
+          },
+          {
+            "day": "2026-10-13",
+            "downloads": 414
+          },
+          {
+            "day": "2026-10-14",
+            "downloads": 0
+          },
+          {
+            "day": "2026-10-15",
+            "downloads": 0
+          },
+          {
+            "day": "2026-10-16",
+            "downloads": 47
+          },
+          {
+            "day": "2026-10-17",
+            "downloads": 72
+          },
+          {
+            "day": "2026-10-18",
+            "downloads": 57
+          },
+          {
+            "day": "2026-10-19",
+            "downloads": 0
+          },
+          {
+            "day": "2026-10-20",
+            "downloads": 0
+          },
+          {
+            "day": "2026-10-21",
+            "downloads": 232
+          },
+          {
+            "day": "2026-10-22",
+            "downloads": 873
+          },
+          {
+            "day": "2026-10-23",
+            "downloads": 55
+          },
+          {
+            "day": "2026-10-24",
+            "downloads": 608
+          },
+          {
+            "day": "2026-10-25",
+            "downloads": 35
+          },
+          {
+            "day": "2026-10-26",
+            "downloads": 341
+          },
+          {
+            "day": "2026-10-27",
+            "downloads": 52
+          },
+          {
+            "day": "2026-10-28",
+            "downloads": 200
+          },
+          {
+            "day": "2026-10-29",
+            "downloads": 221
+          },
+          {
+            "day": "2026-10-30",
+            "downloads": 290
+          },
+          {
+            "day": "2026-10-31",
+            "downloads": 489
+          },
+          {
+            "day": "2026-11-01",
+            "downloads": 1345
+          },
+          {
+            "day": "2026-11-02",
+            "downloads": 566
+          },
+          {
+            "day": "2026-11-03",
+            "downloads": 879
+          },
+          {
+            "day": "2026-11-04",
+            "downloads": 192
+          },
+          {
+            "day": "2026-11-05",
+            "downloads": 1566
+          },
+          {
+            "day": "2026-11-06",
+            "downloads": 999
+          },
+          {
+            "day": "2026-11-07",
+            "downloads": 167
+          },
+          {
+            "day": "2026-11-08",
+            "downloads": 303
+          },
+          {
+            "day": "2026-11-09",
+            "downloads": 172
+          },
+          {
+            "day": "2026-11-10",
+            "downloads": 93
+          }
+        ]
+      },
+      "releases": [
+        {
+          "tag": "v2.3.2",
+          "assets": []
+        },
+        {
+          "tag": "v2.3.1",
+          "assets": []
+        },
+        {
+          "tag": "v2.3.0",
+          "assets": []
+        },
+        {
+          "tag": "v2.2.0",
+          "assets": []
+        },
+        {
+          "tag": "v2.1.1",
+          "assets": []
+        },
+        {
+          "tag": "v2.1.0",
+          "assets": []
+        },
+        {
+          "tag": "v2.0.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.27.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.27.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.27.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.10",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.9",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.8",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.7",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.6",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.4",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.26.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.25.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.25.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.25.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.25.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.24.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.24.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.23.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.21",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.20",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.19",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.18",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.17",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.16",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.15",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.14",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.13",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.12",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.11",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.10",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.9",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.8",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.7",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.6",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.4",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.22.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.21.6",
+          "assets": []
+        },
+        {
+          "tag": "v1.21.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.21.4",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.4.zip",
+              "downloads": 3
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.4.zip.sha256",
+              "downloads": 2
+            }
+          ]
+        },
+        {
+          "tag": "v1.21.3",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.3.zip",
+              "downloads": 5
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.3.zip.sha256",
+              "downloads": 2
+            }
+          ]
+        },
+        {
+          "tag": "v1.21.2",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.2.zip",
+              "downloads": 4
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.2.zip.sha256",
+              "downloads": 4
+            }
+          ]
+        },
+        {
+          "tag": "v1.21.1",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.1.zip",
+              "downloads": 4
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.1.zip.sha256",
+              "downloads": 3
+            }
+          ]
+        },
+        {
+          "tag": "v1.21.0",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.0.zip",
+              "downloads": 5
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.21.0.zip.sha256",
+              "downloads": 2
+            }
+          ]
+        },
+        {
+          "tag": "v1.20.1",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.20.1.zip",
+              "downloads": 7
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.20.1.zip.sha256",
+              "downloads": 2
+            }
+          ]
+        },
+        {
+          "tag": "v1.20.0",
+          "assets": [
+            {
+              "name": "codex-mcp-bridge-plugin-1.20.0.zip",
+              "downloads": 6
+            },
+            {
+              "name": "codex-mcp-bridge-plugin-1.20.0.zip.sha256",
+              "downloads": 2
+            }
+          ]
+        },
+        {
+          "tag": "v1.19.7",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.6",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.4",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.19.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.18.2",
+          "assets": [
+            {
+              "name": "minhspark-codex-mcp-bridge-1.18.2.tgz",
+              "downloads": 3
+            },
+            {
+              "name": "SHA256SUMS.txt",
+              "downloads": 6
+            }
+          ]
+        },
+        {
+          "tag": "v1.18.1",
+          "assets": [
+            {
+              "name": "minhspark-codex-mcp-bridge-1.18.1.tgz",
+              "downloads": 3
+            },
+            {
+              "name": "SHA256SUMS.txt",
+              "downloads": 5
+            }
+          ]
+        },
+        {
+          "tag": "v1.18.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.17.0",
+          "assets": [
+            {
+              "name": "minhspark-codex-mcp-bridge-1.17.0.tgz",
+              "downloads": 4
+            },
+            {
+              "name": "SHA256SUMS.txt",
+              "downloads": 4
+            }
+          ]
+        },
+        {
+          "tag": "v1.16.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.16.0",
+          "assets": [
+            {
+              "name": "desktop-demo.gif",
+              "downloads": 26
+            },
+            {
+              "name": "desktop-demo.mp4",
+              "downloads": 11
+            }
+          ]
+        },
+        {
+          "tag": "v1.15.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.15.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.15.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.9",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.8",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.7",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.6",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.4",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.13.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.12.5",
+          "assets": []
+        },
+        {
+          "tag": "v1.12.4",
+          "assets": []
+        },
+        {
+          "tag": "v1.12.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.12.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.12.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.11.3",
+          "assets": []
+        },
+        {
+          "tag": "v1.11.2",
+          "assets": []
+        },
+        {
+          "tag": "v1.11.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.11.0",
+          "assets": []
+        },
+        {
+          "tag": "v1.10.1",
+          "assets": []
+        },
+        {
+          "tag": "v1.10.0",
+          "assets": []
+        }
+      ],
+      "sourceCollectedAt": {
+        "views": "2026-11-12T03:01:27.928Z",
+        "clones": "2026-11-12T03:01:27.928Z",
+        "npm": "2026-11-12T03:01:27.928Z",
+        "repository": "2026-11-12T03:01:27.928Z",
+        "releases": "2026-11-12T03:01:27.928Z"
       }
     }
   ],

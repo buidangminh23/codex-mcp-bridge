@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repo": "buidangminh23/codex-mcp-bridge",
   "package": "@minhspark/codex-mcp-bridge",
-  "updatedAt": "2026-11-17T14:27:30.480Z",
+  "updatedAt": "2026-11-17T22:53:39.445Z",
   "snapshots": [
     {
       "collectedAt": "2026-09-15T23:53:55.817Z",
@@ -35284,7 +35284,7 @@
       }
     },
     {
-      "collectedAt": "2026-11-17T14:27:30.480Z",
+      "collectedAt": "2026-11-17T22:53:39.445Z",
       "npm": {
         "start": "2026-10-18",
         "end": "2026-11-16",
@@ -35412,7 +35412,7 @@
         ]
       },
       "sourceCollectedAt": {
-        "npm": "2026-11-17T14:27:30.480Z"
+        "npm": "2026-11-17T22:53:39.445Z"
       }
     }
   ],

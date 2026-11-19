@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Màn hình từ xa · Codex Bridge</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:,">
+  <script type="module" src="/screen.js"></script>
+</head>
+<body class="screen-page">
+  <header class="topbar"><div class="bar-inner"><a class="brand" href="/">Codex Bridge</a><span class="division">Màn hình từ xa</span></div></header>
+  <main>
+    <a id="machine" href="/">← Bảng điều phối</a>
+    <div class="page-head"><div><h1 id="label">Màn hình từ xa</h1><p class="muted" id="status" role="status">Đang tải máy…</p></div>
+      <div class="actions"><button id="rdp" class="secondary" hidden>Mở bằng Remote Desktop</button><button id="control" class="secondary" disabled>Bật điều khiển</button><button id="connect" class="primary" disabled>Kết nối</button></div>
+    </div>
+    <div id="display" aria-label="Màn hình máy từ xa"></div>
+  </main>
+  <dialog id="credentials"><form id="signin"><div class="dialog-head"><h2>Đăng nhập máy từ xa</h2></div><div id="fields"></div><div class="dialog-footer"><button type="button" id="abort" class="secondary">Ngắt kết nối</button><button class="primary">Đăng nhập</button></div></form></dialog>
+</body>
+</html>

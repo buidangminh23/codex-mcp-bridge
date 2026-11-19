@@ -282,6 +282,19 @@ test("thread.started alone never marks delivery accepted", async () => {
   await assert.rejects(pending, { code: "PROCESS_EXIT", phase: "result", deliveryState: "unknown", sent: false });
 });
 
+test("pre-turn diagnostic items leave acceptance and final output bound to the real turn", async () => {
+  const f = fixture();
+  const { pending } = await launched(f);
+  f.job.event({ type: "thread.started", thread_id: PROVIDER_ID });
+  for (const id of ["item_0", "item_1"]) f.job.event({ type: "item.completed", item: { id, type: "error", message: TOKEN } });
+  assert.deepEqual(f.events, [{ type: "session", sessionId: SESSION_ID }]);
+  f.job.event({ type: "turn.started" });
+  f.job.complete("verified");
+  f.job.close();
+  assert.equal((await pending).output, "verified");
+  assert.deepEqual(f.events, [{ type: "session", sessionId: SESSION_ID }, { type: "accepted", sessionId: SESSION_ID }]);
+});
+
 test("requires turn completion and successful process exit", async () => {
   const f = fixture();
   const { pending } = await launched(f);
@@ -330,6 +343,11 @@ test("rejects malformed or out-of-order terminal protocol data", async () => {
   for (const send of [
     (job) => job.stdout.write(`${TOKEN}\n`),
     (job) => job.event({ type: "turn.started" }),
+    (job) => job.event({ type: "item.completed", item: { id: "item_0", type: "error", message: TOKEN } }),
+    (job) => {
+      job.event({ type: "thread.started", thread_id: PROVIDER_ID });
+      job.event({ type: "item.completed", item: { id: "item_0", type: "agent_message", text: TOKEN } });
+    },
     (job) => { job.start(); job.event({ type: "turn.completed", usage: { input_tokens: TOKEN } }); },
     (job) => { job.start(); job.event({ type: "thread.started", thread_id: PROVIDER_ID }); },
   ]) {

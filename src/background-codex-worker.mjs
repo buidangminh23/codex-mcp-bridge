@@ -299,7 +299,12 @@ export async function runCodexWorker({ executable, cwd, prompt, requestId, sessi
         if (typeof message !== "string") return fail("INVALID_PROTOCOL");
         fail(diagnosticCode(message, "TURN_FAILED"));
       } else if (/^item\.(?:started|updated|completed)$/.test(value.type)) {
-        if (!accepted || completed || !object(value.item) || typeof value.item.type !== "string") return fail("INVALID_PROTOCOL");
+        if (completed || !object(value.item) || typeof value.item.type !== "string") return fail("INVALID_PROTOCOL");
+        if (!accepted) {
+          if (providerSessionId && value.type === "item.completed" && value.item.type === "error"
+              && typeof value.item.message === "string" && typeof value.item.id === "string" && value.item.id) return;
+          return fail("INVALID_PROTOCOL");
+        }
         if (value.type === "item.completed" && value.item.type === "agent_message") {
           if (typeof value.item.text !== "string") return fail("INVALID_PROTOCOL");
           output = value.item.text;

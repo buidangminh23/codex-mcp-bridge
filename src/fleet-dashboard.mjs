@@ -113,9 +113,10 @@ export function createFleetServer({ hosts, queue, client, token, desktopConnect,
       if (pathname === "/api/jobs") return json(201, queue.submit(body));
       const job = /^\/api\/jobs\/([\da-f-]+)\/(cancel|target)$/.exec(pathname);
       if (job) return json(200, job[2] === "cancel" ? queue.cancel(job[1]) : queue.retarget(job[1], body.target));
-      const target = /^\/api\/hosts\/([\w-]+)\/(windows|screen|rdp)$/.exec(pathname);
+      const target = /^\/api\/hosts\/([\w-]+)\/(sessions|windows|screen|rdp)$/.exec(pathname);
       const host = target && hosts.find(item => item.id === target[1]);
       if (!host) throw fail("Unknown endpoint or machine", 404);
+      if (target[2] === "sessions") return json(200, await client.sessions(host));
       if (target[2] === "windows") return json(200, await client.windows(host));
       if (!host.sshHost) throw fail("Choose a remote machine");
       if (target[2] === "rdp" && host.platform !== "win32") throw fail("RDP is available for Windows machines");

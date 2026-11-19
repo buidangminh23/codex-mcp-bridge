@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { Readable } from "node:stream";
 import { createFleetHostClient, fleetSshArgs, handleFleetHostRequest, listFleetWindows, runFleetHost } from "../src/fleet-host.mjs";
+import { listFleetSessions } from "../src/fleet-sessions.mjs";
 
 const cwd = path.resolve(os.tmpdir(), "fleet project");
 const revision = "d".repeat(40);
@@ -100,6 +101,40 @@ test("window inventory runs on demand for the enrolled host without queueing a w
   assert.deepEqual(await client.windows(local), inventory);
   assert.equal(enumerations, 2);
   assert.deepEqual(calls, [["status", undefined]]);
+});
+
+test("AI session inventory excludes dormant, foreign and duplicate sessions and identifies partial discovery", async () => {
+  const project = process.cwd();
+  const codexId = randomUUID(), claudeId = randomUUID(), waitingId = randomUUID();
+  const row = { kind: "codex", hostId: "local", cwd: project, status: "active", title: "Active task", id: codexId };
+  const inventory = await listFleetSessions(project, {
+    codex: () => ({ rows: [row, row, { ...row, id: randomUUID(), hostId: "remote" },
+      { ...row, id: randomUUID(), cwd: os.tmpdir() }, { ...row, id: randomUUID(), status: "notLoaded" },
+      { ...row, id: waitingId, status: { type: "active", activeFlags: ["waitingOnApproval"] } }], note: "Recent snapshot only." }),
+    claude: () => ({ rows: [{ id: claudeId, cwd: project, title: "Claude task" }] }),
+    antigravity: () => { throw new Error("Private diagnostic, never expose"); },
+  });
+  assert.deepEqual(inventory.sessions, [
+    { id: codexId, agent: "codex", title: "Active task", status: "running" },
+    { id: waitingId, agent: "codex", title: "Active task", status: "waiting" },
+    { id: claudeId, agent: "claude", title: "Claude task", status: "connected" },
+  ]);
+  assert.match(inventory.note, /Antigravity/);
+  assert.match(inventory.note, /Recent snapshot/);
+  assert.doesNotMatch(inventory.note, /Private diagnostic/);
+});
+
+test("AI session inventory uses the mapped project on each host and rechecks permission before returning", async () => {
+  const inventory = { sessions: [{ id: randomUUID(), agent: "codex", title: "Inspect project", status: "running" }] };
+  const { client, calls } = fixture({ sessions: async project => { assert.equal(project, cwd); return inventory; } });
+  for (const host of [local, remote]) assert.deepEqual(await client.sessions(host), inventory);
+  assert.deepEqual(calls, []);
+  let allowed = true;
+  const changed = fixture({ sessions: async () => { allowed = false; return inventory; },
+    authorize: project => { if (!allowed) throw new Error("revoked"); return project; } });
+  await assert.rejects(changed.client.sessions(remote), /revoked/);
+  const mismatch = fixture({ identity: () => "other/project", sessions: () => assert.fail() });
+  await assert.rejects(mismatch.client.sessions(remote), { code: "FLEET_REPOSITORY_MISMATCH" });
 });
 
 test("Linux window inventory parses wmctrl and reports compositor/session limits", async () => {

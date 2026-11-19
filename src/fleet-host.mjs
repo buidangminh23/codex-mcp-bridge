@@ -8,6 +8,7 @@ import { BACKGROUND_AGENTS, readRelayConfiguration, relayFailure, RELAY_UUID } f
 import { RELAY_FRAME_LIMIT, RELAY_REPLY_LIMIT } from "./background-relay-protocol.mjs";
 import { createProjectScope } from "./project-policy.mjs";
 import { repositoryIdentity } from "./remote-codex.mjs";
+import { listFleetSessions } from "./fleet-sessions.mjs";
 
 const commands = new Map([
   ["win32", "worker-relay.cmd fleet-host"],
@@ -131,7 +132,7 @@ function projectIdentity(cwd) {
 }
 
 function validateRequest(input, remote) {
-  if (input?.version !== 1 || !RELAY_UUID.test(input.nonce ?? "") || !["probe", "send", "read", "windows"].includes(input.action)
+  if (input?.version !== 1 || !RELAY_UUID.test(input.nonce ?? "") || !["probe", "send", "read", "windows", "sessions"].includes(input.action)
     || typeof input.cwd !== "string" || !path.isAbsolute(input.cwd) || input.cwd.length > 4096 || /[\0\r\n]/.test(input.cwd)
     || remote && (typeof input.repository !== "string" || !input.repository || input.repository.length > 4096)
     || ["send", "read"].includes(input.action) && (!RELAY_UUID.test(input.requestId ?? "") || !BACKGROUND_AGENTS.includes(input.agent))
@@ -142,7 +143,7 @@ function validateRequest(input, remote) {
 }
 
 export async function handleFleetHostRequest(input, { remote = true, relay = callBackgroundRelay, authorize = authorizedProject,
-  identity = projectIdentity, checkout = checkoutState, windows = listFleetWindows, env = process.env } = {}) {
+  identity = projectIdentity, checkout = checkoutState, windows = listFleetWindows, sessions = listFleetSessions, env = process.env } = {}) {
   assertLocalOperator(env);
   validateRequest(input, remote);
   const check = () => {
@@ -155,6 +156,12 @@ export async function handleFleetHostRequest(input, { remote = true, relay = cal
   if (input.action === "windows") {
     if (remote && identity(input.cwd) !== input.repository) throw relayFailure("FLEET_REPOSITORY_MISMATCH", "The configured checkouts have different Git origins");
     return windows();
+  }
+  if (input.action === "sessions") {
+    const cwd = check();
+    const result = await sessions(cwd);
+    if (check() !== cwd) throw relayFailure("FLEET_PROJECT_CHANGED", "The project mapping changed while reading AI sessions");
+    return result;
   }
   if (input.action === "probe") {
     const totalBytes = os.totalmem();
@@ -250,6 +257,11 @@ async function exchange(host, input) {
     if (!Number.isSafeInteger(body.result?.freeBytes) || !Number.isSafeInteger(body.result?.totalBytes)
       || body.result.freeBytes < 0 || body.result.freeBytes > body.result.totalBytes || body.result.totalBytes <= 0
       || !Array.isArray(body.result.agents) || !body.result.agents.every(agent => BACKGROUND_AGENTS.includes(agent))) throw uncertain();
+  } else if (input.action === "sessions") {
+    if (!Array.isArray(body.result?.sessions) || body.result.sessions.length > 100
+      || !body.result.sessions.every(row => RELAY_UUID.test(row?.id ?? "") && BACKGROUND_AGENTS.includes(row.agent)
+        && typeof row.title === "string" && row.title.length <= 256 && ["running", "waiting", "connected", "idle"].includes(row.status))
+      || body.result.note !== undefined && (typeof body.result.note !== "string" || body.result.note.length > 512)) throw uncertain();
   } else if (input.action === "windows") {
     if (!Array.isArray(body.result?.windows) || body.result.windows.length > 256
       || !body.result.windows.every(row => typeof row?.app === "string" && typeof row.title === "string")) throw uncertain();
@@ -269,9 +281,15 @@ export function createFleetHostClient({ cwd, hosts, remoteCall = exchange, local
       ...(action === "send" ? { prompt: job.prompt, expectedRevision: job.expectedRevision } : {}) };
     if (!host.sshHost) return localCall(input, { remote: false });
     fleetSshArgs(host);
-    const sourceCwd = action === "send" ? authorize(cwd) : cwd;
-    return remoteCall(host, { ...input, repository: identity(sourceCwd) });
+    const protectedRequest = action === "send" || action === "sessions";
+    const sourceCwd = protectedRequest ? authorize(cwd) : cwd;
+    const repository = identity(sourceCwd);
+    const result = await remoteCall(host, { ...input, repository });
+    if (action === "sessions" && (authorize(cwd) !== sourceCwd || identity(sourceCwd) !== repository)) {
+      throw relayFailure("FLEET_PROJECT_CHANGED", "The project mapping changed while reading AI sessions");
+    }
+    return result;
   };
-  return { probe: host => request(host, "probe"), windows: host => request(host, "windows"),
+  return { probe: host => request(host, "probe"), windows: host => request(host, "windows"), sessions: host => request(host, "sessions"),
     send: (host, job) => request(host, "send", job), read: (host, job) => request(host, "read", job) };
 }

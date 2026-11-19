@@ -77,9 +77,9 @@ progress[data-low="true"]::-moz-progress-bar { background: #b4812c; }
 .host-foot a { font-weight: 620; }
 .host-links { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px 14px; }
 .host-links .text-button { padding: 0; min-height: 28px; font-size: inherit; text-decoration: underline; text-underline-offset: .2em; }
-.window-region { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
-.window-list { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; }
-.window-list li { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr); gap: 12px; padding: 5px 0; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.session-region { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
+.session-list { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; }
+.session-list li { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr); gap: 12px; padding: 5px 0; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .hint { margin: 10px 2px; }
 code { font-size: .95em; color: var(--ink); }
 .workbench { margin-top: 30px; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 18px; align-items: start; }

@@ -75,7 +75,7 @@ Install this version of the bridge and set up the background relay on each worke
 }
 ```
 
-Open each machine in its own dashboard window to compare jobs and RAM. Expand **Xem phiên AI** on a machine to see AI sessions for its configured project, their reported status, and any jobs the fleet is running there. The list refreshes while open. The screen viewer connects to the remote machine's existing VNC service over SSH. Sign in to the destination and enable control to use the mouse and keyboard. Windows also supports downloading an RDP connection file for an existing Remote Desktop service. Both remote desktop options use the operator's SSH tunnel and the destination's authentication. Queue data and the browser sign-in link are private to the coordinator's OS account.
+Open each machine in its own dashboard window to compare jobs and RAM. Expand the AI session list on a machine to see AI sessions for its configured project, their reported status, and any jobs the fleet is running there. The list refreshes while open. The screen viewer connects to the remote machine's existing VNC service over SSH. Sign in to the destination and enable control to use the mouse and keyboard. Windows also supports downloading an RDP connection file for an existing Remote Desktop service. Both remote desktop options use the operator's SSH tunnel and the destination's authentication. Queue data and the browser sign-in link are private to the coordinator's OS account.
 
 ### Verify the installation
 

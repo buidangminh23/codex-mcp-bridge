@@ -204,6 +204,12 @@ export function createFleetQueue({ hosts, client, load, save, minFreeBytes = 2 *
     },
     snapshot,
     submit,
+    setMemoryFloor(gib) {
+      const bytes = Math.round(gib * 1024 ** 3);
+      if (typeof gib !== "number" || !Number.isSafeInteger(bytes) || bytes < 1) throw invalid("Enter a positive RAM threshold in GiB");
+      minFreeBytes = bytes;
+      return { minFreeBytes };
+    },
     cancel: id => editQueued(id, { status: "cancelled" }),
     retarget(id, target) { targetCheck(target); return editQueued(id, { target }); },
   };

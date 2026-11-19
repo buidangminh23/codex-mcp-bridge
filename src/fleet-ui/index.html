@@ -25,7 +25,10 @@
     </div>
     <p id="page-error" class="notice error" role="alert" hidden></p>
     <section aria-labelledby="machines-heading">
-      <div class="section-head"><h2 id="machines-heading">Máy làm việc</h2><span class="aside" id="threshold"></span></div>
+      <div class="section-head">
+        <h2 id="machines-heading">Máy làm việc</h2>
+        <div class="memory-control"><span class="aside" id="threshold"></span><button id="edit-memory" class="secondary" aria-haspopup="dialog" disabled>Chỉnh ngưỡng</button></div>
+      </div>
       <div class="machines" id="machines"></div>
       <p id="setup-hint" class="hint" hidden>Để thêm máy đã cấu hình, mở bảng điều phối bằng <code>worker-relay dashboard --host &lt;tên hồ sơ&gt;</code>.</p>
     </section>
@@ -65,6 +68,16 @@
       </section>
     </div>
   </main>
+  <dialog id="memory-dialog" aria-labelledby="memory-heading">
+    <form id="memory-form">
+      <div class="dialog-head"><h2 id="memory-heading">Chỉnh ngưỡng RAM</h2></div>
+      <label for="memory-input">RAM khả dụng tối thiểu (GiB)</label>
+      <input id="memory-input" type="number" min="0" step="any" required autofocus aria-describedby="memory-hint">
+      <p class="form-hint" id="memory-hint">Ngưỡng áp dụng cho các bước đang chờ trên tất cả máy. Bước đang chạy sẽ tiếp tục trên máy đã nhận. Khi mở lại bộ điều phối, ngưỡng sẽ trở về giá trị khởi động.</p>
+      <p id="memory-error" class="notice error" role="alert" hidden></p>
+      <div class="dialog-footer"><button type="button" id="close-memory" class="secondary">Đóng</button><button id="save-memory" class="primary">Áp dụng</button></div>
+    </form>
+  </dialog>
   <dialog id="job-dialog" aria-labelledby="dialog-title">
     <form id="job-form">
       <div class="dialog-head"><h2 id="dialog-title">Tạo công việc</h2><button type="button" id="dismiss" class="close" aria-label="Đóng">×</button></div>

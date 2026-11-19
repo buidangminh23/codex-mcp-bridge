@@ -109,6 +109,7 @@ export function createFleetServer({ hosts, queue, client, token, desktopConnect,
       if (request.method === "GET" && pathname === "/api/state") return json(200, { ...queue.snapshot(), error: health() });
       if (request.method !== "POST" || request.headers.origin !== origin()) throw fail("Expected same-origin POST", 403);
       const body = await readBody(request);
+      if (pathname === "/api/settings/memory") return json(200, queue.setMemoryFloor(body.minFreeGiB));
       if (pathname === "/api/jobs") return json(201, queue.submit(body));
       const job = /^\/api\/jobs\/([\da-f-]+)\/(cancel|target)$/.exec(pathname);
       if (job) return json(200, job[2] === "cancel" ? queue.cancel(job[1]) : queue.retarget(job[1], body.target));

@@ -44,6 +44,8 @@ h3 { font-size: 17px; line-height: 1.4; }
 .muted { font-size: 14px; margin-top: 9px; }
 .aside, .hint, .form-hint { font-size: 13px; line-height: 1.5; }
 .section-head { margin-bottom: 13px; gap: 10px; flex-wrap: wrap; }
+.memory-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.memory-control .secondary { min-height: 32px; padding: 4px 10px; font-size: 13px; }
 .primary, .secondary, .danger, .close, .text-button { border-radius: 7px; padding: 9px 14px; border: 1px solid transparent; font-size: 14px; min-height: 40px; }
 .primary { background: var(--accent); color: white; }
 .primary:hover:enabled { background: #1b408f; }

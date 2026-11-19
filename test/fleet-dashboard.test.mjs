@@ -80,6 +80,9 @@ test("dashboard creates, retargets and cancels a job and reads windows from the 
   const state = await (await box.api("/api/state")).json();
   assert.equal(state.jobs[0].status, "cancelled");
   assert.equal(state.jobs[0].id, job.id);
+  assert.deepEqual(await (await box.post("/api/settings/memory", { minFreeGiB: 1.5 })).json(), { minFreeBytes: 1.5 * 1024 ** 3 });
+  assert.equal((await box.post("/api/settings/memory", { minFreeGiB: -1 })).status, 400);
+  assert.equal((await (await box.api("/api/state")).json()).minFreeBytes, 1.5 * 1024 ** 3);
   assert.equal((await box.post(`/api/jobs/${job.id}/target`, { target: "laptop" })).status, 409);
   assert.deepEqual(await (await box.post("/api/hosts/laptop/windows")).json(), { windows: [{ app: "Editor", title: "laptop" }] });
   assert.equal((await box.post("/api/hosts/missing/windows")).status, 404);

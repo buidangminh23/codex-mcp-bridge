@@ -240,8 +240,9 @@ function render() {
   document.title = title + " · Codex Bridge";
   el("all-hosts").hidden = !hostFilter;
   el("new-job").disabled = !online || hosts.length === 0;
+  el("edit-memory").disabled = !online;
   setText(el("summary"), hosts.filter(host => host.online).length + "/" + hosts.length + " máy trực tuyến · " + jobs.length + " công việc");
-  setText(el("threshold"), "RAM khả dụng tối thiểu " + gib(state.minFreeBytes));
+  setText(el("threshold"), "RAM khả dụng tối thiểu " + (state.minFreeBytes / 1024 ** 3).toLocaleString("vi-VN", { maximumSignificantDigits: 7 }) + " GiB");
   el("setup-hint").hidden = Boolean(hostFilter) || state.hosts.some(host => !host.local);
   reconcile(el("machines"), hosts, machineCard, paintMachine);
   reconcile(el("job-list"), shown, jobRow, paintRow);
@@ -266,6 +267,7 @@ async function refresh() {
     online = false;
     pollError = error.message;
     el("new-job").disabled = true;
+    el("edit-memory").disabled = true;
     el("move-job").disabled = true;
     el("cancel-job").disabled = true;
   }
@@ -325,6 +327,37 @@ async function changeJob(action, data) {
   }
 }
 el("status-filter").addEventListener("change", render);
+el("edit-memory").addEventListener("click", () => {
+  el("memory-input").value = String(state.minFreeBytes / 1024 ** 3);
+  notice(el("memory-error"), "");
+  el("memory-dialog").showModal();
+});
+el("close-memory").addEventListener("click", () => el("memory-dialog").close());
+el("memory-dialog").addEventListener("cancel", event => {
+  if (el("save-memory").disabled) event.preventDefault();
+});
+el("memory-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const submit = el("save-memory");
+  if (submit.disabled) return;
+  const minFreeGiB = el("memory-input").valueAsNumber;
+  const bytes = Math.round(minFreeGiB * 1024 ** 3);
+  if (!Number.isSafeInteger(bytes) || bytes < 1) {
+    notice(el("memory-error"), "Nhập ngưỡng RAM dương, tương đương ít nhất 1 byte.");
+    return;
+  }
+  submit.disabled = el("close-memory").disabled = true;
+  try {
+    await api("/api/settings/memory", { minFreeGiB });
+    el("memory-dialog").close();
+    setText(el("toast"), "Đã cập nhật ngưỡng RAM cho các bước đang chờ.");
+    await refresh();
+  } catch (error) {
+    notice(el("memory-error"), error.message);
+  } finally {
+    submit.disabled = el("close-memory").disabled = false;
+  }
+});
 el("new-target").addEventListener("change", () => renderDetail(state.jobs.find(job => job.id === selected)));
 el("move-job").addEventListener("click", () => changeJob("target", { target: el("new-target").value }));
 el("cancel-job").addEventListener("click", () => changeJob("cancel", {}));

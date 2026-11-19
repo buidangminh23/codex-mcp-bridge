@@ -32,7 +32,8 @@ function request(origin, token, pathname, { method = "GET", headers = {}, body }
 async function appFixture(t, desktopConnect) {
   const token = randomBytes(32).toString("base64url");
   const windows = [];
-  const client = { async windows(host) { windows.push(host.id); return { windows: [{ app: "Editor", title: host.id }] }; } };
+  const client = { async windows(host) { windows.push(host.id); return { windows: [{ app: "Editor", title: host.id }] }; },
+    async sessions(host) { return { sessions: [{ agent: "codex", title: host.id, status: "running" }] }; } };
   const queue = createFleetQueue({ hosts, client, load: () => null, save() {} });
   const app = createFleetServer({ hosts, queue, client, token, desktopConnect });
   await listen(app.server);
@@ -87,6 +88,9 @@ test("dashboard creates, retargets and cancels a job and reads windows from the 
   assert.deepEqual(await (await box.post("/api/hosts/laptop/windows")).json(), { windows: [{ app: "Editor", title: "laptop" }] });
   assert.equal((await box.post("/api/hosts/missing/windows")).status, 404);
   assert.deepEqual(box.windows, ["laptop"]);
+  assert.equal((await box.post("/api/hosts/missing/sessions")).status, 404);
+  assert.deepEqual(await (await box.post("/api/hosts/laptop/sessions")).json(),
+    { sessions: [{ agent: "codex", title: "laptop", status: "running" }] });
   assert.equal((await box.post("/api/hosts/local/screen")).status, 400);
   assert.equal((await box.post("/api/hosts/laptop/rdp")).status, 400);
 });

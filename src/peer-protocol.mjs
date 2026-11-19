@@ -193,7 +193,7 @@ function hasMessagingEndpoint(entry) {
 
 export const BRIDGE_ENTRYPOINT = "codex-bridge";
 
-export function listClaudeSessions({ includeDead = false, includeBridges = false } = {}) {
+export function listClaudeSessions({ includeDead = false, includeBridges = false, includeActivity = false } = {}) {
   const dir = sessionsDir();
   if (!fs.existsSync(dir)) return [];
   const rows = [];
@@ -217,6 +217,7 @@ export function listClaudeSessions({ includeDead = false, includeBridges = false
       kind: entry.kind ?? null,
       entrypoint: entry.entrypoint ?? null,
       startedAt: entry.startedAt ?? null,
+      ...(includeActivity && typeof entry.status === "string" && entry.status.length <= 64 ? { activity: entry.status } : {}),
       processStart,
       socket: entry.messagingSocketPath,
       alive,

@@ -81,26 +81,73 @@ function externalLink(label, path, id) {
   return link;
 }
 
-async function showWindows(id, button, region) {
-  button.disabled = true;
-  setText(button, "Đang tải…");
-  region.hidden = false;
-  try {
-    const result = await api("/api/hosts/" + encodeURIComponent(id) + "/windows", {});
-    const list = node("ul", "window-list");
-    for (const item of result.windows) {
-      const row = node("li");
-      row.append(node("strong", "", item.app), node("span", "", item.title || "Cửa sổ chưa đặt tên"));
-      list.append(row);
-    }
-    region.replaceChildren(result.windows.length ? list : node("p", "hint", "Chưa có cửa sổ hiển thị."));
-    if (result.note) region.append(node("p", "hint", result.note));
-  } catch (error) {
-    region.replaceChildren(node("p", "notice error", error.message));
-  } finally {
-    button.disabled = false;
-    setText(button, "Tải lại cửa sổ");
+const sessionStates = {
+  running: "Đang làm việc", waiting: "Đang chờ", idle: "Đang rảnh",
+  connected: "Đã kết nối", unknown: "Chưa rõ trạng thái"
+};
+
+function sessionList(rows) {
+  const list = node("ul", "session-list");
+  for (const { title, agent, status } of rows) {
+    const row = node("li");
+    const detail = node("div");
+    detail.append(node("strong", "", title), node("p", "job-meta", status));
+    row.append(node("span", "", agentNames[agent] ?? agent), detail);
+    list.append(row);
   }
+  return list;
+}
+
+function sessionView(id, button) {
+  const region = node("div", "session-region");
+  region.id = "sessions-" + id;
+  region.hidden = true;
+  button.setAttribute("aria-controls", region.id);
+  button.setAttribute("aria-expanded", "false");
+  let timer, loading = false, signature;
+  async function refreshSessions() {
+    if (loading || region.hidden || !region.isConnected) return;
+    loading = true;
+    let result, failure;
+    try {
+      result = await api("/api/hosts/" + encodeURIComponent(id) + "/sessions", {});
+    } catch (error) {
+      failure = error.message;
+    } finally {
+      loading = false;
+    }
+    if (region.hidden || !region.isConnected) return;
+    const sessions = (result?.sessions || []).map(item => ({
+      title: item.title || "Phiên " + item.id, agent: item.agent, status: sessionStates[item.status] || sessionStates.unknown
+    }));
+    const jobs = state.jobs.filter(job => job.hostId === id && job.status === "running").map(job => ({
+      title: job.title, agent: job.agent, status: "Đang chạy · Bước " + (job.stepIndex + 1) + "/" + job.steps.length
+    }));
+    const next = JSON.stringify([sessions, jobs, result?.note, failure]);
+    if (next !== signature) {
+      const content = [];
+      if (jobs.length) content.push(node("strong", "job-meta", "Việc đang chạy qua bộ điều phối"), sessionList(jobs));
+      if (sessions.length) content.push(node("strong", "job-meta", "Phiên AI trong dự án"), sessionList(sessions));
+      if (failure) content.push(node("p", "notice error", "Chưa tải được phiên AI. " + failure));
+      else if (!sessions.length && !result?.note) content.push(node("p", "hint", "Chưa thấy phiên AI nào trong dự án trên máy này."));
+      if (result?.note) content.push(node("p", "hint", result.note));
+      region.replaceChildren(...content);
+      signature = next;
+    }
+    timer = setTimeout(refreshSessions, 10000);
+  }
+  button.addEventListener("click", () => {
+    clearTimeout(timer);
+    region.hidden = !region.hidden;
+    button.setAttribute("aria-expanded", String(!region.hidden));
+    setText(button, region.hidden ? "Xem phiên AI" : "Ẩn phiên AI");
+    if (!region.hidden) {
+      region.replaceChildren(node("p", "hint", "Đang tải phiên AI…"));
+      signature = undefined;
+      void refreshSessions();
+    }
+  });
+  return region;
 }
 
 function machineCard(host) {
@@ -110,12 +157,9 @@ function machineCard(host) {
   const meter = node("progress");
   const foot = node("div", "host-foot");
   const links = node("div", "host-links");
-  const windows = node("button", "text-button", "Xem cửa sổ");
-  const region = node("div", "window-region");
-  region.setAttribute("aria-live", "polite");
-  region.hidden = true;
-  windows.addEventListener("click", () => showWindows(host.id, windows, region));
-  links.append(windows);
+  const sessions = node("button", "text-button", "Xem phiên AI");
+  const region = sessionView(host.id, sessions);
+  links.append(sessions);
   if (!host.local) links.append(externalLink("Xem màn hình", "/screen.html", host.id));
   if (!hostFilter) links.append(externalLink("Mở bảng riêng ↗", "/", host.id));
   foot.append(node("span", "agents"), links);

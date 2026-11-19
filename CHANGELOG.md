@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.4.0] - 2026-11-19
+
+- The fleet dashboard shows the AI sessions for the selected project on each computer. Operators can check which machine and assistant are working on a task.
+- Schedule jobs by available RAM across local and SSH workers. Each step keeps its original worker receipt, and later steps can move between clean checkouts at the same Git revision.
+- Open a separate dashboard for each machine or connect to its remote desktop to view and control the screen.
+
 ## [2.3.2] - 2026-11-06
 
 ### Fixed

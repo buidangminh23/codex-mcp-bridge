@@ -31,13 +31,16 @@ export function handshakeIdentity({ root, entry, env }) {
 export function createHandshakeCache({ directory, identity }) {
   const file = path.join(directory, `.handshake-${identity}.json`);
   const load = () => {
+    let descriptor;
     try {
-      const info = fs.lstatSync(file);
-      if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_BYTES) return {};
-      const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+      descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+      const info = fs.fstatSync(descriptor);
+      if (!info.isFile() || info.nlink !== 1 || info.size > MAX_BYTES) return {};
+      const saved = JSON.parse(fs.readFileSync(descriptor, "utf8"));
       if (saved?.schema !== SCHEMA || saved.identity !== identity || !saved.protocols || typeof saved.protocols !== "object" || Array.isArray(saved.protocols)) return {};
       return saved.protocols;
     } catch { return {}; }
+    finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
   };
   const removeStaleSiblings = (now) => {
     try {

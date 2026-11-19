@@ -61,7 +61,7 @@ On Windows, add `.cmd` to terminal commands. Provider quotas and tool permission
 
 Run `worker-relay dashboard` inside the local project to open the operator dashboard. Add an existing macOS/Linux remote Codex profile with `worker-relay dashboard --host mac`. Run the same command again to reopen the dashboard. From a source checkout use `node scripts/worker-relay.mjs dashboard`. The dashboard listens on loopback, and the coordinator keeps scheduling when its browser windows close.
 
-Create a job with one or more sequential steps. Auto prefers this computer when a worker is ready and the OS reports at least 2 GiB of memory available to the worker. Other eligible computers are ranked by available RAM. Use **Chỉnh ngưỡng** to adjust the running dashboard. Set the startup floor with `--min-free-gib`. Pin a job to a machine, change its destination while queued, or cancel the remaining queued steps. An active step finishes on the machine that accepted it. Later steps receive earlier results and can move when the two working trees are clean at the same Git revision. Share any required artifacts separately. Interrupted deliveries keep their original receipt ID for recovery.
+Create a job with one or more sequential steps. Auto prefers this computer when a worker is ready and the OS reports at least 2 GiB of memory available to the worker. Other eligible computers are ranked by available RAM. Adjust the memory floor beside the machine list while the dashboard is running. Set the startup floor with `--min-free-gib`. Pin a job to a machine, change its destination while queued, or cancel the remaining queued steps. An active step finishes on the machine that accepted it. Later steps receive earlier results and can move when the two working trees are clean at the same Git revision. Share any required artifacts separately. Interrupted deliveries keep their original receipt ID for recovery.
 
 Install this version of the bridge and set up the background relay on each worker. Each checkout needs an existing project grant and the same Git origin. Test the configured SSH alias using the operator's key and verified host key. For Windows SSH targets or multiple custom checkout mappings, use `worker-relay dashboard --config /path/to/fleet.json` with a local configuration:
 
@@ -69,13 +69,13 @@ Install this version of the bridge and set up the background relay on each worke
 {
   "version": 1,
   "hosts": [
-    { "id": "laptop", "sshHost": "laptop", "platform": "darwin", "cwd": "/Users/operator/project" },
+    { "id": "laptop", "sshHost": "laptop", "platform": "darwin", "cwd": "/Users/<user>/project" },
     { "id": "workstation", "sshHost": "workstation", "platform": "win32", "cwd": "D:\\Projects\\project" }
   ]
 }
 ```
 
-Open each machine in its own dashboard window to compare jobs and RAM. **Xem cửa sổ** lists windows visible to that login session. On macOS, titles can require Screen Recording access. Linux window discovery uses X11 and `wmctrl`. **Xem màn hình** opens the remote machine's existing VNC service over SSH. Sign in to the destination and select **Bật điều khiển** to use the mouse and keyboard. Windows also supports downloading an RDP connection file for an existing Remote Desktop service. Both remote desktop options use the operator's SSH tunnel and the destination's authentication. Queue data and the browser sign-in link are private to the coordinator's OS account.
+Open each machine in its own dashboard window to compare jobs and RAM. Use the window list to see applications visible to that login session. On macOS, titles can require Screen Recording access. Linux window discovery uses X11 and `wmctrl`. The screen viewer connects to the remote machine's existing VNC service over SSH. Sign in to the destination and enable control to use the mouse and keyboard. Windows also supports downloading an RDP connection file for an existing Remote Desktop service. Both remote desktop options use the operator's SSH tunnel and the destination's authentication. Queue data and the browser sign-in link are private to the coordinator's OS account.
 
 ### Verify the installation
 

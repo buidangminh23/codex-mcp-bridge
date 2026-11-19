@@ -3,7 +3,8 @@ import { fork } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createReleaseSnapshot, pruneReleaseSnapshots, snapshotRoot, sourceRevision } from "./release-snapshot.mjs";
+import { createReleaseSnapshot, prepareReleaseSnapshot, pruneReleaseSnapshots, snapshotRoot, sourceRevision } from "./release-snapshot.mjs";
+import { createHandshakeCache, handshakeIdentity } from "./handshake-cache.mjs";
 import { desktopTasksConfigured } from "./native-relay.mjs";
 import { isMainModule, stableInstallPath } from "./install-paths.mjs";
 import { CLIENT_CLOSE_DRAIN_MS, CLIENT_CLOSE_STOP_MS } from "./reload-control.mjs";
@@ -20,6 +21,7 @@ const MAX_QUEUE = 256;
 const RETIRE_GRACE_MS = 6000;
 const CLIENT_CLOSE_GRACE_MS = CLIENT_CLOSE_DRAIN_MS + CLIENT_CLOSE_STOP_MS + 1000;
 const MAX_LISTED_TOOLS = 20;
+const INITIAL_HANDSHAKE_TIMEOUT_MS = 120000;
 const hasId = (message) => Object.hasOwn(message, "id");
 const idKey = (id) => JSON.stringify(id);
 const errorMessage = (id, message, options = {}) => {
@@ -236,6 +238,19 @@ export async function runSupervisor(entry, options = {}) {
     if (changed) catalogGeneration++;
   };
   const clientToolList = () => clientToolListState(connectedTools, currentTools, listedGeneration === catalogGeneration && catalogGeneration > 0);
+  const earlyHandshakeAllowed = options.earlyHandshake ?? (env.CODEX_BRIDGE_EARLY_HANDSHAKE !== "0" && !hardenedBridgeEnabled(env));
+  let handshakeCache = null;
+  if (earlyHandshakeAllowed) {
+    try { handshakeCache = createHandshakeCache({ directory: snapshotRoot(env), identity: handshakeIdentity({ root, entry, env }) }); }
+    catch (error) { log(`saved handshake unavailable: ${error.message}`); }
+  }
+  let early = null;
+  let handshakeSaved = false;
+  const saveHandshake = (catalog) => {
+    if (!handshakeCache || handshakeSaved || !initializeParams || !initializeResult || !catalog) return;
+    handshakeSaved = true;
+    handshakeCache.write(initializeParams.protocolVersion, initializeResult, catalog);
+  };
   const recoveryDelayMs = Math.min(30000, supervisorInterval(env.CODEX_BRIDGE_RECOVERY_DELAY_MS, 1000));
   const recoveryLimit = 5;
   const canRecover = () => recoverable && ready && initializeResult && initializeCatalog;
@@ -274,6 +289,7 @@ export async function runSupervisor(entry, options = {}) {
           connectedTools ??= message.result.tools;
           currentTools ??= message.result.tools;
           listedGeneration = catalogGeneration;
+          if (!message.result.nextCursor && worker === active && !reloads && !recoveries) saveHandshake(message.result);
         }
         if (pending.method === "initialize" && !message.error) {
           initializeResult = message.result;
@@ -446,6 +462,45 @@ export async function runSupervisor(entry, options = {}) {
       for (const message of queue.splice(0)) dispatch(message);
     }
   };
+  const answerEarly = (message) => {
+    if (!handshakeCache) return false;
+    if (message.method === "initialize" && hasId(message) && !early && !initializeParams) {
+      const saved = handshakeCache.read(message.params?.protocolVersion);
+      if (!saved) return false;
+      initializeParams = message.params;
+      early = saved;
+      output({ jsonrpc: "2.0", id: message.id, result: saved.initialize });
+      return true;
+    }
+    if (!early) return false;
+    if (message.method === "notifications/initialized") return true;
+    if (message.method === "ping" && hasId(message)) { output({ jsonrpc: "2.0", id: message.id, result: {} }); return true; }
+    if (message.method === "tools/list" && hasId(message) && !message.params?.cursor) {
+      connectedTools ??= early.catalog.tools;
+      output({ jsonrpc: "2.0", id: message.id, result: early.catalog });
+      return true;
+    }
+    return false;
+  };
+  const adoptEarlyHandshake = async (worker) => {
+    const initialized = await worker.rpc("initialize", initializeParams, INITIAL_HANDSHAKE_TIMEOUT_MS);
+    if (initialized.protocolVersion !== early.initialize.protocolVersion || JSON.stringify(initialized.capabilities) !== JSON.stringify(early.initialize.capabilities)) {
+      throw new Error("The saved handshake no longer matches the MCP protocol or capabilities of this installation");
+    }
+    worker.write({ jsonrpc: "2.0", method: "notifications/initialized" });
+    const catalog = await worker.rpc("tools/list", {}, INITIAL_HANDSHAKE_TIMEOUT_MS);
+    if (!Array.isArray(catalog.tools) || !catalog.tools.length || catalog.nextCursor) throw new Error("The bridge tool catalog is incomplete");
+    const catalogChanged = JSON.stringify(catalog) !== JSON.stringify(early.catalog);
+    if (catalogChanged && initialized.capabilities?.tools?.listChanged !== true) throw new Error("The saved tool list is out of date and this client cannot be told");
+    await worker.control("activate", undefined, INITIAL_HANDSHAKE_TIMEOUT_MS);
+    if (stopping || worker.closed) throw new Error("The bridge worker stopped before activation completed");
+    initializeResult = initialized;
+    if (recoverable) initializeCatalog = catalog;
+    recordCatalog(catalog.tools, catalogChanged);
+    handshakeSaved = !catalogChanged;
+    saveHandshake(catalog);
+    return catalogChanged;
+  };
   const dispatch = (message) => {
     if (stopping) return;
     if (!message.method && hasId(message)) {
@@ -463,6 +518,7 @@ export async function runSupervisor(entry, options = {}) {
       return;
     }
     if (failure) { if (hasId(message)) output(errorMessage(message.id, `${failure}${canRecover() && recoveryAttempts < recoveryLimit ? "; bridge worker recovery is pending, this request was not sent" : ""}`, { operation: message.params?.name ?? message.method, deliveryState: "not_sent" })); return; }
+    if (!active && answerEarly(message)) return;
     if (switching || !active) {
       const bytes = queue.reduce((size, queued) => size + Buffer.byteLength(JSON.stringify(queued)), 0);
       if (queue.length >= MAX_QUEUE || bytes + Buffer.byteLength(JSON.stringify(message)) > MAX_FRAME_BYTES) { if (hasId(message)) output(errorMessage(message.id, "Reload request queue is full; no operation was dispatched", { code: "MCP_QUEUE_FULL", operation: message.params?.name ?? message.method, deliveryState: "not_sent" })); return; }
@@ -498,21 +554,42 @@ export async function runSupervisor(entry, options = {}) {
     await Promise.allSettled([...workers].map((worker) => worker.stop(CLIENT_CLOSE_GRACE_MS)));
     process.stdin.pause();
   };
-  const preparationStarted = performance.now();
-  log(`preparing ${entry} runtime`);
-  const initial = snapshot(root, { lease: true });
-  log(`prepared ${entry} runtime in ${Math.round(performance.now() - preparationStarted)} ms (${initial.copy})`);
-  observed = initial.revision;
-  observedRouting = routingConfiguration();
-  active = spawn(initial, observedRouting);
-  const timer = setInterval(() => { void check(); }, pollMs);
-  schedulePrune();
+  let timer;
   lines(process.stdin, (message) => {
     if (!message || message.jsonrpc !== "2.0" || (!message.method && !hasId(message))) throw new Error("Invalid client JSON-RPC message");
     dispatch(message);
   }, (error) => { log(error.message); void shutdown(); });
   process.stdin.on("end", () => { void shutdown(); });
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void shutdown(); });
+  const preparationStarted = performance.now();
+  log(`preparing ${entry} runtime`);
+  const initial = Object.assign(await prepareReleaseSnapshot(root, { cache: snapshotRoot(env), lease: true }), { sourceRoot: root });
+  log(`prepared ${entry} runtime in ${Math.round(performance.now() - preparationStarted)} ms (${initial.copy})`);
+  if (stopping) { initial.lease?.release(); return; }
+  observed = initial.revision;
+  observedRouting = routingConfiguration();
+  const first = spawn(initial, observedRouting);
+  let earlyCatalogChanged = false;
+  if (early) {
+    try { earlyCatalogChanged = await adoptEarlyHandshake(first); }
+    catch (error) {
+      handshakeCache.forget();
+      log(`saved handshake rejected: ${error.message}; reconnect MCP`);
+      await shutdown();
+      process.exitCode = 1;
+      return;
+    }
+  }
+  active = first;
+  activeSince = Date.now();
+  if (early) {
+    ready = true;
+    if (earlyCatalogChanged) output({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+    log(`answered the MCP handshake from the saved copy; worker ready after ${Math.round(performance.now() - preparationStarted)} ms`);
+  }
+  for (const message of queue.splice(0)) dispatch(message);
+  timer = setInterval(() => { void check(); }, pollMs);
+  schedulePrune();
   log(`supervising ${entry}; installed updates activate after pending work completes`);
 }
 

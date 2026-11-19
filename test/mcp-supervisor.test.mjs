@@ -10,7 +10,7 @@ import { execFile, spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ListRootsRequestSchema, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createReleaseSnapshot, sourceRevision } from "../src/release-snapshot.mjs";
+import { createReleaseSnapshot, prepareReleaseSnapshot, sourceRevision } from "../src/release-snapshot.mjs";
 import { clientToolListState, supervisorInterval } from "../src/mcp-supervisor.mjs";
 import { createProcessReaper, processAlive, waitForExit } from "./helpers/process-reaper.mjs";
 
@@ -44,6 +44,8 @@ readline.createInterface({input: process.stdin}).on('line', async line => {
   if (!Object.hasOwn(msg, 'id')) return;
   try {
     let result;
+    if (msg.method === 'initialize' && process.env.TEST_INITIALIZE_DELAY) await new Promise(resolve => setTimeout(resolve, Number(process.env.TEST_INITIALIZE_DELAY)));
+    if (msg.method === 'initialize' && process.env.TEST_INITIALIZED_MARKER) fs.writeFileSync(process.env.TEST_INITIALIZED_MARKER, 'answered');
     if (msg.method === 'initialize') result = {protocolVersion:msg.params.protocolVersion,capabilities:{tools:process.env.TEST_NO_LIST_CHANGED ? {} : {listChanged:true}},serverInfo:{name:'fixture',version:VERSION}};
     else if (msg.method === 'tools/list') result = {tools:[{name:STATUS,description:VERSION === 'CHANGED_CATALOG' ? 'Changed tools' : 'Read test worker',inputSchema:{type:'object'}}]};
     else if (msg.method === 'ping') result = {};
@@ -828,4 +830,71 @@ it("a supervisor started from an older installation moves its worker to the reco
   fs.writeFileSync(path.join(fixture.root, "package.json"), identity("2.4.0"));
   fixture.update("C");
   await eventually(api.call, value => value.structuredContent.version === "C", api.stderr);
+});
+
+async function primeHandshake(t, fixture, extraEnv = {}) {
+  const first = await connect(t, fixture, extraEnv);
+  await first.client.listTools();
+  await first.call();
+  await first.client.close();
+  await first.reaper.reap();
+}
+
+it("answers a reconnecting client from its saved handshake while a slow worker starts", { timeout: 120000 }, async t => {
+  const fixture = installation(t);
+  await primeHandshake(t, fixture);
+  const marker = path.join(fixture.root, "worker-initialized");
+  const api = await connect(t, fixture, { TEST_INITIALIZE_DELAY: "5000", TEST_INITIALIZED_MARKER: marker });
+  const listed = await api.client.listTools();
+  assert.equal(fs.existsSync(marker), false, `the handshake and tool list waited for the worker\n${api.stderr()}`);
+  assert.deepEqual(listed.tools.map(tool => tool.name), ["codex_bridge_status"]);
+  const result = await api.call("add", { value: "after-early-handshake" });
+  assert.equal(result.structuredContent.version, "A");
+  assert.deepEqual(result.structuredContent.records, ["after-early-handshake"]);
+  assert.equal(result.structuredContent.autoReload === undefined, true);
+  const status = await api.call();
+  assert.equal(status.structuredContent.autoReload.state, "current");
+  assert.equal(status.structuredContent.autoReload.clientToolList.state, "current");
+  assert.equal(fs.readFileSync(fixture.ledger, "utf8"), "after-early-handshake\n");
+});
+
+it("tells the client when the started worker's tools differ from the saved handshake", { timeout: 120000 }, async t => {
+  const fixture = installation(t);
+  await primeHandshake(t, fixture);
+  fixture.update("CHANGED_CATALOG");
+  const api = await connect(t, fixture, { TEST_INITIALIZE_DELAY: "600" });
+  const changed = new Promise(resolve => api.client.setNotificationHandler(ToolListChangedNotificationSchema, resolve));
+  assert.equal((await api.client.listTools()).tools[0].description, "Read test worker");
+  await changed;
+  assert.equal((await api.client.listTools()).tools[0].description, "Changed tools");
+  assert.equal((await api.call()).structuredContent.version, "CHANGED_CATALOG");
+});
+
+it("leaves the handshake to the worker when the saved handshake is switched off", { timeout: 120000 }, async t => {
+  const fixture = installation(t);
+  await primeHandshake(t, fixture, { CODEX_BRIDGE_EARLY_HANDSHAKE: "0" });
+  const marker = path.join(fixture.root, "worker-initialized");
+  const api = await connect(t, fixture, { TEST_INITIALIZE_DELAY: "600", TEST_INITIALIZED_MARKER: marker, CODEX_BRIDGE_EARLY_HANDSHAKE: "0" });
+  assert.equal(fs.existsSync(marker), true, "the worker answered the handshake itself");
+  assert.doesNotMatch(api.stderr(), /saved copy/);
+  assert.equal((await api.call()).structuredContent.version, "A");
+});
+
+it("prepares a runtime off the main thread with the same result and a held lease", async t => {
+  const fixture = installation(t);
+  t.after(() => fixture.cleanup());
+  const cache = path.join(fixture.root, "cache");
+  let ticks = 0;
+  const ticker = setInterval(() => { ticks++; }, 1);
+  const prepared = await prepareReleaseSnapshot(fixture.root, { cache, lease: true });
+  clearInterval(ticker);
+  t.after(() => prepared.lease.release());
+  const direct = createReleaseSnapshot(fixture.root, { cache });
+  assert.equal(prepared.directory, direct.directory);
+  assert.equal(prepared.revision, direct.revision);
+  assert.equal(prepared.key, direct.key);
+  assert.equal(direct.copy, "reused");
+  assert.ok(fs.existsSync(prepared.lease.file));
+  assert.ok(ticks > 0, "the main thread kept running during preparation");
+  await assert.rejects(prepareReleaseSnapshot(path.join(fixture.root, "missing"), { cache }), /ENOENT/);
 });

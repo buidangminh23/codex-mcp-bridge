@@ -157,7 +157,10 @@ export async function handleFleetHostRequest(input, { remote = true, relay = cal
     return windows();
   }
   if (input.action === "probe") {
-    const metrics = { hostname: os.hostname(), platform: process.platform, freeBytes: os.freemem(), totalBytes: os.totalmem(), revision: null, clean: null };
+    const totalBytes = os.totalmem();
+    const available = process.availableMemory();
+    const freeBytes = Number.isSafeInteger(available) && available >= 0 ? Math.min(available, totalBytes) : os.freemem();
+    const metrics = { hostname: os.hostname(), platform: process.platform, freeBytes, totalBytes, revision: null, clean: null };
     try {
       const cwd = check();
       const [health, state] = await Promise.all([relay("status").then(status => ({ status }), error => ({ error })), checkout(cwd)]);

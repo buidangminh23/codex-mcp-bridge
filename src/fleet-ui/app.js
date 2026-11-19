@@ -129,7 +129,7 @@ function paintMachine(card, host) {
   const health = !host.checkedAt ? "Đang kiểm tra" : !host.online ? "Ngoại tuyến" : low ? "Thiếu RAM" : "Trực tuyến";
   badge(card.querySelector(".badge"), health, host.online ? (low ? "amber" : "green") : "gray");
   setText(card.querySelector(".host-sub"), [host.local ? "Máy này" : host.id, platforms[host.platform] || host.platform].filter(Boolean).join(" · "));
-  const text = host.online ? gib(host.freeBytes) + " trống / " + gib(host.totalBytes) : "Chưa có số liệu RAM hiện tại";
+  const text = host.online ? gib(host.freeBytes) + " khả dụng / " + gib(host.totalBytes) : "Chưa có số liệu RAM hiện tại";
   setText(card.querySelector(".ram-text"), text);
   const meter = card.querySelector("progress");
   meter.hidden = !host.online;
@@ -241,7 +241,7 @@ function render() {
   el("all-hosts").hidden = !hostFilter;
   el("new-job").disabled = !online || hosts.length === 0;
   setText(el("summary"), hosts.filter(host => host.online).length + "/" + hosts.length + " máy trực tuyến · " + jobs.length + " công việc");
-  setText(el("threshold"), "RAM trống tối thiểu " + gib(state.minFreeBytes));
+  setText(el("threshold"), "RAM khả dụng tối thiểu " + gib(state.minFreeBytes));
   el("setup-hint").hidden = Boolean(hostFilter) || state.hosts.some(host => !host.local);
   reconcile(el("machines"), hosts, machineCard, paintMachine);
   reconcile(el("job-list"), shown, jobRow, paintRow);

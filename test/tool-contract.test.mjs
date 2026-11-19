@@ -18,6 +18,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OPEN_SESSION_TEXT = /open the session in Claude Desktop.*target auto/;
 
 const CODEX_TOOLS = [
+  "send_to_fleet_session", "read_fleet_session_delivery",
   "worker_status", "list_workers", "send_to_worker", "read_worker_delivery",
   "inspect_bridge_project",
   "prepare_bridge_project",
@@ -34,6 +35,7 @@ const CODEX_TOOLS = [
 ];
 
 const CLAUDE_TOOLS = [
+  "send_to_fleet_session", "read_fleet_session_delivery",
   "worker_status", "list_workers", "send_to_worker", "read_worker_delivery",
   "inspect_bridge_project",
   "prepare_bridge_project",
@@ -941,7 +943,7 @@ describe("codex-bridge tool contract", async () => {
 
   it("marks the tools that only read as read-only", () => {
     const readOnly = tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name);
-    assert.deepEqual(readOnly.sort(), ["codex_bridge_status", "inspect_bridge_project", "list_codex_threads", "list_workers", "read_codex_thread", "read_worker_delivery", "wait_codex_reply", "worker_status"]);
+    assert.deepEqual(readOnly.sort(), ["codex_bridge_status", "inspect_bridge_project", "list_codex_threads", "list_workers", "read_codex_thread", "read_fleet_session_delivery", "read_worker_delivery", "wait_codex_reply", "worker_status"]);
   });
 
   it("marks the tools that can destroy work as destructive", () => {
@@ -951,6 +953,7 @@ describe("codex-bridge tool contract", async () => {
       "interrupt_codex_turn",
       "prepare_bridge_project",
       "send_to_codex_thread",
+      "send_to_fleet_session",
       "send_to_worker",
       "start_codex_thread",
       "stop_codex_app_server",
@@ -986,7 +989,7 @@ describe("claude-bridge tool contract", async () => {
 
   it("marks the tools that only read as read-only", () => {
     const readOnly = tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name);
-    assert.deepEqual(readOnly.sort(), ["inspect_bridge_project", "list_claude_sessions", "list_workers", "read_claude_delivery", "read_claude_transcript", "read_worker_delivery", "worker_status"]);
+    assert.deepEqual(readOnly.sort(), ["inspect_bridge_project", "list_claude_sessions", "list_workers", "read_claude_delivery", "read_claude_transcript", "read_fleet_session_delivery", "read_worker_delivery", "worker_status"]);
   });
 });
 

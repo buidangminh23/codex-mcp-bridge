@@ -129,3 +129,15 @@ export function recheckProjectScope(expected, current = captureProjectScope(expe
   }
   return current;
 }
+
+export function captureCheckoutScope(mapped, native) {
+  const scope = captureProjectScope(mapped, native);
+  if (!samePath(scope.sender.path, scope.recipient.path) && ![scope.sender, scope.recipient].every(side => side.repository && exists(path.join(side.path, ".git")))) {
+    throw Object.assign(new Error("The destination must be a registered checkout of the authorized repository"), { code: "PROJECT_SCOPE_MISMATCH" });
+  }
+  return scope;
+}
+
+export function recheckCheckoutScope(expected) {
+  return recheckProjectScope(expected, captureCheckoutScope(expected.sender.input, expected.recipient.input));
+}

@@ -92,8 +92,7 @@ export function repositoryIdentity(cwd) {
   return `${url.hostname.toLowerCase()}${url.port ? `:${url.port}` : ""}/${name}`;
 }
 
-export function readRemoteProfile(name, { env = process.env } = {}) {
-  if (typeof name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) throw remoteFailure("REMOTE_HOST_INVALID", "Choose an exact configured remote host name");
+export function readRemoteHostsConfig({ env = process.env } = {}) {
   const root = home(env);
   if (!cleanPath(root) || !path.isAbsolute(root)) throw remoteFailure("REMOTE_CONFIG_UNSAFE", "Codex configuration directory must be absolute");
   const directory = fs.realpathSync.native(root);
@@ -121,6 +120,12 @@ export function readRemoteProfile(name, { env = process.env } = {}) {
         || fs.realpathSync.native(root) !== directory) throw remoteFailure("REMOTE_CONFIG_CHANGED", "Remote host configuration changed during reading");
     config = JSON.parse(data.toString("utf8"));
   } finally { fs.closeSync(descriptor); }
+  return config;
+}
+
+export function readRemoteProfile(name, { env = process.env } = {}) {
+  if (typeof name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) throw remoteFailure("REMOTE_HOST_INVALID", "Choose an exact configured remote host name");
+  const config = readRemoteHostsConfig({ env });
   const profile = config.version === 1 && Object.hasOwn(config.hosts ?? {}, name) ? config.hosts[name] : null;
   if (!ownObject(profile) || Object.keys(profile).sort().join() !== ["sshHost", "node", "receiver", "localCwd", "remoteCwd"].sort().join()
       || typeof profile.sshHost !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(profile.sshHost)

@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.5.0] - 2026-11-19
+
+- Claude Desktop Code, Codex Desktop and Antigravity Desktop sessions can hand authorized work to an idle native session on another configured computer. The caller can select a machine, assistant or exact session, or let available memory and recipient eligibility determine the destination.
+- The source and destination record the request before dispatch. The original conversation can read its reply using the same request ID after a delay or a lost connection.
+- Existing POSIX host profiles work for session routing. A Windows SSH destination can use the installed worker relay with an explicit project mapping.
+
 ## [2.4.0] - 2026-11-19
 
 - The fleet dashboard shows the AI sessions for the selected project on each computer. Operators can check which machine and assistant are working on a task.

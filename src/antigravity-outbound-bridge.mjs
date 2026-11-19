@@ -13,6 +13,7 @@ import { createHardenedRootPolicy } from "./hardened-root-policy.mjs";
 import { stopProcessInspectors } from "./claude-sender-context.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./background-relay-mcp.mjs";
+import { fleetSender, registerFleetSessionTools } from "./fleet-session-tools.mjs";
 import { assertAccountIdentity } from "./bridge-account-context.mjs";
 import { bridgeDiagnostic, withBridgeDiagnostic, preflightFailure } from "./recipient-preflight.mjs";
 import { createReloadControl, exitWhenClientCloses } from "./reload-control.mjs";
@@ -79,6 +80,9 @@ export function createAntigravityOutboundBridge({ resolveSender = resolveAntigra
       if (JSON.stringify(current) !== JSON.stringify(identity)) throw preflightFailure("ANTIGRAVITY_SENDER_CHANGED", "Antigravity sender identity or permissions changed before delivery");
     };
   }
+
+  registerFleetSessionTools((name, config, handler) => server.registerTool(name, config, (args, extra) =>
+    reload.run(() => handler(args, extra))), { identify: async extra => fleetSender("antigravity", await sender(extra)) });
 
   function register(name, description, inputSchema, readOnly, handler) {
     server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: true, openWorldHint: !readOnly } }, async (args, extra) => {

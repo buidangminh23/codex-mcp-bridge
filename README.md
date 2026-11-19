@@ -102,7 +102,7 @@ Confirm a reply on each route used. Saved configuration alone does not verify li
 - **Claude → Codex:** “Send this review to my Codex task in this project and wait for its reply.”
 - **Codex → Claude:** “Send this result to my Claude Desktop Code session in this project.”
 - **Background work:** “Send this task to a Claude worker in this project.”
-- **Another computer:** use [`remote_codex` over SSH](REFERENCE.md#codex-to-codex-over-ssh) with an existing Desktop task.
+- **Another computer:** from an existing AI session, use [`send_to_fleet_session`](REFERENCE.md#cross-machine-ai-sessions) to send a brief to a session in the mapped project. To inspect a particular Codex Desktop task from Codex, use [`remote_codex` over SSH](REFERENCE.md#codex-to-codex-over-ssh).
 
 Native handoffs preserve the actual sender and destination permissions. Antigravity App replies stay in their App conversation; independent workers return separate delivery receipts.
 

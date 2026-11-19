@@ -7,6 +7,7 @@ import { readClaudeAccountContext } from "./desktop-account-context.mjs";
 import { NativeDesktopRelay } from "./native-relay.mjs";
 import { assertClaudeSessionProcess, listClaudeSessions } from "./peer-protocol.mjs";
 import { RELAY_UUID } from "./background-relay-config.mjs";
+import { captureProjectScope } from "./project-scope.mjs";
 
 const liveStatus = new Map([
   ["active", "running"], ["running", "running"], ["working", "running"], ["busy", "running"],
@@ -15,9 +16,15 @@ const liveStatus = new Map([
   ["needsinput", "waiting"], ["blocked", "waiting"],
 ]);
 
-function sameProject(row, cwd) {
+function sameProject(row, cwd, authorize) {
   if (typeof row.cwd !== "string" || !path.isAbsolute(row.cwd)) return false;
-  try { return path.relative(cwd, fs.realpathSync.native(row.cwd)) === ""; }
+  try {
+    const nativeCwd = fs.realpathSync.native(row.cwd);
+    if (path.relative(cwd, nativeCwd) === "") return true;
+    if (!authorize) return false;
+    captureProjectScope(cwd, nativeCwd);
+    return path.relative(authorize(nativeCwd), nativeCwd) === "";
+  }
   catch { return false; }
 }
 
@@ -33,8 +40,8 @@ async function codexSnapshot() {
     note: "Codex Desktop cung cấp ảnh chụp các phiên gần đây và đã ghim. Phiên cũ hơn có thể chưa xuất hiện." };
 }
 
-function claudeSnapshot(cwd) {
-  const rows = listClaudeSessions({ includeActivity: true }).filter(session => session.alive && RELAY_UUID.test(session.sessionId) && sameProject(session, cwd));
+function claudeSnapshot(cwd, authorize) {
+  const rows = listClaudeSessions({ includeActivity: true }).filter(session => session.alive && RELAY_UUID.test(session.sessionId) && sameProject(session, cwd, authorize));
   if (!rows.length) return { rows: [] };
   const account = readClaudeAccountContext();
   const sessions = [];
@@ -56,11 +63,11 @@ function claudeSnapshot(cwd) {
   return { rows: sessions, ...(incomplete ? { note: "Một số phiên Claude chưa xác minh được trong lần kiểm tra này." } : {}) };
 }
 
-export async function listFleetSessions(project, { codex = codexSnapshot, claude = claudeSnapshot, antigravity = listAntigravityConversations } = {}) {
+export async function listFleetSessions(project, { codex = codexSnapshot, claude = claudeSnapshot, antigravity = listAntigravityConversations, authorize } = {}) {
   const cwd = fs.realpathSync.native(project);
   const providers = ["Codex Desktop", "Claude Code", "Antigravity"];
   const snapshots = await Promise.allSettled([
-    Promise.resolve().then(codex), Promise.resolve().then(() => claude(cwd)),
+    Promise.resolve().then(codex), Promise.resolve().then(() => claude(cwd, authorize)),
     Promise.resolve().then(async () => {
       const rows = await antigravity({ limit: 100 });
       return { rows, ...(rows.length >= 100 ? { note: "Antigravity chỉ hiển thị các phiên từ danh sách gần đây." } : {}) };
@@ -79,7 +86,7 @@ export async function listFleetSessions(project, { codex = codexSnapshot, claude
     if (result.status !== "fulfilled") continue;
     if (result.value.note) notes.push(result.value.note);
     for (const row of result.value.rows) {
-      if (!sameProject(row, cwd)) continue;
+      if (!sameProject(row, cwd, authorize)) continue;
       if (index === 0 && row.kind === "codex" && row.hostId === "local") {
         const status = row.status?.type ?? row.status;
         const waiting = Array.isArray(row.status?.activeFlags) && row.status.activeFlags.some(flag => ["waitingOnApproval", "waitingOnUserInput"].includes(flag));

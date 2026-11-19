@@ -296,7 +296,7 @@ function safeSenderDiagnostic(diagnostic) {
   return null;
 }
 
-export async function readClaudeSenderContext({ account, parentPid = process.ppid, readAncestry = readProcessAncestry, listSessions = listClaudeSessions, readContext = readClaudeDesktopContext } = {}) {
+export async function readClaudeSenderContext({ account, parentPid = process.ppid, readAncestry = readProcessAncestry, listSessions = listClaudeSessions, readContext = readClaudeDesktopContext, includePermissions = false } = {}) {
   if (account?.status !== "verified" || !account.fingerprint) return senderResult("unavailable", "The calling Claude account is not verified.");
   let stage = "session_registry";
   try {
@@ -331,6 +331,7 @@ export async function readClaudeSenderContext({ account, parentPid = process.ppi
     return senderResult("verified", "The calling MCP process belongs to a live Claude Desktop Code session in the selected account.", {
       pid: session.pid, sessionId: session.sessionId, taskId: context.taskId, cwd: context.cwd,
       processStart: process.processStart, accountFingerprint: account.fingerprint,
+      ...(includePermissions ? { mode: context.permissionClass, permissionMode: context.permissionMode } : {}),
       lineage: ancestry.map((entry) => ({ ...entry })),
     });
   } catch (error) {

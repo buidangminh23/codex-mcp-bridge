@@ -43,7 +43,7 @@ async function fixture(t, outcomes = {}) {
 
 test("outbound MCP advertises native tools and rejects missing caller before target access", async (t) => {
   const f = await fixture(t);
-  assert.deepEqual((await f.client.listTools()).tools.map((x) => x.name).sort(), ["agent_bridge_status", "list_agent_tasks", "send_to_agent_task", "read_agent_delivery", "read_agent_task", "worker_status", "list_workers", "send_to_worker", "read_worker_delivery"].sort());
+  assert.deepEqual((await f.client.listTools()).tools.map((x) => x.name).sort(), ["agent_bridge_status", "list_agent_tasks", "send_to_agent_task", "read_agent_delivery", "read_agent_task", "worker_status", "list_workers", "send_to_worker", "read_worker_delivery", "send_to_fleet_session", "read_fleet_session_delivery"].sort());
   f.change({ status: "unverified", reason: "Missing native metadata" });
   const status = await f.call("agent_bridge_status");
   assert.equal(status.isError, true);

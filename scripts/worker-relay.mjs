@@ -11,7 +11,13 @@ const action = args.shift() ?? "status";
 const option = name => { const index = args.indexOf(name); return index < 0 ? undefined : args[index + 1]; };
 try {
   let result;
-  if (action === "status" || action === "list") result = await callBackgroundRelay(action);
+  if (action === "dashboard") {
+    const { runFleetDashboard } = await import("../src/fleet-dashboard.mjs");
+    await runFleetDashboard(args);
+  } else if (action === "fleet-host") {
+    const { runFleetHost } = await import("../src/fleet-host.mjs");
+    result = await runFleetHost();
+  } else if (action === "status" || action === "list") result = await callBackgroundRelay(action);
   else if (action === "read") result = await callBackgroundRelay("read", { requestId: option("--request-id"), waitSec: Number(option("--wait") ?? 0) }, { timeoutMs: (Number(option("--wait") ?? 0) + 10) * 1000 });
   else if (action === "send") {
     if (!args.includes("--stdin") || !RELAY_UUID.test(option("--request-id") ?? "")) throw relayFailure("WORKER_REQUEST_INVALID", "Use --stdin and a persistent --request-id UUID so uncertain deliveries can be inspected safely");
@@ -28,7 +34,7 @@ try {
     const prompt = Buffer.concat(chunks).toString("utf8");
     result = await callBackgroundRelay("send", { agent: option("--agent"), cwd: option("--cwd"), requestId: option("--request-id"), prompt });
   } else if (action === "--help" || action === "help") {
-    process.stdout.write("worker-relay status | list | send --agent <codex|claude|antigravity> --cwd <project> --request-id <uuid> --stdin | read --request-id <uuid> [--wait <0-60>]\n");
+    process.stdout.write("worker-relay dashboard [--help] | status | list | send --agent <codex|claude|antigravity> --cwd <project> --request-id <uuid> --stdin | read --request-id <uuid> [--wait <0-60>]\n");
   } else throw relayFailure("WORKER_COMMAND_INVALID", "Unknown worker relay command");
   if (result) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");

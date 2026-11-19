@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Điều phối công việc · Codex Bridge</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="bar-inner">
+      <a href="/" class="brand"><span class="mark" aria-hidden="true"></span>Codex Bridge</a>
+      <span class="division">Điều phối máy</span>
+      <span id="connection" class="connection" role="status">Đang kết nối</span>
+    </div>
+  </header>
+  <main>
+    <a id="all-hosts" href="/" hidden>← Tất cả máy</a>
+    <div class="page-head">
+      <div><h1 id="page-title">Điều phối công việc</h1><p id="summary" class="muted">Đang tải trạng thái máy…</p></div>
+      <button id="new-job" class="primary" disabled><span aria-hidden="true">+</span> Tạo công việc</button>
+    </div>
+    <p id="page-error" class="notice error" role="alert" hidden></p>
+    <section aria-labelledby="machines-heading">
+      <div class="section-head"><h2 id="machines-heading">Máy làm việc</h2><span class="aside" id="threshold"></span></div>
+      <div class="machines" id="machines"></div>
+      <p id="setup-hint" class="hint" hidden>Để thêm máy đã cấu hình, mở bảng điều phối bằng <code>worker-relay dashboard --host &lt;tên hồ sơ&gt;</code>.</p>
+    </section>
+    <div class="workbench">
+      <section class="panel queue" aria-labelledby="queue-heading">
+        <div class="section-head panel-head">
+          <h2 id="queue-heading">Danh sách công việc</h2>
+          <select id="status-filter" aria-label="Lọc theo trạng thái">
+            <option value="all">Mọi trạng thái</option><option value="queued">Chờ phân công</option>
+            <option value="running">Đang chạy</option><option value="uncertain">Chờ xác minh</option>
+            <option value="completed">Hoàn tất</option><option value="failed">Thất bại</option><option value="cancelled">Đã hủy</option>
+          </select>
+        </div>
+        <div id="job-list"></div>
+        <div id="empty-queue" class="empty" hidden>
+          <span class="empty-art list-art" aria-hidden="true"></span>
+          <h3 id="empty-heading">Chưa có công việc</h3><p id="empty-description">Công việc đã tạo sẽ xuất hiện ở đây.</p>
+        </div>
+      </section>
+      <section class="panel detail" aria-labelledby="detail-heading">
+        <div class="section-head panel-head"><h2 id="detail-heading">Chi tiết công việc</h2></div>
+        <div id="empty-detail" class="empty">
+          <span class="empty-art step-art" aria-hidden="true"></span>
+          <p>Chọn công việc để xem tiến độ từng bước.</p>
+        </div>
+        <div id="job-detail" hidden>
+          <h3 id="job-title"></h3>
+          <div class="detail-summary"><span id="job-status" class="badge"></span><span id="job-agent"></span></div>
+          <dl class="metadata"><dt>Máy nhận</dt><dd id="job-target"></dd><dt>Thời điểm tạo</dt><dd id="job-created"></dd></dl>
+          <p id="job-error" class="notice" hidden></p>
+          <div id="job-actions" class="actions" hidden>
+            <label for="new-target" class="sr-only">Chọn máy nhận mới</label><select id="new-target"></select>
+            <button id="move-job" class="secondary">Đổi máy</button><button id="cancel-job" class="danger">Hủy việc</button>
+          </div>
+          <ol id="steps" class="steps" aria-label="Các bước thực hiện"></ol>
+        </div>
+      </section>
+    </div>
+  </main>
+  <dialog id="job-dialog" aria-labelledby="dialog-title">
+    <form id="job-form">
+      <div class="dialog-head"><h2 id="dialog-title">Tạo công việc</h2><button type="button" id="dismiss" class="close" aria-label="Đóng">×</button></div>
+      <label for="title-input">Tên công việc</label><input id="title-input" required maxlength="160" autocomplete="off" autofocus>
+      <div class="fields">
+        <div><label for="agent-input">Trợ lý</label><select id="agent-input"><option value="codex">Codex</option><option value="claude">Claude</option><option value="antigravity">Antigravity</option></select></div>
+        <div><label for="target-input">Máy nhận</label><select id="target-input"></select></div>
+      </div>
+      <p class="form-hint">Chế độ tự động chọn máy đủ RAM trước mỗi bước. Kết quả văn bản của bước trước được chuyển sang bước tiếp theo.</p>
+      <div id="step-fields"></div>
+      <button type="button" id="add-step" class="text-button">+ Thêm bước</button>
+      <p class="notice error" id="form-error" role="alert" hidden></p>
+      <div class="dialog-footer"><button type="button" id="back" class="secondary">Đóng</button><button id="submit-job" class="primary">Thêm vào hàng chờ</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="sr-only" role="status"></div>
+</body>
+</html>

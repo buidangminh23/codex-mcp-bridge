@@ -129,7 +129,7 @@ function sessionView(id, button) {
       if (jobs.length) content.push(node("strong", "job-meta", "Việc đang chạy qua bộ điều phối"), sessionList(jobs));
       if (sessions.length) content.push(node("strong", "job-meta", "Phiên AI trong dự án"), sessionList(sessions));
       if (failure) content.push(node("p", "notice error", "Chưa tải được phiên AI. " + failure));
-      else if (!sessions.length && !result?.note) content.push(node("p", "hint", "Chưa thấy phiên AI nào trong dự án trên máy này."));
+      else if (!sessions.length) content.push(node("p", "hint", "Lần kiểm tra này chưa ghi nhận phiên AI nào của dự án trên máy này."));
       if (result?.note) content.push(node("p", "hint", result.note));
       region.replaceChildren(...content);
       signature = next;

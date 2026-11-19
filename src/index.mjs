@@ -44,10 +44,11 @@ import { createRelayWake } from "./relay-wake.mjs";
 import { withBridgeDiagnostic } from "./recipient-preflight.mjs";
 import { BACKGROUND_TOOLS } from "./background-relay-config.mjs";
 import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./background-relay-mcp.mjs";
+import { fleetSender, FLEET_SESSION_TOOLS, registerFleetSessionTools } from "./fleet-session-tools.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "2.4.0";
+const VERSION = "2.5.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 
@@ -476,7 +477,7 @@ function registerTool(name, definition, handler) {
     try {
       result = await reload.run(async () => {
       if (!definition.annotations?.readOnlyHint) runtime.assertCurrent();
-      if (BACKGROUND_TOOLS.includes(name)) return handler(...args);
+      if (BACKGROUND_TOOLS.includes(name) || FLEET_SESSION_TOOLS.includes(name)) return handler(...args);
       if (name === "codex_bridge_status") {
         const state = runtime.status();
         if (!state.current) return { ...failure(new Error(`${state.reason}; reconnect this MCP server in the existing task.`)), structuredContent: { runtime: state } };
@@ -529,6 +530,13 @@ function registerTool(name, definition, handler) {
 }
 
 registerBackgroundTools(registerTool);
+registerFleetSessionTools(registerTool, { identify: async () => {
+  runtime.assertCurrent();
+  const { claude } = readBridgeAccounts();
+  const identity = requireClaudeSenderContext(await readClaudeSenderContext({ account: claude, includePermissions: true }));
+  security.assertCwd(identity.cwd);
+  return fleetSender("claude", identity, identity.accountFingerprint);
+} });
 
 registerDesktopReadTools(registerTool, {
   desktopTasksEnabled, desktopTasks, replyReceipts, security, client,

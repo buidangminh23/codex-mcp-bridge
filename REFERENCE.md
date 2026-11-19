@@ -2,6 +2,31 @@
 
 [Quick start](README.md)
 
+### Cross-machine AI sessions
+
+From the sending conversation, call `send_to_fleet_session` with a new UUID in `requestId` and the task in `prompt`. The bridge verifies the calling session. The optional `host`, `agent` and `sessionId` fields constrain the recipient. For example, a Claude session on a PC can set `host` to `mac` and `agent` to `codex` to reach an eligible chat on the Mac. Omit those selectors to let the router choose among eligible sessions of the configured project.
+
+Use the same request ID with `read_fleet_session_delivery` in the sending conversation to retrieve its result. The receipt identifies the chosen machine and session. A pending or uncertain delivery retains its original destination. Continue reading the receipt after a timeout. Sending a second request ID starts independent work.
+
+Install the bridge on both computers. Configure a project grant for each checkout and an SSH alias with key authentication and a verified host key for each sending direction. The sending MCP server verifies the calling conversation, and the receiving computer trusts its authenticated SSH operator to convey that identity. The router reads the sending user's `~/.codex/bridge-remote-hosts.json` (or the directory set by `CODEX_HOME`). Existing POSIX Codex profiles also work. A Mac sending to a Windows computer can use the following mapping in that file. The Windows SSH account must be able to run `worker-relay.cmd`. Preserve any existing host entries.
+
+```json
+{
+  "version": 1,
+  "sessionMinFreeGiB": 2,
+  "hosts": {
+    "pc": {
+      "sshHost": "windows-workstation",
+      "platform": "win32",
+      "localCwd": "/Users/<user>/project",
+      "remoteCwd": "D:\\Projects\\project"
+    }
+  }
+}
+```
+
+Selection uses mapped hosts with the same repository, enough available RAM, and an idle native session eligible to receive from the caller. Among eligible computers it prefers the one with the most available memory. The default session memory floor is 2 GiB. A Codex destination requires a verified full-access sender. A Claude destination checks its own inbound settings. Antigravity Desktop requires its native sidecar. The result of a completed read is returned through the sending conversation's MCP call.
+
 ### Codex to Codex over SSH
 
 Update both computers with the [one-command updater](README.md#package--npm). If an existing task still shows the old tool catalog, allow its managed worker to reload when idle or reconnect its MCP server normally. Do not create or open a task to load the relay.

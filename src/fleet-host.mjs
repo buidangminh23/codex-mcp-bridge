@@ -116,7 +116,7 @@ function assertLocalOperator(env) {
   }
 }
 
-function authorizedProject(cwd) {
+export function authorizedProject(cwd) {
   const config = readRelayConfiguration({ missing: true });
   if (!config?.enabled) throw relayFailure("WORKER_RELAY_DISABLED", "Enable and configure the background relay for this user");
   try {
@@ -218,12 +218,13 @@ export async function runFleetHost(inputStream = process.stdin) {
   }
 }
 
-export function fleetSshArgs(host) {
+export function fleetSshArgs(host, operation = "fleet-host") {
+  if (!["fleet-host", "fleet-session-host"].includes(operation)) throw relayFailure("FLEET_HOST_INVALID", "Invalid fleet receiver operation");
   const platform = host.platform ?? "linux";
   if (!commands.has(platform) || typeof host.sshHost !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(host.sshHost)) {
     throw relayFailure("FLEET_HOST_INVALID", "Choose a configured SSH alias and supported platform");
   }
-  let command = commands.get(platform);
+  let command = commands.get(platform).replace("fleet-host", operation);
   if (host.runtime) {
     const paths = [host.runtime.node, host.runtime.cli];
     if (platform === "win32" || paths.some(value => typeof value !== "string" || !path.posix.isAbsolute(value) || /[\0\r\n]/.test(value))) {
@@ -231,7 +232,7 @@ export function fleetSshArgs(host) {
     }
     const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'";
     const shell = platform === "darwin" ? "/bin/zsh" : "/bin/sh";
-    command = shell + " -lc " + quote("exec " + paths.map(quote).join(" ") + " fleet-host");
+    command = shell + " -lc " + quote("exec " + paths.map(quote).join(" ") + " " + operation);
   }
   return ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5", "-o",
     "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "PermitLocalCommand=no", "--", host.sshHost, command];

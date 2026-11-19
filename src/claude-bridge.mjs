@@ -25,10 +25,12 @@ import { AGENT_PROMPT_GUIDANCE, PROMPT_FIELD_HINT } from "./prompt-guidance.mjs"
 import { registerProjectOnboardingTools } from "./project-onboarding-tools.mjs";
 import { discoverClaudeProject } from "./claude-project-discovery.mjs";
 import { BACKGROUND_WORKER_GUIDANCE, registerBackgroundTools } from "./background-relay-mcp.mjs";
+import { fleetSender, registerFleetSessionTools } from "./fleet-session-tools.mjs";
+import { readCodexAccountContext } from "./codex-account-context.mjs";
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "2.4.0";
+const VERSION = "2.5.0";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const FORWARD_MIN_INTERVAL_MS = 5000;
 const FORWARD_MAX_PER_SESSION = 50;
@@ -307,6 +309,13 @@ function registerTool(name, definition, handler) {
 }
 
 registerBackgroundTools(registerTool);
+registerFleetSessionTools(registerTool, { identify: async extra => {
+  runtime.assertCurrent();
+  const identity = await assertSender(extra?._meta);
+  rootPolicy.assert(identity.cwd);
+  const account = readCodexAccountContext();
+  return fleetSender("codex", identity, account.status === "verified" ? account.fingerprint : null);
+} });
 
 registerProjectOnboardingTools(registerTool, { options: { policyRegistration: "codex", evaluateAuthorization: (cwd) => rootPolicyAccessScope(rootPolicy, cwd) ?? { mode: "no-root-restriction", authorized: true } }, beforePrepare: async (extra) => {
   runtime.assertCurrent();

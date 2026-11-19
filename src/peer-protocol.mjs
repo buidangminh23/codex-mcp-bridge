@@ -1091,7 +1091,7 @@ export class PeerEndpoint {
     return frame.msg_id;
   }
 
-  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend, permissionMode = this.permissionMode, replyThreadId, senderReview, senderApprovalPolicy, recipient, accountContext, scopeBindings } = {}) {
+  async sendAndWait(targetSocket, text, { timeoutMs = 120000, priority = "next", transcriptSession, beforeSend, onPrepared, permissionMode = this.permissionMode, replyThreadId, senderReview, senderApprovalPolicy, recipient, accountContext, scopeBindings } = {}) {
     const previous = this.requestQueues.get(targetSocket) ?? Promise.resolve();
     const pending = previous.catch(() => {}).then(async () => {
       await beforeSend?.();
@@ -1115,6 +1115,7 @@ export class PeerEndpoint {
       this.sentMessages.set(msgId, { targetSocket, transcriptSession, sentAt: since, replyThreadId, permissionMode, senderApprovalPolicy, ...(senderReview ? { senderReview: { ...senderReview } } : {}), ...(recipient ? { recipient: { ...recipient } } : {}), ...(accountContext ? { accountContext: Object.freeze({ ...accountContext }) } : {}), ...(scopeBindings ? { scopeBindings: Object.freeze(structuredClone(scopeBindings)) } : {}) });
       this.#startTranscriptPolling();
       try {
+        await onPrepared?.(msgId);
         const sentId = await this.send(targetSocket, text, { priority, msgId, permissionMode, beforeSend });
         if (sentId !== msgId) {
           const pendingMessage = this.pendingMessages.get(msgId);

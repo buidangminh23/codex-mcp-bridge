@@ -120,6 +120,38 @@ test("sidecar persists the pre-send boundary and refreshes native replies withou
   assert.equal(observations, 1);
 });
 
+test("fleet sidecar binds the native instance and project before dispatching an Antigravity-authored prompt", async t => {
+  const { state, options } = fixture(t);
+  const conversationId = crypto.randomUUID();
+  let writes = 0;
+  options.runNative = async args => {
+    await args.beforeDispatch({ version: 1, status: "ready", trajectoryId: crypto.randomUUID(), beforeStepIndex: 12, promptSha256: "b".repeat(64), projectId: "original" });
+    writes++;
+    return { status: "accepted", completed: false, conversationId };
+  };
+  const server = await startAntigravitySidecar(options);
+  t.after(() => server.close());
+  const { instanceId } = await state.handler({ operation: "fleet-status" });
+  const request = { operation: "send", instanceId, requestId: crypto.randomUUID(), conversationId, cwd: options.directory,
+    prompt: "echo the platform", sender: { id: crypto.randomUUID(), provider: "antigravity", host: "other", accountFingerprint: "c".repeat(64) } };
+  await assert.rejects(state.handler({ ...request, instanceId: crypto.randomUUID() }), /sidecar changed/);
+  async function submit(expectedProjectId) {
+    const requestId = crypto.randomUUID();
+    let result = await state.handler({ ...request, requestId, expectedProjectId });
+    for (let i = 0; i < 30 && result.status === "pending"; i++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      result = await state.handler({ operation: "receipt", requestId, instanceId });
+    }
+    return result;
+  }
+  assert.equal((await submit("different")).status, "failed");
+  assert.equal(writes, 0);
+  const accepted = await submit("original");
+  assert.equal(accepted.sender.provider, "antigravity");
+  assert.equal(accepted.status, "accepted");
+  assert.equal(writes, 1);
+});
+
 test("sidecar keeps unknown reply observations unconfirmed", async (t) => {
   const { state, options } = fixture(t);
   options.runNative = async () => ({ status: "accepted", completed: false });

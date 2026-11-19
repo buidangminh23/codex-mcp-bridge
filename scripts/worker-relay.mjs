@@ -17,6 +17,9 @@ try {
   } else if (action === "fleet-host") {
     const { runFleetHost } = await import("../src/fleet-host.mjs");
     result = await runFleetHost();
+  } else if (action === "fleet-session-host") {
+    const { runFleetSessionHost } = await import("../src/fleet-session-receiver.mjs");
+    result = await runFleetSessionHost();
   } else if (action === "status" || action === "list") result = await callBackgroundRelay(action);
   else if (action === "read") result = await callBackgroundRelay("read", { requestId: option("--request-id"), waitSec: Number(option("--wait") ?? 0) }, { timeoutMs: (Number(option("--wait") ?? 0) + 10) * 1000 });
   else if (action === "send") {

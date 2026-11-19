@@ -161,7 +161,7 @@ export async function observeAntigravityDelivery(record, { home = os.homedir(), 
   if (record?.surface !== "desktop" || !["accepted", "unknown", "sent_unconfirmed"].includes(record.status)) return record;
   const observation = (status, code) => ({ ...record, replyObservation: { status, code, source: "native-transcript", retrySafe: false } });
   try {
-    if (!UUID.test(record.conversationId ?? "") || !/^[a-f0-9]{64}$/.test(record.digest ?? "") || !["codex", "claude"].includes(record.sender?.provider)
+    if (!UUID.test(record.conversationId ?? "") || !/^[a-f0-9]{64}$/.test(record.digest ?? "") || !["codex", "claude", "antigravity"].includes(record.sender?.provider)
         || typeof record.sender.id !== "string" || !record.sender.id) throw transcriptFailure();
     const matches = (await list({ home, surface: "desktop", limit: 1000 })).filter((row) => row.conversationId === record.conversationId);
     if (matches.length !== 1 || matches[0].surface !== "desktop" || canonicalCwd(matches[0].cwd) !== canonicalCwd(record.cwd)) throw transcriptFailure("ANTIGRAVITY_REPLY_SCOPE_CHANGED");

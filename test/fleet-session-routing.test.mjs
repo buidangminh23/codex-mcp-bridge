@@ -138,7 +138,11 @@ test("capacity, requested session and source checks are applied before dispatch"
   let verified = 0;
   await assert.rejects(f.router.send({ ...args, checkSender() { if (++verified === 2) throw Error("changed"); } }), /changed/);
   assert.equal(f.sends.length, 0);
-  assert.ok(fleetSshArgs(f.settings.hosts[1], "fleet-session-host").includes("worker-relay.cmd fleet-session-host"));
+  const windows = fleetSshArgs(f.settings.hosts[1], "fleet-session-host").at(-1);
+  assert.match(windows, /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand [\w+/=]+$/);
+  const script = Buffer.from(windows.split(" ").at(-1), "base64").toString("utf16le");
+  assert.match(script, /& node \$userCli fleet-session-host/);
+  assert.match(script, /else \{ & worker-relay\.cmd fleet-session-host \}/);
   assert.throws(() => fleetSshArgs(f.settings.hosts[1], "unknown"));
 });
 

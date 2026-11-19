@@ -225,6 +225,15 @@ export function fleetSshArgs(host, operation = "fleet-host") {
     throw relayFailure("FLEET_HOST_INVALID", "Choose a configured SSH alias and supported platform");
   }
   let command = commands.get(platform).replace("fleet-host", operation);
+  if (platform === "win32" && operation === "fleet-session-host") {
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "$userCli = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'npm/node_modules/@minhspark/codex-mcp-bridge/scripts/worker-relay.mjs'",
+      "if (Test-Path -LiteralPath $userCli -PathType Leaf) { & node $userCli fleet-session-host } else { & worker-relay.cmd fleet-session-host }",
+      "exit $LASTEXITCODE",
+    ].join("\n");
+    command = "powershell.exe -NoProfile -NonInteractive -EncodedCommand " + Buffer.from(script, "utf16le").toString("base64");
+  }
   if (host.runtime) {
     const paths = [host.runtime.node, host.runtime.cli];
     if (platform === "win32" || paths.some(value => typeof value !== "string" || !path.posix.isAbsolute(value) || /[\0\r\n]/.test(value))) {

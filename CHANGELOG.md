@@ -2,6 +2,20 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.5.1] - 2026-11-19
+
+### Fixed
+
+- The bridge tools no longer go missing from a session that started while the computer was busy, most often right after sign-in. Before answering the MCP handshake, the bridge verified its runtime copy with about 15,000 file operations on the main thread. That takes 0.3 seconds on an idle machine, but in one Claude Desktop log 95 of about 500 starts took more than 10 seconds and 31 took more than 30 seconds, up to 90 seconds. Claude Code gives a server 30 seconds to connect, so those sessions started without the bridge and every send from them failed until the session was reopened.
+- The bridge now answers the handshake and the first tool list from a copy saved by the previous start of the same installation and settings, then finishes verification on a second thread and starts the worker. Tool calls wait for the verified worker, so no bridge code runs before verification. If the worker reports different tools, the client receives a tool list change notification.
+
+### Verification and limits
+
+- Tests cover the early answer while a slow worker starts, the corrected tool list, the switch, and preparation on a second thread. They fail against the previous supervisor. The full suite passes with 2,182 tests.
+- Measured on Windows with the real `index.mjs`: the handshake took 7,385 ms on the first start and 52 to 58 ms on later starts.
+- The first start after an installation or a settings change has no saved copy and waits as before. Set `CODEX_BRIDGE_EARLY_HANDSHAKE=0` to always wait. Hardened mode always waits.
+- A start that the operating system itself delays before the bridge process runs is not affected by this change.
+
 ## [2.5.0] - 2026-11-19
 
 - Claude Desktop Code, Codex Desktop and Antigravity Desktop sessions can hand authorized work to an idle native session on another configured computer. The caller can select a machine, assistant or exact session, or let available memory and recipient eligibility determine the destination.

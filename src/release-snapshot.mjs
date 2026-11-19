@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 function digestFiles(root, files) {
   const hash = createHash("sha256");
@@ -629,4 +630,33 @@ export function createReleaseSnapshot(root, { cache = snapshotRoot(), expectedRe
     held?.release();
     throw error;
   }
+}
+
+const PREPARATION_THREAD = "bridgeReleaseSnapshot";
+
+export function prepareReleaseSnapshot(root, { cache = snapshotRoot(), expectedRevision, lease = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const thread = new Worker(new URL(import.meta.url), { workerData: { [PREPARATION_THREAD]: { root, cache, expectedRevision } } });
+    let release = null;
+    thread.once("message", (message) => { release = message; });
+    thread.once("error", reject);
+    thread.once("exit", () => {
+      if (!release) { reject(new Error("Runtime preparation stopped before it finished")); return; }
+      if (!lease) { resolve(release); return; }
+      let held;
+      try {
+        held = leaseSnapshot(path.dirname(release.directory), release.key, release.directory);
+        if (!isDirectory(release.directory)) throw new Error("The prepared runtime was removed before it could be leased");
+        resolve({ ...release, lease: held });
+      } catch (error) {
+        held?.release();
+        reject(error);
+      }
+    });
+  });
+}
+
+if (!isMainThread && workerData?.[PREPARATION_THREAD]) {
+  const { root, cache, expectedRevision } = workerData[PREPARATION_THREAD];
+  parentPort.postMessage(createReleaseSnapshot(root, { cache, ...(expectedRevision ? { expectedRevision } : {}) }));
 }

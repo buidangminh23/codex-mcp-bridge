@@ -1,8 +1,9 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { BACKGROUND_AGENTS, privateRelayDirectory, relayFailure, relayPaths, RELAY_UUID } from "./background-relay-config.mjs";
+import { BACKGROUND_AGENTS, privateRelayDirectory, relayFailure, RELAY_UUID } from "./background-relay-config.mjs";
 import { assertPrivateRelayFile } from "./background-relay-storage.mjs";
 
 export const fail = (code, message) => relayFailure("FLEET_SESSION_" + code, message);
@@ -23,8 +24,9 @@ export function senderIdentity(sender) {
 
 export function targetIdentity(target) {
   if (!BACKGROUND_AGENTS.includes(target?.agent) || !RELAY_UUID.test(target.id || "") || !validDigest(target.accountFingerprint)
-    || !validText(target.taskId, 512)) throw fail("TARGET", "The native destination identity is incomplete");
-  return { agent: target.agent, id: target.id, accountFingerprint: target.accountFingerprint, taskId: target.taskId };
+    || !validText(target.taskId, 512) || target.scopeFingerprint !== undefined && !validDigest(target.scopeFingerprint)) throw fail("TARGET", "The native destination identity is incomplete");
+  return { agent: target.agent, id: target.id, accountFingerprint: target.accountFingerprint, taskId: target.taskId,
+    ...(target.scopeFingerprint ? { scopeFingerprint: target.scopeFingerprint } : {}) };
 }
 
 export function publicResult(requestId, target, host, result) {
@@ -37,7 +39,7 @@ export function publicResult(requestId, target, host, result) {
 }
 
 export class SessionReceipts {
-  constructor(role, directory = path.join(relayPaths().root, "session-deliveries")) {
+  constructor(role, directory = path.join(os.userInfo().homedir, ".config", "GptClaudeBridge", "agent-relay", "session-deliveries")) {
     privateRelayDirectory(directory);
     const file = path.join(directory, role === "source" ? "outbox.db" : "inbox.db");
     try { fs.closeSync(fs.openSync(file, "wx", 0o600)); } catch (error) { if (error.code !== "EEXIST") throw error; }

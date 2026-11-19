@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -8,8 +7,10 @@ import { readRemoteHostsConfig, readRemoteProfile, repositoryIdentity } from "./
 import { captureProjectScope, recheckProjectScope } from "./project-scope.mjs";
 import { fail, hash, publicResult, senderIdentity, SessionReceipts, targetIdentity, terminal, validName, validText } from "./fleet-session-protocol.mjs";
 
-export function sessionHostConfiguration(cwd) {
-  const config = readRemoteHostsConfig();
+const exactMapping = host => host.sourceScope && path.relative(host.sourceScope.sender.path, host.sourceScope.recipient.path) === "";
+
+export function sessionHostConfiguration(cwd, { env = process.env } = {}) {
+  const config = readRemoteHostsConfig({ env });
   if (config?.version !== 1 || !config.hosts || typeof config.hosts !== "object" || Array.isArray(config.hosts)
     || Object.keys(config.hosts).length > 32) throw fail("CONFIG", "Configure up to 32 SSH host profiles");
   const floor = config.sessionMinFreeGiB ?? 2;
@@ -18,7 +19,12 @@ export function sessionHostConfiguration(cwd) {
   const hosts = [];
   for (const [id, entry] of Object.entries(config.hosts)) {
     if (!validName(id) || ["auto", "local"].includes(id) || !validText(entry?.localCwd, 4096) || !path.isAbsolute(entry.localCwd)) throw fail("CONFIG", "Invalid session host mapping");
-    if (path.relative(cwd, path.resolve(entry.localCwd)) !== "") continue;
+    let sourceScope;
+    try { sourceScope = captureProjectScope(cwd, entry.localCwd); }
+    catch (error) {
+      if (path.relative(cwd, entry.localCwd) === "") throw error;
+      continue;
+    }
     let host;
     if (entry.platform) {
       const style = entry.platform === "win32" ? path.win32 : path.posix;
@@ -26,18 +32,26 @@ export function sessionHostConfiguration(cwd) {
         || Object.keys(entry).some(key => !["platform","sshHost","localCwd","remoteCwd"].includes(key))) throw fail("CONFIG", "Invalid cross-platform session host mapping");
       host = { id, sshHost: entry.sshHost, cwd: entry.remoteCwd, platform: entry.platform };
     } else {
-      const profile = readRemoteProfile(id);
-      if (path.relative(cwd, fs.realpathSync.native(profile.localCwd)) !== "") throw fail("CONFIG", "The remote project profile changed");
+      const profile = readRemoteProfile(id, { env });
+      if (profile.localCwd !== entry.localCwd) throw fail("CONFIG", "The remote project profile changed");
       const src = path.posix.dirname(profile.receiver);
       const runtime = path.posix.basename(profile.receiver) === "remote-codex-receiver.mjs" && path.posix.basename(src) === "src"
         ? { node: profile.node, cli: path.posix.resolve(src, "../scripts/worker-relay.mjs") } : undefined;
       host = { id, sshHost: profile.sshHost, cwd: profile.remoteCwd, platform: profile.remoteCwd.startsWith("/Users/") ? "darwin" : "linux", runtime };
     }
+    host.sourceScope = recheckProjectScope(sourceScope);
     fleetSshArgs(host, "fleet-session-host");
-    if (hosts.some(previous => previous.sshHost.toLowerCase() === host.sshHost.toLowerCase())) throw fail("CONFIG", "Duplicate session SSH host aliases");
     hosts.push(host);
   }
-  return { hosts, minFreeBytes };
+  const mappings = [];
+  for (const sshHost of new Set(hosts.map(h => h.sshHost.toLowerCase()))) {
+    const group = hosts.filter(h => h.sshHost.toLowerCase() === sshHost);
+    const exact = group.filter(exactMapping);
+    const matches = exact.length ? exact : group;
+    if (matches.length > 1) throw fail("CONFIG", "Ambiguous project mappings for the same session SSH host");
+    mappings.push(matches[0]);
+  }
+  return { hosts: mappings, minFreeBytes };
 }
 
 async function exchange(host, frame) {
@@ -74,7 +88,7 @@ function choose(inspections, { minFreeBytes, agent, sessionId, sender }) {
     }
   }
   if (sessionId && options.length > 1) throw fail("AMBIGUOUS", "This session ID matches multiple destinations; specify the exact host and assistant");
-  options.sort((a,b) => b.freeBytes - a.freeBytes || a.host.id.localeCompare(b.host.id) || a.target.agent.localeCompare(b.target.agent) || a.target.id.localeCompare(b.target.id));
+  options.sort((a,b) => Number(Boolean(exactMapping(b.host))) - Number(Boolean(exactMapping(a.host))) || b.freeBytes - a.freeBytes || a.host.id.localeCompare(b.host.id) || a.target.agent.localeCompare(b.target.agent) || a.target.id.localeCompare(b.target.id));
   if (!options.length) {
     const gib = bytes => (bytes / 1024 ** 3).toFixed(2);
     const details = inspections.map(({ host, sample }) => {
@@ -105,7 +119,14 @@ export function createFleetSessionRouter({ config = sessionHostConfiguration, au
       await checkSender();
       recheck(scope);
       if (authorize(sender.cwd) !== cwd || identify(cwd) !== repository) throw fail("PROJECT", "The sending project changed during this delivery");
-      if (route && !config(cwd).hosts.some(h => hash(h) === hash(route.host))) throw fail("CONFIG", "The original destination host profile changed");
+      if (!route) return;
+      if (route.host.sourceScope) recheck(route.host.sourceScope);
+      const sameRoute = config(cwd).hosts.some(h => {
+        if (route.host.sourceScope || !h.sourceScope) return hash(h) === hash(route.host);
+        const { sourceScope, ...originalFields } = h;
+        return exactMapping(h) && hash(originalFields) === hash(route.host);
+      });
+      if (!sameRoute) throw fail("CONFIG", "The original destination host profile changed");
     };
     const store = receipts();
     try {

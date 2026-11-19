@@ -4,7 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { createFleetSessionRouter } from "../src/fleet-session-routing.mjs";
+import { execFileSync } from "node:child_process";
+import { createFleetSessionRouter, sessionHostConfiguration } from "../src/fleet-session-routing.mjs";
+import { recheckProjectScope } from "../src/project-scope.mjs";
 import { handleFleetSessionRequest } from "../src/fleet-session-receiver.mjs";
 import { SessionReceipts } from "../src/fleet-session-protocol.mjs";
 import { fleetSshArgs } from "../src/fleet-host.mjs";
@@ -16,6 +18,32 @@ const agents = ["codex","claude","antigravity"];
 const target = agent => ({ agent, id: randomUUID(), accountFingerprint: "a".repeat(64), taskId: randomUUID(), status: "idle" });
 const source = agent => ({ agent, id: randomUUID(), account: "b".repeat(64), mode: "bypass", host: "pc", cwd });
 const scoped = { authorize: input => { assert.equal(input, cwd); return input; }, identify: () => origin, capture: () => ({}), recheck: () => {}, env: {} };
+
+test("registered worktrees inherit their checkout's mapping, exact mappings win, and independent clones are excluded", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fleet-mapping-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const project = path.join(dir, "project"), worktree = path.join(dir, "linked"), clone = path.join(dir, "clone");
+  const env = { CODEX_HOME: dir };
+  const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe", windowsHide: true });
+  git("init", project);
+  git("-C", project, "-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "--allow-empty", "-m", "fixture");
+  git("-C", project, "remote", "add", "origin", "https://example.org/operator/project");
+  git("-C", project, "worktree", "add", "--detach", worktree, "HEAD");
+  git("clone", "--local", project, clone);
+  git("-C", clone, "remote", "set-url", "origin", "https://example.org/operator/project");
+  const host = { platform: "darwin", sshHost: "mac", localCwd: project, remoteCwd: "/projects/main" };
+  const config = hosts => fs.writeFileSync(path.join(dir, "bridge-remote-hosts.json"), JSON.stringify({ version: 1, hosts }), { mode: 0o600 });
+  config({ mac: host });
+  assert.deepEqual(sessionHostConfiguration(clone, { env }).hosts, []);
+  const [inherited] = sessionHostConfiguration(worktree, { env }).hosts;
+  assert.equal(inherited.id, "mac");
+  assert.equal(inherited.sourceScope.recipient.path, fs.realpathSync.native(project));
+  config({ mac: host, feature: { ...host, localCwd: worktree, remoteCwd: "/projects/feature" } });
+  assert.deepEqual(sessionHostConfiguration(worktree, { env }).hosts.map(h => [h.id,h.cwd]), [["feature","/projects/feature"]]);
+  git("-C", project, "worktree", "remove", worktree);
+  git("-C", project, "worktree", "add", "--detach", worktree, "HEAD");
+  assert.throws(() => recheckProjectScope(inherited.sourceScope), { code: "PROJECT_SCOPE_CHANGED" });
+});
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fleet-sessions-"));
@@ -48,6 +76,7 @@ function fixture(t) {
   };
   state.contact = async (host, frame) => {
     state.checks.push([host.id, frame.action]);
+    if (frame.action === "send") state.beforeSend?.();
     const result = await handleFleetSessionRequest(frame, { ...scoped, adapters, freeBytes: () => state.mem[host.id], receipts: () => session(remoteStore) });
     if (frame.action === "send" && state.lost) throw Error("SSH reply lost");
     return result;
@@ -111,6 +140,17 @@ test("capacity, requested session and source checks are applied before dispatch"
   assert.equal(f.sends.length, 0);
   assert.ok(fleetSshArgs(f.settings.hosts[1], "fleet-session-host").includes("worker-relay.cmd fleet-session-host"));
   assert.throws(() => fleetSshArgs(f.settings.hosts[1], "unknown"));
+});
+
+test("a native project binding changed after discovery blocks writing into a replacement session", async t => {
+  const f = fixture(t);
+  f.rows.codex.scopeFingerprint = "1".repeat(64);
+  f.beforeSend = () => { f.rows.codex.scopeFingerprint = "2".repeat(64); };
+  const args = { sender: source("claude"), checkSender: () => {}, requestId: randomUUID(), prompt: "read-only", agent: "codex" };
+  const declined = await f.router.send(args);
+  assert.equal(declined.status, "failed");
+  assert.equal(f.sends.length, 0);
+  assert.deepEqual(await f.router.read(args), declined);
 });
 
 test("an idle target is released by exact completion evidence after its first caller stops polling", async t => {

@@ -159,7 +159,7 @@ export async function handleFleetHostRequest(input, { remote = true, relay = cal
   }
   if (input.action === "sessions") {
     const cwd = check();
-    const result = await sessions(cwd);
+    const result = await sessions(cwd, { authorize });
     if (check() !== cwd) throw relayFailure("FLEET_PROJECT_CHANGED", "The project mapping changed while reading AI sessions");
     return result;
   }

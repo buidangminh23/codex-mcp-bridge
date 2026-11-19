@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,13 +13,13 @@ const providers = ["codex", "claude", "antigravity"];
 function fixture(t) {
   const cwd = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "fleet-recipient-")));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const controls = { busy: false, account: "recipient", writes: [], prepared: [], rotate: false, substitute: false };
+  const controls = { busy: false, account: "recipient", writes: [], prepared: [], rotate: false, substitute: false, nativeCwd: cwd };
   const taskId = randomUUID(), executor = randomUUID(), instanceId = randomUUID(), turn = randomUUID();
   let sidecarReceipt, peerMessage;
   const account = () => ({ status: "verified", fingerprint: digest(controls.account) });
   const status = () => controls.busy ? "active" : "idle";
-  const thread = () => ({ id: taskId, cwd, kind: "codex", hostId: "local", projectId: "project", title: "Existing task", status: { type: status() } });
-  const agRow = () => ({ conversationId: taskId, projectId: "project", cwd, surface: "desktop", status: controls.busy ? "busy" : "CASCADE_RUN_STATUS_IDLE", title: "Existing task" });
+  const thread = () => ({ id: taskId, cwd: controls.nativeCwd, kind: "codex", hostId: "local", projectId: "project", title: "Existing task", status: { type: status() } });
+  const agRow = () => ({ conversationId: taskId, projectId: "project", cwd: controls.nativeCwd, surface: "desktop", status: controls.busy ? "busy" : "CASCADE_RUN_STATUS_IDLE", title: "Existing task" });
   function wrote(text) {
     assert.equal(controls.prepared.length, 1);
     controls.writes.push(text);
@@ -28,18 +29,18 @@ function fixture(t) {
     codex: { async requestDesktop(op, args, opts) {
       await opts.beforeSend();
       let result;
-      if (op === "list_projects") result = { projects: [{ projectId: "project", hostId: "local", projectKind: "local", path: cwd }] };
+      if (op === "list_projects") result = { projects: [{ projectId: "project", hostId: "local", projectKind: "local", path: controls.savedCwd || controls.nativeCwd }] };
       if (op === "list_threads") result = { pinnedThreads: [], threads: [thread()] };
       if (op === "read_thread") result = { thread: thread(), turns: [] };
       if (op === "send_message_to_thread") { wrote(args.prompt); result = { threadId: taskId, status: "accepted" }; }
       return { result, executorThreadId: executor };
     } },
-    watermark: () => ({ status: "available" }),
-    observe: () => ({ status: "completed", threadId: taskId, turnId: turn, text: "native response", replySha256: digest(controls.substitute ? "another" : "native response") }),
+    watermark: ({ expectedCwd }) => { assert.equal(expectedCwd, controls.nativeCwd); return { status: "available" }; },
+    observe: ({ expectedCwd }) => { assert.equal(expectedCwd, controls.nativeCwd); return { status: "completed", threadId: taskId, turnId: turn, text: "native response", replySha256: digest(controls.substitute ? "another" : "native response") }; },
     claudeAccount: account,
-    claudeSessions: () => [{ sessionId: taskId, entrypoint: "claude-desktop", alive: true, pid: 11, processStart: "native-process", socket: "native-socket", cwd, activity: status() }],
-    claudeContext: () => ({ status: "matched", accountFingerprint: account().fingerprint, taskId: "local_" + taskId, cwd, title: "Existing task", permissionClass: "bypass" }),
-    assertProcess() {}, inbound: () => ({ value: controls.inbound ?? "accept" }),
+    claudeSessions: () => [{ sessionId: taskId, entrypoint: "claude-desktop", alive: true, pid: 11, processStart: "native-process", socket: "native-socket", cwd: controls.nativeCwd, activity: status() }],
+    claudeContext: () => ({ status: "matched", accountFingerprint: account().fingerprint, taskId: "local_" + taskId, cwd: controls.nativeCwd, title: "Existing task", permissionClass: "bypass" }),
+    assertProcess() {}, inbound: directory => { assert.equal(directory, controls.nativeCwd); return { value: controls.inbound ?? "accept" }; },
     peer: () => ({
       start() {}, stop() {},
       async sendAndWait(socket, text, options) {
@@ -51,7 +52,7 @@ function fixture(t) {
         return { msgId };
       },
     }),
-    claudeReply: (id, directory, msgId) => ({ status: "reply_received", reply: { inReplyTo: controls.substitute ? randomUUID() : peerMessage, text: "native response" } }),
+    claudeReply: (id, directory, msgId) => { assert.equal(directory, controls.nativeCwd); return { status: "reply_received", reply: { inReplyTo: controls.substitute ? randomUUID() : peerMessage, text: "native response" } }; },
     antigravity: async request => {
       if (request.operation === "fleet-status") return { instanceId: controls.rotate ? randomUUID() : instanceId };
       assert.equal(request.instanceId, instanceId);
@@ -60,7 +61,8 @@ function fixture(t) {
       if (request.operation === "send") {
         assert.equal(request.expectedProjectId, "project");
         wrote(request.prompt);
-        sidecarReceipt = { requestId: request.requestId, conversationId: taskId, cwd, sender: request.sender, status: "pending" };
+        assert.equal(request.cwd, controls.nativeCwd);
+        sidecarReceipt = { requestId: request.requestId, conversationId: taskId, cwd: controls.nativeCwd, sender: request.sender, status: "pending" };
         return sidecarReceipt;
       }
       return { ...sidecarReceipt, status: "reply_received", result: { reply: "native response" }, replyObservation: { status: "reply_received", replySha256: digest(controls.substitute ? "another" : "native response") } };
@@ -73,7 +75,7 @@ function fixture(t) {
     return { cwd, target, requestId: randomUUID(), prompt: "Read the current platform.", sender: { agent: source, id: randomUUID(), mode: "bypass", host: "test-pc", account: digest("source-account") },
       check() {}, onPrepared: binding => controls.prepared.push(binding) };
   }
-  return { api, controls, inputFor };
+  return { api, controls, cwd, inputFor };
 }
 
 for (const source of providers) {
@@ -129,4 +131,40 @@ test("discovery excludes recipients that would refuse this sender's verified per
   assert.deepEqual(list.sessions.map(row => row.agent), ["antigravity"]);
   controls.inbound = "accept";
   assert.deepEqual((await api.listSessionTargets(cwd, { sender })).sessions.map(row => row.agent), ["claude", "antigravity"]);
+});
+
+test("native destinations stay bound to the registered worktree and its exact saved Codex project", async t => {
+  const { api, controls, cwd, inputFor } = fixture(t);
+  const git = (...args) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe", windowsHide: true });
+  git("init");
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "initial");
+  git("remote", "add", "origin", "https://example.test/fixture/repo.git");
+  const linked = path.join(cwd, "registered");
+  git("worktree", "add", "--detach", linked);
+  controls.nativeCwd = linked;
+  controls.savedCwd = cwd;
+  assert.deepEqual((await api.listSessionTargets(cwd)).sessions.map(row => row.agent), ["claude", "antigravity"]);
+  controls.savedCwd = linked;
+  const reads = [];
+  for (const provider of providers) {
+    controls.prepared.length = 0;
+    const input = await inputFor("claude", provider);
+    const result = await api.dispatchSession(input);
+    assert.equal(result.adapterReceipt.projectScope.recipient.path, linked);
+    const read = { ...input, receipt: result.adapterReceipt };
+    assert.equal((await api.readSessionReply(read)).output, "native response");
+    reads.push(read);
+  }
+  const clone = path.join(cwd, "other-checkout");
+  git("clone", "--local", ".", clone);
+  git("-C", clone, "remote", "set-url", "origin", "https://example.test/fixture/repo.git");
+  controls.nativeCwd = clone;
+  controls.savedCwd = clone;
+  assert.deepEqual((await api.listSessionTargets(cwd)).sessions, []);
+  controls.nativeCwd = linked;
+  controls.savedCwd = linked;
+  fs.renameSync(path.join(linked, ".git"), path.join(linked, ".git-detached"));
+  assert.deepEqual((await api.listSessionTargets(cwd)).sessions, []);
+  for (const read of reads) await assert.rejects(api.readSessionReply(read));
+  assert.equal(controls.writes.length, 3);
 });

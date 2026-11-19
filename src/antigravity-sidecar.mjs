@@ -7,6 +7,7 @@ import { AntigravityDeliveries } from "./antigravity-deliveries.mjs";
 import { listAntigravityConversations, observeAntigravityDelivery, runAgentApi, sanitizeAntigravityMetadata } from "./antigravity-desktop.mjs";
 import { exitForVersionRequest } from "./cli-version.mjs";
 import { readProcessAncestry } from "./claude-sender-context.mjs";
+import { recheckCheckoutScope } from "./project-scope.mjs";
 import { HUMAN_SENDER, humanDeliveryInput, humanReceipt, humanWorkspace } from "./antigravity-human.mjs";
 
 export async function createAntigravityParentGuard({ parentPid = process.ppid, inspect = readProcessAncestry } = {}) {
@@ -110,6 +111,10 @@ export async function startAntigravitySidecar({ directory = antigravityBridgeDir
       try { return await runNative({ command: "send", conversationId: request.conversationId, expectedCwd: request.cwd, prompt: request.prompt, env,
         beforeDispatch: (observation) => {
           if (request.expectedProjectId !== undefined && observation?.projectId !== request.expectedProjectId) throw Object.assign(new Error("The selected Antigravity project changed"), { deliveryState: "not_sent" });
+          if (request.projectScope) {
+            if (request.cwd !== request.projectScope.recipient?.path) throw Object.assign(new Error("The Antigravity worktree does not match the selected checkout"), { deliveryState: "not_sent" });
+            recheckCheckoutScope(request.projectScope);
+          }
           return deliveries.captureObservation(request.requestId, observation);
         } }); }
       finally { sending.delete(request.conversationId); }

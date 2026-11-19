@@ -8,6 +8,12 @@ import { fail, hash, publicResult, senderIdentity, SessionReceipts, targetIdenti
 
 const byteLimit = 256 * 1024;
 const availableMemory = () => Math.min(os.totalmem(), process.availableMemory?.() ?? os.freemem());
+const targetSlot = (cwd, target) => {
+  const { scopeFingerprint, ...identity } = targetIdentity(target);
+  return hash([cwd, identity]);
+};
+const sameTarget = (row, target) => row.agent === target.agent && row.id === target.id && row.accountFingerprint === target.accountFingerprint
+  && row.taskId === target.taskId && (!target.scopeFingerprint || row.scopeFingerprint === target.scopeFingerprint);
 
 function boundedOutcome(result) {
   if (typeof result?.output !== "string" || Buffer.byteLength(result.output) <= 240 * 1024) return result;
@@ -53,14 +59,13 @@ export async function handleFleetSessionRequest(input, { authorize = authorizedP
     const store = receipts();
     try {
       const idle = sessions.filter(row => row.status === "idle").slice(0,256);
-      const keys = idle.map(row => hash([cwd, targetIdentity(row)]));
+      const keys = idle.map(row => targetSlot(cwd, row));
       const previous = store.claimIdleChecks(keys).filter(record => record.route.cwd === cwd && record.route.repository === input.repository
-        && idle.some(row => row.id === record.route.target?.id && row.agent === record.route.target.agent && row.accountFingerprint === record.route.target.accountFingerprint
-          && row.taskId === record.route.target.taskId));
+        && idle.some(row => sameTarget(row, record.route.target)));
       await Promise.allSettled(previous.map(record => observe(record, native, store, check)));
       check();
       const occupied = store.occupied();
-      const targets = idle.filter(row => !occupied.has(hash([cwd, targetIdentity(row)])))
+      const targets = idle.filter(row => !occupied.has(targetSlot(cwd, row)))
         .map(row => ({ ...targetIdentity(row), status: "idle", title: String(row.title ?? "").slice(0, 256) }));
       return { freeBytes: freeBytes(), targets: targets.slice(0,100) };
     } finally { store.close(); }
@@ -82,9 +87,8 @@ export async function handleFleetSessionRequest(input, { authorize = authorizedP
       if (freeBytes() < input.minFreeBytes) throw fail("MEMORY", "The receiving computer is now below the minimum available RAM");
       const { sessions } = await native.listSessionTargets(cwd, { sender });
       check();
-      if (!sessions.some(row => row.status === "idle" && row.agent === target.agent && row.id === target.id
-        && row.accountFingerprint === target.accountFingerprint && row.taskId === target.taskId)) throw fail("BUSY", "The selected AI session is no longer ready under its original identity");
-      const fresh = store.reserve(requestId, owner, digest, { target, sender, cwd, repository: input.repository, receiverPid: process.pid }, hash([cwd, target]));
+      if (!sessions.some(row => row.status === "idle" && sameTarget(row, target))) throw fail("BUSY", "The selected AI session is no longer ready under its original identity");
+      const fresh = store.reserve(requestId, owner, digest, { target, sender, cwd, repository: input.repository, receiverPid: process.pid }, targetSlot(cwd, target));
       if (fresh) {
         let prepared;
         const onPrepared = receipt => {

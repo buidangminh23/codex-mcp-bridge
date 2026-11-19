@@ -11,6 +11,7 @@ import { captureCodexRolloutWatermark, resolveCodexNativeDispatchResponse } from
 import { readClaudeAccountContext } from "./desktop-account-context.mjs";
 import { NativeDesktopRelay } from "./native-relay.mjs";
 import { assertClaudeSessionProcess, listClaudeSessions, PeerEndpoint, readTranscriptOutcome } from "./peer-protocol.mjs";
+import { captureCheckoutScope, recheckCheckoutScope } from "./project-scope.mjs";
 import { assertRecipientClass } from "./recipient-preflight.mjs";
 import { matchDesktopProject } from "./thread-delivery.mjs";
 import { protectCurrentUserPipe } from "./windows-pipe-acl.mjs";
@@ -25,12 +26,19 @@ function sameProject(directory, cwd) {
   catch { return false; }
 }
 
-function sessionRow(agent, id, title, status, accountFingerprint, taskId) {
-  return { agent, id, title: String(title || id).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 256), status, accountFingerprint, taskId };
+function checkoutScope(cwd, nativeCwd) {
+  try { return captureCheckoutScope(cwd, nativeCwd); } catch { return null; }
+}
+
+function sessionRow(agent, id, title, status, accountFingerprint, taskId, scope) {
+  const { path: cwd, identity, repository } = scope.recipient;
+  const scopeFingerprint = createHash("sha256").update(JSON.stringify([cwd, identity, repository?.path, repository?.identity])).digest("hex");
+  return { agent, id, title: String(title || id).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 256), status, accountFingerprint, taskId, cwd, scopeFingerprint };
 }
 
 function matchTarget(rows, target, requireIdle = false) {
-  const found = rows.filter(row => row.id === target.id && row.accountFingerprint === target.accountFingerprint && row.taskId === target.taskId);
+  const found = rows.filter(row => row.id === target.id && row.accountFingerprint === target.accountFingerprint && row.taskId === target.taskId
+    && (!target.scopeFingerprint || row.scopeFingerprint === target.scopeFingerprint));
   if (found.length !== 1 || requireIdle && found[0].status !== "idle") throw unavailable("The selected native session is missing, changed, busy or waiting for user input");
   return found[0];
 }
@@ -61,16 +69,19 @@ function codexAdapter(cwd, { accounts, codex, watermark, observe }, check) {
   async function list(sender) {
     if (sender && sender.mode !== "bypass") return [];
     const { result } = await call("list_projects", {});
-    const projectId = matchDesktopProject(result.projects, cwd).projectId;
     const { result: snapshot, executorThreadId } = await call("list_threads", { limit: 50 });
     if (!uuid.test(executorThreadId) || !Array.isArray(snapshot.threads) || !Array.isArray(snapshot.pinnedThreads)
         || snapshot.unavailableHosts?.some(host => (host?.hostId ?? host) === "local")) throw unavailable("Codex Desktop did not confirm the local host");
     const rows = new Map();
     for (const thread of [...snapshot.pinnedThreads, ...snapshot.threads]) {
       const status = codexStatus(thread);
-      if (!status || !uuid.test(thread.id) || thread.id === executorThreadId || thread.kind !== "codex" || thread.hostId !== "local"
-          || thread.projectId !== projectId || !sameProject(thread.cwd, cwd)) continue;
-      rows.set(thread.id, sessionRow("codex", thread.id, thread.title, status, identity.codex, projectId));
+      if (!status || !uuid.test(thread.id) || thread.id === executorThreadId || thread.kind !== "codex" || thread.hostId !== "local") continue;
+      const scope = checkoutScope(cwd, thread.cwd);
+      if (!scope) continue;
+      let project;
+      try { project = matchDesktopProject(result.projects, scope.recipient.path); } catch { continue; }
+      if (thread.projectId !== project.projectId) continue;
+      rows.set(thread.id, sessionRow("codex", thread.id, thread.title, status, identity.codex, project.projectId, scope));
     }
     return [...rows.values()];
   }
@@ -124,15 +135,17 @@ function claudeAdapter(cwd, deps, check) {
     const list = [];
     const current = deps.claudeSessions({ includeActivity: true });
     for (const session of current) {
-      if (!session.alive || session.entrypoint !== "claude-desktop" || !uuid.test(session.sessionId) || !session.socket || !sameProject(session.cwd, cwd)) continue;
+      if (!session.alive || session.entrypoint !== "claude-desktop" || !uuid.test(session.sessionId) || !session.socket) continue;
+      const scope = checkoutScope(cwd, session.cwd);
+      if (!scope) continue;
       try {
         deps.assertProcess(session);
         const desktop = deps.claudeContext(session, { account });
-        if (desktop.status !== "matched" || desktop.accountFingerprint !== account.fingerprint || !desktop.taskId || !sameProject(desktop.cwd, cwd)) continue;
+        if (desktop.status !== "matched" || desktop.accountFingerprint !== account.fingerprint || !desktop.taskId || !sameProject(desktop.cwd, scope.recipient.path)) continue;
         const activity = String(session.activity || "").toLowerCase();
         const status = activity === "idle" ? "idle" : ["running", "busy", "working", "active"].includes(activity) ? "running" : "connected";
-        list.push({ row: sessionRow("claude", session.sessionId, desktop.title, status, account.fingerprint, desktop.taskId),
-          session: { ...session, desktop, inbound: deps.inbound(cwd) } });
+        list.push({ row: sessionRow("claude", session.sessionId, desktop.title, status, account.fingerprint, desktop.taskId, scope),
+          session: { ...session, desktop, inbound: deps.inbound(scope.recipient.path) } });
       } catch {}
     }
     const confirmed = deps.claudeAccount();
@@ -199,10 +212,12 @@ function antigravityAdapter(cwd, { antigravity }, check) {
     return instanceId;
   }
   function rowFor(row, instanceId) {
-    if (row.surface !== "desktop" || !sameProject(row.cwd, cwd) || !uuid.test(row.conversationId) || typeof row.projectId !== "string" || !row.projectId) return null;
+    if (row.surface !== "desktop" || !uuid.test(row.conversationId) || typeof row.projectId !== "string" || !row.projectId) return null;
+    const scope = checkoutScope(cwd, row.cwd);
+    if (!scope) return null;
     const status = row.status === "CASCADE_RUN_STATUS_IDLE" ? "idle" : "running";
     const binding = createHash("sha256").update(JSON.stringify([instanceId, row.projectId])).digest("hex");
-    return sessionRow("antigravity", row.conversationId, row.title, status, binding, row.projectId);
+    return sessionRow("antigravity", row.conversationId, row.title, status, binding, row.projectId, scope);
   }
   async function inspect(target, idle) {
     const instanceId = await instance();
@@ -222,7 +237,7 @@ function antigravityAdapter(cwd, { antigravity }, check) {
       const instanceId = await inspect(input.target, true);
       const sender = { provider: input.sender.agent, id: input.sender.id, host: input.sender.host, accountFingerprint: input.sender.account };
       await prepare({ instanceId, sender });
-      const receipt = await call({ operation: "send", instanceId, conversationId: input.target.id, cwd, prompt: text, requestId: input.requestId, expectedProjectId: input.target.taskId, sender });
+      const receipt = await call({ operation: "send", instanceId, conversationId: input.target.id, cwd, prompt: text, requestId: input.requestId, expectedProjectId: input.target.taskId, projectScope: input.projectScope, sender });
       if (receipt?.requestId !== input.requestId || receipt.conversationId !== input.target.id || !isDeepStrictEqual(receipt.sender, sender)) return { status: "uncertain" };
       return { status: receipt.status === "failed" ? "failed" : "running" };
     },
@@ -245,10 +260,23 @@ export function createSessionDestinations(overrides = {}) {
   const deps = { accounts: readBridgeAccounts, codex: new NativeDesktopRelay(), watermark: captureCodexRolloutWatermark, observe: resolveCodexNativeDispatchResponse,
     claudeSessions: listClaudeSessions, claudeAccount: readClaudeAccountContext, claudeContext: readClaudeDesktopContext, assertProcess: assertClaudeSessionProcess,
     inbound: readClaudeInboundPolicy, peer: options => new PeerEndpoint(options), claudeReply: readTranscriptOutcome, antigravity: callAntigravityDesktop, ...overrides };
-  function adapter(input) {
+  async function boundDestination(input, storedScope) {
     if (!agents.includes(input.target?.agent) || !uuid.test(input.target.id) || !fingerprint.test(input.target.accountFingerprint)
-        || typeof input.target.taskId !== "string" || !input.target.taskId || typeof input.check !== "function") throw unavailable("The native recipient is not bound to a project and identity");
-    return factories[input.target.agent](fs.realpathSync.native(input.cwd), deps, input.check);
+        || typeof input.target.taskId !== "string" || !input.target.taskId || typeof input.check !== "function"
+        || input.target.scopeFingerprint !== undefined && !fingerprint.test(input.target.scopeFingerprint)) throw unavailable("The native recipient is not bound to a project and identity");
+    const cwd = fs.realpathSync.native(input.cwd);
+    const factory = factories[input.target.agent];
+    let scope = storedScope;
+    if (!scope) {
+      const rows = await factory(cwd, deps, input.check).list();
+      const selected = matchTarget(rows, input.target);
+      if (!input.target.scopeFingerprint && !sameProject(selected.cwd, cwd)) throw unavailable("Dispatch to a linked worktree requires a pinned checkout identity");
+      scope = checkoutScope(cwd, selected.cwd);
+    }
+    if (!scope || !sameProject(scope.sender.path, cwd)) throw unavailable("The destination checkout changed");
+    const guard = async () => { await input.check(); recheckCheckoutScope(scope); };
+    await guard();
+    return { scope, guard, destination: factory(scope.recipient.path, deps, guard) };
   }
   return {
     async listSessionTargets(project, { sender } = {}) {
@@ -260,18 +288,23 @@ export function createSessionDestinations(overrides = {}) {
     },
     async dispatchSession(input) {
       const text = messageFor(input);
-      const destination = adapter(input);
+      const { destination, scope, guard } = await boundDestination(input);
       let adapterReceipt;
-      const result = await destination.send(input, text, async binding => {
-        adapterReceipt = binding;
-        await input.onPrepared?.(binding);
+      const result = await destination.send({ ...input, projectScope: scope }, text, async binding => {
+        adapterReceipt = { ...binding, projectScope: scope };
+        await guard();
+        await input.onPrepared?.(adapterReceipt);
       });
       if (!adapterReceipt) throw new Error("No native observation receipt was prepared");
+      await guard();
       return { ...result, adapterReceipt };
     },
     async readSessionReply(input) {
       if (!input.receipt || typeof input.receipt !== "object") return { status: "uncertain" };
-      return adapter(input).read(input, input.receipt);
+      const { destination, guard } = await boundDestination(input, input.receipt.projectScope);
+      const result = await destination.read(input, input.receipt);
+      await guard();
+      return result;
     },
   };
 }

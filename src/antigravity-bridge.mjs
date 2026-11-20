@@ -155,7 +155,7 @@ register("antigravity_bridge_status", "Inspect native sidecar connectivity and s
       supported: true,
       server: "agent-bridge",
       surface: "desktop",
-      targets: ["codex-desktop", "claude-desktop-code"],
+      targets: ["codex-desktop", "claude-desktop"],
       scope: "existing-conversations-in-the-same-project",
       readiness: "not_checked",
       statusTool: "agent_bridge_status",

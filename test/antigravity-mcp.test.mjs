@@ -117,7 +117,7 @@ test("inbound clients discover the separate outbound Desktop bridge and its limi
   assert.equal(status.outbound.supported, true);
   assert.equal(status.outbound.server, "agent-bridge");
   assert.equal(status.outbound.surface, "desktop");
-  assert.deepEqual(status.outbound.targets, ["codex-desktop", "claude-desktop-code"]);
+  assert.deepEqual(status.outbound.targets, ["codex-desktop", "claude-desktop"]);
   assert.equal(status.outbound.scope, "existing-conversations-in-the-same-project");
   assert.equal(status.outbound.readiness, "not_checked");
   assert.equal(status.outbound.statusTool, "agent_bridge_status");

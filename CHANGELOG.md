@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.7.1] - 2026-11-20
+
+### Fixed
+
+- `antigravity_bridge_status` now names the Claude destination `claude-desktop`, the same name that `agent_bridge_status` inside Antigravity reports. Both always meant a live Claude Desktop Code session in the sender's project; only the label differed.
+
 ## [2.7.0] - 2026-11-20
 
 ### Added

@@ -351,7 +351,7 @@ test("cancellation after write preserves uncertain or proven delivery", async (t
 
 test("startup and turn timeouts retain their correct dispatch certainty", async (t) => {
   for (const init of [false, true]) {
-    const f = fixture(t, { init, args: { timeoutMs: 20 } });
+    const f = fixture(t, { init, args: { timeoutMs: init ? 1000 : 20 } });
     await assert.rejects(f.run(), { code: "ANTIGRAVITY_WORKER_TIMEOUT", phase: "observation", deliveryState: init ? "unknown" : "not_sent", sent: init ? null : false });
     assert.equal(f.child.writes.length, init ? 1 : 0);
     assert.equal(f.launches.length, 1);

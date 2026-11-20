@@ -2,21 +2,105 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
   <title>Màn hình từ xa · Codex Bridge</title>
+  <link rel="icon" type="image/svg+xml" href="/icons/bridge.svg">
   <link rel="stylesheet" href="/style.css">
-  <link rel="icon" href="data:,">
   <script type="module" src="/screen.js"></script>
 </head>
 <body class="screen-page">
-  <header class="topbar"><div class="bar-inner"><a class="brand" href="/">Codex Bridge</a><span class="division">Màn hình từ xa</span></div></header>
-  <main>
-    <a id="machine" href="/">← Bảng điều phối</a>
-    <div class="page-head"><div><h1 id="label">Màn hình từ xa</h1><p class="muted" id="status" role="status">Đang tải máy…</p></div>
-      <div class="actions"><button id="rdp" class="secondary" hidden>Mở bằng Remote Desktop</button><button id="control" class="secondary" disabled>Bật điều khiển</button><button id="connect" class="primary" disabled>Kết nối</button></div>
+  <header class="topbar">
+    <div class="bar-inner">
+      <div class="brand-group">
+        <a class="brand" href="/">
+          <span class="brand-mark" aria-hidden="true">
+            <img src="/icons/bridge.svg" alt="" class="brand-logo" draggable="false" decoding="sync">
+          </span>
+          <span>Codex Bridge</span>
+        </a>
+        <span class="division">Màn hình từ xa</span>
+      </div>
+      <div class="bar-actions">
+        <span id="screen-state" class="badge" data-tone="gray">Chưa kết nối</span>
+        <button type="button" id="theme-toggle" class="icon-button" aria-label="Chuyển giao diện sáng tối" title="Đổi giao diện sáng / tối">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2m-7.07-15.07 1.41 1.41m11.32 11.32 1.41 1.41M2 12h2M20 12h2m-15.66 5.66-1.41 1.41m14.14-14.14-1.41 1.41"></path>
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+          </svg>
+        </button>
+      </div>
     </div>
-    <div id="display" aria-label="Màn hình máy từ xa"></div>
+  </header>
+
+  <main>
+    <a id="machine" class="back-link" href="/">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m12 19-7-7 7-7"></path>
+        <path d="M19 12H5"></path>
+      </svg>
+      <span id="machine-label">Bảng điều phối</span>
+    </a>
+
+    <div class="page-head">
+      <div class="page-head-copy">
+        <h1 id="label">Màn hình từ xa</h1>
+        <p class="muted" id="status" role="status">Đang tải máy…</p>
+      </div>
+      <div class="actions screen-actions">
+        <button id="rdp" class="secondary" hidden>
+          <img src="/icons/windows.svg" alt="" class="inline-brand-icon" draggable="false" decoding="sync">
+          <span>Mở bằng Remote Desktop</span>
+        </button>
+        <button id="control" class="secondary" disabled>
+          <span id="control-icon" class="btn-icon" aria-hidden="true"></span>
+          <span id="control-label">Bật điều khiển</span>
+        </button>
+        <button id="fullscreen" class="secondary" disabled>
+          <span id="fullscreen-icon" class="btn-icon" aria-hidden="true"></span>
+          <span id="fullscreen-label">Toàn màn hình</span>
+        </button>
+        <button id="connect" class="primary" disabled>
+          <span id="connect-icon" class="btn-icon" aria-hidden="true"></span>
+          <span id="connect-label">Kết nối</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="display-frame" id="display-frame">
+      <div id="display" aria-label="Màn hình máy từ xa"></div>
+      <div id="display-placeholder" class="display-placeholder">
+        <span class="empty-art" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="20" height="14" x="2" y="3" rx="2"></rect>
+            <line x1="8" x2="16" y1="21" y2="21"></line>
+            <line x1="12" x2="12" y1="17" y2="21"></line>
+          </svg>
+        </span>
+        <p>Nhấn <strong>Kết nối</strong> để mở phiên chia sẻ màn hình qua đường hầm SSH cục bộ.</p>
+      </div>
+    </div>
   </main>
-  <dialog id="credentials"><form id="signin"><div class="dialog-head"><h2>Đăng nhập máy từ xa</h2></div><div id="fields"></div><div class="dialog-footer"><button type="button" id="abort" class="secondary">Ngắt kết nối</button><button class="primary">Đăng nhập</button></div></form></dialog>
+
+  <dialog id="credentials" aria-labelledby="credentials-title">
+    <form id="signin">
+      <div class="dialog-head">
+        <div class="dialog-title-wrap">
+          <h2 id="credentials-title">Đăng nhập máy từ xa</h2>
+          <p class="dialog-sub">Thông tin được chuyển trực tiếp tới máy đích qua SSH</p>
+        </div>
+      </div>
+      <div class="dialog-body">
+        <div id="fields" class="credential-fields"></div>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" id="abort" class="secondary">Ngắt kết nối</button>
+        <button class="primary">Đăng nhập</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>

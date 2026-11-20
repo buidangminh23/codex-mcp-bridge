@@ -3,7 +3,8 @@ import { BACKGROUND_AGENTS, RELAY_UUID } from "./background-relay-config.mjs";
 import { diagnosticText } from "./recipient-preflight.mjs";
 
 const active = new Set(["running", "uncertain"]);
-const statuses = new Set(["queued", ...active, "completed", "failed", "cancelled"]);
+const terminal = new Set(["completed", "failed", "cancelled"]);
+const statuses = new Set(["queued", ...active, ...terminal]);
 const relayStatuses = new Set(["queued", "running", "completed", "failed", "unknown"]);
 const maxSteps = 16;
 const maxStepBytes = 32 * 1024;
@@ -102,6 +103,21 @@ export function createFleetQueue({ hosts, client, load, save, minFreeBytes = 2 *
     if (!job) throw invalid("No such fleet job", 404);
     if (job.status !== "queued") throw invalid("Only a step awaiting assignment can be changed", 409);
     return structuredClone(change(id, patch));
+  }
+
+  function remove(id) {
+    const job = jobs.find(item => item.id === id);
+    if (!job) throw invalid("No such fleet job", 404);
+    if (!terminal.has(job.status)) throw invalid("Only completed, failed or cancelled jobs can be removed", 409);
+    store(jobs.filter(item => item.id !== id));
+    return { removed: id };
+  }
+
+  function prune() {
+    const kept = jobs.filter(item => !terminal.has(item.status));
+    const removed = jobs.length - kept.length;
+    if (removed > 0) store(kept);
+    return { removed };
   }
 
   function hostView(host) {
@@ -212,5 +228,7 @@ export function createFleetQueue({ hosts, client, load, save, minFreeBytes = 2 *
     },
     cancel: id => editQueued(id, { status: "cancelled" }),
     retarget(id, target) { targetCheck(target); return editQueued(id, { target }); },
+    remove,
+    prune,
   };
 }

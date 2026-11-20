@@ -6,6 +6,13 @@
 - Codex companion: original idle frame from OpenAI's Codex desktop companion artwork (`codex-spritesheet-v6`, cell 0,0, 192 × 208 pixels). Copyright OpenAI. This third-party artwork and the represented trademarks are not covered by this repository's MIT license.
 - Antigravity: original vector mark from the [official Google Antigravity favicon](https://www.antigravity.google/favicon.svg), retrieved October 28, 2026. The favicon background is omitted; the logo paths, colors, masks, and filters are preserved. Copyright Google. This third-party artwork and the represented trademarks are not covered by this repository's MIT license.
 
+## Fleet dashboard icons (`src/fleet-ui/icons/`)
+
+- `bridge.svg`: copied from `assets/plugin-icon.svg`.
+- `codex.svg`, `claude.svg`: official color marks from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT license below).
+- `antigravity.svg`: standalone vector extracted verbatim from `assets/agent-pets.svg` (official Google Antigravity mark).
+- `windows.svg`, `apple.svg`, `linux.svg`, `git.svg`: official marks from [devicon](https://github.com/devicons/devicon) (MIT license).
+
 ## LobeHub Icons license
 
 MIT License

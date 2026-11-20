@@ -169,3 +169,28 @@ test("expired probes and hosts without the selected agent cannot accept a task",
   assert.equal(sends.length, 0);
   assert.equal(queue.snapshot().hosts[0].online, false);
 });
+
+test("remove and prune delete only terminal jobs while protecting queued and active work", async () => {
+  const { queue, samples } = fixture();
+  samples.get("local").freeBytes = 1;
+  samples.get("worker").freeBytes = 1;
+  const queued = queue.submit({ ...input, title: "Still queued", steps: ["Wait"] });
+  const cancelled = queue.submit({ ...input, title: "Cancelled task", steps: ["Skip"] });
+  queue.cancel(cancelled.id);
+  assert.throws(() => queue.remove(queued.id), { statusCode: 409 });
+  assert.throws(() => queue.remove("00000000-0000-4000-8000-000000000000"), { statusCode: 404 });
+  assert.deepEqual(queue.remove(cancelled.id), { removed: cancelled.id });
+  assert.deepEqual(queue.snapshot().jobs.map(job => job.id), [queued.id]);
+
+  samples.get("local").freeBytes = 16;
+  const active = queue.submit({ ...input, title: "Active task", steps: ["Finish"] });
+  const secondCancelled = queue.submit({ ...input, title: "Cancelled second", steps: ["Skip"] });
+  queue.cancel(secondCancelled.id);
+  await queue.tick();
+  await queue.tick();
+  assert.equal(queue.snapshot().jobs.find(job => job.id === queued.id).status, "completed");
+  assert.equal(queue.snapshot().jobs.find(job => job.id === active.id).status, "running");
+  assert.throws(() => queue.remove(active.id), { statusCode: 409 });
+  assert.deepEqual(queue.prune(), { removed: 2 });
+  assert.deepEqual(queue.snapshot().jobs.map(job => job.id), [active.id]);
+});

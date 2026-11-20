@@ -2,97 +2,527 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
   <title>Điều phối công việc · Codex Bridge</title>
-  <link rel="icon" href="data:,">
+  <link rel="icon" type="image/svg+xml" href="/icons/bridge.svg">
   <link rel="stylesheet" href="/style.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="bar-inner">
-      <a href="/" class="brand"><span class="mark" aria-hidden="true"></span>Codex Bridge</a>
-      <span class="division">Điều phối máy</span>
-      <span id="connection" class="connection" role="status">Đang kết nối</span>
+      <div class="brand-group">
+        <a href="/" class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <img src="/icons/bridge.svg" alt="" class="brand-logo" draggable="false" decoding="sync">
+          </span>
+          <span>Codex Bridge</span>
+        </a>
+        <span class="division" id="bar-division">Điều phối máy</span>
+      </div>
+      <div class="bar-actions">
+        <span id="connection" class="connection" role="status">Đang kết nối</span>
+        <button type="button" id="refresh-now" class="icon-button" aria-label="Làm mới trạng thái cụm máy" title="Làm mới ngay (R)" disabled>
+          <svg class="icon-refresh" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+            <path d="M21 3v5h-5"></path>
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+            <path d="M8 16H3v5"></path>
+          </svg>
+        </button>
+        <button type="button" id="notify-toggle" class="icon-button" aria-label="Bật thông báo khi công việc hoàn tất" aria-pressed="false" title="Thông báo hoàn tất công việc">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path>
+            <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path>
+          </svg>
+        </button>
+        <button type="button" id="shortcuts-btn" class="icon-button desktop-only" aria-label="Phím tắt" title="Phím tắt (?)" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect width="20" height="16" x="2" y="4" rx="2"></rect>
+            <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"></path>
+          </svg>
+        </button>
+        <button type="button" id="theme-toggle" class="icon-button" aria-label="Chuyển giao diện sáng tối" title="Đổi giao diện sáng / tối (D)">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2m-7.07-15.07 1.41 1.41m11.32 11.32 1.41 1.41M2 12h2M20 12h2m-15.66 5.66-1.41 1.41m14.14-14.14-1.41 1.41"></path>
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+          </svg>
+        </button>
+      </div>
     </div>
   </header>
+
   <main>
-    <a id="all-hosts" href="/" hidden>← Tất cả máy</a>
+    <a id="all-hosts" class="back-link" href="/" hidden>
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m12 19-7-7 7-7"></path>
+        <path d="M19 12H5"></path>
+      </svg>
+      <span>Tất cả máy</span>
+    </a>
+
     <div class="page-head">
-      <div><h1 id="page-title">Điều phối công việc</h1><p id="summary" class="muted">Đang tải trạng thái máy…</p></div>
-      <button id="new-job" class="primary" disabled><span aria-hidden="true">+</span> Tạo công việc</button>
+      <div class="page-head-copy">
+        <h1 id="page-title">Điều phối công việc</h1>
+        <p id="summary" class="muted">Đang tải trạng thái máy…</p>
+      </div>
+      <div class="page-head-actions">
+        <span id="last-synced-wrap" class="sync-stamp" hidden>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          <span id="last-synced"></span>
+        </span>
+        <button id="new-job" class="primary" disabled title="Tạo công việc mới (N)">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14"></path>
+            <path d="M12 5v14"></path>
+          </svg>
+          <span>Tạo công việc</span>
+        </button>
+      </div>
     </div>
+
     <p id="page-error" class="notice error" role="alert" hidden></p>
-    <section aria-labelledby="machines-heading">
+
+    <section class="overview-grid" id="overview" aria-label="Tổng quan cụm máy">
+      <div class="stat-card">
+        <div class="stat-top">
+          <span class="stat-label">Máy trực tuyến</span>
+          <span class="stat-icon tone-green" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect>
+              <rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect>
+              <line x1="6" x2="6.01" y1="6" y2="6"></line>
+              <line x1="6" x2="6.01" y1="18" y2="18"></line>
+            </svg>
+          </span>
+        </div>
+        <strong class="stat-value" id="stat-hosts">—</strong>
+        <span class="stat-sub" id="stat-hosts-sub">Đang kiểm tra kết nối</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-top">
+          <span class="stat-label">RAM khả dụng</span>
+          <span class="stat-icon tone-blue" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect width="16" height="16" x="4" y="4" rx="2"></rect>
+              <rect width="6" height="6" x="9" y="9" rx="1"></rect>
+              <path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"></path>
+            </svg>
+          </span>
+        </div>
+        <strong class="stat-value" id="stat-ram">—</strong>
+        <span class="stat-sub" id="stat-ram-sub">Tổng bộ nhớ khả dụng</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-top">
+          <span class="stat-label">Đang xử lý</span>
+          <span class="stat-icon tone-amber" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path>
+            </svg>
+          </span>
+        </div>
+        <strong class="stat-value" id="stat-active">—</strong>
+        <span class="stat-sub" id="stat-active-sub">Hàng chờ và tác vụ chạy</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-top">
+          <span class="stat-label">Hoàn tất</span>
+          <span class="stat-icon tone-neutral" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="m9 12 2 2 4-4"></path>
+            </svg>
+          </span>
+        </div>
+        <strong class="stat-value" id="stat-done">—</strong>
+        <span class="stat-sub" id="stat-done-sub">Tổng tiến độ công việc</span>
+      </div>
+    </section>
+
+    <section class="fleet-section" aria-labelledby="machines-heading">
       <div class="section-head">
-        <h2 id="machines-heading">Máy làm việc</h2>
-        <div class="memory-control"><span class="aside" id="threshold"></span><button id="edit-memory" class="secondary" aria-haspopup="dialog" disabled>Chỉnh ngưỡng</button></div>
+        <div class="section-title-group">
+          <h2 id="machines-heading">Máy làm việc</h2>
+          <span class="count-pill" id="machines-count">0</span>
+        </div>
+        <div class="memory-control">
+          <span class="threshold-pill">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m12 14 4-4"></path>
+              <path d="M3.34 19a10 10 0 1 1 17.32 0"></path>
+            </svg>
+            <span id="threshold">RAM tối thiểu</span>
+          </span>
+          <button id="edit-memory" class="secondary compact-btn" aria-haspopup="dialog" disabled>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="21" x2="14" y1="4" y2="4"></line>
+              <line x1="10" x2="3" y1="4" y2="4"></line>
+              <line x1="21" x2="12" y1="12" y2="12"></line>
+              <line x1="8" x2="3" y1="12" y2="12"></line>
+              <line x1="21" x2="16" y1="20" y2="20"></line>
+              <line x1="12" x2="3" y1="20" y2="20"></line>
+              <line x1="14" x2="14" y1="2" y2="6"></line>
+              <line x1="8" x2="8" y1="10" y2="14"></line>
+              <line x1="16" x2="16" y1="18" y2="22"></line>
+            </svg>
+            <span>Chỉnh ngưỡng</span>
+          </button>
+        </div>
       </div>
       <div class="machines" id="machines"></div>
       <p id="setup-hint" class="hint" hidden>Để thêm máy đã cấu hình, mở bảng điều phối bằng <code>worker-relay dashboard --host &lt;tên hồ sơ&gt;</code>.</p>
     </section>
+
     <div class="workbench">
       <section class="panel queue" aria-labelledby="queue-heading">
         <div class="section-head panel-head">
-          <h2 id="queue-heading">Danh sách công việc</h2>
-          <select id="status-filter" aria-label="Lọc theo trạng thái">
-            <option value="all">Mọi trạng thái</option><option value="queued">Chờ phân công</option>
-            <option value="running">Đang chạy</option><option value="uncertain">Chờ xác minh</option>
-            <option value="completed">Hoàn tất</option><option value="failed">Thất bại</option><option value="cancelled">Đã hủy</option>
+          <div class="section-title-group">
+            <h2 id="queue-heading">Danh sách công việc</h2>
+            <span class="count-pill" id="queue-count">0</span>
+          </div>
+          <div class="panel-head-actions">
+            <button type="button" id="prune-jobs" class="secondary compact-btn" hidden>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 6h18"></path>
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                <line x1="10" x2="10" y1="11" y2="17"></line>
+                <line x1="14" x2="14" y1="11" y2="17"></line>
+              </svg>
+              <span id="prune-jobs-label">Dọn lịch sử</span>
+            </button>
+            <select id="status-filter" aria-label="Lọc theo trạng thái">
+              <option value="all">Mọi trạng thái</option>
+              <option value="queued">Chờ phân công</option>
+              <option value="running">Đang chạy</option>
+              <option value="uncertain">Chờ xác minh</option>
+              <option value="completed">Hoàn tất</option>
+              <option value="failed">Thất bại</option>
+              <option value="cancelled">Đã hủy</option>
+            </select>
+          </div>
+        </div>
+        <div id="queue-toolbar" class="queue-toolbar" hidden>
+          <div class="search-box">
+            <svg class="search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8"></circle>
+              <path d="m21 21-4.3-4.3"></path>
+            </svg>
+            <input id="job-search" type="search" placeholder="Tìm công việc, bước, máy…" autocomplete="off" aria-label="Tìm kiếm công việc">
+            <kbd class="search-kbd" id="search-kbd" aria-hidden="true">/</kbd>
+            <button type="button" id="clear-search" class="clear-search" aria-label="Xóa tìm kiếm" hidden>
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M18 6 6 18"></path>
+                <path d="m6 6 12 12"></path>
+              </svg>
+            </button>
+          </div>
+          <select id="agent-filter" aria-label="Lọc theo trợ lý">
+            <option value="all">Mọi trợ lý</option>
+            <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
+            <option value="antigravity">Antigravity</option>
           </select>
         </div>
-        <div id="job-list"></div>
+        <div id="filter-pills" class="filter-pills" role="tablist" aria-label="Lọc nhanh trạng thái công việc"></div>
+        <div id="job-list" class="job-list"></div>
         <div id="empty-queue" class="empty" hidden>
-          <span class="empty-art list-art" aria-hidden="true"></span>
-          <h3 id="empty-heading">Chưa có công việc</h3><p id="empty-description">Công việc đã tạo sẽ xuất hiện ở đây.</p>
+          <span class="empty-art" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <rect width="8" height="4" x="8" y="2" rx="1" ry="1"></rect>
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+              <path d="M12 11h4"></path>
+              <path d="M12 16h4"></path>
+              <path d="M8 11h.01"></path>
+              <path d="M8 16h.01"></path>
+            </svg>
+          </span>
+          <h3 id="empty-heading">Chưa có công việc</h3>
+          <p id="empty-description">Công việc đã tạo sẽ xuất hiện ở đây.</p>
         </div>
       </section>
+
       <section class="panel detail" aria-labelledby="detail-heading">
-        <div class="section-head panel-head"><h2 id="detail-heading">Chi tiết công việc</h2></div>
+        <div class="section-head panel-head">
+          <div class="section-title-group">
+            <h2 id="detail-heading">Chi tiết công việc</h2>
+          </div>
+          <span id="detail-progress" class="count-pill" hidden></span>
+        </div>
         <div id="empty-detail" class="empty">
-          <span class="empty-art step-art" aria-hidden="true"></span>
-          <p>Chọn công việc để xem tiến độ từng bước.</p>
+          <span class="empty-art" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m3 17 2 2 4-4"></path>
+              <path d="m3 7 2 2 4-4"></path>
+              <path d="M13 6h8"></path>
+              <path d="M13 12h8"></path>
+              <path d="M13 18h8"></path>
+            </svg>
+          </span>
+          <h3>Chọn một công việc</h3>
+          <p>Nhấn vào công việc bên trái để theo dõi tiến độ và kết quả từng bước.</p>
         </div>
         <div id="job-detail" hidden>
-          <h3 id="job-title"></h3>
-          <div class="detail-summary"><span id="job-status" class="badge"></span><span id="job-agent"></span></div>
-          <dl class="metadata"><dt>Máy nhận</dt><dd id="job-target"></dd><dt>Thời điểm tạo</dt><dd id="job-created"></dd></dl>
-          <p id="job-error" class="notice" hidden></p>
-          <div id="job-actions" class="actions" hidden>
-            <label for="new-target" class="sr-only">Chọn máy nhận mới</label><select id="new-target"></select>
-            <button id="move-job" class="secondary">Đổi máy</button><button id="cancel-job" class="danger">Hủy việc</button>
+          <div class="detail-hero">
+            <h3 id="job-title"></h3>
+            <div class="detail-summary-row">
+              <div class="detail-summary">
+                <span id="job-status" class="badge"></span>
+                <span id="job-agent" class="agent-chip"></span>
+              </div>
+              <div class="detail-toolbar">
+                <button type="button" id="clone-job" class="secondary compact-btn">
+                  <span id="clone-job-icon" class="btn-icon" aria-hidden="true"></span>
+                  <span id="clone-job-label">Nhân bản</span>
+                </button>
+                <button type="button" id="copy-report" class="secondary compact-btn">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path>
+                    <path d="M14 2v4a2 2 0 0 0 2 2h4"></path>
+                    <path d="M10 9H8"></path>
+                    <path d="M16 13H8"></path>
+                    <path d="M16 17H8"></path>
+                  </svg>
+                  <span>Báo cáo</span>
+                </button>
+                <button type="button" id="delete-job" class="danger compact-btn" hidden>
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 6h18"></path>
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                  </svg>
+                  <span>Xóa</span>
+                </button>
+              </div>
+            </div>
           </div>
-          <ol id="steps" class="steps" aria-label="Các bước thực hiện"></ol>
+          <dl class="metadata">
+            <div class="meta-cell">
+              <dt>
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect>
+                  <rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect>
+                  <line x1="6" x2="6.01" y1="6" y2="6"></line>
+                  <line x1="6" x2="6.01" y1="18" y2="18"></line>
+                </svg>
+                <span>Máy nhận</span>
+              </dt>
+              <dd id="job-target"></dd>
+            </div>
+            <div class="meta-cell">
+              <dt>
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M8 2v4"></path>
+                  <path d="M16 2v4"></path>
+                  <rect width="18" height="18" x="3" y="4" rx="2"></rect>
+                  <path d="M3 10h18"></path>
+                </svg>
+                <span>Thời điểm tạo</span>
+              </dt>
+              <dd id="job-created"></dd>
+            </div>
+            <div class="meta-cell">
+              <dt>
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                <span>Cập nhật</span>
+              </dt>
+              <dd id="job-updated"></dd>
+            </div>
+          </dl>
+          <p id="job-error" class="notice" hidden></p>
+          <div id="job-actions" class="actions action-bar" hidden>
+            <label for="new-target" class="sr-only">Chọn máy nhận mới</label>
+            <select id="new-target"></select>
+            <button id="move-job" class="secondary">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m16 3 4 4-4 4"></path>
+                <path d="M20 7H4"></path>
+                <path d="m8 21-4-4 4-4"></path>
+                <path d="M4 17h16"></path>
+              </svg>
+              <span>Đổi máy</span>
+            </button>
+            <button id="cancel-job" class="danger">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"></circle>
+                <path d="m15 9-6 6"></path>
+                <path d="m9 9 6 6"></path>
+              </svg>
+              <span>Hủy việc</span>
+            </button>
+          </div>
+          <div id="step-progress-wrap" class="step-progress-wrap" hidden>
+            <div class="step-progress-head">
+              <span>Tiến độ các bước</span>
+              <span id="step-progress-text"></span>
+            </div>
+            <div class="step-progress-track">
+              <div id="step-progress-fill" class="step-progress-fill"></div>
+            </div>
+          </div>
+          <div class="steps-section">
+            <div class="steps-heading">Tiến trình thực hiện</div>
+            <ol id="steps" class="steps" aria-label="Các bước thực hiện"></ol>
+          </div>
         </div>
       </section>
     </div>
   </main>
+
   <dialog id="memory-dialog" aria-labelledby="memory-heading">
     <form id="memory-form">
-      <div class="dialog-head"><h2 id="memory-heading">Chỉnh ngưỡng RAM</h2></div>
-      <label for="memory-input">RAM khả dụng tối thiểu (GiB)</label>
-      <input id="memory-input" type="number" min="0" step="any" required autofocus aria-describedby="memory-hint">
-      <p class="form-hint" id="memory-hint">Ngưỡng áp dụng cho các bước đang chờ trên tất cả máy. Bước đang chạy sẽ tiếp tục trên máy đã nhận. Khi mở lại bộ điều phối, ngưỡng sẽ trở về giá trị khởi động.</p>
-      <p id="memory-error" class="notice error" role="alert" hidden></p>
-      <div class="dialog-footer"><button type="button" id="close-memory" class="secondary">Đóng</button><button id="save-memory" class="primary">Áp dụng</button></div>
+      <div class="dialog-head">
+        <div class="dialog-title-wrap">
+          <h2 id="memory-heading">Chỉnh ngưỡng RAM</h2>
+          <p class="dialog-sub">Đặt lượng RAM trống tối thiểu trước khi nhận bước mới</p>
+        </div>
+        <button type="button" id="dismiss-memory" class="icon-button close-btn" aria-label="Đóng">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6 6 18"></path>
+            <path d="m6 6 12 12"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="dialog-body">
+        <div class="field-group">
+          <label for="memory-input">RAM khả dụng tối thiểu (GiB)</label>
+          <div class="input-with-unit">
+            <input id="memory-input" type="number" min="0" step="any" required autofocus aria-describedby="memory-hint">
+            <span class="input-unit" aria-hidden="true">GiB</span>
+          </div>
+          <div class="preset-row" id="memory-presets" role="group" aria-label="Mức gợi ý nhanh">
+            <button type="button" class="preset-chip" data-gib="1">1 GiB</button>
+            <button type="button" class="preset-chip" data-gib="2">2 GiB</button>
+            <button type="button" class="preset-chip" data-gib="4">4 GiB</button>
+            <button type="button" class="preset-chip" data-gib="8">8 GiB</button>
+          </div>
+        </div>
+        <p class="form-hint" id="memory-hint">Ngưỡng áp dụng cho các bước đang chờ trên tất cả máy. Bước đang chạy sẽ tiếp tục trên máy đã nhận. Khi mở lại bộ điều phối, ngưỡng sẽ trở về giá trị khởi động.</p>
+        <p id="memory-error" class="notice error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" id="close-memory" class="secondary">Đóng</button>
+        <button id="save-memory" class="primary">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 6 9 17l-5-5"></path>
+          </svg>
+          <span>Áp dụng</span>
+        </button>
+      </div>
     </form>
   </dialog>
+
   <dialog id="job-dialog" aria-labelledby="dialog-title">
     <form id="job-form">
-      <div class="dialog-head"><h2 id="dialog-title">Tạo công việc</h2><button type="button" id="dismiss" class="close" aria-label="Đóng">×</button></div>
-      <label for="title-input">Tên công việc</label><input id="title-input" required maxlength="160" autocomplete="off" autofocus>
-      <div class="fields">
-        <div><label for="agent-input">Trợ lý</label><select id="agent-input"><option value="codex">Codex</option><option value="claude">Claude</option><option value="antigravity">Antigravity</option></select></div>
-        <div><label for="target-input">Máy nhận</label><select id="target-input"></select></div>
+      <div class="dialog-head">
+        <div class="dialog-title-wrap">
+          <h2 id="dialog-title">Tạo công việc</h2>
+          <p class="dialog-sub">Giao một hoặc nhiều bước liên tiếp cho máy phù hợp</p>
+        </div>
+        <button type="button" id="dismiss" class="icon-button close-btn" aria-label="Đóng">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6 6 18"></path>
+            <path d="m6 6 12 12"></path>
+          </svg>
+        </button>
       </div>
-      <p class="form-hint">Bước đầu dùng bản dự án trên máy nhận. Khi chuyển bước sang máy khác, hai bản Git cần sạch và cùng commit. Kết quả văn bản được chuyển cùng bước tiếp theo.</p>
-      <div id="step-fields"></div>
-      <button type="button" id="add-step" class="text-button">+ Thêm bước</button>
-      <p class="notice error" id="form-error" role="alert" hidden></p>
-      <div class="dialog-footer"><button type="button" id="back" class="secondary">Đóng</button><button id="submit-job" class="primary">Thêm vào hàng chờ</button></div>
+      <div class="dialog-body">
+        <div class="template-strip">
+          <div class="template-head">
+            <span class="template-label">Mẫu nhanh</span>
+            <button type="button" id="save-template" class="template-save">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"></path>
+                <line x1="12" x2="12" y1="7" y2="13"></line>
+                <line x1="15" x2="9" y1="10" y2="10"></line>
+              </svg>
+              <span>Lưu mẫu hiện tại</span>
+            </button>
+          </div>
+          <div id="template-list" class="template-list" role="group" aria-label="Chọn mẫu công việc"></div>
+        </div>
+        <div class="field-group">
+          <label for="title-input">Tên công việc</label>
+          <input id="title-input" required maxlength="160" autocomplete="off" placeholder="Ví dụ: Chạy bộ test và kiểm tra build trên Mac" autofocus>
+        </div>
+        <div class="fields">
+          <div class="field-group">
+            <label for="agent-input">Trợ lý</label>
+            <select id="agent-input">
+              <option value="codex">Codex</option>
+              <option value="claude">Claude</option>
+              <option value="antigravity">Antigravity</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label for="target-input">Máy nhận</label>
+            <select id="target-input"></select>
+          </div>
+        </div>
+        <p class="form-hint">Bước đầu dùng bản dự án trên máy nhận. Khi chuyển bước sang máy khác, hai bản Git cần sạch và cùng commit. Kết quả văn bản được chuyển cùng bước tiếp theo.</p>
+        <div id="step-fields" class="step-fields"></div>
+        <button type="button" id="add-step" class="add-step-btn">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14"></path>
+            <path d="M12 5v14"></path>
+          </svg>
+          <span>Thêm bước tiếp theo</span>
+        </button>
+        <p class="notice error" id="form-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-footer dialog-footer-split">
+        <span class="footer-hint">Nhấn <kbd>Ctrl</kbd> + <kbd>Enter</kbd> để gửi nhanh</span>
+        <div class="footer-buttons">
+          <button type="button" id="back" class="secondary">Đóng</button>
+          <button id="submit-job" class="primary">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"></path>
+              <path d="m21.854 2.147-10.94 10.939"></path>
+            </svg>
+            <span>Thêm vào hàng chờ</span>
+          </button>
+        </div>
+      </div>
     </form>
   </dialog>
-  <div id="toast" class="sr-only" role="status"></div>
+
+  <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+    <div class="dialog-head">
+      <div class="dialog-title-wrap">
+        <h2 id="shortcuts-title">Phím tắt điều phối</h2>
+        <p class="dialog-sub">Thao tác nhanh không cần rời bàn phím</p>
+      </div>
+      <button type="button" id="close-shortcuts" class="icon-button close-btn" aria-label="Đóng">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 6 6 18"></path>
+          <path d="m6 6 12 12"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="dialog-body">
+      <ul class="shortcut-list">
+        <li><span>Tạo công việc mới</span><kbd>N</kbd></li>
+        <li><span>Làm mới trạng thái cụm máy ngay</span><kbd>R</kbd></li>
+        <li><span>Tìm kiếm trong danh sách công việc</span><kbd>/</kbd></li>
+        <li><span>Chuyển công việc trước / tiếp theo</span><span class="kbd-pair"><kbd>↑</kbd><kbd>↓</kbd></span></li>
+        <li><span>Đổi giao diện Sáng / Tối</span><kbd>D</kbd></li>
+        <li><span>Gửi nhanh trong hộp thoại tạo việc</span><span class="kbd-pair"><kbd>Ctrl</kbd><kbd>Enter</kbd></span></li>
+        <li><span>Mở / đóng bảng phím tắt</span><kbd>?</kbd></li>
+      </ul>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" data-visible="false"></div>
 </body>
 </html>

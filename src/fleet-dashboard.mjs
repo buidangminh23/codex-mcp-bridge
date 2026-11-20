@@ -77,7 +77,7 @@ async function readBody(request) {
   throw fail("Expected a JSON object");
 }
 
-export function createFleetServer({ hosts, queue, client, token, desktopConnect, health = () => null }) {
+export function createFleetServer({ hosts, queue, client, token, desktopConnect, health = () => null, refresh }) {
   const auth = Buffer.from("Bearer " + token);
   const origin = () => "http://127.0.0.1:" + server.address().port;
   const server = http.createServer(async (request, response) => {
@@ -98,9 +98,10 @@ export function createFleetServer({ hosts, queue, client, token, desktopConnect,
         let file;
         if (pathname === "/") file = path.join(ui, "index.html");
         else if (/^\/(?:app\.js|style\.css|screen\.(?:js|html))$/.test(pathname)) file = path.join(ui, pathname.slice(1));
+        else if (/^\/icons\/[a-z0-9-]+\.svg$/.test(pathname)) file = path.join(ui, pathname.slice(1));
         else if (/^\/novnc\/(?:core|vendor)\/(?:[\w-]+\/)*[\w.-]+\.js$/.test(pathname)) file = path.join(vendor, pathname.slice(7));
         if (request.method !== "GET" || !file || !fs.existsSync(file)) throw fail("Page not found", 404);
-        response.setHeader("Content-Type", ({ ".html": "text/html", ".js": "text/javascript", ".css": "text/css" })[path.extname(file)] + "; charset=utf-8");
+        response.setHeader("Content-Type", ({ ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" })[path.extname(file)] + "; charset=utf-8");
         response.end(await fs.promises.readFile(file));
         return;
       }
@@ -109,10 +110,19 @@ export function createFleetServer({ hosts, queue, client, token, desktopConnect,
       if (request.method === "GET" && pathname === "/api/state") return json(200, { ...queue.snapshot(), error: health() });
       if (request.method !== "POST" || request.headers.origin !== origin()) throw fail("Expected same-origin POST", 403);
       const body = await readBody(request);
+      if (pathname === "/api/refresh") {
+        await (refresh ? refresh() : queue.tick());
+        return json(200, { ...queue.snapshot(), error: health() });
+      }
       if (pathname === "/api/settings/memory") return json(200, queue.setMemoryFloor(body.minFreeGiB));
       if (pathname === "/api/jobs") return json(201, queue.submit(body));
-      const job = /^\/api\/jobs\/([\da-f-]+)\/(cancel|target)$/.exec(pathname);
-      if (job) return json(200, job[2] === "cancel" ? queue.cancel(job[1]) : queue.retarget(job[1], body.target));
+      if (pathname === "/api/jobs/prune") return json(200, queue.prune());
+      const job = /^\/api\/jobs\/([\da-f-]+)\/(cancel|target|delete)$/.exec(pathname);
+      if (job) {
+        if (job[2] === "cancel") return json(200, queue.cancel(job[1]));
+        if (job[2] === "delete") return json(200, queue.remove(job[1]));
+        return json(200, queue.retarget(job[1], body.target));
+      }
       const target = /^\/api\/hosts\/([\w-]+)\/(sessions|windows|screen|rdp)$/.exec(pathname);
       const host = target && hosts.find(item => item.id === target[1]);
       if (!host) throw fail("Unknown endpoint or machine", 404);
@@ -130,9 +140,13 @@ export function createFleetServer({ hosts, queue, client, token, desktopConnect,
 }
 
 function launchBrowser(url) {
-  const [tool, args] = process.platform === "win32" ? ["rundll32.exe", ["url.dll,FileProtocolHandler", url]]
-    : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
-  const child = spawn(tool, args, { stdio: "ignore", detached: true, windowsHide: true });
+  const [tool, args, options] = process.platform === "win32"
+    ? [path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:FLEET_OPEN_URL"],
+      { env: { ...process.env, FLEET_OPEN_URL: url } }]
+    : ["/bin/sh", ["-c", process.platform === "darwin" ? 'exec open "$FLEET_OPEN_URL"' : 'exec xdg-open "$FLEET_OPEN_URL"'],
+      { env: { ...process.env, FLEET_OPEN_URL: url } }];
+  const child = spawn(tool, args, { stdio: "ignore", detached: true, windowsHide: true, ...options });
   child.on("error", () => process.stderr.write("Use the local sign-in link printed in this terminal.\n"));
   child.unref();
 }
@@ -178,8 +192,11 @@ export async function runFleetDashboard(args) {
     const token = randomBytes(32).toString("base64url");
     let error = null;
     let activeTick;
-    const tick = () => { activeTick = queue.tick().then(() => { error = null; }, failure => { error = failure.message; }); };
-    app = createFleetServer({ hosts, client, queue, token, health: () => error });
+    const tick = () => {
+      activeTick = queue.tick().then(() => { error = null; }, failure => { error = failure.message; });
+      return activeTick;
+    };
+    app = createFleetServer({ hosts, client, queue, token, health: () => error, refresh: tick });
     await new Promise((resolve, reject) => app.server.once("error", reject).listen(port, "127.0.0.1", resolve));
     writeRelayJson(sessionFile, { token, optionsHash });
     const url = app.origin() + "/#session=" + token;

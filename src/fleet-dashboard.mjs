@@ -123,11 +123,22 @@ export function createFleetServer({ hosts, queue, client, token, desktopConnect,
         if (job[2] === "delete") return json(200, queue.remove(job[1]));
         return json(200, queue.retarget(job[1], body.target));
       }
-      const target = /^\/api\/hosts\/([\w-]+)\/(sessions|windows|screen|rdp)$/.exec(pathname);
+      const target = /^\/api\/hosts\/([\w-]+)\/(sessions|windows|activity|screen|rdp)$/.exec(pathname);
       const host = target && hosts.find(item => item.id === target[1]);
       if (!host) throw fail("Unknown endpoint or machine", 404);
       if (target[2] === "sessions") return json(200, await client.sessions(host));
       if (target[2] === "windows") return json(200, await client.windows(host));
+      if (target[2] === "activity") {
+        try {
+          return json(200, await client.activity(host));
+        } catch (error) {
+          if (host.sshHost && error?.code === "FLEET_REQUEST_INVALID") {
+            return json(200, { supported: false, checkedAt: new Date().toISOString(), relay: null, tasks: [], processes: [], totalProcesses: 0,
+              note: "Máy từ xa đang chạy bản worker-relay cũ chưa hỗ trợ đọc tiến trình và việc chạy ngầm. Cập nhật bản mới trên máy đích để xem đầy đủ." });
+          }
+          throw error;
+        }
+      }
       if (!host.sshHost) throw fail("Choose a remote machine");
       if (target[2] === "rdp" && host.platform !== "win32") throw fail("RDP is available for Windows machines");
       return json(200, target[2] === "rdp" ? await screens.rdp(host) : screens.issue(host));

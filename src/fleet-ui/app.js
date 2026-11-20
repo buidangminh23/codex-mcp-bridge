@@ -93,6 +93,34 @@ let hasBaseline = false;
 let lastSyncedAt = null;
 let previousStatuses = new Map();
 let notifyEnabled = localStorage.getItem("fleet-notify") === "1";
+let activeActivityTab = "live";
+let procCategory = "all";
+let procGroupEnabled = true;
+let activityScanning = false;
+let activityLoadedOnce = false;
+let activityLastScan = null;
+let activityHostKey = "";
+let procPillsSig = "";
+let bgListSig = "";
+let procTableSig = "";
+const hostActivity = new Map();
+const hostSessions = new Map();
+const openBgTaskIds = new Set();
+const processCategories = [
+  { value: "all", label: "Tất cả" },
+  { value: "agent", label: "Agent AI" },
+  { value: "ci", label: "CI / Build / Test" },
+  { value: "server", label: "Dev Server" },
+  { value: "script", label: "Script / Git" },
+  { value: "mcp", label: "MCP Server" },
+];
+const categoryLabels = { agent: "Agent AI", ci: "CI / Test", server: "Dev Server", script: "Script / Git", mcp: "MCP Server" };
+const categoryRank = { agent: 0, ci: 1, server: 2, script: 3, mcp: 4 };
+const processStateLabels = { running: "Đang chạy", sleeping: "Ngầm", idle: "Rảnh", stopped: "Tạm dừng", unresponsive: "Không phản hồi" };
+const relayTaskStatuses = { queued: "Đang chờ", running: "Đang chạy", completed: "Hoàn tất", failed: "Thất bại", unknown: "Chờ xác minh" };
+const relayTaskTones = { queued: "amber", running: "blue", completed: "green", failed: "red", unknown: "amber" };
+const workerReadinessLabels = { ready: "Sẵn sàng", "authentication-unverified": "Chưa xác thực", disabled: "Đã tắt", blocked: "Chặn" };
+const workerReadinessTones = { ready: "green", "authentication-unverified": "amber", disabled: "gray", blocked: "red" };
 
 function node(tag, className, value) {
   const item = document.createElement(tag);
@@ -222,6 +250,25 @@ function icon(name, size = 14) {
     );
   } else if (name === "play") {
     svg.append(svgEl("polygon", { points: "6 3 20 12 6 21 6 3" }));
+  } else if (name === "activity") {
+    svg.append(svgEl("path", { d: "M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" }));
+  } else if (name === "globe") {
+    svg.append(
+      svgEl("circle", { cx: 12, cy: 12, r: 10 }),
+      svgEl("path", { d: "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" }),
+      svgEl("path", { d: "M2 12h20" })
+    );
+  } else if (name === "cog") {
+    svg.append(
+      svgEl("circle", { cx: 12, cy: 12, r: 3 }),
+      svgEl("path", { d: "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" })
+    );
+  } else if (name === "layers") {
+    svg.append(
+      svgEl("path", { d: "m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" }),
+      svgEl("path", { d: "m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" }),
+      svgEl("path", { d: "m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" })
+    );
   } else {
     svg.append(
       svgEl("rect", { width: 20, height: 8, x: 2, y: 2, rx: 2, ry: 2 }),
@@ -253,6 +300,100 @@ function showToast(message) {
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + " B";
   return numbers.format(bytes / 1024) + " KiB";
+}
+
+function formatMem(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes >= 1024 ** 3) return numbers.format(bytes / (1024 ** 3)) + " GiB";
+  if (bytes >= 1024 ** 2) return numbers.format(bytes / (1024 ** 2)) + " MiB";
+  if (bytes >= 1024) return numbers.format(bytes / 1024) + " KiB";
+  return bytes + " B";
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  const s = Math.floor(seconds);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "p " + (s % 60) + "s";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + "g " + (m % 60) + "p";
+  const d = Math.floor(h / 24);
+  return d + "ng " + (h % 24) + "g";
+}
+
+function formatCpu(proc) {
+  if (typeof proc.cpuPercent === "number" && Number.isFinite(proc.cpuPercent)) return numbers.format(proc.cpuPercent) + "%";
+  if (typeof proc.cpuSeconds === "number" && Number.isFinite(proc.cpuSeconds) && proc.cpuSeconds > 0) return formatDuration(proc.cpuSeconds);
+  return "—";
+}
+
+function procRamPct(bytes, maxBytes) {
+  const ref = Math.max(maxBytes || 0, 256 * 1024 * 1024);
+  if (!Number.isFinite(bytes) || bytes <= 0) return 0;
+  return Math.max(4, Math.min(100, (bytes / ref) * 100));
+}
+
+function processMark(proc) {
+  const agent = proc.agent;
+  if (agent && agentIcons[agent]) return brandImg(agentIcons[agent], "proc-brand-icon");
+  const name = String(proc.name || "");
+  if (/^claude/i.test(name)) return brandImg("/icons/claude.svg", "proc-brand-icon");
+  if (/^codex/i.test(name)) return brandImg("/icons/codex.svg", "proc-brand-icon");
+  if (/^(?:antigravity|language_server)/i.test(name)) return brandImg("/icons/antigravity.svg", "proc-brand-icon");
+  if (/^git$/i.test(name)) return brandImg("/icons/git.svg", "proc-brand-icon");
+  const iconName = proc.category === "agent" ? "sessions" : proc.category === "ci" ? "play"
+    : proc.category === "server" ? "globe" : proc.category === "mcp" ? "layers" : "terminal";
+  const elIcon = icon(iconName, 14);
+  elIcon.classList.add("proc-cat-icon");
+  return elIcon;
+}
+
+function groupCodeProcesses(rows) {
+  const groups = new Map();
+  for (const proc of rows) {
+    const label = proc.label || proc.name;
+    const key = (proc.host?.id || "") + "\0" + proc.category + "\0" + label;
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        ...proc,
+        label,
+        count: 1,
+        pids: [proc.pid],
+        memoryBytes: proc.memoryBytes || 0,
+        cpuPercent: proc.cpuPercent,
+        cpuSeconds: proc.cpuSeconds,
+        uptimeSeconds: proc.uptimeSeconds ?? null,
+      });
+    } else {
+      existing.count += 1;
+      existing.pids.push(proc.pid);
+      existing.memoryBytes += proc.memoryBytes || 0;
+      if (typeof proc.cpuPercent === "number") existing.cpuPercent = (existing.cpuPercent || 0) + proc.cpuPercent;
+      if (typeof proc.cpuSeconds === "number") existing.cpuSeconds = Math.round(((existing.cpuSeconds || 0) + proc.cpuSeconds) * 10) / 10;
+      if (typeof proc.uptimeSeconds === "number" && (existing.uptimeSeconds == null || proc.uptimeSeconds > existing.uptimeSeconds)) {
+        existing.uptimeSeconds = proc.uptimeSeconds;
+      }
+      if (!existing.agent && proc.agent) existing.agent = proc.agent;
+      if (!existing.role && proc.role) existing.role = proc.role;
+    }
+  }
+  return [...groups.values()];
+}
+
+function hostInline(host) {
+  const wrap = node("span", "host-inline");
+  const platformKey = host?.platform || "server";
+  if (platformIcons[platformKey]) {
+    const img = brandImg(platformIcons[platformKey], "mini-os-icon");
+    img.dataset.platform = platformKey;
+    wrap.append(img);
+  } else {
+    wrap.append(icon("server", 13));
+  }
+  wrap.append(node("span", "", host?.hostname || host?.id || "—"));
+  return wrap;
 }
 
 function syncNotifyButton() {
@@ -395,7 +536,7 @@ function sessionNote(text) {
   return note;
 }
 
-function inspectorView(id, sessionsBtn, windowsBtn) {
+function inspectorView(id, sessionsBtn, windowsBtn, processesBtn) {
   const region = node("div", "session-region");
   region.id = "inspector-" + id;
   region.hidden = true;
@@ -403,21 +544,27 @@ function inspectorView(id, sessionsBtn, windowsBtn) {
   sessionsBtn.setAttribute("aria-expanded", "false");
   windowsBtn.setAttribute("aria-controls", region.id);
   windowsBtn.setAttribute("aria-expanded", "false");
+  processesBtn.setAttribute("aria-controls", region.id);
+  processesBtn.setAttribute("aria-expanded", "false");
 
   let mode = null;
   let timer;
   let requestSeq = 0;
   let signature;
   let windowQuery = "";
+  let processQuery = "";
   let cachedWindows = null;
 
   function updateButtons() {
     sessionsBtn.setAttribute("aria-expanded", String(mode === "sessions"));
     windowsBtn.setAttribute("aria-expanded", String(mode === "windows"));
+    processesBtn.setAttribute("aria-expanded", String(mode === "processes"));
     const sessionLabel = sessionsBtn.querySelector(".action-label");
     if (sessionLabel) setText(sessionLabel, mode === "sessions" ? "Ẩn phiên AI" : "Phiên AI");
     const winLabel = windowsBtn.querySelector(".action-label");
     if (winLabel) setText(winLabel, mode === "windows" ? "Ẩn cửa sổ" : "Cửa sổ");
+    const procLabel = processesBtn.querySelector(".action-label");
+    if (procLabel) setText(procLabel, mode === "processes" ? "Ẩn chạy ngầm" : "Chạy ngầm");
   }
 
   function paintWindowItems(list, rows) {
@@ -430,6 +577,120 @@ function inspectorView(id, sessionsBtn, windowsBtn) {
       row.append(main);
       return row;
     }));
+  }
+
+  function paintProcessItems(list, rows, totalBytes) {
+    const grouped = groupCodeProcesses(rows).slice(0, 30);
+    const maxBytes = grouped.reduce((max, item) => Math.max(max, item.memoryBytes || 0), 0);
+    list.replaceChildren(...grouped.map(proc => {
+      const row = node("li", "inspector-proc-row");
+      const left = node("div", "proc-name-cell");
+      left.append(processMark(proc), node("span", "proc-name-text", proc.label || proc.name));
+      if (proc.count > 1) left.append(node("span", "proc-count-badge", "×" + proc.count));
+      const pidText = proc.count > 1
+        ? (proc.uptimeSeconds != null ? formatDuration(proc.uptimeSeconds) : proc.count + " luồng")
+        : "PID " + proc.pid + (proc.uptimeSeconds != null ? " · " + formatDuration(proc.uptimeSeconds) : "");
+      const pidEl = node("span", "proc-pid", pidText);
+      if (proc.count > 1) pidEl.title = "PID: " + proc.pids.join(", ");
+      const ramCell = node("span", "proc-ram-cell");
+      const bar = node("span", "proc-bar");
+      const pct = procRamPct(proc.memoryBytes, maxBytes);
+      const fill = node("span", "proc-bar-fill");
+      fill.style.setProperty("--proc-pct", pct.toFixed(1) + "%");
+      bar.append(fill);
+      if (totalBytes > 0) ramCell.title = numbers.format((proc.memoryBytes / totalBytes) * 100) + "% RAM máy";
+      ramCell.append(bar, node("span", "", formatMem(proc.memoryBytes)));
+      row.append(left, pidEl, ramCell);
+      return row;
+    }));
+  }
+
+  function renderProcessesView(result, failure) {
+    const content = [];
+    const rows = result?.processes || [];
+    const totalCount = result?.totalProcesses || rows.length;
+    const hostInfo = state.hosts.find(item => item.id === id);
+    const totalBytes = hostInfo?.totalBytes || 0;
+    const q = processQuery.trim().toLowerCase();
+    const filtered = q ? rows.filter(p => (p.label || p.name).toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || String(p.pid).includes(q)) : rows;
+
+    const head = node("div", "session-group-head");
+    const meta = node("div", "session-group-meta");
+    meta.append(node("span", "count-pill", q ? filtered.length + "/" + totalCount : String(totalCount)));
+    const refreshBtn = node("button", "inspector-refresh");
+    refreshBtn.type = "button";
+    refreshBtn.append(icon("refresh", 12), node("span", "", "Tải lại"));
+    refreshBtn.addEventListener("click", () => { void loadProcesses(true); });
+    meta.append(refreshBtn);
+    head.append(node("span", "session-group-title", "Agent & Phiên code chạy ẩn"), meta);
+    content.push(head);
+
+    if (failure) {
+      content.push(node("p", "notice error", "Chưa tải được phiên chạy ngầm. " + failure));
+    } else {
+      if (result?.relay) {
+        const bar = node("div", "inspector-relay-bar");
+        const relayState = result.relay.online
+          ? "Worker Relay v" + (result.relay.version || "?") + " · PID " + (result.relay.pid || "—") + " · Chạy " + result.relay.active + " · Chờ " + result.relay.queued
+          : "Worker Relay ngoại tuyến";
+        bar.append(node("span", "", relayState));
+        if (result.relay.workers?.length) {
+          const workersWrap = node("div", "inspector-workers");
+          for (const w of result.relay.workers) {
+            const chip = agentChip(w.agent);
+            const st = node("span", "worker-state", workerReadinessLabels[w.readiness] || w.readiness);
+            st.dataset.tone = workerReadinessTones[w.readiness] || "gray";
+            workersWrap.append(chip, st);
+          }
+          bar.append(workersWrap);
+        }
+        content.push(bar);
+      }
+      if (rows.length > 5) {
+        const input = node("input", "window-filter");
+        input.type = "search";
+        input.value = processQuery;
+        input.placeholder = "Lọc theo Agent, CI, script hoặc PID…";
+        input.setAttribute("aria-label", "Lọc phiên code chạy ẩn trên máy này");
+        input.addEventListener("input", () => {
+          processQuery = input.value;
+          const list = region.querySelector(".session-list");
+          const pill = region.querySelector(".count-pill");
+          const empty = region.querySelector(".window-empty");
+          const query = processQuery.trim().toLowerCase();
+          const next = query ? rows.filter(p => (p.label || p.name).toLowerCase().includes(query) || p.name.toLowerCase().includes(query) || String(p.pid).includes(query)) : rows;
+          if (pill) setText(pill, query ? next.length + "/" + totalCount : String(totalCount));
+          if (list) paintProcessItems(list, next, totalBytes);
+          if (empty) empty.hidden = next.length > 0;
+        });
+        content.push(input);
+      }
+      const list = node("ul", "session-list");
+      paintProcessItems(list, filtered, totalBytes);
+      const empty = node("p", "hint window-empty", rows.length ? "Không có phiên chạy ẩn khớp từ khóa lọc." : "Chưa ghi nhận tiến trình Agent hay phiên code chạy ẩn nào.");
+      empty.hidden = filtered.length > 0;
+      content.push(list, empty);
+    }
+    if (result?.note) content.push(sessionNote(result.note));
+    region.replaceChildren(...content);
+  }
+
+  async function loadProcesses(manual = false) {
+    if (mode !== "processes" || !region.isConnected) return;
+    const seq = ++requestSeq;
+    const existing = hostActivity.get(id);
+    if (manual || !existing) region.replaceChildren(node("p", "hint", "Đang đọc tiến trình và dịch vụ chạy ngầm…"));
+    else renderProcessesView(existing, null);
+    let result, failure;
+    try {
+      result = await api("/api/hosts/" + encodeURIComponent(id) + "/activity", {});
+      hostActivity.set(id, result);
+      renderActivity();
+    } catch (error) {
+      failure = error.message;
+    }
+    if (seq !== requestSeq || mode !== "processes" || !region.isConnected) return;
+    renderProcessesView(result, failure);
   }
 
   function renderWindowsView(result, failure) {
@@ -505,6 +766,10 @@ function inspectorView(id, sessionsBtn, windowsBtn) {
     let result, failure;
     try {
       result = await api("/api/hosts/" + encodeURIComponent(id) + "/sessions", {});
+      if (result) {
+        hostSessions.set(id, result);
+        renderActivity();
+      }
     } catch (error) {
       failure = error.message;
     }
@@ -561,17 +826,21 @@ function inspectorView(id, sessionsBtn, windowsBtn) {
     region.hidden = false;
     signature = undefined;
     windowQuery = "";
+    processQuery = "";
     updateButtons();
     if (mode === "sessions") {
       region.replaceChildren(node("p", "hint", "Đang tải phiên AI…"));
       void refreshSessions();
-    } else {
+    } else if (mode === "windows") {
       void loadWindows(true);
+    } else {
+      void loadProcesses(true);
     }
   }
 
   sessionsBtn.addEventListener("click", () => toggleMode("sessions"));
   windowsBtn.addEventListener("click", () => toggleMode("windows"));
+  processesBtn.addEventListener("click", () => toggleMode("processes"));
   return region;
 }
 
@@ -627,8 +896,11 @@ function machineCard(host) {
   const windows = node("button", "host-action");
   windows.type = "button";
   windows.append(icon("windows", 14), node("span", "action-label", "Cửa sổ"), icon("chevron-down", 13));
-  const region = inspectorView(host.id, sessions, windows);
-  links.append(dispatchBtn, sessions, windows);
+  const processes = node("button", "host-action");
+  processes.type = "button";
+  processes.append(icon("activity", 14), node("span", "action-label", "Chạy ngầm"), icon("chevron-down", 13));
+  const region = inspectorView(host.id, sessions, windows, processes);
+  links.append(dispatchBtn, sessions, windows, processes);
   if (!host.local) links.append(externalAction("Màn hình", "screen", "/screen.html", host.id));
   if (!hostFilter) links.append(externalAction("Bảng riêng", "external", "/", host.id));
   foot.append(agents, links);
@@ -841,12 +1113,22 @@ function renderOverview(hosts, jobs) {
   const runningCount = jobs.filter(job => job.status === "running").length;
   const queuedCount = jobs.filter(job => job.status === "queued").length;
   const uncertainCount = jobs.filter(job => job.status === "uncertain").length;
-  const activeCount = runningCount + queuedCount + uncertainCount;
+  let liveAiCount = 0;
+  let bgActiveCount = 0;
+  for (const host of hosts) {
+    const sess = hostSessions.get(host.id)?.sessions || [];
+    liveAiCount += sess.filter(item => item.status === "running" || item.status === "waiting").length;
+    const act = hostActivity.get(host.id);
+    if (act?.relay) bgActiveCount += (act.relay.active || 0) + (act.relay.queued || 0);
+  }
+  const activeCount = runningCount + queuedCount + uncertainCount + bgActiveCount;
   setText(el("stat-active"), String(activeCount));
   const activeParts = [];
   if (runningCount) activeParts.push(runningCount + " đang chạy");
   if (queuedCount) activeParts.push(queuedCount + " chờ phân công");
   if (uncertainCount) activeParts.push(uncertainCount + " chờ xác minh");
+  if (bgActiveCount) activeParts.push(bgActiveCount + " việc ngầm");
+  if (liveAiCount) activeParts.push(liveAiCount + " phiên AI đang làm");
   setText(el("stat-active-sub"), activeParts.length ? activeParts.join(" · ") : "Hàng chờ đang rảnh");
 
   const doneCount = jobs.filter(job => job.status === "completed").length;
@@ -1039,6 +1321,493 @@ function matchesSearch(job, query) {
   return haystack.includes(query);
 }
 
+function setActivityTab(nextTab) {
+  activeActivityTab = nextTab;
+  for (const btn of document.querySelectorAll(".activity-tab")) {
+    const active = btn.dataset.tab === nextTab;
+    btn.setAttribute("aria-selected", String(active));
+  }
+  el("panel-live").hidden = nextTab !== "live";
+  el("panel-background").hidden = nextTab !== "background";
+  el("panel-processes").hidden = nextTab !== "processes";
+}
+
+function buildLiveItem({ agent, title, sourceLabel, host, timeText, statusText, tone, onClick }) {
+  const row = node(onClick ? "button" : "div", "live-item" + (onClick ? " clickable" : ""));
+  if (onClick) {
+    row.type = "button";
+    row.addEventListener("click", onClick);
+  }
+  const main = node("div", "live-item-main");
+  const copy = node("div", "live-item-copy");
+  copy.append(node("span", "live-item-title", title));
+  const meta = node("div", "live-item-meta");
+  meta.append(node("span", "", sourceLabel));
+  if (host) {
+    meta.append(node("span", "job-meta-sep", "·"), hostInline(host));
+  }
+  if (timeText) {
+    meta.append(node("span", "job-meta-sep", "·"), node("span", "", timeText));
+  }
+  copy.append(meta);
+  main.append(agentChip(agent), copy);
+  const st = node("span", "badge");
+  badge(st, statusText, tone);
+  row.append(main, st);
+  return row;
+}
+
+function renderActivity() {
+  const allHosts = state.hosts.filter(host => !hostFilter || host.id === hostFilter);
+  const hostSelect = el("activity-host-filter");
+  hostSelect.hidden = Boolean(hostFilter) || allHosts.length <= 1;
+  const hostSig = JSON.stringify(allHosts.map(h => [h.id, h.hostname]));
+  if (hostSig !== activityHostKey) {
+    const prev = hostSelect.value || "all";
+    hostSelect.replaceChildren(new Option("Tất cả máy", "all"), ...allHosts.map(h => new Option(h.hostname || h.id, h.id)));
+    hostSelect.value = Array.from(hostSelect.options).some(opt => opt.value === prev) ? prev : "all";
+    activityHostKey = hostSig;
+  }
+  const chosenHostId = hostFilter || (hostSelect.value === "all" ? null : hostSelect.value);
+  const scopedHosts = chosenHostId ? allHosts.filter(h => h.id === chosenHostId) : allHosts;
+  const hostById = new Map(allHosts.map(h => [h.id, h]));
+
+  el("activity-refresh").disabled = !online || activityScanning || allHosts.length === 0;
+  el("activity-refresh").dataset.busy = String(activityScanning);
+  if (activityLastScan) {
+    setText(el("activity-stamp"), "Quét " + times.format(activityLastScan));
+    el("activity-stamp").hidden = false;
+  }
+
+  const activeItems = [];
+  const passiveItems = [];
+  const allBgTasks = [];
+  const allProcs = [];
+  const hostNotes = [];
+  let totalProcCount = 0;
+
+  for (const job of state.jobs) {
+    if (!["running", "queued", "uncertain"].includes(job.status)) continue;
+    const targetHostId = job.hostId || (job.target !== "auto" ? job.target : null);
+    if (chosenHostId && targetHostId !== chosenHostId) continue;
+    activeItems.push({
+      agent: job.agent,
+      title: job.title,
+      sourceLabel: "Điều phối · Bước " + (job.stepIndex + 1) + "/" + job.steps.length,
+      host: targetHostId ? hostById.get(targetHostId) : null,
+      timeText: dates.format(new Date(job.updatedAt || job.createdAt)),
+      statusText: statusNames[job.status],
+      tone: tones[job.status],
+      onClick: () => {
+        selected = job.id;
+        el("status-filter").value = "all";
+        el("agent-filter").value = "all";
+        el("job-search").value = "";
+        render();
+        el("detail-heading").scrollIntoView({ block: "start", behavior: "smooth" });
+      },
+    });
+  }
+
+  for (const host of scopedHosts) {
+    const sess = hostSessions.get(host.id)?.sessions || [];
+    for (const item of sess) {
+      const entry = {
+        agent: item.agent,
+        title: item.title || "Phiên " + item.id,
+        sourceLabel: "Phiên AI",
+        host,
+        timeText: "",
+        statusText: sessionStates[item.status] || sessionStates.unknown,
+        tone: sessionTones[item.status] || "gray",
+      };
+      if (item.status === "running" || item.status === "waiting") activeItems.push(entry);
+      else passiveItems.push(entry);
+    }
+
+    const act = hostActivity.get(host.id);
+    if (!act) continue;
+    if (act.note) hostNotes.push({ host, note: act.note });
+    totalProcCount += act.totalProcesses || (act.processes?.length || 0);
+    for (const task of act.tasks || []) {
+      const enrichedTask = { ...task, host };
+      allBgTasks.push(enrichedTask);
+      if (task.status === "running" || task.status === "queued") {
+        activeItems.push({
+          agent: task.agent,
+          title: task.outputPreview ? task.outputPreview.split(/\r?\n/)[0].slice(0, 120) : "Tác vụ chạy ngầm #" + task.requestId.slice(0, 8),
+          sourceLabel: "Worker ngầm",
+          host,
+          timeText: task.updatedAt ? dates.format(new Date(task.updatedAt)) : "",
+          statusText: relayTaskStatuses[task.status] || task.status,
+          tone: relayTaskTones[task.status] || "gray",
+          onClick: () => {
+            openBgTaskIds.add(task.requestId);
+            setActivityTab("background");
+            renderActivity();
+          },
+        });
+      }
+    }
+    for (const proc of act.processes || []) {
+      allProcs.push({ ...proc, host, hostTotalBytes: host.totalBytes || 0 });
+    }
+  }
+
+  allBgTasks.sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
+
+  const groupedAllProcs = groupCodeProcesses(allProcs);
+  const liveCount = activeItems.length;
+  setText(el("tab-count-live"), String(liveCount));
+  setText(el("tab-count-bg"), String(allBgTasks.length));
+  setText(el("tab-count-proc"), String(groupedAllProcs.length));
+  setText(el("live-work-count"), String(liveCount + passiveItems.length));
+  setText(el("relay-hosts-count"), String(scopedHosts.length));
+  const summaryParts = [
+    liveCount + " đang chạy",
+    allBgTasks.length + " việc Agent ngầm",
+    groupedAllProcs.length + " phiên code & CI ẩn",
+  ];
+  setText(el("activity-total-pill"), activityLoadedOnce ? summaryParts.join(" · ") : "Đang quét…");
+
+  const liveContainer = el("live-work-list");
+  const recentBg = allBgTasks.filter(t => !["running", "queued"].includes(t.status)).slice(0, 3);
+  if (!activityLoadedOnce && !activeItems.length && !passiveItems.length && !recentBg.length) {
+    liveContainer.replaceChildren(node("p", "hint", "Đang quét phiên AI, việc chạy ngầm và tiến trình trên cụm máy…"));
+  } else if (!activeItems.length && !passiveItems.length && !recentBg.length) {
+    liveContainer.replaceChildren(node("p", "hint", "Hiện chưa có công việc điều phối, worker ngầm hay phiên AI nào đang mở trên máy đã chọn."));
+  } else {
+    const nodes = [];
+    if (activeItems.length) {
+      nodes.push(node("div", "live-group-label", "Đang chạy & chờ xử lý (" + activeItems.length + ")"));
+      for (const item of activeItems) nodes.push(buildLiveItem(item));
+    }
+    if (passiveItems.length) {
+      nodes.push(node("div", "live-group-label", "Phiên AI đang mở · Rảnh / Đã kết nối (" + passiveItems.length + ")"));
+      for (const item of passiveItems) nodes.push(buildLiveItem(item));
+    }
+    if (recentBg.length) {
+      const head = node("div", "live-group-head");
+      head.append(node("div", "live-group-label", "Việc chạy ngầm gần nhất (" + allBgTasks.length + ")"));
+      const moreBtn = node("button", "link-btn");
+      moreBtn.type = "button";
+      moreBtn.append(node("span", "", "Xem tất cả"), icon("chevron-right", 13));
+      moreBtn.addEventListener("click", () => {
+        setActivityTab("background");
+        renderActivity();
+      });
+      head.append(moreBtn);
+      nodes.push(head);
+      for (const task of recentBg) {
+        const firstLine = (task.outputPreview || "").split(/\r?\n/).find(line => line.trim()) || task.diagnosticReason || "Tác vụ #" + task.requestId.slice(0, 8);
+        nodes.push(buildLiveItem({
+          agent: task.agent,
+          title: firstLine,
+          sourceLabel: "Worker ngầm · #" + task.requestId.slice(0, 8),
+          host: task.host,
+          timeText: task.createdAt ? dates.format(new Date(task.createdAt)) : "",
+          statusText: relayTaskStatuses[task.status] || task.status,
+          tone: relayTaskTones[task.status] || "gray",
+          onClick: () => {
+            openBgTaskIds.add(task.requestId);
+            setActivityTab("background");
+            renderActivity();
+          },
+        }));
+      }
+    }
+    liveContainer.replaceChildren(...nodes);
+  }
+
+  const relayContainer = el("relay-services");
+  relayContainer.replaceChildren(...scopedHosts.map(host => {
+    const act = hostActivity.get(host.id);
+    const card = node("div", "relay-host-card");
+    const top = node("div", "relay-host-top");
+    const idWrap = node("div", "relay-host-id");
+    idWrap.append(hostInline(host));
+    const st = node("span", "badge");
+    if (!host.online) badge(st, "Ngoại tuyến", "gray");
+    else if (!act) badge(st, "Đang quét", "gray");
+    else if (act.supported === false) badge(st, "Bản cũ", "amber");
+    else if (act.relay?.online) badge(st, act.relay.accepting ? "Hoạt động" : "Đang xả việc", act.relay.accepting ? "green" : "amber");
+    else badge(st, "Chưa chạy", "red");
+    top.append(idWrap, st);
+    card.append(top);
+
+    if (act?.supported === false) {
+      card.append(node("p", "hint", act.note || "Cập nhật worker-relay trên máy này để đọc chi tiết dịch vụ ngầm."));
+      return card;
+    }
+
+    if (act?.relay) {
+      const metrics = node("div", "relay-metrics");
+      const m1 = node("span");
+      m1.append("PID ", node("strong", "", act.relay.pid ? String(act.relay.pid) : "—"));
+      const m2 = node("span");
+      m2.append("Bản ", node("strong", "", act.relay.version || "—"));
+      const m3 = node("span");
+      m3.append("Chạy ", node("strong", "", String(act.relay.active || 0)), " · Chờ ", node("strong", "", String(act.relay.queued || 0)));
+      metrics.append(m1, m2, m3);
+      if (act.system?.cpuCount) {
+        const m4 = node("span");
+        m4.append(node("strong", "", String(act.system.cpuCount)), " lõi · Uptime ", node("strong", "", formatDuration(act.system.uptimeSeconds)));
+        metrics.append(m4);
+      }
+      card.append(metrics);
+
+      if (act.relay.workers?.length) {
+        const list = node("div", "worker-list");
+        for (const w of act.relay.workers) {
+          const wRow = node("div", "worker-row");
+          const ver = node("span", "worker-version", w.version ? "v" + w.version : "—");
+          const wSt = node("span", "worker-state", workerReadinessLabels[w.readiness] || w.readiness);
+          wSt.dataset.tone = workerReadinessTones[w.readiness] || "gray";
+          wRow.append(agentChip(w.agent), ver, wSt);
+          list.append(wRow);
+        }
+        card.append(list);
+      }
+    } else if (host.online) {
+      card.append(node("p", "hint", "Đang đọc trạng thái dịch vụ chạy ngầm…"));
+    }
+    return card;
+  }));
+
+  const topProcContainer = el("top-processes");
+  const topSorted = groupedAllProcs.slice().sort((a, b) => {
+    const rankDiff = (categoryRank[a.category] ?? 9) - (categoryRank[b.category] ?? 9);
+    if (rankDiff !== 0) return rankDiff;
+    return b.memoryBytes - a.memoryBytes;
+  }).slice(0, 6);
+  if (!topSorted.length) {
+    topProcContainer.replaceChildren(node("p", "hint", activityLoadedOnce ? "Chưa ghi nhận tiến trình Agent hay phiên code nào đang chạy ẩn." : "Đang quét phiên code chạy ẩn…"));
+  } else {
+    const maxTopBytes = topSorted.reduce((max, item) => Math.max(max, item.memoryBytes || 0), 0);
+    topProcContainer.replaceChildren(...topSorted.map(proc => {
+      const row = node("div", "top-proc-row");
+      const nameCell = node("div", "proc-name-cell");
+      nameCell.append(processMark(proc), node("span", "proc-name-text", proc.label || proc.name));
+      if (proc.count > 1) nameCell.append(node("span", "proc-count-badge", "×" + proc.count));
+      const pidEl = node("span", "proc-pid", proc.count > 1 ? (categoryLabels[proc.category] || proc.category) : "PID " + proc.pid);
+      if (proc.count > 1) pidEl.title = "PID: " + proc.pids.join(", ");
+      const ramCell = node("span", "proc-ram-cell");
+      const bar = node("span", "proc-bar");
+      const pct = procRamPct(proc.memoryBytes, maxTopBytes);
+      const fill = node("span", "proc-bar-fill");
+      fill.style.setProperty("--proc-pct", pct.toFixed(1) + "%");
+      bar.append(fill);
+      if (proc.hostTotalBytes > 0) ramCell.title = numbers.format((proc.memoryBytes / proc.hostTotalBytes) * 100) + "% RAM máy";
+      ramCell.append(bar, node("span", "", formatMem(proc.memoryBytes)));
+      row.append(nameCell, pidEl, ramCell);
+      return row;
+    }));
+  }
+
+  const notesNodes = hostNotes.map(({ host, note }) => sessionNote((host.hostname || host.id) + ": " + note));
+  el("bg-notes").hidden = notesNodes.length === 0;
+  el("bg-notes").replaceChildren(...notesNodes.map(n => n.cloneNode(true)));
+  el("proc-notes").hidden = notesNodes.length === 0;
+  el("proc-notes").replaceChildren(...notesNodes);
+
+  const bgQuery = el("bg-search").value.trim().toLowerCase();
+  const bgStatus = el("bg-status-filter").value;
+  const bgAgent = el("bg-agent-filter").value;
+  const filteredBg = allBgTasks.filter(task => {
+    if (bgStatus !== "all" && task.status !== bgStatus) return false;
+    if (bgAgent !== "all" && task.agent !== bgAgent) return false;
+    if (!bgQuery) return true;
+    const hay = [task.requestId, agentNames[task.agent] || task.agent, task.host?.hostname || "", task.outputPreview || "", task.diagnosticCode || "", task.diagnosticReason || ""].join(" ").toLowerCase();
+    return hay.includes(bgQuery);
+  });
+
+  const bgList = el("bg-task-list");
+  const nextBgSig = JSON.stringify([filteredBg.map(t => [t.requestId, t.status, t.updatedAt, t.host?.id]), allBgTasks.length]);
+  if (nextBgSig !== bgListSig) {
+    bgListSig = nextBgSig;
+    if (!filteredBg.length) {
+      bgList.replaceChildren(node("p", "hint", allBgTasks.length ? "Không có việc chạy ngầm khớp bộ lọc." : "Chưa ghi nhận tác vụ chạy ngầm nào trong Worker Relay."));
+    } else {
+      bgList.replaceChildren(...filteredBg.map(task => {
+        const details = node("details", "bg-task-item");
+        details.open = openBgTaskIds.has(task.requestId);
+        details.addEventListener("toggle", () => {
+          if (details.open) openBgTaskIds.add(task.requestId);
+          else openBgTaskIds.delete(task.requestId);
+        });
+        const summary = node("summary", "bg-task-summary");
+        const main = node("div", "bg-task-main");
+        const copy = node("div", "bg-task-copy");
+        const headline = node("div", "bg-task-headline");
+        headline.append(node("span", "bg-task-id", "#" + task.requestId.slice(0, 8)));
+        const firstLine = (task.outputPreview || "").split(/\r?\n/).find(line => line.trim()) || task.diagnosticReason || (task.status === "running" ? "Đang thực thi qua background worker…" : "Không có văn bản trả về");
+        headline.append(node("span", "bg-task-preview", firstLine));
+        const meta = node("div", "bg-task-meta");
+        const sourceText = task.sourceKind === "background-worker"
+          ? "Ủy quyền từ " + (agentNames[task.sourceAgent] || "worker")
+          : "Tác vụ cục bộ";
+        meta.append(node("span", "", sourceText), node("span", "job-meta-sep", "·"), hostInline(task.host));
+        if (task.createdAt) {
+          meta.append(node("span", "job-meta-sep", "·"), node("span", "", dates.format(new Date(task.createdAt))));
+        }
+        if (task.createdAt && task.updatedAt) {
+          const sec = Math.max(0, Math.round((new Date(task.updatedAt) - new Date(task.createdAt)) / 1000));
+          if (sec > 0) meta.append(node("span", "job-meta-sep", "·"), node("span", "", formatDuration(sec)));
+        }
+        copy.append(headline, meta);
+        main.append(agentChip(task.agent), copy);
+        const right = node("div", "bg-task-right");
+        const st = node("span", "badge");
+        badge(st, relayTaskStatuses[task.status] || task.status, relayTaskTones[task.status] || "gray");
+        right.append(st, icon("chevron-down", 14));
+        summary.append(main, right);
+
+        const detail = node("div", "bg-task-detail");
+        const kv = node("div", "bg-task-kv");
+        const idSpan = node("span");
+        idSpan.append("Mã biên nhận: ", node("code", "", task.requestId));
+        const copyBtn = node("button", "secondary compact-btn");
+        copyBtn.type = "button";
+        copyBtn.append(icon("copy", 12), node("span", "copy-label", "Sao chép kết quả"));
+        copyBtn.addEventListener("click", () => {
+          void copyText(task.outputPreview || task.diagnosticReason || task.requestId, copyBtn, "Đã sao chép nội dung việc chạy ngầm.");
+        });
+        kv.append(idSpan, copyBtn);
+        detail.append(kv);
+        if (task.diagnosticReason) {
+          detail.append(node("p", "notice error", (task.diagnosticCode ? task.diagnosticCode + ": " : "") + task.diagnosticReason));
+        }
+        if (task.outputPreview) {
+          detail.append(node("pre", "bg-task-output", task.outputPreview + (task.outputTruncated ? "\n…" : "")));
+        }
+        details.append(summary, detail);
+        return details;
+      }));
+    }
+  }
+
+  const procQuery = el("proc-search").value.trim().toLowerCase();
+  const procSort = el("proc-sort").value;
+  el("proc-group-toggle").setAttribute("aria-pressed", String(procGroupEnabled));
+  const baseProcs = procGroupEnabled ? groupedAllProcs : allProcs.map(p => ({ ...p, label: p.label || p.name, count: 1, pids: [p.pid] }));
+  const searchMatchedProcs = baseProcs.filter(proc => {
+    if (!procQuery) return true;
+    const hay = [proc.label, proc.name, categoryLabels[proc.category] || "", proc.role || "", proc.host?.hostname || "", ...proc.pids.map(String)].join(" ").toLowerCase();
+    return hay.includes(procQuery);
+  });
+
+  const catCounts = new Map([["all", searchMatchedProcs.length]]);
+  for (const proc of searchMatchedProcs) {
+    catCounts.set(proc.category, (catCounts.get(proc.category) || 0) + 1);
+  }
+  const pillsData = processCategories.map(item => ({ ...item, count: catCounts.get(item.value) || 0 }));
+  const nextPillsSig = JSON.stringify([procCategory, pillsData]);
+  if (nextPillsSig !== procPillsSig) {
+    procPillsSig = nextPillsSig;
+    el("proc-category-pills").replaceChildren(...pillsData.map(item => {
+      const btn = node("button", "filter-pill");
+      btn.type = "button";
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-selected", String(procCategory === item.value));
+      btn.append(node("span", "", item.label), node("span", "filter-pill-count", String(item.count)));
+      btn.addEventListener("click", () => {
+        procCategory = item.value;
+        renderActivity();
+      });
+      return btn;
+    }));
+  }
+
+  const filteredProcs = searchMatchedProcs.filter(proc => procCategory === "all" || proc.category === procCategory);
+
+  filteredProcs.sort((a, b) => {
+    if (procSort === "memory") return b.memoryBytes - a.memoryBytes || a.pid - b.pid;
+    if (procSort === "cpu") return ((b.cpuPercent ?? b.cpuSeconds ?? -1) - (a.cpuPercent ?? a.cpuSeconds ?? -1)) || (b.memoryBytes - a.memoryBytes);
+    if (procSort === "uptime") return ((b.uptimeSeconds ?? -1) - (a.uptimeSeconds ?? -1)) || (b.memoryBytes - a.memoryBytes);
+    if (procSort === "name") return (a.label || a.name).localeCompare(b.label || b.name);
+    return ((categoryRank[a.category] ?? 9) - (categoryRank[b.category] ?? 9)) || (b.memoryBytes - a.memoryBytes) || a.pid - b.pid;
+  });
+
+  const tbody = el("proc-table-body");
+  el("proc-table-wrap").hidden = filteredProcs.length === 0;
+  el("proc-empty").hidden = filteredProcs.length > 0;
+  const shownProcs = filteredProcs.slice(0, 120);
+  const nextProcSig = JSON.stringify([procGroupEnabled, shownProcs.map(p => [p.host?.id, p.pid, p.count, p.label, p.memoryBytes, p.cpuPercent, p.cpuSeconds, p.uptimeSeconds, p.state])]);
+  if (nextProcSig === procTableSig) return;
+  procTableSig = nextProcSig;
+  const maxShownBytes = shownProcs.reduce((max, item) => Math.max(max, item.memoryBytes || 0), 0);
+  tbody.replaceChildren(...shownProcs.map(proc => {
+    const tr = document.createElement("tr");
+
+    const nameTd = document.createElement("td");
+    const nameCell = node("div", "proc-name-cell");
+    nameCell.append(processMark(proc), node("span", "proc-name-text", proc.label || proc.name));
+    if (proc.count > 1) nameCell.append(node("span", "proc-count-badge", "×" + proc.count));
+    nameTd.append(nameCell);
+
+    const catTd = document.createElement("td");
+    const catSpan = node("span", "proc-cat-label", categoryLabels[proc.category] || proc.category);
+    catSpan.dataset.cat = proc.category;
+    catTd.append(catSpan);
+
+    const pidTd = node("td", "proc-pid", proc.count > 1 ? proc.pid + " (+" + (proc.count - 1) + ")" : String(proc.pid));
+    if (proc.count > 1) pidTd.title = "PID: " + proc.pids.join(", ");
+
+    const hostTd = document.createElement("td");
+    hostTd.append(hostInline(proc.host));
+
+    const uptimeTd = node("td", "num", proc.uptimeSeconds != null ? formatDuration(proc.uptimeSeconds) : "—");
+
+    const cpuTd = node("td", "num", formatCpu(proc));
+
+    const ramTd = node("td", "num");
+    const ramCell = node("span", "proc-ram-cell");
+    const bar = node("span", "proc-bar");
+    const pct = procRamPct(proc.memoryBytes, maxShownBytes);
+    const fill = node("span", "proc-bar-fill");
+    fill.style.setProperty("--proc-pct", pct.toFixed(1) + "%");
+    bar.append(fill);
+    if (proc.hostTotalBytes > 0) ramCell.title = numbers.format((proc.memoryBytes / proc.hostTotalBytes) * 100) + "% RAM máy";
+    ramCell.append(bar, node("span", "", formatMem(proc.memoryBytes)));
+    ramTd.append(ramCell);
+
+    const stateTd = document.createElement("td");
+    const stateDot = node("span", "proc-state-dot", processStateLabels[proc.state] || proc.state);
+    stateDot.dataset.state = proc.state;
+    stateTd.append(stateDot);
+
+    tr.append(nameTd, catTd, pidTd, hostTd, uptimeTd, cpuTd, ramTd, stateTd);
+    return tr;
+  }));
+}
+
+async function refreshActivity(manual = false) {
+  if (activityScanning || !online) return;
+  const targets = state.hosts.filter(host => host.online && (!hostFilter || host.id === hostFilter));
+  if (!targets.length) {
+    renderActivity();
+    return;
+  }
+  activityScanning = true;
+  renderActivity();
+  try {
+    await Promise.allSettled(targets.flatMap(host => [
+      api("/api/hosts/" + encodeURIComponent(host.id) + "/activity", {})
+        .then(result => { hostActivity.set(host.id, result); })
+        .catch(() => {}),
+      api("/api/hosts/" + encodeURIComponent(host.id) + "/sessions", {})
+        .then(result => { hostSessions.set(host.id, result); })
+        .catch(() => {}),
+    ]));
+    activityLoadedOnce = true;
+    activityLastScan = new Date();
+    if (manual) showToast("Đã quét lại việc chạy ngầm và tiến trình.");
+  } finally {
+    activityScanning = false;
+    render();
+  }
+}
+
 function render() {
   const hosts = state.hosts.filter(host => !hostFilter || host.id === hostFilter);
   const scopedJobs = state.jobs.filter(job => !hostFilter || job.hostId === hostFilter || job.target === hostFilter || job.history.some(entry => entry.hostId === hostFilter));
@@ -1083,6 +1852,7 @@ function render() {
 
   renderOverview(hosts, scopedJobs);
   reconcile(el("machines"), hosts, machineCard, paintMachine);
+  renderActivity();
   renderFilterPills(preStatus, statusFilter);
   reconcile(el("job-list"), shown, jobRow, paintRow);
   el("empty-queue").hidden = shown.length > 0;
@@ -1100,6 +1870,9 @@ function applyLatestState(latest) {
   pollError = latest.error || "";
   notifyJobChanges(latest.jobs || []);
   render();
+  if (!activityLoadedOnce && !activityScanning && latest.hosts?.some(host => host.online)) {
+    void refreshActivity(false);
+  }
 }
 
 async function refresh() {
@@ -1143,6 +1916,7 @@ async function forceRefresh() {
     }
     if (index === requestIndex) {
       applyLatestState(latest);
+      void refreshActivity(false);
       actionError = "";
       showToast("Đã làm mới trạng thái cụm máy.");
     }
@@ -1593,8 +2367,36 @@ window.addEventListener("storage", event => {
   if (event.key === "fleet-session") void refresh();
 });
 
+for (const btn of document.querySelectorAll(".activity-tab")) {
+  btn.addEventListener("click", () => {
+    setActivityTab(btn.dataset.tab);
+    renderActivity();
+  });
+}
+
+el("view-all-procs").addEventListener("click", () => {
+  setActivityTab("processes");
+  renderActivity();
+});
+
+el("activity-refresh").addEventListener("click", () => { void refreshActivity(true); });
+el("activity-host-filter").addEventListener("change", renderActivity);
+el("bg-search").addEventListener("input", renderActivity);
+el("bg-status-filter").addEventListener("change", renderActivity);
+el("bg-agent-filter").addEventListener("change", renderActivity);
+el("proc-search").addEventListener("input", renderActivity);
+el("proc-sort").addEventListener("change", renderActivity);
+el("proc-group-toggle").addEventListener("click", () => {
+  procGroupEnabled = !procGroupEnabled;
+  renderActivity();
+});
+
 async function poll() {
   await refresh();
   setTimeout(poll, 4000);
 }
 poll();
+
+setInterval(() => {
+  if (!document.hidden && online && activityLoadedOnce) void refreshActivity(false);
+}, 15000);

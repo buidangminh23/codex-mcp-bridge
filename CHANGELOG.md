@@ -2,6 +2,18 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.7.0] - 2026-11-20
+
+### Added
+
+- The fleet dashboard shows what is running in the background on each computer: background relay workers, Codex and Claude runs started without a window, CI and test runners, local dev servers, scripts and MCP servers. Each row shows the agent, memory, CPU and uptime. A machine inspector tab and a fleet-wide panel can be filtered by machine.
+- Only a short label is shown for each process, such as "Codex App Server" or "Node Test Runner". Full command lines, which can contain tokens or paths, never leave the machine.
+
+### Verification and limits
+
+- The full suite passes locally with 2,185 tests and 58 skipped.
+- Reading processes is supported on Windows, macOS and Linux. Other platforms show a notice instead of a list.
+
 ## [2.6.0] - 2026-11-20
 
 ### Added

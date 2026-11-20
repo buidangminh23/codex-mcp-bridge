@@ -181,6 +181,172 @@
       <p id="setup-hint" class="hint" hidden>Để thêm máy đã cấu hình, mở bảng điều phối bằng <code>worker-relay dashboard --host &lt;tên hồ sơ&gt;</code>.</p>
     </section>
 
+    <section class="activity-section" id="activity-section" aria-labelledby="activity-heading">
+      <div class="panel activity-panel">
+        <div class="section-head panel-head">
+          <div class="section-title-group">
+            <svg class="section-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path>
+            </svg>
+            <h2 id="activity-heading">Tác vụ ngầm Agent &amp; Phiên code ẩn</h2>
+            <span class="count-pill" id="activity-total-pill">Đang quét…</span>
+          </div>
+          <div class="panel-head-actions">
+            <span id="activity-stamp" class="sync-stamp" hidden></span>
+            <select id="activity-host-filter" aria-label="Lọc hoạt động theo máy">
+              <option value="all">Tất cả máy</option>
+            </select>
+            <button type="button" id="activity-refresh" class="secondary compact-btn" disabled>
+              <svg class="icon-refresh" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+                <path d="M21 3v5h-5"></path>
+                <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+                <path d="M8 16H3v5"></path>
+              </svg>
+              <span>Quét lại</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="activity-tabs" role="tablist" aria-label="Chế độ xem tác vụ ngầm Agent và phiên code ẩn">
+          <button type="button" id="tab-live" class="activity-tab" role="tab" aria-selected="true" aria-controls="panel-live" data-tab="live">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"></path>
+            </svg>
+            <span>Đang chạy trực tiếp</span>
+            <span class="activity-tab-count" id="tab-count-live">0</span>
+          </button>
+          <button type="button" id="tab-background" class="activity-tab" role="tab" aria-selected="false" aria-controls="panel-background" data-tab="background">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"></path>
+              <path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"></path>
+              <path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"></path>
+            </svg>
+            <span>Việc Agent ngầm</span>
+            <span class="activity-tab-count" id="tab-count-bg">0</span>
+          </button>
+          <button type="button" id="tab-processes" class="activity-tab" role="tab" aria-selected="false" aria-controls="panel-processes" data-tab="processes">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="4 17 10 11 4 5"></polyline>
+              <line x1="12" x2="20" y1="19" y2="19"></line>
+            </svg>
+            <span>Phiên code &amp; CI ẩn</span>
+            <span class="activity-tab-count" id="tab-count-proc">0</span>
+          </button>
+        </div>
+
+        <div id="panel-live" class="activity-pane" role="tabpanel" aria-labelledby="tab-live">
+          <div class="live-grid">
+            <div class="live-col">
+              <div class="sub-head">
+                <h3>Phiên &amp; tác vụ Agent đang hoạt động</h3>
+                <span class="count-pill" id="live-work-count">0</span>
+              </div>
+              <div id="live-work-list" class="live-work-list"></div>
+            </div>
+            <div class="live-side">
+              <div class="sub-card">
+                <div class="sub-head">
+                  <h3>Worker Agent chạy ngầm (Relay)</h3>
+                  <span class="count-pill" id="relay-hosts-count">0</span>
+                </div>
+                <div id="relay-services" class="relay-services"></div>
+              </div>
+              <div class="sub-card">
+                <div class="sub-head">
+                  <h3>Phiên code &amp; Agent đang chạy ẩn</h3>
+                  <button type="button" id="view-all-procs" class="link-btn">
+                    <span>Xem tất cả</span>
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="m9 18 6-6-6-6"></path>
+                    </svg>
+                  </button>
+                </div>
+                <div id="top-processes" class="top-processes"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="panel-background" class="activity-pane" role="tabpanel" aria-labelledby="tab-background" hidden>
+          <div class="activity-toolbar">
+            <div class="search-box">
+              <svg class="search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="8"></circle>
+                <path d="m21 21-4.3-4.3"></path>
+              </svg>
+              <input id="bg-search" type="search" placeholder="Tìm theo mã biên nhận, trợ lý, kết quả…" autocomplete="off" aria-label="Tìm việc Agent chạy ngầm">
+            </div>
+            <select id="bg-status-filter" aria-label="Lọc việc chạy ngầm theo trạng thái">
+              <option value="all">Mọi trạng thái</option>
+              <option value="running">Đang chạy</option>
+              <option value="queued">Đang chờ</option>
+              <option value="completed">Hoàn tất</option>
+              <option value="failed">Thất bại</option>
+              <option value="unknown">Chờ xác minh</option>
+            </select>
+            <select id="bg-agent-filter" aria-label="Lọc việc chạy ngầm theo trợ lý">
+              <option value="all">Mọi trợ lý</option>
+              <option value="codex">Codex</option>
+              <option value="claude">Claude</option>
+              <option value="antigravity">Antigravity</option>
+            </select>
+          </div>
+          <div id="bg-notes" class="activity-notes" hidden></div>
+          <div id="bg-task-list" class="bg-task-list"></div>
+        </div>
+
+        <div id="panel-processes" class="activity-pane" role="tabpanel" aria-labelledby="tab-processes" hidden>
+          <div class="activity-toolbar">
+            <div class="search-box">
+              <svg class="search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="8"></circle>
+                <path d="m21 21-4.3-4.3"></path>
+              </svg>
+              <input id="proc-search" type="search" placeholder="Lọc theo tên tác vụ, CI, script, agent hoặc PID…" autocomplete="off" aria-label="Tìm phiên code và CI chạy ẩn">
+            </div>
+            <button type="button" id="proc-group-toggle" class="secondary compact-btn toggle-pill" aria-pressed="true" title="Gộp các tiến trình cùng tên trên cùng máy">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"></path>
+                <path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"></path>
+              </svg>
+              <span>Gộp trùng</span>
+            </button>
+            <select id="proc-sort" aria-label="Sắp xếp phiên code và tiến trình ẩn">
+              <option value="priority">Ưu tiên Agent &amp; CI</option>
+              <option value="memory">RAM cao nhất</option>
+              <option value="cpu">CPU cao nhất</option>
+              <option value="uptime">Chạy lâu nhất</option>
+              <option value="name">Tên A–Z</option>
+            </select>
+          </div>
+          <div id="proc-category-pills" class="filter-pills proc-pills" role="tablist" aria-label="Lọc nhóm tác vụ chạy ẩn"></div>
+          <div id="proc-notes" class="activity-notes" hidden></div>
+          <div class="process-table-wrap" id="proc-table-wrap">
+            <table class="process-table">
+              <thead>
+                <tr>
+                  <th scope="col">Tác vụ / Phiên ẩn</th>
+                  <th scope="col">Nhóm</th>
+                  <th scope="col">PID</th>
+                  <th scope="col">Máy</th>
+                  <th scope="col" class="num">Đang chạy</th>
+                  <th scope="col" class="num">CPU</th>
+                  <th scope="col" class="num">RAM</th>
+                  <th scope="col">Trạng thái</th>
+                </tr>
+              </thead>
+              <tbody id="proc-table-body"></tbody>
+            </table>
+          </div>
+          <div id="proc-empty" class="empty compact-empty" hidden>
+            <h3 id="proc-empty-title">Không có phiên code hay tác vụ CI nào khớp bộ lọc</h3>
+            <p id="proc-empty-sub">Các tiến trình Agent CLI, test/build CI, dev server, MCP và script chạy ẩn sẽ tự động xuất hiện ở đây.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <div class="workbench">
       <section class="panel queue" aria-labelledby="queue-heading">
         <div class="section-head panel-head">

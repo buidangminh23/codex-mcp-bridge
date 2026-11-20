@@ -144,7 +144,8 @@ function launchBrowser(url) {
     ? [path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:FLEET_OPEN_URL"],
       { env: { ...process.env, FLEET_OPEN_URL: url } }]
-    : process.platform === "darwin" ? ["open", [url], {}] : ["xdg-open", [url], {}];
+    : ["/bin/sh", ["-c", process.platform === "darwin" ? 'exec open "$FLEET_OPEN_URL"' : 'exec xdg-open "$FLEET_OPEN_URL"'],
+      { env: { ...process.env, FLEET_OPEN_URL: url } }];
   const child = spawn(tool, args, { stdio: "ignore", detached: true, windowsHide: true, ...options });
   child.on("error", () => process.stderr.write("Use the local sign-in link printed in this terminal.\n"));
   child.unref();

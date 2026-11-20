@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { Readable } from "node:stream";
-import { createFleetHostClient, fleetSshArgs, handleFleetHostRequest, listFleetActivity, listFleetProcesses, listFleetWindows, runFleetHost } from "../src/fleet-host.mjs";
+import { createFleetHostClient, describeCodeProcess, fleetSshArgs, handleFleetHostRequest, listFleetActivity, listFleetProcesses, listFleetWindows, runFleetHost } from "../src/fleet-host.mjs";
 import { listFleetSessions } from "../src/fleet-sessions.mjs";
 
 const cwd = path.resolve(os.tmpdir(), "fleet project");
@@ -159,28 +159,44 @@ test("desktop window inventory handles lack of titles or an interactive session"
   assert.match(win.note, /Windows/);
 });
 
-test("process inventory parses Windows, macOS and Linux processes safely without leaking arguments", async () => {
+test("process inventory keeps only agent, CI, dev-server and hidden code runs without leaking arguments", async () => {
+  assert.equal(describeCodeProcess("explorer", "C:\\Windows\\explorer.exe"), null);
+  assert.equal(describeCodeProcess("MsMpEng", ""), null);
+  assert.equal(describeCodeProcess("Antigravity", "Antigravity.exe --type=renderer"), null);
+  assert.equal(describeCodeProcess("pwsh", "pwsh.exe -Command \"echo secret_token=abc\""), null);
+  const ci = describeCodeProcess("node", "node --test --token=supersecret test/app.test.mjs");
+  assert.equal(ci.category, "ci");
+  assert.doesNotMatch(ci.label, /supersecret/);
+
   const mac = await listFleetProcesses({ platform: "darwin", run: async (bin, args) => {
     assert.equal(bin, "/bin/ps");
-    assert.deepEqual(args, ["-axo", "pid=,pcpu=,rss=,state=,comm="]);
-    return { stdout: "  42 12.5 512000 R /Applications/Claude.app/Contents/MacOS/claude\n  99  0.4  65536 S /usr/local/bin/node\n" };
+    assert.deepEqual(args, ["-axo", "pid=,pcpu=,rss=,etime=,state=,args="]);
+    return { stdout: [
+      "  42 12.5 512000 01:12:05 R /usr/local/bin/codex exec --api-key=secret-value",
+      "  55  4.0 120000    05:10 S /usr/local/bin/node --test test/suite.mjs",
+      "  77  1.0  50000 10:00:00 S /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+      "  99  0.4  65536    20:00 S /usr/local/bin/node server/hub.ts",
+    ].join("\n") };
   } });
-  assert.equal(mac.totalProcesses, 2);
-  assert.equal(mac.processes[0].name, "claude");
-  assert.equal(mac.processes[0].category, "ai");
-  assert.equal(mac.processes[0].memoryBytes, 512000 * 1024);
-  assert.equal(mac.processes[0].background, false);
-  assert.equal(mac.processes[1].name, "node");
-  assert.equal(mac.processes[1].category, "dev");
-  assert.equal(mac.processes[1].background, true);
+  assert.equal(mac.totalProcesses, 3);
+  assert.equal(mac.processes[0].category, "agent");
+  assert.equal(mac.processes[0].agent, "codex");
+  assert.equal(mac.processes[0].uptimeSeconds, 4325);
+  assert.doesNotMatch(mac.processes[0].label, /secret/);
+  assert.equal(mac.processes[1].category, "ci");
+  assert.equal(mac.processes[2].category, "server");
+  assert.equal(mac.processes[2].label, "node server/hub.ts");
 
   const win = await listFleetProcesses({ platform: "win32", run: async () => ({
-    stdout: JSON.stringify({ total: 10, rows: [{ pid: 77, name: "codex", memoryBytes: 128000000, cpuSeconds: 4.5, threads: 8, background: true, responding: true }] }),
+    stdout: JSON.stringify([
+      { pid: 77, name: "codex", memoryBytes: 128000000, cpuSeconds: 4.5, uptimeSeconds: 90, threads: 8, cmd: "codex.exe app-server" },
+      { pid: 88, name: "Antigravity", memoryBytes: 256000000, cpuSeconds: 12, uptimeSeconds: 90, threads: 8, cmd: "Antigravity.exe --type=gpu-process" },
+    ]),
   }) });
-  assert.equal(win.totalProcesses, 10);
-  assert.equal(win.processes[0].category, "ai");
-  assert.equal(win.processes[0].state, "running");
-  assert.equal(win.processes[0].threads, 8);
+  assert.equal(win.totalProcesses, 1);
+  assert.equal(win.processes[0].category, "agent");
+  assert.equal(win.processes[0].label, "Codex App Server");
+  assert.equal(win.processes[0].uptimeSeconds, 90);
 });
 
 test("activity inventory reads background relay status, tasks and running processes with permission recheck", async () => {
@@ -189,13 +205,13 @@ test("activity inventory reads background relay status, tasks and running proces
     relay: async method => method === "status"
       ? { pid: 500, version: "2.5.1", accepting: true, active: 1, queued: 0, workers: [{ agent: "codex", ready: true, canAcceptWork: true, readiness: "ready", version: "0.167" }] }
       : { tasks: [{ requestId: taskId, agent: "codex", status: "running", deliveryState: "sent", source: { kind: "local-client" }, output: "Working", createdAt: "2026-11-20T00:00:00Z", updatedAt: "2026-11-20T00:00:05Z" }] },
-    processes: async () => ({ totalProcesses: 1, processes: [{ pid: 500, name: "node", memoryBytes: 50000000, cpuPercent: null, cpuSeconds: 2.1, threads: 10, state: "running", category: "dev", background: true }] }),
+    processes: async () => ({ totalProcesses: 1, processes: [{ pid: 500, name: "node", label: "Worker Relay Daemon", agent: null, memoryBytes: 50000000, cpuPercent: null, cpuSeconds: 2.1, uptimeSeconds: 120, threads: 10, state: "running", category: "agent", background: true }] }),
   });
   assert.equal(sample.relay.online, true);
   assert.equal(sample.tasks.length, 1);
   assert.equal(sample.tasks[0].requestId, taskId);
   assert.equal(sample.processes[0].role, "worker-relay");
-  assert.equal(sample.processes[0].category, "ai");
+  assert.equal(sample.processes[0].category, "agent");
 
   const { client } = fixture({ activity: async () => sample });
   for (const host of [local, remote]) assert.equal((await client.activity(host)).tasks[0].requestId, taskId);

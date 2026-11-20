@@ -67,52 +67,190 @@ const windowsProcessList = `
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-$all = [System.Diagnostics.Process]::GetProcesses()
-$pattern = '(?i)^(node|codex|claude|antigravity|language_server|python|python3|git|ssh|code|cursor|pwsh|powershell|docker|wsl|vmmem|bun|deno|go|cargo|rustc|java|dotnet|vite|next|esbuild|ollama)'
-$sorted = $all | Sort-Object WorkingSet64 -Descending
-$picked = [System.Collections.Generic.List[object]]::new()
-$seen = [System.Collections.Generic.HashSet[int]]::new()
-foreach ($p in $sorted) {
-  $keep = ($picked.Count -lt 90) -or ($p.ProcessName -match $pattern)
-  if (-not $keep) { continue }
-  if ($picked.Count -ge 120) { break }
-  if (-not $seen.Add($p.Id)) { continue }
-  $cpu = $null
-  try { $cpu = [Math]::Round($p.TotalProcessorTime.TotalSeconds, 1) } catch {}
-  $threads = 0
-  try { $threads = $p.Threads.Count } catch {}
-  $bg = $true
-  try { $bg = ($p.MainWindowHandle -eq [IntPtr]::Zero) } catch {}
-  $resp = $true
-  try { $resp = [bool]$p.Responding } catch {}
-  $picked.Add([PSCustomObject]@{
-    pid = [int]$p.Id
-    name = [string]$p.ProcessName
-    memoryBytes = [int64]$p.WorkingSet64
+$pattern = '(?i)^(node|codex|claude|antigravity|language_server|python|python3|git|ssh|npm|pnpm|yarn|npx|bun|deno|vitest|jest|mocha|tsc|eslint|esbuild|vite|next|turbo|webpack|rollup|cargo|rustc|go|pytest|mypy|ruff|gradle|mvn|dotnet|msbuild|docker|kubectl|gh|playwright|cloudflared|ngrok|ollama|pwsh|powershell|bash|zsh|sh)$'
+$now = [DateTime]::UtcNow
+$selfPid = $PID
+$rows = foreach ($p in (Get-CimInstance Win32_Process)) {
+  if ($p.ProcessId -eq $selfPid) { continue }
+  $name = [string]($p.Name -replace '\\.exe$','')
+  if ($name -notmatch $pattern) { continue }
+  $cmd = [string]$p.CommandLine
+  if ($cmd.Length -gt 512) { $cmd = $cmd.Substring(0, 512) }
+  $cpu = [Math]::Round(([double]$p.KernelModeTime + [double]$p.UserModeTime) / 10000000.0, 1)
+  $up = $null
+  if ($null -ne $p.CreationDate) {
+    $up = [Math]::Max(0, [int][Math]::Floor(($now - $p.CreationDate.ToUniversalTime()).TotalSeconds))
+  }
+  [PSCustomObject]@{
+    pid = [int]$p.ProcessId
+    name = $name
+    memoryBytes = [int64]$p.WorkingSetSize
     cpuSeconds = $cpu
-    threads = [int]$threads
-    background = $bg
-    responding = $resp
-  })
+    uptimeSeconds = $up
+    threads = [int]$p.ThreadCount
+    cmd = $cmd
+  }
 }
-foreach ($p in $all) { try { $p.Dispose() } catch {} }
-ConvertTo-Json -InputObject ([PSCustomObject]@{ total = $all.Length; rows = @($picked) }) -Compress
+ConvertTo-Json -InputObject @($rows) -Compress
 `;
-const aiProcessPattern = /^(?:codex|claude|antigravity|language_server|ollama|chatgpt|copilot|cursor|windsurf|worker-relay)/i;
-const devProcessPattern = /^(?:node|npm|pnpm|yarn|bun|deno|python3?|git|ssh|sshd|code|docker|com\.docker|wsl|vmmem|pwsh|powershell|bash|zsh|sh|wt|windowsterminal|iterm2?|terminal|go|cargo|rustc|java|dotnet|esbuild|vite|next|postgres|redis|nginx|caddy|kubectl|ruby|php)/i;
-const browserProcessPattern = /^(?:chrome|google chrome|msedge|firefox|brave|safari|arc|opera|vivaldi|chromium|webkit)/i;
-const systemProcessPattern = /^(?:system|idle|registry|svchost|msmpeng|memory compression|dwm|csrss|lsass|services|smss|wininit|winlogon|explorer|searchhost|searchindexer|kernel_task|launchd|windowserver|systemd|mds|mds_stores|coreaudiod|cfprefsd|loginwindow|fontdrvhost|runtimebroker|sihost|taskhostw|ctfmon|conhost|openconsole|dllhost|audiodg|spoolsv|wmiprvse|securityhealthservice|shellexperiencehost|startmenuexperiencehost|textinputhost|applicationframehost|systemsettings|widgetservice|widgets|mdworker)/i;
+const trackedExecutablePattern = /^(?:node|codex|claude|antigravity|language_server|python|python3|git|ssh|npm|pnpm|yarn|npx|bun|deno|vitest|jest|mocha|tsc|eslint|esbuild|vite|next|turbo|webpack|rollup|cargo|rustc|go|pytest|mypy|ruff|gradle|mvn|dotnet|msbuild|docker|kubectl|gh|playwright|cloudflared|ngrok|ollama|pwsh|powershell|bash|zsh|sh)$/i;
+const electronHelperPattern = /--type=(?:renderer|gpu-process|utility|zygote|crashpad|broker|ppapi)|--crash-reporter/i;
+const sensitiveTokenPattern = /(?:token|secret|password|passwd|apikey|api_key|bearer|authorization|cookie|private_key)/i;
+const safeScriptFolders = new Set(["src", "scripts", "server", "test", "tests", "bin", "app", "packages", "cmd", "tools"]);
+const safeGitSubcommands = new Set(["fetch", "pull", "push", "clone", "status", "diff", "rebase", "merge", "gc", "commit", "checkout", "switch", "log", "worktree", "submodule"]);
+const ciRunnersPattern = /^(?:vitest|jest|mocha|pytest|mypy|ruff|tsc|eslint|esbuild|turbo|webpack|rollup|gradle|mvn|msbuild|gh|playwright)$/i;
+const ciSubcommandPattern = /\b(?:--test|test|build|lint|typecheck|check|ci|verify|compile|clippy|fmt|format|e2e)\b/i;
+const serverPattern = /\b(?:dashboard|dev|serve|start|watch|nodemon|uvicorn|gunicorn|flask|preview|tunnel)\b|(?:^|[\\/])(?:server|hub|proxy|gateway|daemon)\.[mc]?[jt]s$/i;
 
 function cleanText(value, limit) {
   return String(value ?? "").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").trim().slice(0, limit);
 }
 
-function classifyProcess(name) {
-  if (aiProcessPattern.test(name)) return "ai";
-  if (devProcessPattern.test(name)) return "dev";
-  if (browserProcessPattern.test(name)) return "browser";
-  if (systemProcessPattern.test(name)) return "system";
-  return "app";
+function splitCommandTokens(raw) {
+  const tokens = [];
+  const regex = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match;
+  while ((match = regex.exec(String(raw || ""))) && tokens.length < 24) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? "");
+  }
+  return tokens;
+}
+
+function safePathLabel(token) {
+  const cleaned = String(token || "").replace(/^["']|["']$/g, "").trim();
+  if (!cleaned || cleaned.startsWith("-") || cleaned.includes("://") || cleaned.includes("=") || sensitiveTokenPattern.test(cleaned)) return null;
+  const scoped = /(@[a-z0-9._-]+\/[a-z0-9._-]+)/i.exec(cleaned.replace(/\\/g, "/"));
+  if (scoped && !sensitiveTokenPattern.test(scoped[1])) return scoped[1].slice(0, 64);
+  const parts = cleaned.replace(/\\/g, "/").split("/").filter(Boolean);
+  if (!parts.length) return null;
+  const base = parts.at(-1);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(base) || sensitiveTokenPattern.test(base)) return null;
+  const parent = parts.length >= 2 ? parts.at(-2) : null;
+  if (parent && safeScriptFolders.has(parent.toLowerCase())) return (parent + "/" + base).slice(0, 72);
+  return base.slice(0, 64);
+}
+
+function extractMcpName(cmd) {
+  const scoped = /(@[a-z0-9._-]+\/[a-z0-9._-]*mcp[a-z0-9._-]*)/i.exec(cmd.replace(/\\/g, "/"));
+  if (scoped) return scoped[1].slice(0, 48);
+  const named = /\b((?:next-devtools-mcp|context7-mcp|mcp-server-[a-z0-9_-]+|server-(?:memory|filesystem|fetch|sequential-thinking|everything|time)|[a-z0-9_-]+-mcp))\b/i.exec(cmd);
+  if (named) return named[1].slice(0, 48);
+  const sidecar = /sidecars\/([a-z0-9_-]+)\//i.exec(cmd.replace(/\\/g, "/"));
+  if (sidecar) return sidecar[1].slice(0, 48);
+  return null;
+}
+
+export function describeCodeProcess(rawName, rawCmd = "") {
+  const name = cleanText(String(rawName || "").replace(/\.exe$/i, ""), 128);
+  if (!name || !trackedExecutablePattern.test(name)) return null;
+  const cmd = String(rawCmd || "");
+  const lower = name.toLowerCase();
+  if (electronHelperPattern.test(cmd)) return null;
+  if (/[\\/]Elgato[\\/]StreamDeck[\\/]/i.test(cmd)) return null;
+  if (lower === "antigravity") {
+    const mcp = extractMcpName(cmd);
+    if (mcp) return { category: "mcp", agent: "antigravity", label: "MCP: " + mcp };
+    return null;
+  }
+  if (lower === "claude" && (!cmd.trim() || /[\\/]AnthropicClaude[\\/]app-/i.test(cmd) && !/\s(?:-p|--print|--output-format|mcp|serve|exec)\b/i.test(cmd))) {
+    return null;
+  }
+  if ((lower === "pwsh" || lower === "powershell" || lower === "bash" || lower === "zsh" || lower === "sh")) {
+    const fileMatch = /(?:^|\s)(?:-File|-f)\s+(?:"([^"]+)"|'([^']+)'|(\S+))/i.exec(cmd)
+      || (lower !== "pwsh" && lower !== "powershell" ? /\s([^\s-]+\.(?:sh|bash|zsh))(?:\s|$)/i.exec(cmd) : null);
+    const scriptName = fileMatch ? safePathLabel(fileMatch[1] || fileMatch[2] || fileMatch[3]) : null;
+    if (!scriptName) return null;
+    const isCi = ciSubcommandPattern.test(scriptName);
+    return { category: isCi ? "ci" : "script", agent: null, label: lower + " " + scriptName };
+  }
+
+  if (/background-relay-daemon\.m?js/i.test(cmd)) return { category: "agent", agent: null, label: "Worker Relay Daemon" };
+  if (/background-relay-service\.m?js/i.test(cmd)) return { category: "agent", agent: null, label: "Worker Relay Service" };
+  if (/background-relay-mcp\.m?js/i.test(cmd)) return { category: "mcp", agent: null, label: "Worker Relay MCP" };
+  if (/worker-relay\.m?js\s+dashboard\b/i.test(cmd)) return { category: "server", agent: null, label: "Fleet Dashboard (worker-relay)" };
+  if (/antigravity-sidecar\.m?js/i.test(cmd)) return { category: "agent", agent: "antigravity", label: "Antigravity Sidecar" };
+  if (/mcp-supervisor\.m?js/i.test(cmd)) return { category: "mcp", agent: null, label: "MCP Bridge Supervisor" };
+  if (/claude-control-hook\.m?js/i.test(cmd)) return { category: "agent", agent: "claude", label: "Claude Control Hook" };
+  if (/codex-bridge|claude-bridge/i.test(cmd)) {
+    const isClaude = /claude-bridge/i.test(cmd);
+    return { category: "agent", agent: isClaude ? "claude" : "codex", label: isClaude ? "Claude Bridge" : "Codex Bridge" };
+  }
+
+  if (lower === "language_server") return { category: "agent", agent: "antigravity", label: "Antigravity Language Server" };
+  if (lower === "codex") {
+    if (/\bapp-server\b/i.test(cmd)) return { category: "agent", agent: "codex", label: "Codex App Server" };
+    if (/\bexec\b/i.test(cmd)) return { category: "agent", agent: "codex", label: "Codex CLI (chạy ngầm)" };
+    if (/\bmcp\b/i.test(cmd)) return { category: "mcp", agent: "codex", label: "Codex MCP" };
+    return { category: "agent", agent: "codex", label: "Codex Agent CLI" };
+  }
+  if (lower === "claude") {
+    if (/(?:^|\s)(?:-p|--print|--output-format)\b/i.test(cmd)) return { category: "agent", agent: "claude", label: "Claude CLI (chạy ngầm)" };
+    if (/\bmcp\b/i.test(cmd)) return { category: "mcp", agent: "claude", label: "Claude MCP" };
+    return { category: "agent", agent: "claude", label: "Claude Code CLI" };
+  }
+  if (lower === "ollama") return { category: "agent", agent: null, label: "Ollama Local Model" };
+
+  const mcpName = extractMcpName(cmd);
+  if (mcpName) return { category: "mcp", agent: null, label: "MCP: " + mcpName };
+
+  const tokens = splitCommandTokens(cmd).slice(1);
+  if (lower === "git") {
+    const sub = tokens.find(t => safeGitSubcommands.has(t.toLowerCase()));
+    return { category: "script", agent: null, label: sub ? "git " + sub.toLowerCase() : "git" };
+  }
+  if (lower === "ssh" || lower === "cloudflared" || lower === "ngrok") {
+    return { category: "server", agent: null, label: lower === "ssh" ? "SSH Tunnel / Relay" : lower + " tunnel" };
+  }
+  if (lower === "docker" || lower === "kubectl") {
+    const sub = tokens.find(t => /^[a-z][a-z0-9-]{1,24}$/.test(t));
+    const isCi = sub && /^(?:build|test|compose)$/i.test(sub);
+    return { category: isCi ? "ci" : "server", agent: null, label: sub ? lower + " " + sub : lower };
+  }
+
+  if (ciRunnersPattern.test(lower)) {
+    const sub = tokens.find(t => /^[a-z][a-z0-9:-]{1,28}$/i.test(t) && !sensitiveTokenPattern.test(t));
+    return { category: "ci", agent: null, label: sub ? lower + " " + sub : lower };
+  }
+  if (lower === "npm" || lower === "pnpm" || lower === "yarn" || lower === "npx" || lower === "bun" || lower === "cargo" || lower === "go" || lower === "dotnet") {
+    const parts = tokens.filter(t => !t.startsWith("-") && /^[a-z0-9@._:/-]{1,40}$/i.test(t) && !sensitiveTokenPattern.test(t)).slice(0, 2);
+    const joined = parts.join(" ");
+    const isServer = serverPattern.test(joined);
+    const isCi = !isServer && (ciSubcommandPattern.test(joined) || lower === "cargo" || lower === "go" || lower === "dotnet");
+    return { category: isServer ? "server" : isCi ? "ci" : "script", agent: null, label: joined ? lower + " " + joined : lower };
+  }
+
+  if (lower === "node" || lower === "deno" || lower === "python" || lower === "python3") {
+    if (/(?:^|\s)--test\b/i.test(cmd)) return { category: "ci", agent: null, label: "Node Test Runner" };
+    if (/(?:^|\s)-m\s+(pytest|unittest|mypy|ruff)\b/i.test(cmd)) {
+      const m = /-m\s+(pytest|unittest|mypy|ruff)\b/i.exec(cmd);
+      return { category: "ci", agent: null, label: "python -m " + m[1].toLowerCase() };
+    }
+    if (/(?:^|\s)-m\s+(uvicorn|http\.server|flask)\b/i.test(cmd)) {
+      const m = /-m\s+(uvicorn|http\.server|flask)\b/i.exec(cmd);
+      return { category: "server", agent: null, label: "python -m " + m[1].toLowerCase() };
+    }
+    const scriptToken = tokens.map(safePathLabel).find(Boolean);
+    if (!scriptToken) return null;
+    if (/npx-cli\.js$/i.test(scriptToken)) {
+      const pkg = tokens.map(safePathLabel).find(t => t && !/npx-cli\.js$/i.test(t));
+      if (!pkg) return null;
+      return { category: /mcp/i.test(pkg) ? "mcp" : serverPattern.test(pkg) ? "server" : "script", agent: null, label: "npx " + pkg };
+    }
+    const subToken = tokens.find(t => /^(?:dev|start|serve|watch|dashboard|build|test|lint|check)$/i.test(t));
+    const isServer = serverPattern.test(scriptToken) || (subToken && /^(?:dev|start|serve|watch|dashboard)$/i.test(subToken));
+    const isCi = !isServer && (ciSubcommandPattern.test(scriptToken) || (subToken && /^(?:build|test|lint|check)$/i.test(subToken)));
+    return {
+      category: isServer ? "server" : isCi ? "ci" : "script",
+      agent: null,
+      label: lower + " " + scriptToken + (subToken ? " " + subToken.toLowerCase() : ""),
+    };
+  }
+
+  if (lower === "vite" || lower === "next") {
+    const isBuild = /\bbuild\b/i.test(cmd);
+    return { category: isBuild ? "ci" : "server", agent: null, label: isBuild ? lower + " build" : lower + " dev" };
+  }
+  return { category: "script", agent: null, label: name };
 }
 
 function parsePosixState(raw) {
@@ -123,58 +261,67 @@ function parsePosixState(raw) {
   return "sleeping";
 }
 
+function parsePosixEtime(raw) {
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(String(raw || "").trim());
+  if (!match) return null;
+  const days = Number(match[1] || 0);
+  const hours = Number(match[2] || 0);
+  const mins = Number(match[3] || 0);
+  const secs = Number(match[4] || 0);
+  return days * 86400 + hours * 3600 + mins * 60 + secs;
+}
+
 export async function listFleetProcesses({ platform = process.platform, env = process.env, run = runFile } = {}) {
   const options = { timeout: 6500, windowsHide: true, maxBuffer: 1024 * 1024, encoding: "utf8", env };
   let rows = [];
-  let totalProcesses = 0;
   let note;
   try {
     if (platform === "win32") {
       const ps = path.win32.join(env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
       const script = Buffer.from(windowsProcessList, "utf16le").toString("base64");
       const { stdout } = await run(ps, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", script], options);
-      const parsed = JSON.parse(stdout);
-      const list = Array.isArray(parsed?.rows) ? parsed.rows : [];
-      totalProcesses = Number.isSafeInteger(parsed?.total) && parsed.total >= list.length ? parsed.total : list.length;
-      rows = list.filter(row => Number.isSafeInteger(row?.pid) && row.pid > 0 && typeof row.name === "string").map(row => {
-        const name = cleanText(row.name, 128) || "Process " + row.pid;
+      const parsed = JSON.parse(stdout || "[]");
+      const list = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+      rows = list.flatMap(row => {
+        if (!Number.isSafeInteger(row?.pid) || row.pid <= 0 || typeof row.name !== "string") return [];
+        const info = describeCodeProcess(row.name, row.cmd);
+        if (!info) return [];
         const memoryBytes = Number.isSafeInteger(row.memoryBytes) && row.memoryBytes >= 0 ? row.memoryBytes : 0;
         const cpuSeconds = typeof row.cpuSeconds === "number" && Number.isFinite(row.cpuSeconds) && row.cpuSeconds >= 0 ? Math.round(row.cpuSeconds * 10) / 10 : null;
+        const uptimeSeconds = Number.isSafeInteger(row.uptimeSeconds) && row.uptimeSeconds >= 0 ? row.uptimeSeconds : null;
         const threads = Number.isSafeInteger(row.threads) && row.threads >= 0 ? row.threads : null;
-        return { pid: row.pid, name, memoryBytes, cpuPercent: null, cpuSeconds, threads,
-          state: row.responding === false ? "unresponsive" : "running",
-          category: classifyProcess(name), background: row.background !== false };
+        return [{ pid: row.pid, name: cleanText(row.name, 128), label: cleanText(info.label, 128),
+          agent: info.agent, category: info.category, memoryBytes, cpuPercent: null, cpuSeconds,
+          uptimeSeconds, threads, state: "running", background: true }];
       });
     } else if (platform === "darwin" || platform === "linux") {
       const bin = platform === "darwin" ? "/bin/ps" : "ps";
-      const { stdout } = await run(bin, ["-axo", "pid=,pcpu=,rss=,state=,comm="], { ...options, env: { ...env, LC_ALL: "C" } });
-      const all = stdout.split(/\r?\n/).flatMap(line => {
-        const match = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(.+)$/.exec(line);
+      const { stdout } = await run(bin, ["-axo", "pid=,pcpu=,rss=,etime=,state=,args="], { ...options, env: { ...env, LC_ALL: "C" } });
+      rows = stdout.split(/\r?\n/).flatMap(line => {
+        const match = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.+)$/.exec(line);
         if (!match) return [];
         const pid = Number(match[1]);
         const cpuPercent = Math.round(Number(match[2]) * 10) / 10;
         const memoryBytes = Number(match[3]) * 1024;
-        const rawState = match[4];
-        const rawComm = match[5].trim();
-        const name = cleanText(path.posix.basename(rawComm), 128) || "process-" + pid;
+        const uptimeSeconds = parsePosixEtime(match[4]);
+        const rawState = match[5];
+        const rawArgs = match[6].trim();
+        const firstToken = splitCommandTokens(rawArgs)[0] || "";
+        const name = cleanText(path.posix.basename(firstToken), 128);
         if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(memoryBytes) || memoryBytes < 0) return [];
-        return [{ pid, name, memoryBytes, cpuPercent: Number.isFinite(cpuPercent) && cpuPercent >= 0 ? cpuPercent : null,
-          cpuSeconds: null, threads: null, state: parsePosixState(rawState),
-          category: classifyProcess(name), background: !rawState.includes("+") && !rawComm.includes(".app/") }];
+        const info = describeCodeProcess(name, rawArgs);
+        if (!info) return [];
+        return [{ pid, name, label: cleanText(info.label, 128), agent: info.agent, category: info.category,
+          memoryBytes, cpuPercent: Number.isFinite(cpuPercent) && cpuPercent >= 0 ? cpuPercent : null,
+          cpuSeconds: null, uptimeSeconds, threads: null, state: parsePosixState(rawState), background: true }];
       });
-      totalProcesses = all.length;
-      all.sort((a, b) => b.memoryBytes - a.memoryBytes || (b.cpuPercent ?? 0) - (a.cpuPercent ?? 0));
-      const picked = [];
-      for (const row of all) {
-        if (picked.length < 90 || row.category === "ai" || row.category === "dev") picked.push(row);
-        if (picked.length >= 120) break;
-      }
-      rows = picked;
-    } else return { processes: [], totalProcesses: 0, note: "Hệ điều hành này chưa hỗ trợ đọc danh sách tiến trình." };
+    } else return { processes: [], totalProcesses: 0, note: "Hệ điều hành này chưa hỗ trợ đọc tiến trình code chạy ẩn." };
   } catch {
-    return { processes: [], totalProcesses: 0, note: "Không đọc được danh sách tiến trình trên máy này." };
+    return { processes: [], totalProcesses: 0, note: "Không đọc được danh sách tiến trình Agent và phiên code chạy ẩn trên máy này." };
   }
-  return { processes: rows.slice(0, 120), totalProcesses, ...(note ? { note } : {}) };
+  const rank = { agent: 0, ci: 1, server: 2, script: 3, mcp: 4 };
+  rows.sort((a, b) => (rank[a.category] ?? 9) - (rank[b.category] ?? 9) || b.memoryBytes - a.memoryBytes);
+  return { processes: rows.slice(0, 120), totalProcesses: rows.length, ...(note ? { note } : {}) };
 }
 
 function summarizeRelayTask(task) {
@@ -238,13 +385,13 @@ export async function listFleetActivity({ relay = callBackgroundRelay, processes
     : [];
   const rawProcs = Array.isArray(procResult.value?.processes) ? procResult.value.processes : [];
   if (procResult.value?.note) notes.push(procResult.value.note);
-  else if (procResult.error) notes.push("Không đọc được danh sách tiến trình trên máy này.");
+  else if (procResult.error) notes.push("Không đọc được danh sách phiên code chạy ẩn trên máy này.");
   const relayPid = relayView.pid;
   const enriched = rawProcs.slice(0, 120).map(item => item.pid === relayPid
-    ? { ...item, category: "ai", role: "worker-relay" }
+    ? { ...item, category: "agent", label: item.label || "Worker Relay Daemon", role: "worker-relay" }
     : item.pid === process.pid
-      ? { ...item, category: "dev", role: "fleet-dashboard" }
-      : { ...item, role: item.role ?? null });
+      ? { ...item, category: "server", label: item.label || "Fleet Dashboard (worker-relay)", role: "fleet-dashboard" }
+      : { ...item, label: item.label || item.name, role: item.role ?? null });
   const totalProcesses = Number.isSafeInteger(procResult.value?.totalProcesses) && procResult.value.totalProcesses >= enriched.length
     ? procResult.value.totalProcesses : enriched.length;
   return {
@@ -488,7 +635,9 @@ async function exchange(host, input) {
         && ["queued", "running", "completed", "failed", "unknown"].includes(row.status))
       || !Array.isArray(body.result?.processes) || body.result.processes.length > 120
       || !body.result.processes.every(row => Number.isSafeInteger(row?.pid) && row.pid > 0
-        && typeof row.name === "string" && row.name.length <= 128 && Number.isSafeInteger(row.memoryBytes) && row.memoryBytes >= 0)
+        && typeof row.name === "string" && row.name.length <= 128
+        && (row.label === undefined || typeof row.label === "string" && row.label.length <= 128)
+        && Number.isSafeInteger(row.memoryBytes) && row.memoryBytes >= 0)
       || !Number.isSafeInteger(body.result?.totalProcesses) || body.result.totalProcesses < 0
       || body.result.note !== undefined && (typeof body.result.note !== "string" || body.result.note.length > 512)) throw uncertain();
   } else if (body.result?.requestId !== input.requestId || body.result.agent !== input.agent

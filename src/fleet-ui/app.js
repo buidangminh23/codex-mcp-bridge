@@ -95,6 +95,7 @@ let previousStatuses = new Map();
 let notifyEnabled = localStorage.getItem("fleet-notify") === "1";
 let activeActivityTab = "live";
 let procCategory = "all";
+let procGroupEnabled = true;
 let activityScanning = false;
 let activityLoadedOnce = false;
 let activityLastScan = null;
@@ -107,13 +108,14 @@ const hostSessions = new Map();
 const openBgTaskIds = new Set();
 const processCategories = [
   { value: "all", label: "Tất cả" },
-  { value: "ai", label: "AI" },
-  { value: "dev", label: "Dev & CLI" },
-  { value: "browser", label: "Trình duyệt" },
-  { value: "background", label: "Chạy ngầm" },
-  { value: "system", label: "Hệ thống" },
+  { value: "agent", label: "Agent AI" },
+  { value: "ci", label: "CI / Build / Test" },
+  { value: "server", label: "Dev Server" },
+  { value: "script", label: "Script / Git" },
+  { value: "mcp", label: "MCP Server" },
 ];
-const categoryLabels = { ai: "AI", dev: "Dev & CLI", browser: "Trình duyệt", system: "Hệ thống", app: "Ứng dụng" };
+const categoryLabels = { agent: "Agent AI", ci: "CI / Test", server: "Dev Server", script: "Script / Git", mcp: "MCP Server" };
+const categoryRank = { agent: 0, ci: 1, server: 2, script: 3, mcp: 4 };
 const processStateLabels = { running: "Đang chạy", sleeping: "Ngầm", idle: "Rảnh", stopped: "Tạm dừng", unresponsive: "Không phản hồi" };
 const relayTaskStatuses = { queued: "Đang chờ", running: "Đang chạy", completed: "Hoàn tất", failed: "Thất bại", unknown: "Chờ xác minh" };
 const relayTaskTones = { queued: "amber", running: "blue", completed: "green", failed: "red", unknown: "amber" };
@@ -333,16 +335,51 @@ function procRamPct(bytes, maxBytes) {
 }
 
 function processMark(proc) {
+  const agent = proc.agent;
+  if (agent && agentIcons[agent]) return brandImg(agentIcons[agent], "proc-brand-icon");
   const name = String(proc.name || "");
   if (/^claude/i.test(name)) return brandImg("/icons/claude.svg", "proc-brand-icon");
   if (/^codex/i.test(name)) return brandImg("/icons/codex.svg", "proc-brand-icon");
   if (/^(?:antigravity|language_server)/i.test(name)) return brandImg("/icons/antigravity.svg", "proc-brand-icon");
   if (/^git$/i.test(name)) return brandImg("/icons/git.svg", "proc-brand-icon");
-  const iconName = proc.category === "ai" ? "sessions" : proc.category === "dev" ? "terminal"
-    : proc.category === "browser" ? "globe" : proc.category === "system" ? "cog" : "windows";
+  const iconName = proc.category === "agent" ? "sessions" : proc.category === "ci" ? "play"
+    : proc.category === "server" ? "globe" : proc.category === "mcp" ? "layers" : "terminal";
   const elIcon = icon(iconName, 14);
   elIcon.classList.add("proc-cat-icon");
   return elIcon;
+}
+
+function groupCodeProcesses(rows) {
+  const groups = new Map();
+  for (const proc of rows) {
+    const label = proc.label || proc.name;
+    const key = (proc.host?.id || "") + "\0" + proc.category + "\0" + label;
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        ...proc,
+        label,
+        count: 1,
+        pids: [proc.pid],
+        memoryBytes: proc.memoryBytes || 0,
+        cpuPercent: proc.cpuPercent,
+        cpuSeconds: proc.cpuSeconds,
+        uptimeSeconds: proc.uptimeSeconds ?? null,
+      });
+    } else {
+      existing.count += 1;
+      existing.pids.push(proc.pid);
+      existing.memoryBytes += proc.memoryBytes || 0;
+      if (typeof proc.cpuPercent === "number") existing.cpuPercent = (existing.cpuPercent || 0) + proc.cpuPercent;
+      if (typeof proc.cpuSeconds === "number") existing.cpuSeconds = Math.round(((existing.cpuSeconds || 0) + proc.cpuSeconds) * 10) / 10;
+      if (typeof proc.uptimeSeconds === "number" && (existing.uptimeSeconds == null || proc.uptimeSeconds > existing.uptimeSeconds)) {
+        existing.uptimeSeconds = proc.uptimeSeconds;
+      }
+      if (!existing.agent && proc.agent) existing.agent = proc.agent;
+      if (!existing.role && proc.role) existing.role = proc.role;
+    }
+  }
+  return [...groups.values()];
 }
 
 function hostInline(host) {
@@ -527,7 +564,7 @@ function inspectorView(id, sessionsBtn, windowsBtn, processesBtn) {
     const winLabel = windowsBtn.querySelector(".action-label");
     if (winLabel) setText(winLabel, mode === "windows" ? "Ẩn cửa sổ" : "Cửa sổ");
     const procLabel = processesBtn.querySelector(".action-label");
-    if (procLabel) setText(procLabel, mode === "processes" ? "Ẩn tiến trình" : "Tiến trình");
+    if (procLabel) setText(procLabel, mode === "processes" ? "Ẩn chạy ngầm" : "Chạy ngầm");
   }
 
   function paintWindowItems(list, rows) {
@@ -543,14 +580,18 @@ function inspectorView(id, sessionsBtn, windowsBtn, processesBtn) {
   }
 
   function paintProcessItems(list, rows, totalBytes) {
-    const slice = rows.slice(0, 40);
-    const maxBytes = slice.reduce((max, item) => Math.max(max, item.memoryBytes || 0), 0);
-    list.replaceChildren(...slice.map(proc => {
+    const grouped = groupCodeProcesses(rows).slice(0, 30);
+    const maxBytes = grouped.reduce((max, item) => Math.max(max, item.memoryBytes || 0), 0);
+    list.replaceChildren(...grouped.map(proc => {
       const row = node("li", "inspector-proc-row");
       const left = node("div", "proc-name-cell");
-      left.append(processMark(proc), node("span", "proc-name-text", proc.name));
-      if (proc.role) left.append(node("span", "proc-role-tag", proc.role));
-      const pidEl = node("span", "proc-pid", "PID " + proc.pid + " · " + formatCpu(proc));
+      left.append(processMark(proc), node("span", "proc-name-text", proc.label || proc.name));
+      if (proc.count > 1) left.append(node("span", "proc-count-badge", "×" + proc.count));
+      const pidText = proc.count > 1
+        ? (proc.uptimeSeconds != null ? formatDuration(proc.uptimeSeconds) : proc.count + " luồng")
+        : "PID " + proc.pid + (proc.uptimeSeconds != null ? " · " + formatDuration(proc.uptimeSeconds) : "");
+      const pidEl = node("span", "proc-pid", pidText);
+      if (proc.count > 1) pidEl.title = "PID: " + proc.pids.join(", ");
       const ramCell = node("span", "proc-ram-cell");
       const bar = node("span", "proc-bar");
       const pct = procRamPct(proc.memoryBytes, maxBytes);
@@ -571,7 +612,7 @@ function inspectorView(id, sessionsBtn, windowsBtn, processesBtn) {
     const hostInfo = state.hosts.find(item => item.id === id);
     const totalBytes = hostInfo?.totalBytes || 0;
     const q = processQuery.trim().toLowerCase();
-    const filtered = q ? rows.filter(p => p.name.toLowerCase().includes(q) || String(p.pid).includes(q) || (p.role || "").toLowerCase().includes(q)) : rows;
+    const filtered = q ? rows.filter(p => (p.label || p.name).toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || String(p.pid).includes(q)) : rows;
 
     const head = node("div", "session-group-head");
     const meta = node("div", "session-group-meta");
@@ -581,11 +622,11 @@ function inspectorView(id, sessionsBtn, windowsBtn, processesBtn) {
     refreshBtn.append(icon("refresh", 12), node("span", "", "Tải lại"));
     refreshBtn.addEventListener("click", () => { void loadProcesses(true); });
     meta.append(refreshBtn);
-    head.append(node("span", "session-group-title", "Tiến trình & Worker chạy ngầm"), meta);
+    head.append(node("span", "session-group-title", "Agent & Phiên code chạy ẩn"), meta);
     content.push(head);
 
     if (failure) {
-      content.push(node("p", "notice error", "Chưa tải được tiến trình. " + failure));
+      content.push(node("p", "notice error", "Chưa tải được phiên chạy ngầm. " + failure));
     } else {
       if (result?.relay) {
         const bar = node("div", "inspector-relay-bar");
@@ -609,15 +650,15 @@ function inspectorView(id, sessionsBtn, windowsBtn, processesBtn) {
         const input = node("input", "window-filter");
         input.type = "search";
         input.value = processQuery;
-        input.placeholder = "Lọc theo tên tiến trình hoặc PID…";
-        input.setAttribute("aria-label", "Lọc tiến trình trên máy này");
+        input.placeholder = "Lọc theo Agent, CI, script hoặc PID…";
+        input.setAttribute("aria-label", "Lọc phiên code chạy ẩn trên máy này");
         input.addEventListener("input", () => {
           processQuery = input.value;
           const list = region.querySelector(".session-list");
           const pill = region.querySelector(".count-pill");
           const empty = region.querySelector(".window-empty");
           const query = processQuery.trim().toLowerCase();
-          const next = query ? rows.filter(p => p.name.toLowerCase().includes(query) || String(p.pid).includes(query) || (p.role || "").toLowerCase().includes(query)) : rows;
+          const next = query ? rows.filter(p => (p.label || p.name).toLowerCase().includes(query) || p.name.toLowerCase().includes(query) || String(p.pid).includes(query)) : rows;
           if (pill) setText(pill, query ? next.length + "/" + totalCount : String(totalCount));
           if (list) paintProcessItems(list, next, totalBytes);
           if (empty) empty.hidden = next.length > 0;
@@ -626,7 +667,7 @@ function inspectorView(id, sessionsBtn, windowsBtn, processesBtn) {
       }
       const list = node("ul", "session-list");
       paintProcessItems(list, filtered, totalBytes);
-      const empty = node("p", "hint window-empty", rows.length ? "Không có tiến trình khớp từ khóa lọc." : "Chưa có dữ liệu tiến trình trên máy này.");
+      const empty = node("p", "hint window-empty", rows.length ? "Không có phiên chạy ẩn khớp từ khóa lọc." : "Chưa ghi nhận tiến trình Agent hay phiên code chạy ẩn nào.");
       empty.hidden = filtered.length > 0;
       content.push(list, empty);
     }
@@ -857,7 +898,7 @@ function machineCard(host) {
   windows.append(icon("windows", 14), node("span", "action-label", "Cửa sổ"), icon("chevron-down", 13));
   const processes = node("button", "host-action");
   processes.type = "button";
-  processes.append(icon("activity", 14), node("span", "action-label", "Tiến trình"), icon("chevron-down", 13));
+  processes.append(icon("activity", 14), node("span", "action-label", "Chạy ngầm"), icon("chevron-down", 13));
   const region = inspectorView(host.id, sessions, windows, processes);
   links.append(dispatchBtn, sessions, windows, processes);
   if (!host.local) links.append(externalAction("Màn hình", "screen", "/screen.html", host.id));
@@ -1415,16 +1456,17 @@ function renderActivity() {
 
   allBgTasks.sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
 
+  const groupedAllProcs = groupCodeProcesses(allProcs);
   const liveCount = activeItems.length;
   setText(el("tab-count-live"), String(liveCount));
   setText(el("tab-count-bg"), String(allBgTasks.length));
-  setText(el("tab-count-proc"), totalProcCount ? totalProcCount.toLocaleString("vi-VN") : String(allProcs.length));
+  setText(el("tab-count-proc"), String(groupedAllProcs.length));
   setText(el("live-work-count"), String(liveCount + passiveItems.length));
   setText(el("relay-hosts-count"), String(scopedHosts.length));
   const summaryParts = [
-    liveCount + " đang làm",
-    allBgTasks.length + " việc ngầm",
-    (totalProcCount || allProcs.length).toLocaleString("vi-VN") + " tiến trình",
+    liveCount + " đang chạy",
+    allBgTasks.length + " việc Agent ngầm",
+    groupedAllProcs.length + " phiên code & CI ẩn",
   ];
   setText(el("activity-total-pill"), activityLoadedOnce ? summaryParts.join(" · ") : "Đang quét…");
 
@@ -1533,21 +1575,22 @@ function renderActivity() {
   }));
 
   const topProcContainer = el("top-processes");
-  const topSorted = allProcs.slice().sort((a, b) => {
-    const aiDiff = Number(b.category === "ai") - Number(a.category === "ai");
-    if (aiDiff !== 0) return aiDiff;
+  const topSorted = groupedAllProcs.slice().sort((a, b) => {
+    const rankDiff = (categoryRank[a.category] ?? 9) - (categoryRank[b.category] ?? 9);
+    if (rankDiff !== 0) return rankDiff;
     return b.memoryBytes - a.memoryBytes;
   }).slice(0, 6);
   if (!topSorted.length) {
-    topProcContainer.replaceChildren(node("p", "hint", activityLoadedOnce ? "Chưa có dữ liệu tiến trình hệ thống." : "Đang quét tiến trình…"));
+    topProcContainer.replaceChildren(node("p", "hint", activityLoadedOnce ? "Chưa ghi nhận tiến trình Agent hay phiên code nào đang chạy ẩn." : "Đang quét phiên code chạy ẩn…"));
   } else {
     const maxTopBytes = topSorted.reduce((max, item) => Math.max(max, item.memoryBytes || 0), 0);
     topProcContainer.replaceChildren(...topSorted.map(proc => {
       const row = node("div", "top-proc-row");
       const nameCell = node("div", "proc-name-cell");
-      nameCell.append(processMark(proc), node("span", "proc-name-text", proc.name));
-      if (proc.role) nameCell.append(node("span", "proc-role-tag", proc.role));
-      const pidEl = node("span", "proc-pid", "PID " + proc.pid);
+      nameCell.append(processMark(proc), node("span", "proc-name-text", proc.label || proc.name));
+      if (proc.count > 1) nameCell.append(node("span", "proc-count-badge", "×" + proc.count));
+      const pidEl = node("span", "proc-pid", proc.count > 1 ? (categoryLabels[proc.category] || proc.category) : "PID " + proc.pid);
+      if (proc.count > 1) pidEl.title = "PID: " + proc.pids.join(", ");
       const ramCell = node("span", "proc-ram-cell");
       const bar = node("span", "proc-bar");
       const pct = procRamPct(proc.memoryBytes, maxTopBytes);
@@ -1645,17 +1688,17 @@ function renderActivity() {
 
   const procQuery = el("proc-search").value.trim().toLowerCase();
   const procSort = el("proc-sort").value;
-  const searchMatchedProcs = allProcs.filter(proc => {
+  el("proc-group-toggle").setAttribute("aria-pressed", String(procGroupEnabled));
+  const baseProcs = procGroupEnabled ? groupedAllProcs : allProcs.map(p => ({ ...p, label: p.label || p.name, count: 1, pids: [p.pid] }));
+  const searchMatchedProcs = baseProcs.filter(proc => {
     if (!procQuery) return true;
-    return proc.name.toLowerCase().includes(procQuery) || String(proc.pid).includes(procQuery)
-      || (proc.role || "").toLowerCase().includes(procQuery)
-      || (proc.host?.hostname || "").toLowerCase().includes(procQuery);
+    const hay = [proc.label, proc.name, categoryLabels[proc.category] || "", proc.role || "", proc.host?.hostname || "", ...proc.pids.map(String)].join(" ").toLowerCase();
+    return hay.includes(procQuery);
   });
 
   const catCounts = new Map([["all", searchMatchedProcs.length]]);
   for (const proc of searchMatchedProcs) {
     catCounts.set(proc.category, (catCounts.get(proc.category) || 0) + 1);
-    if (proc.background) catCounts.set("background", (catCounts.get("background") || 0) + 1);
   }
   const pillsData = processCategories.map(item => ({ ...item, count: catCounts.get(item.value) || 0 }));
   const nextPillsSig = JSON.stringify([procCategory, pillsData]);
@@ -1675,24 +1718,21 @@ function renderActivity() {
     }));
   }
 
-  const filteredProcs = searchMatchedProcs.filter(proc => {
-    if (procCategory === "all") return true;
-    if (procCategory === "background") return proc.background === true;
-    return proc.category === procCategory;
-  });
+  const filteredProcs = searchMatchedProcs.filter(proc => procCategory === "all" || proc.category === procCategory);
 
   filteredProcs.sort((a, b) => {
+    if (procSort === "memory") return b.memoryBytes - a.memoryBytes || a.pid - b.pid;
     if (procSort === "cpu") return ((b.cpuPercent ?? b.cpuSeconds ?? -1) - (a.cpuPercent ?? a.cpuSeconds ?? -1)) || (b.memoryBytes - a.memoryBytes);
-    if (procSort === "name") return a.name.localeCompare(b.name) || (b.memoryBytes - a.memoryBytes);
-    if (procSort === "pid") return a.pid - b.pid;
-    return b.memoryBytes - a.memoryBytes || a.pid - b.pid;
+    if (procSort === "uptime") return ((b.uptimeSeconds ?? -1) - (a.uptimeSeconds ?? -1)) || (b.memoryBytes - a.memoryBytes);
+    if (procSort === "name") return (a.label || a.name).localeCompare(b.label || b.name);
+    return ((categoryRank[a.category] ?? 9) - (categoryRank[b.category] ?? 9)) || (b.memoryBytes - a.memoryBytes) || a.pid - b.pid;
   });
 
   const tbody = el("proc-table-body");
   el("proc-table-wrap").hidden = filteredProcs.length === 0;
   el("proc-empty").hidden = filteredProcs.length > 0;
   const shownProcs = filteredProcs.slice(0, 120);
-  const nextProcSig = JSON.stringify(shownProcs.map(p => [p.host?.id, p.pid, p.memoryBytes, p.cpuPercent, p.cpuSeconds, p.state]));
+  const nextProcSig = JSON.stringify([procGroupEnabled, shownProcs.map(p => [p.host?.id, p.pid, p.count, p.label, p.memoryBytes, p.cpuPercent, p.cpuSeconds, p.uptimeSeconds, p.state])]);
   if (nextProcSig === procTableSig) return;
   procTableSig = nextProcSig;
   const maxShownBytes = shownProcs.reduce((max, item) => Math.max(max, item.memoryBytes || 0), 0);
@@ -1701,19 +1741,22 @@ function renderActivity() {
 
     const nameTd = document.createElement("td");
     const nameCell = node("div", "proc-name-cell");
-    nameCell.append(processMark(proc), node("span", "proc-name-text", proc.name));
-    if (proc.role) nameCell.append(node("span", "proc-role-tag", proc.role));
+    nameCell.append(processMark(proc), node("span", "proc-name-text", proc.label || proc.name));
+    if (proc.count > 1) nameCell.append(node("span", "proc-count-badge", "×" + proc.count));
     nameTd.append(nameCell);
 
     const catTd = document.createElement("td");
-    const catSpan = node("span", "proc-cat-label", (categoryLabels[proc.category] || proc.category) + (proc.background ? " · Ngầm" : ""));
+    const catSpan = node("span", "proc-cat-label", categoryLabels[proc.category] || proc.category);
     catSpan.dataset.cat = proc.category;
     catTd.append(catSpan);
 
-    const pidTd = node("td", "proc-pid", String(proc.pid));
+    const pidTd = node("td", "proc-pid", proc.count > 1 ? proc.pid + " (+" + (proc.count - 1) + ")" : String(proc.pid));
+    if (proc.count > 1) pidTd.title = "PID: " + proc.pids.join(", ");
 
     const hostTd = document.createElement("td");
     hostTd.append(hostInline(proc.host));
+
+    const uptimeTd = node("td", "num", proc.uptimeSeconds != null ? formatDuration(proc.uptimeSeconds) : "—");
 
     const cpuTd = node("td", "num", formatCpu(proc));
 
@@ -1728,14 +1771,12 @@ function renderActivity() {
     ramCell.append(bar, node("span", "", formatMem(proc.memoryBytes)));
     ramTd.append(ramCell);
 
-    const threadTd = node("td", "num", proc.threads != null ? String(proc.threads) : "—");
-
     const stateTd = document.createElement("td");
     const stateDot = node("span", "proc-state-dot", processStateLabels[proc.state] || proc.state);
     stateDot.dataset.state = proc.state;
     stateTd.append(stateDot);
 
-    tr.append(nameTd, catTd, pidTd, hostTd, cpuTd, ramTd, threadTd, stateTd);
+    tr.append(nameTd, catTd, pidTd, hostTd, uptimeTd, cpuTd, ramTd, stateTd);
     return tr;
   }));
 }
@@ -2345,6 +2386,10 @@ el("bg-status-filter").addEventListener("change", renderActivity);
 el("bg-agent-filter").addEventListener("change", renderActivity);
 el("proc-search").addEventListener("input", renderActivity);
 el("proc-sort").addEventListener("change", renderActivity);
+el("proc-group-toggle").addEventListener("click", () => {
+  procGroupEnabled = !procGroupEnabled;
+  renderActivity();
+});
 
 async function poll() {
   await refresh();

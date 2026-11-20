@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { Readable } from "node:stream";
-import { createFleetHostClient, fleetSshArgs, handleFleetHostRequest, listFleetWindows, runFleetHost } from "../src/fleet-host.mjs";
+import { createFleetHostClient, fleetSshArgs, handleFleetHostRequest, listFleetActivity, listFleetProcesses, listFleetWindows, runFleetHost } from "../src/fleet-host.mjs";
 import { listFleetSessions } from "../src/fleet-sessions.mjs";
 
 const cwd = path.resolve(os.tmpdir(), "fleet project");
@@ -157,4 +157,52 @@ test("desktop window inventory handles lack of titles or an interactive session"
   const win = await listFleetWindows({ platform: "win32", run: async () => ({ stdout: "[]" }) });
   assert.deepEqual(win.windows, []);
   assert.match(win.note, /Windows/);
+});
+
+test("process inventory parses Windows, macOS and Linux processes safely without leaking arguments", async () => {
+  const mac = await listFleetProcesses({ platform: "darwin", run: async (bin, args) => {
+    assert.equal(bin, "/bin/ps");
+    assert.deepEqual(args, ["-axo", "pid=,pcpu=,rss=,state=,comm="]);
+    return { stdout: "  42 12.5 512000 R /Applications/Claude.app/Contents/MacOS/claude\n  99  0.4  65536 S /usr/local/bin/node\n" };
+  } });
+  assert.equal(mac.totalProcesses, 2);
+  assert.equal(mac.processes[0].name, "claude");
+  assert.equal(mac.processes[0].category, "ai");
+  assert.equal(mac.processes[0].memoryBytes, 512000 * 1024);
+  assert.equal(mac.processes[0].background, false);
+  assert.equal(mac.processes[1].name, "node");
+  assert.equal(mac.processes[1].category, "dev");
+  assert.equal(mac.processes[1].background, true);
+
+  const win = await listFleetProcesses({ platform: "win32", run: async () => ({
+    stdout: JSON.stringify({ total: 10, rows: [{ pid: 77, name: "codex", memoryBytes: 128000000, cpuSeconds: 4.5, threads: 8, background: true, responding: true }] }),
+  }) });
+  assert.equal(win.totalProcesses, 10);
+  assert.equal(win.processes[0].category, "ai");
+  assert.equal(win.processes[0].state, "running");
+  assert.equal(win.processes[0].threads, 8);
+});
+
+test("activity inventory reads background relay status, tasks and running processes with permission recheck", async () => {
+  const taskId = randomUUID();
+  const sample = await listFleetActivity({
+    relay: async method => method === "status"
+      ? { pid: 500, version: "2.5.1", accepting: true, active: 1, queued: 0, workers: [{ agent: "codex", ready: true, canAcceptWork: true, readiness: "ready", version: "0.167" }] }
+      : { tasks: [{ requestId: taskId, agent: "codex", status: "running", deliveryState: "sent", source: { kind: "local-client" }, output: "Working", createdAt: "2026-11-20T00:00:00Z", updatedAt: "2026-11-20T00:00:05Z" }] },
+    processes: async () => ({ totalProcesses: 1, processes: [{ pid: 500, name: "node", memoryBytes: 50000000, cpuPercent: null, cpuSeconds: 2.1, threads: 10, state: "running", category: "dev", background: true }] }),
+  });
+  assert.equal(sample.relay.online, true);
+  assert.equal(sample.tasks.length, 1);
+  assert.equal(sample.tasks[0].requestId, taskId);
+  assert.equal(sample.processes[0].role, "worker-relay");
+  assert.equal(sample.processes[0].category, "ai");
+
+  const { client } = fixture({ activity: async () => sample });
+  for (const host of [local, remote]) assert.equal((await client.activity(host)).tasks[0].requestId, taskId);
+  let allowed = true;
+  const revoked = fixture({ activity: async () => { allowed = false; return sample; },
+    authorize: project => { if (!allowed) throw new Error("revoked"); return project; } });
+  await assert.rejects(revoked.client.activity(remote), /revoked/);
+  const mismatch = fixture({ identity: () => "other/project", activity: () => assert.fail() });
+  await assert.rejects(mismatch.client.activity(remote), { code: "FLEET_REPOSITORY_MISMATCH" });
 });

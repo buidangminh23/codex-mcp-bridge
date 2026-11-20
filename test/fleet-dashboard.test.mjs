@@ -37,6 +37,10 @@ async function appFixture(t, desktopConnect) {
     async probe(host) { probes += 1; return { hostname: host.id, platform: host.platform || "linux", freeBytes: 8 * 1024 ** 3, totalBytes: 16 * 1024 ** 3, agents: ["codex"] }; },
     async windows(host) { windows.push(host.id); return { windows: [{ app: "Editor", title: host.id }] }; },
     async sessions(host) { return { sessions: [{ agent: "codex", title: host.id, status: "running" }] }; },
+    async activity(host) {
+      if (host.id === "office") throw Object.assign(new Error("Invalid fleet host request"), { code: "FLEET_REQUEST_INVALID" });
+      return { supported: true, relay: { online: true, pid: 100, version: "2.5.1", accepting: true, active: 0, queued: 0, workers: [] }, tasks: [], processes: [{ pid: 100, name: "node", memoryBytes: 1024, category: "dev", state: "running", background: true }], totalProcesses: 1 };
+    },
   };
   const queue = createFleetQueue({ hosts, client, load: () => null, save() {} });
   const app = createFleetServer({ hosts, queue, client, token, desktopConnect });
@@ -100,6 +104,9 @@ test("dashboard creates, retargets and cancels a job and reads windows from the 
   assert.equal((await box.post("/api/hosts/missing/sessions")).status, 404);
   assert.deepEqual(await (await box.post("/api/hosts/laptop/sessions")).json(),
     { sessions: [{ agent: "codex", title: "laptop", status: "running" }] });
+  assert.equal((await box.post("/api/hosts/missing/activity")).status, 404);
+  assert.equal((await (await box.post("/api/hosts/local/activity")).json()).totalProcesses, 1);
+  assert.equal((await (await box.post("/api/hosts/office/activity")).json()).supported, false);
   assert.equal((await box.post("/api/hosts/local/screen")).status, 400);
   assert.equal((await box.post("/api/hosts/laptop/rdp")).status, 400);
   const activeJob = await (await box.post("/api/jobs", newJob)).json();

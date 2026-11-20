@@ -2,6 +2,26 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.6.0] - 2026-11-20
+
+### Added
+
+- The fleet dashboard has a light and dark theme, a cluster overview strip, platform icons, Git revision and clean-checkout status, and a memory meter that marks the configured free-RAM floor.
+- A machine inspector lists the AI sessions and the open desktop windows of each computer, with a filter, a manual reload and a quick dispatch to that machine.
+- Operators can probe every machine immediately, delete finished jobs one at a time or prune them together. Queued, running and uncertain jobs are never removed.
+- Jobs can be searched, filtered by agent and status, cloned, re-run and exported as a Markdown report. Multi-step jobs show their progress, and an uncertain receipt can be checked again.
+- Built-in and saved job templates, step reordering, a live UTF-8 size counter, Ctrl+Enter to submit, desktop notifications on completion and keyboard shortcuts.
+
+### Fixed
+
+- Opening the dashboard keeps the private sign-in link on Windows and across open tabs.
+- On every platform the browser opener receives the sign-in link through its environment instead of its command line.
+
+### Verification and limits
+
+- The full suite passes locally with 2,183 tests and 58 skipped. CI passes on Windows, macOS and Linux with Node 22 and 24.
+- The macOS and Linux browser opener was not run on a real desktop for this release.
+
 ## [2.5.1] - 2026-11-19
 
 ### Fixed

@@ -71,6 +71,11 @@ test("dashboard requires its exact loopback origin and a valid operator token", 
   assert.equal(state.status, 200);
   assert.equal(state.headers.get("cache-control"), "no-store");
   assert.deepEqual((await state.json()).jobs, []);
+  const icon = await fetch(box.origin + "/icons/codex.svg");
+  assert.equal(icon.status, 200);
+  assert.match(icon.headers.get("content-type"), /^image\/svg\+xml/);
+  assert.equal((await fetch(box.origin + "/icons/..%2Fapp.js")).status, 404);
+  assert.equal((await fetch(box.origin + "/icons/missing.svg")).status, 404);
 });
 
 test("dashboard creates, retargets and cancels a job and reads windows from the requested host", async t => {

@@ -37,6 +37,8 @@ const statusOrder = ["running", "queued", "uncertain", "completed", "failed", "c
 const tones = { running: "blue", completed: "green", failed: "red", queued: "amber", uncertain: "amber" };
 const sessionTones = { running: "blue", waiting: "amber", connected: "green", idle: "gray", unknown: "gray" };
 const agentNames = { codex: "Codex", claude: "Claude", antigravity: "Antigravity" };
+const agentIcons = { codex: "/icons/codex.svg", claude: "/icons/claude.svg", antigravity: "/icons/antigravity.svg" };
+const platformIcons = { win32: "/icons/windows.svg", darwin: "/icons/apple.svg", linux: "/icons/linux.svg" };
 const platforms = { win32: "Windows", darwin: "macOS", linux: "Linux" };
 const numbers = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 1 });
 const percents = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 });
@@ -99,6 +101,17 @@ function node(tag, className, value) {
   return item;
 }
 
+function brandImg(src, className) {
+  const img = document.createElement("img");
+  img.src = src;
+  img.alt = "";
+  img.className = className;
+  img.draggable = false;
+  img.decoding = "sync";
+  img.setAttribute("aria-hidden", "true");
+  return img;
+}
+
 function svgEl(tag, attrs = {}) {
   const item = document.createElementNS(svgNs, tag);
   for (const [key, value] of Object.entries(attrs)) item.setAttribute(key, String(value));
@@ -108,81 +121,113 @@ function svgEl(tag, attrs = {}) {
 function icon(name, size = 14) {
   const svg = svgEl("svg", {
     viewBox: "0 0 24 24", width: size, height: size, fill: "none",
-    stroke: "currentColor", "stroke-width": "1.9", "stroke-linecap": "round", "stroke-linejoin": "round",
+    stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round",
     "aria-hidden": "true"
   });
-  if (name === "win32") {
+  if (name === "sessions") {
     svg.append(
-      svgEl("rect", { x: 3, y: 3, width: 8, height: 8, rx: 1.5 }),
-      svgEl("rect", { x: 13, y: 3, width: 8, height: 8, rx: 1.5 }),
-      svgEl("rect", { x: 3, y: 13, width: 8, height: 8, rx: 1.5 }),
-      svgEl("rect", { x: 13, y: 13, width: 8, height: 8, rx: 1.5 })
-    );
-  } else if (name === "darwin") {
-    svg.append(
-      svgEl("rect", { x: 3, y: 4, width: 18, height: 12, rx: 2 }),
-      svgEl("path", { d: "M2 20h20" })
-    );
-  } else if (name === "linux") {
-    svg.append(
-      svgEl("rect", { x: 3, y: 4, width: 18, height: 16, rx: 2.5 }),
-      svgEl("path", { d: "M8 10l3 2.5L8 15M13 15h4" })
-    );
-  } else if (name === "git") {
-    svg.append(
-      svgEl("circle", { cx: 6, cy: 6, r: 2.5 }),
-      svgEl("circle", { cx: 6, cy: 18, r: 2.5 }),
-      svgEl("circle", { cx: 18, cy: 10, r: 2.5 }),
-      svgEl("path", { d: "M6 8.5v7M8.5 6H14a4 4 0 0 1 4 4" })
-    );
-  } else if (name === "sessions") {
-    svg.append(
-      svgEl("path", { d: "M12 3l8 4.5-8 4.5-8-4.5L12 3z" }),
-      svgEl("path", { d: "M4 12.5l8 4.5 8-4.5M4 17l8 4.5 8-4.5" })
+      svgEl("path", { d: "M12 8V4H8" }),
+      svgEl("rect", { width: 16, height: 12, x: 4, y: 8, rx: 2 }),
+      svgEl("path", { d: "M2 14h2M20 14h2M15 13v2M9 13v2" })
     );
   } else if (name === "windows") {
     svg.append(
-      svgEl("rect", { x: 3, y: 4, width: 18, height: 16, rx: 2 }),
-      svgEl("path", { d: "M3 9h18M8 6.5h.01M11 6.5h.01" })
+      svgEl("rect", { x: 2, y: 4, width: 20, height: 16, rx: 2 }),
+      svgEl("path", { d: "M10 4v4M2 8h20M6 4v4" })
     );
-  } else if (name === "plus") {
-    svg.append(svgEl("path", { d: "M12 5v14M5 12h14" }));
+  } else if (name === "send") {
+    svg.append(
+      svgEl("path", { d: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" }),
+      svgEl("path", { d: "m21.854 2.147-10.94 10.939" })
+    );
   } else if (name === "refresh") {
     svg.append(
-      svgEl("path", { d: "M21 12a9 9 0 1 1-2.64-6.36" }),
-      svgEl("path", { d: "M21 3v6h-6" })
+      svgEl("path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" }),
+      svgEl("path", { d: "M21 3v5h-5" }),
+      svgEl("path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" }),
+      svgEl("path", { d: "M8 16H3v5" })
+    );
+  } else if (name === "rotate") {
+    svg.append(
+      svgEl("path", { d: "M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" }),
+      svgEl("path", { d: "M21 3v5h-5" })
     );
   } else if (name === "chevron-down") {
     svg.classList.add("chevron");
-    svg.append(svgEl("path", { d: "M6 9l6 6 6-6" }));
+    svg.append(svgEl("path", { d: "m6 9 6 6 6-6" }));
   } else if (name === "chevron-right") {
     svg.classList.add("chevron");
-    svg.append(svgEl("path", { d: "M9 6l6 6-6 6" }));
+    svg.append(svgEl("path", { d: "m9 18 6-6-6-6" }));
   } else if (name === "screen") {
     svg.append(
-      svgEl("rect", { x: 2.5, y: 3.5, width: 19, height: 13, rx: 2 }),
-      svgEl("path", { d: "M8 20.5h8M12 16.5v4" })
+      svgEl("rect", { width: 20, height: 14, x: 2, y: 3, rx: 2 }),
+      svgEl("line", { x1: 8, x2: 16, y1: 21, y2: 21 }),
+      svgEl("line", { x1: 12, x2: 12, y1: 17, y2: 21 })
     );
   } else if (name === "external") {
     svg.append(
-      svgEl("path", { d: "M15 3h6v6M10 14L21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" })
+      svgEl("path", { d: "M15 3h6v6" }),
+      svgEl("path", { d: "M10 14 21 3" }),
+      svgEl("path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" })
     );
   } else if (name === "info") {
     svg.append(
-      svgEl("circle", { cx: 12, cy: 12, r: 9 }),
-      svgEl("path", { d: "M12 16v-4M12 8h.01" })
+      svgEl("circle", { cx: 12, cy: 12, r: 10 }),
+      svgEl("path", { d: "M12 16v-4" }),
+      svgEl("path", { d: "M12 8h.01" })
     );
   } else if (name === "check") {
-    svg.append(svgEl("path", { d: "M20 6L9 17l-5-5" }));
+    svg.append(svgEl("path", { d: "M20 6 9 17l-5-5" }));
+  } else if (name === "alert") {
+    svg.append(
+      svgEl("path", { d: "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" }),
+      svgEl("path", { d: "M12 9v4" }),
+      svgEl("path", { d: "M12 17h.01" })
+    );
+  } else if (name === "x") {
+    svg.append(
+      svgEl("path", { d: "M18 6 6 18" }),
+      svgEl("path", { d: "m6 6 12 12" })
+    );
+  } else if (name === "ban") {
+    svg.append(
+      svgEl("circle", { cx: 12, cy: 12, r: 10 }),
+      svgEl("path", { d: "m4.9 4.9 14.2 14.2" })
+    );
   } else if (name === "copy") {
     svg.append(
-      svgEl("rect", { x: 9, y: 9, width: 11, height: 11, rx: 2 }),
-      svgEl("path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" })
+      svgEl("rect", { width: 14, height: 14, x: 8, y: 8, rx: 2, ry: 2 }),
+      svgEl("path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" })
     );
+  } else if (name === "terminal") {
+    svg.append(
+      svgEl("polyline", { points: "4 17 10 11 4 5" }),
+      svgEl("line", { x1: 12, x2: 20, y1: 19, y2: 19 })
+    );
+  } else if (name === "arrow-up") {
+    svg.append(
+      svgEl("path", { d: "m5 12 7-7 7 7" }),
+      svgEl("path", { d: "M12 19V5" })
+    );
+  } else if (name === "arrow-down") {
+    svg.append(
+      svgEl("path", { d: "M12 5v14" }),
+      svgEl("path", { d: "m19 12-7 7-7-7" })
+    );
+  } else if (name === "trash") {
+    svg.append(
+      svgEl("path", { d: "M3 6h18" }),
+      svgEl("path", { d: "M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" }),
+      svgEl("path", { d: "M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" })
+    );
+  } else if (name === "play") {
+    svg.append(svgEl("polygon", { points: "6 3 20 12 6 21 6 3" }));
   } else {
     svg.append(
-      svgEl("rect", { x: 3, y: 4, width: 18, height: 14, rx: 2 }),
-      svgEl("path", { d: "M8 21h8M12 18v3" })
+      svgEl("rect", { width: 20, height: 8, x: 2, y: 2, rx: 2, ry: 2 }),
+      svgEl("rect", { width: 20, height: 8, x: 2, y: 14, rx: 2, ry: 2 }),
+      svgEl("line", { x1: 6, x2: 6.01, y1: 6, y2: 6 }),
+      svgEl("line", { x1: 6, x2: 6.01, y1: 18, y2: 18 })
     );
   }
   return svg;
@@ -283,9 +328,17 @@ function badge(item, text, tone) {
   setText(item, text);
 }
 
+function fillAgentChip(chip, agent) {
+  const sig = String(agent || "");
+  if (chip.dataset.agent === sig && chip.childNodes.length) return;
+  chip.dataset.agent = sig;
+  const mark = agentIcons[agent] ? brandImg(agentIcons[agent], "agent-brand-icon") : icon("sessions", 13);
+  chip.replaceChildren(mark, node("span", "", agentNames[agent] || agent));
+}
+
 function agentChip(agent) {
-  const chip = node("span", "agent-chip", agentNames[agent] || agent);
-  chip.dataset.agent = agent;
+  const chip = node("span", "agent-chip");
+  fillAgentChip(chip, agent);
   return chip;
 }
 
@@ -353,7 +406,7 @@ function inspectorView(id, sessionsBtn, windowsBtn) {
 
   let mode = null;
   let timer;
-  let loading = false;
+  let requestSeq = 0;
   let signature;
   let windowQuery = "";
   let cachedWindows = null;
@@ -365,6 +418,18 @@ function inspectorView(id, sessionsBtn, windowsBtn) {
     if (sessionLabel) setText(sessionLabel, mode === "sessions" ? "Ẩn phiên AI" : "Phiên AI");
     const winLabel = windowsBtn.querySelector(".action-label");
     if (winLabel) setText(winLabel, mode === "windows" ? "Ẩn cửa sổ" : "Cửa sổ");
+  }
+
+  function paintWindowItems(list, rows) {
+    list.replaceChildren(...rows.map(item => {
+      const row = node("li", "session-item");
+      const main = node("div", "session-main");
+      const app = node("span", "app-chip", item.app);
+      app.title = item.app;
+      main.append(app, node("span", "session-title", item.title || "(Không tiêu đề)"));
+      row.append(main);
+      return row;
+    }));
   }
 
   function renderWindowsView(result, failure) {
@@ -419,21 +484,9 @@ function inspectorView(id, sessionsBtn, windowsBtn) {
     region.replaceChildren(...content);
   }
 
-  function paintWindowItems(list, rows) {
-    list.replaceChildren(...rows.map(item => {
-      const row = node("li", "session-item");
-      const main = node("div", "session-main");
-      const app = node("span", "app-chip", item.app);
-      app.title = item.app;
-      main.append(app, node("span", "session-title", item.title || "(Không tiêu đề)"));
-      row.append(main);
-      return row;
-    }));
-  }
-
   async function loadWindows(manual = false) {
-    if (loading || mode !== "windows" || !region.isConnected) return;
-    loading = true;
+    if (mode !== "windows" || !region.isConnected) return;
+    const seq = ++requestSeq;
     if (manual || !cachedWindows) region.replaceChildren(node("p", "hint", "Đang đọc danh sách cửa sổ…"));
     let result, failure;
     try {
@@ -441,25 +494,21 @@ function inspectorView(id, sessionsBtn, windowsBtn) {
       cachedWindows = result;
     } catch (error) {
       failure = error.message;
-    } finally {
-      loading = false;
     }
-    if (mode !== "windows" || !region.isConnected) return;
+    if (seq !== requestSeq || mode !== "windows" || !region.isConnected) return;
     renderWindowsView(result, failure);
   }
 
   async function refreshSessions() {
-    if (loading || mode !== "sessions" || !region.isConnected) return;
-    loading = true;
+    if (mode !== "sessions" || !region.isConnected) return;
+    const seq = ++requestSeq;
     let result, failure;
     try {
       result = await api("/api/hosts/" + encodeURIComponent(id) + "/sessions", {});
     } catch (error) {
       failure = error.message;
-    } finally {
-      loading = false;
     }
-    if (mode !== "sessions" || !region.isConnected) return;
+    if (seq !== requestSeq || mode !== "sessions" || !region.isConnected) return;
     const sessions = (result?.sessions || []).map(item => ({
       title: item.title || "Phiên " + item.id,
       agent: item.agent,
@@ -501,6 +550,7 @@ function inspectorView(id, sessionsBtn, windowsBtn) {
 
   function toggleMode(nextMode) {
     clearTimeout(timer);
+    requestSeq++;
     if (mode === nextMode) {
       mode = null;
       region.hidden = true;
@@ -566,7 +616,7 @@ function machineCard(host) {
   const links = node("div", "host-links");
   const dispatchBtn = node("button", "host-action accent-action dispatch-btn");
   dispatchBtn.type = "button";
-  dispatchBtn.append(icon("plus", 14), node("span", "", "Giao việc"));
+  dispatchBtn.append(icon("send", 13), node("span", "", "Giao việc"));
   dispatchBtn.addEventListener("click", () => {
     const current = state.hosts.find(item => item.id === host.id);
     openJobDialog({ target: host.id, agent: current?.agents?.[0] || "codex" });
@@ -593,7 +643,10 @@ function paintMachine(card, host) {
   const platformBox = card.querySelector(".platform-icon");
   if (platformBox.dataset.platform !== platformKey) {
     platformBox.dataset.platform = platformKey;
-    platformBox.replaceChildren(icon(platformKey, 18));
+    const mark = platformIcons[platformKey]
+      ? brandImg(platformIcons[platformKey], "platform-brand-icon")
+      : icon("server", 18);
+    platformBox.replaceChildren(mark);
   }
   const roleChip = card.querySelector(".host-role-chip");
   roleChip.hidden = !host.local;
@@ -609,7 +662,7 @@ function paintMachine(card, host) {
     if (gitPill.dataset.sig !== sig) {
       gitPill.dataset.sig = sig;
       gitPill.dataset.clean = host.clean === true ? "true" : host.clean === false ? "false" : "";
-      gitPill.replaceChildren(icon("git", 11), node("span", "", cleanText ? shortRev + " · " + cleanText : shortRev));
+      gitPill.replaceChildren(brandImg("/icons/git.svg", "git-brand-icon"), node("span", "", cleanText ? shortRev + " · " + cleanText : shortRev));
       gitPill.title = "Commit " + shortRev + (cleanText ? " (" + cleanText + ")" : "");
     }
     gitPill.hidden = false;
@@ -620,7 +673,10 @@ function paintMachine(card, host) {
   const runningOnHost = state.jobs.filter(job => job.hostId === host.id && job.status === "running").length;
   const runningChip = card.querySelector(".host-running-chip");
   runningChip.hidden = runningOnHost === 0;
-  if (runningOnHost > 0) setText(runningChip, "Đang chạy " + runningOnHost + " việc");
+  if (runningOnHost > 0 && runningChip.dataset.count !== String(runningOnHost)) {
+    runningChip.dataset.count = String(runningOnHost);
+    runningChip.replaceChildren(icon("play", 11), node("span", "", "Đang chạy " + runningOnHost + " việc"));
+  }
 
   const low = host.online && host.freeBytes < state.minFreeBytes;
   const health = !host.checkedAt ? "Đang kiểm tra" : !host.online ? "Ngoại tuyến" : low ? "Thiếu RAM" : "Trực tuyến";
@@ -846,6 +902,9 @@ function stepRows(job) {
     const marker = node("span", "step-node");
     marker.dataset.tone = tone;
     if (status === "completed") marker.append(icon("check", 13));
+    else if (status === "uncertain") marker.append(icon("alert", 12));
+    else if (status === "failed") marker.append(icon("x", 12));
+    else if (status === "cancelled") marker.append(icon("ban", 12));
     else marker.textContent = String(index + 1);
 
     const card = node("div", "step-card");
@@ -865,7 +924,7 @@ function stepRows(job) {
       const summary = node("summary", "output-summary");
       const summaryLeft = node("span", "output-summary-left");
       const label = entry.outputTruncated ? "Kết quả (đã rút gọn)" : "Kết quả";
-      summaryLeft.append(icon("chevron-right", 13), node("span", "", label));
+      summaryLeft.append(icon("chevron-right", 13), icon("terminal", 13), node("span", "", label));
       const copyBtn = node("button", "copy-btn");
       copyBtn.type = "button";
       copyBtn.append(icon("copy", 12), node("span", "copy-label", "Sao chép"));
@@ -917,16 +976,21 @@ function renderDetail(job) {
   setText(progress, "Bước " + (job.stepIndex + 1) + "/" + job.steps.length);
   setText(el("job-title"), job.title);
   badge(el("job-status"), statusNames[job.status], tones[job.status]);
-  const agentTag = el("job-agent");
-  agentTag.dataset.agent = job.agent;
-  setText(agentTag, agentNames[job.agent] || job.agent);
+  fillAgentChip(el("job-agent"), job.agent);
   setText(el("job-target"), hostName(job.hostId || job.target));
   setText(el("job-created"), dates.format(new Date(job.createdAt)));
   setText(el("job-updated"), dates.format(new Date(job.updatedAt || job.createdAt)));
   notice(el("job-error"), job.error);
 
+  const retry = ["failed", "cancelled"].includes(job.status);
   const cloneBtn = el("clone-job");
-  setText(cloneBtn, ["failed", "cancelled"].includes(job.status) ? "Chạy lại" : "Nhân bản");
+  setText(el("clone-job-label"), retry ? "Chạy lại" : "Nhân bản");
+  const cloneIconWrap = el("clone-job-icon");
+  const nextCloneIcon = retry ? "rotate" : "copy";
+  if (cloneIconWrap.dataset.icon !== nextCloneIcon) {
+    cloneIconWrap.dataset.icon = nextCloneIcon;
+    cloneIconWrap.replaceChildren(icon(nextCloneIcon, 14));
+  }
   cloneBtn.disabled = !online || state.hosts.length === 0;
 
   const deleteBtn = el("delete-job");
@@ -959,9 +1023,8 @@ function renderDetail(job) {
 function disarmPrune() {
   clearTimeout(pruneTimer);
   pruneArmed = false;
-  const button = el("prune-jobs");
-  button.dataset.armed = "false";
-  setText(button, "Dọn lịch sử");
+  el("prune-jobs").dataset.armed = "false";
+  setText(el("prune-jobs-label"), "Dọn lịch sử");
 }
 
 function matchesSearch(job, query) {
@@ -999,10 +1062,9 @@ function render() {
   setText(el("machines-count"), String(hosts.length));
   setText(el("queue-count"), String(shown.length));
 
-  const syncStamp = el("last-synced");
   if (lastSyncedAt) {
-    setText(syncStamp, "Cập nhật " + times.format(lastSyncedAt));
-    syncStamp.hidden = false;
+    setText(el("last-synced"), "Cập nhật " + times.format(lastSyncedAt));
+    el("last-synced-wrap").hidden = false;
   }
 
   const floorGiB = state.minFreeBytes ? (state.minFreeBytes / 1024 ** 3).toLocaleString("vi-VN", { maximumSignificantDigits: 7 }) : "—";
@@ -1129,8 +1191,9 @@ function renderTemplates() {
     });
     wrap.append(chip);
     if (item.custom) {
-      const del = node("button", "template-del", "×");
+      const del = node("button", "template-del");
       del.type = "button";
+      del.append(icon("x", 12));
       del.setAttribute("aria-label", "Xóa mẫu " + item.name);
       del.addEventListener("click", () => {
         writeCustomTemplates(readCustomTemplates().filter(entry => entry.id !== item.id));
@@ -1182,8 +1245,9 @@ function addField(initialValue = "") {
   const controls = node("div", "step-controls");
   const byteCounter = node("span", "step-bytes", "0 B / 32 KiB");
 
-  const up = node("button", "step-move move-up", "↑");
+  const up = node("button", "step-move move-up");
   up.type = "button";
+  up.append(icon("arrow-up", 13));
   up.addEventListener("click", () => {
     if (field.previousElementSibling) {
       field.parentElement.insertBefore(field, field.previousElementSibling);
@@ -1192,8 +1256,9 @@ function addField(initialValue = "") {
     }
   });
 
-  const down = node("button", "step-move move-down", "↓");
+  const down = node("button", "step-move move-down");
   down.type = "button";
+  down.append(icon("arrow-down", 13));
   down.addEventListener("click", () => {
     if (field.nextElementSibling) {
       field.parentElement.insertBefore(field.nextElementSibling, field);
@@ -1202,8 +1267,9 @@ function addField(initialValue = "") {
     }
   });
 
-  const remove = node("button", "step-remove", "Bỏ bước");
+  const remove = node("button", "step-remove");
   remove.type = "button";
+  remove.append(icon("trash", 12), node("span", "", "Bỏ bước"));
   remove.addEventListener("click", () => {
     const sibling = field.previousElementSibling || field.nextElementSibling;
     field.remove();
@@ -1337,9 +1403,8 @@ el("prune-jobs").addEventListener("click", () => {
     const count = state.jobs.filter(job => terminalStatuses.has(job.status)).length;
     if (!count) return;
     pruneArmed = true;
-    const button = el("prune-jobs");
-    button.dataset.armed = "true";
-    setText(button, "Xác nhận xóa " + count + " việc?");
+    el("prune-jobs").dataset.armed = "true";
+    setText(el("prune-jobs-label"), "Xác nhận xóa " + count + " việc?");
     clearTimeout(pruneTimer);
     pruneTimer = setTimeout(disarmPrune, 4000);
     return;

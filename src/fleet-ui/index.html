@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Điều phối công việc · Codex Bridge</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232563eb'/%3E%3Crect x='4.5' y='6' width='9.5' height='7.5' rx='2' fill='none' stroke='%23ffffff' stroke-width='2'/%3E%3Crect x='10' y='10.5' width='9.5' height='7.5' rx='2' fill='%232563eb' stroke='%23bfdbfe' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="icon" type="image/svg+xml" href="/icons/bridge.svg">
   <link rel="stylesheet" href="/style.css">
   <script type="module" src="/app.js"></script>
 </head>
@@ -15,10 +15,7 @@
       <div class="brand-group">
         <a href="/" class="brand">
           <span class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
-              <rect x="2.5" y="4.5" width="12.5" height="9.5" rx="2.5" stroke="currentColor" stroke-width="1.9"></rect>
-              <rect x="9" y="10" width="12.5" height="9.5" rx="2.5" fill="var(--brand-mark-bg)" stroke="var(--accent)" stroke-width="1.9"></rect>
-            </svg>
+            <img src="/icons/bridge.svg" alt="" class="brand-logo" draggable="false" decoding="sync">
           </span>
           <span>Codex Bridge</span>
         </a>
@@ -27,31 +24,32 @@
       <div class="bar-actions">
         <span id="connection" class="connection" role="status">Đang kết nối</span>
         <button type="button" id="refresh-now" class="icon-button" aria-label="Làm mới trạng thái cụm máy" title="Làm mới ngay (R)" disabled>
-          <svg class="icon-refresh" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
-            <path d="M21 3v6h-6"></path>
+          <svg class="icon-refresh" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+            <path d="M21 3v5h-5"></path>
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+            <path d="M8 16H3v5"></path>
           </svg>
         </button>
         <button type="button" id="notify-toggle" class="icon-button" aria-label="Bật thông báo khi công việc hoàn tất" aria-pressed="false" title="Thông báo hoàn tất công việc">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path>
+            <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path>
           </svg>
         </button>
         <button type="button" id="shortcuts-btn" class="icon-button desktop-only" aria-label="Phím tắt" title="Phím tắt (?)" aria-haspopup="dialog">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="9"></circle>
-            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
-            <path d="M12 17h.01"></path>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect width="20" height="16" x="2" y="4" rx="2"></rect>
+            <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"></path>
           </svg>
         </button>
         <button type="button" id="theme-toggle" class="icon-button" aria-label="Chuyển giao diện sáng tối" title="Đổi giao diện sáng / tối (D)">
-          <svg class="icon-sun" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="4"></circle>
-            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+            <path d="M12 2v2M12 20v2m-7.07-15.07 1.41 1.41m11.32 11.32 1.41 1.41M2 12h2M20 12h2m-15.66 5.66-1.41 1.41m14.14-14.14-1.41 1.41"></path>
           </svg>
-          <svg class="icon-moon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
           </svg>
         </button>
       </div>
@@ -61,7 +59,8 @@
   <main>
     <a id="all-hosts" class="back-link" href="/" hidden>
       <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M19 12H5M12 19l-7-7 7-7"></path>
+        <path d="m12 19-7-7 7-7"></path>
+        <path d="M19 12H5"></path>
       </svg>
       <span>Tất cả máy</span>
     </a>
@@ -72,10 +71,17 @@
         <p id="summary" class="muted">Đang tải trạng thái máy…</p>
       </div>
       <div class="page-head-actions">
-        <span id="last-synced" class="sync-stamp" hidden></span>
+        <span id="last-synced-wrap" class="sync-stamp" hidden>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          <span id="last-synced"></span>
+        </span>
         <button id="new-job" class="primary" disabled title="Tạo công việc mới (N)">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
-            <path d="M12 5v14M5 12h14"></path>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14"></path>
+            <path d="M12 5v14"></path>
           </svg>
           <span>Tạo công việc</span>
         </button>
@@ -89,9 +95,11 @@
         <div class="stat-top">
           <span class="stat-label">Máy trực tuyến</span>
           <span class="stat-icon tone-green" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="2" y="3" width="20" height="14" rx="2"></rect>
-              <path d="M8 21h8M12 17v4"></path>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect>
+              <rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect>
+              <line x1="6" x2="6.01" y1="6" y2="6"></line>
+              <line x1="6" x2="6.01" y1="18" y2="18"></line>
             </svg>
           </span>
         </div>
@@ -102,9 +110,10 @@
         <div class="stat-top">
           <span class="stat-label">RAM khả dụng</span>
           <span class="stat-icon tone-blue" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="4" y="6" width="16" height="12" rx="2"></rect>
-              <path d="M8 6V3M12 6V3M16 6V3M8 21v-3M12 21v-3M16 21v-3"></path>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect width="16" height="16" x="4" y="4" rx="2"></rect>
+              <rect width="6" height="6" x="9" y="9" rx="1"></rect>
+              <path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"></path>
             </svg>
           </span>
         </div>
@@ -115,8 +124,8 @@
         <div class="stat-top">
           <span class="stat-label">Đang xử lý</span>
           <span class="stat-icon tone-amber" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4"></path>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path>
             </svg>
           </span>
         </div>
@@ -127,8 +136,9 @@
         <div class="stat-top">
           <span class="stat-label">Hoàn tất</span>
           <span class="stat-icon tone-neutral" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M20 6L9 17l-5-5"></path>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="m9 12 2 2 4-4"></path>
             </svg>
           </span>
         </div>
@@ -145,14 +155,23 @@
         </div>
         <div class="memory-control">
           <span class="threshold-pill">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 20V10M18 20V4M6 20v-4"></path>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m12 14 4-4"></path>
+              <path d="M3.34 19a10 10 0 1 1 17.32 0"></path>
             </svg>
             <span id="threshold">RAM tối thiểu</span>
           </span>
           <button id="edit-memory" class="secondary compact-btn" aria-haspopup="dialog" disabled>
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="21" x2="14" y1="4" y2="4"></line>
+              <line x1="10" x2="3" y1="4" y2="4"></line>
+              <line x1="21" x2="12" y1="12" y2="12"></line>
+              <line x1="8" x2="3" y1="12" y2="12"></line>
+              <line x1="21" x2="16" y1="20" y2="20"></line>
+              <line x1="12" x2="3" y1="20" y2="20"></line>
+              <line x1="14" x2="14" y1="2" y2="6"></line>
+              <line x1="8" x2="8" y1="10" y2="14"></line>
+              <line x1="16" x2="16" y1="18" y2="22"></line>
             </svg>
             <span>Chỉnh ngưỡng</span>
           </button>
@@ -170,7 +189,16 @@
             <span class="count-pill" id="queue-count">0</span>
           </div>
           <div class="panel-head-actions">
-            <button type="button" id="prune-jobs" class="secondary compact-btn" hidden>Dọn lịch sử</button>
+            <button type="button" id="prune-jobs" class="secondary compact-btn" hidden>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 6h18"></path>
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                <line x1="10" x2="10" y1="11" y2="17"></line>
+                <line x1="14" x2="14" y1="11" y2="17"></line>
+              </svg>
+              <span id="prune-jobs-label">Dọn lịch sử</span>
+            </button>
             <select id="status-filter" aria-label="Lọc theo trạng thái">
               <option value="all">Mọi trạng thái</option>
               <option value="queued">Chờ phân công</option>
@@ -185,12 +213,17 @@
         <div id="queue-toolbar" class="queue-toolbar" hidden>
           <div class="search-box">
             <svg class="search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="7"></circle>
-              <path d="M21 21l-4.35-4.35"></path>
+              <circle cx="11" cy="11" r="8"></circle>
+              <path d="m21 21-4.3-4.3"></path>
             </svg>
             <input id="job-search" type="search" placeholder="Tìm công việc, bước, máy…" autocomplete="off" aria-label="Tìm kiếm công việc">
             <kbd class="search-kbd" id="search-kbd" aria-hidden="true">/</kbd>
-            <button type="button" id="clear-search" class="clear-search" aria-label="Xóa tìm kiếm" hidden>×</button>
+            <button type="button" id="clear-search" class="clear-search" aria-label="Xóa tìm kiếm" hidden>
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M18 6 6 18"></path>
+                <path d="m6 6 12 12"></path>
+              </svg>
+            </button>
           </div>
           <select id="agent-filter" aria-label="Lọc theo trợ lý">
             <option value="all">Mọi trợ lý</option>
@@ -203,9 +236,13 @@
         <div id="job-list" class="job-list"></div>
         <div id="empty-queue" class="empty" hidden>
           <span class="empty-art" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="4" y="4" width="16" height="16" rx="3"></rect>
-              <path d="M8 9h8M8 13h6M8 17h4"></path>
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <rect width="8" height="4" x="8" y="2" rx="1" ry="1"></rect>
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+              <path d="M12 11h4"></path>
+              <path d="M12 16h4"></path>
+              <path d="M8 11h.01"></path>
+              <path d="M8 16h.01"></path>
             </svg>
           </span>
           <h3 id="empty-heading">Chưa có công việc</h3>
@@ -222,10 +259,12 @@
         </div>
         <div id="empty-detail" class="empty">
           <span class="empty-art" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="6" cy="6" r="2.5"></circle>
-              <circle cx="6" cy="18" r="2.5"></circle>
-              <path d="M6 8.5v7M12 6h7M12 12h7M12 18h5"></path>
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m3 17 2 2 4-4"></path>
+              <path d="m3 7 2 2 4-4"></path>
+              <path d="M13 6h8"></path>
+              <path d="M13 12h8"></path>
+              <path d="M13 18h8"></path>
             </svg>
           </span>
           <h3>Chọn một công việc</h3>
@@ -240,23 +279,64 @@
                 <span id="job-agent" class="agent-chip"></span>
               </div>
               <div class="detail-toolbar">
-                <button type="button" id="clone-job" class="secondary compact-btn">Nhân bản</button>
-                <button type="button" id="copy-report" class="secondary compact-btn">Báo cáo</button>
-                <button type="button" id="delete-job" class="danger compact-btn" hidden>Xóa</button>
+                <button type="button" id="clone-job" class="secondary compact-btn">
+                  <span id="clone-job-icon" class="btn-icon" aria-hidden="true"></span>
+                  <span id="clone-job-label">Nhân bản</span>
+                </button>
+                <button type="button" id="copy-report" class="secondary compact-btn">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path>
+                    <path d="M14 2v4a2 2 0 0 0 2 2h4"></path>
+                    <path d="M10 9H8"></path>
+                    <path d="M16 13H8"></path>
+                    <path d="M16 17H8"></path>
+                  </svg>
+                  <span>Báo cáo</span>
+                </button>
+                <button type="button" id="delete-job" class="danger compact-btn" hidden>
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 6h18"></path>
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                  </svg>
+                  <span>Xóa</span>
+                </button>
               </div>
             </div>
           </div>
           <dl class="metadata">
             <div class="meta-cell">
-              <dt>Máy nhận</dt>
+              <dt>
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect>
+                  <rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect>
+                  <line x1="6" x2="6.01" y1="6" y2="6"></line>
+                  <line x1="6" x2="6.01" y1="18" y2="18"></line>
+                </svg>
+                <span>Máy nhận</span>
+              </dt>
               <dd id="job-target"></dd>
             </div>
             <div class="meta-cell">
-              <dt>Thời điểm tạo</dt>
+              <dt>
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M8 2v4"></path>
+                  <path d="M16 2v4"></path>
+                  <rect width="18" height="18" x="3" y="4" rx="2"></rect>
+                  <path d="M3 10h18"></path>
+                </svg>
+                <span>Thời điểm tạo</span>
+              </dt>
               <dd id="job-created"></dd>
             </div>
             <div class="meta-cell">
-              <dt>Cập nhật</dt>
+              <dt>
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                <span>Cập nhật</span>
+              </dt>
               <dd id="job-updated"></dd>
             </div>
           </dl>
@@ -264,8 +344,23 @@
           <div id="job-actions" class="actions action-bar" hidden>
             <label for="new-target" class="sr-only">Chọn máy nhận mới</label>
             <select id="new-target"></select>
-            <button id="move-job" class="secondary">Đổi máy</button>
-            <button id="cancel-job" class="danger">Hủy việc</button>
+            <button id="move-job" class="secondary">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m16 3 4 4-4 4"></path>
+                <path d="M20 7H4"></path>
+                <path d="m8 21-4-4 4-4"></path>
+                <path d="M4 17h16"></path>
+              </svg>
+              <span>Đổi máy</span>
+            </button>
+            <button id="cancel-job" class="danger">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"></circle>
+                <path d="m15 9-6 6"></path>
+                <path d="m9 9 6 6"></path>
+              </svg>
+              <span>Hủy việc</span>
+            </button>
           </div>
           <div id="step-progress-wrap" class="step-progress-wrap" hidden>
             <div class="step-progress-head">
@@ -293,8 +388,9 @@
           <p class="dialog-sub">Đặt lượng RAM trống tối thiểu trước khi nhận bước mới</p>
         </div>
         <button type="button" id="dismiss-memory" class="icon-button close-btn" aria-label="Đóng">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <path d="M18 6L6 18M6 6l12 12"></path>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6 6 18"></path>
+            <path d="m6 6 12 12"></path>
           </svg>
         </button>
       </div>
@@ -317,7 +413,12 @@
       </div>
       <div class="dialog-footer">
         <button type="button" id="close-memory" class="secondary">Đóng</button>
-        <button id="save-memory" class="primary">Áp dụng</button>
+        <button id="save-memory" class="primary">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 6 9 17l-5-5"></path>
+          </svg>
+          <span>Áp dụng</span>
+        </button>
       </div>
     </form>
   </dialog>
@@ -330,8 +431,9 @@
           <p class="dialog-sub">Giao một hoặc nhiều bước liên tiếp cho máy phù hợp</p>
         </div>
         <button type="button" id="dismiss" class="icon-button close-btn" aria-label="Đóng">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <path d="M18 6L6 18M6 6l12 12"></path>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6 6 18"></path>
+            <path d="m6 6 12 12"></path>
           </svg>
         </button>
       </div>
@@ -339,7 +441,14 @@
         <div class="template-strip">
           <div class="template-head">
             <span class="template-label">Mẫu nhanh</span>
-            <button type="button" id="save-template" class="template-save">Lưu mẫu hiện tại</button>
+            <button type="button" id="save-template" class="template-save">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"></path>
+                <line x1="12" x2="12" y1="7" y2="13"></line>
+                <line x1="15" x2="9" y1="10" y2="10"></line>
+              </svg>
+              <span>Lưu mẫu hiện tại</span>
+            </button>
           </div>
           <div id="template-list" class="template-list" role="group" aria-label="Chọn mẫu công việc"></div>
         </div>
@@ -364,8 +473,9 @@
         <p class="form-hint">Bước đầu dùng bản dự án trên máy nhận. Khi chuyển bước sang máy khác, hai bản Git cần sạch và cùng commit. Kết quả văn bản được chuyển cùng bước tiếp theo.</p>
         <div id="step-fields" class="step-fields"></div>
         <button type="button" id="add-step" class="add-step-btn">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <path d="M12 5v14M5 12h14"></path>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14"></path>
+            <path d="M12 5v14"></path>
           </svg>
           <span>Thêm bước tiếp theo</span>
         </button>
@@ -375,7 +485,13 @@
         <span class="footer-hint">Nhấn <kbd>Ctrl</kbd> + <kbd>Enter</kbd> để gửi nhanh</span>
         <div class="footer-buttons">
           <button type="button" id="back" class="secondary">Đóng</button>
-          <button id="submit-job" class="primary">Thêm vào hàng chờ</button>
+          <button id="submit-job" class="primary">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"></path>
+              <path d="m21.854 2.147-10.94 10.939"></path>
+            </svg>
+            <span>Thêm vào hàng chờ</span>
+          </button>
         </div>
       </div>
     </form>
@@ -388,8 +504,9 @@
         <p class="dialog-sub">Thao tác nhanh không cần rời bàn phím</p>
       </div>
       <button type="button" id="close-shortcuts" class="icon-button close-btn" aria-label="Đóng">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-          <path d="M18 6L6 18M6 6l12 12"></path>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 6 6 18"></path>
+          <path d="m6 6 12 12"></path>
         </svg>
       </button>
     </div>

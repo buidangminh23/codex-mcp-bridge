@@ -98,9 +98,10 @@ export function createFleetServer({ hosts, queue, client, token, desktopConnect,
         let file;
         if (pathname === "/") file = path.join(ui, "index.html");
         else if (/^\/(?:app\.js|style\.css|screen\.(?:js|html))$/.test(pathname)) file = path.join(ui, pathname.slice(1));
+        else if (/^\/icons\/[a-z0-9-]+\.svg$/.test(pathname)) file = path.join(ui, pathname.slice(1));
         else if (/^\/novnc\/(?:core|vendor)\/(?:[\w-]+\/)*[\w.-]+\.js$/.test(pathname)) file = path.join(vendor, pathname.slice(7));
         if (request.method !== "GET" || !file || !fs.existsSync(file)) throw fail("Page not found", 404);
-        response.setHeader("Content-Type", ({ ".html": "text/html", ".js": "text/javascript", ".css": "text/css" })[path.extname(file)] + "; charset=utf-8");
+        response.setHeader("Content-Type", ({ ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" })[path.extname(file)] + "; charset=utf-8");
         response.end(await fs.promises.readFile(file));
         return;
       }

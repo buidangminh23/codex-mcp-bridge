@@ -26,7 +26,26 @@
       </div>
       <div class="bar-actions">
         <span id="connection" class="connection" role="status">Đang kết nối</span>
-        <button type="button" id="theme-toggle" class="icon-button" aria-label="Chuyển giao diện sáng tối" title="Đổi giao diện sáng / tối">
+        <button type="button" id="refresh-now" class="icon-button" aria-label="Làm mới trạng thái cụm máy" title="Làm mới ngay (R)" disabled>
+          <svg class="icon-refresh" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+            <path d="M21 3v6h-6"></path>
+          </svg>
+        </button>
+        <button type="button" id="notify-toggle" class="icon-button" aria-label="Bật thông báo khi công việc hoàn tất" aria-pressed="false" title="Thông báo hoàn tất công việc">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+        </button>
+        <button type="button" id="shortcuts-btn" class="icon-button desktop-only" aria-label="Phím tắt" title="Phím tắt (?)" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+            <path d="M12 17h.01"></path>
+          </svg>
+        </button>
+        <button type="button" id="theme-toggle" class="icon-button" aria-label="Chuyển giao diện sáng tối" title="Đổi giao diện sáng / tối (D)">
           <svg class="icon-sun" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="4"></circle>
             <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
@@ -53,7 +72,8 @@
         <p id="summary" class="muted">Đang tải trạng thái máy…</p>
       </div>
       <div class="page-head-actions">
-        <button id="new-job" class="primary" disabled>
+        <span id="last-synced" class="sync-stamp" hidden></span>
+        <button id="new-job" class="primary" disabled title="Tạo công việc mới (N)">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
             <path d="M12 5v14M5 12h14"></path>
           </svg>
@@ -128,7 +148,7 @@
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 20V10M18 20V4M6 20v-4"></path>
             </svg>
-            <span id="threshold">RAM khả dụng tối thiểu</span>
+            <span id="threshold">RAM tối thiểu</span>
           </span>
           <button id="edit-memory" class="secondary compact-btn" aria-haspopup="dialog" disabled>
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -149,14 +169,34 @@
             <h2 id="queue-heading">Danh sách công việc</h2>
             <span class="count-pill" id="queue-count">0</span>
           </div>
-          <select id="status-filter" aria-label="Lọc theo trạng thái">
-            <option value="all">Mọi trạng thái</option>
-            <option value="queued">Chờ phân công</option>
-            <option value="running">Đang chạy</option>
-            <option value="uncertain">Chờ xác minh</option>
-            <option value="completed">Hoàn tất</option>
-            <option value="failed">Thất bại</option>
-            <option value="cancelled">Đã hủy</option>
+          <div class="panel-head-actions">
+            <button type="button" id="prune-jobs" class="secondary compact-btn" hidden>Dọn lịch sử</button>
+            <select id="status-filter" aria-label="Lọc theo trạng thái">
+              <option value="all">Mọi trạng thái</option>
+              <option value="queued">Chờ phân công</option>
+              <option value="running">Đang chạy</option>
+              <option value="uncertain">Chờ xác minh</option>
+              <option value="completed">Hoàn tất</option>
+              <option value="failed">Thất bại</option>
+              <option value="cancelled">Đã hủy</option>
+            </select>
+          </div>
+        </div>
+        <div id="queue-toolbar" class="queue-toolbar" hidden>
+          <div class="search-box">
+            <svg class="search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle>
+              <path d="M21 21l-4.35-4.35"></path>
+            </svg>
+            <input id="job-search" type="search" placeholder="Tìm công việc, bước, máy…" autocomplete="off" aria-label="Tìm kiếm công việc">
+            <kbd class="search-kbd" id="search-kbd" aria-hidden="true">/</kbd>
+            <button type="button" id="clear-search" class="clear-search" aria-label="Xóa tìm kiếm" hidden>×</button>
+          </div>
+          <select id="agent-filter" aria-label="Lọc theo trợ lý">
+            <option value="all">Mọi trợ lý</option>
+            <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
+            <option value="antigravity">Antigravity</option>
           </select>
         </div>
         <div id="filter-pills" class="filter-pills" role="tablist" aria-label="Lọc nhanh trạng thái công việc"></div>
@@ -194,9 +234,16 @@
         <div id="job-detail" hidden>
           <div class="detail-hero">
             <h3 id="job-title"></h3>
-            <div class="detail-summary">
-              <span id="job-status" class="badge"></span>
-              <span id="job-agent" class="agent-chip"></span>
+            <div class="detail-summary-row">
+              <div class="detail-summary">
+                <span id="job-status" class="badge"></span>
+                <span id="job-agent" class="agent-chip"></span>
+              </div>
+              <div class="detail-toolbar">
+                <button type="button" id="clone-job" class="secondary compact-btn">Nhân bản</button>
+                <button type="button" id="copy-report" class="secondary compact-btn">Báo cáo</button>
+                <button type="button" id="delete-job" class="danger compact-btn" hidden>Xóa</button>
+              </div>
             </div>
           </div>
           <dl class="metadata">
@@ -208,6 +255,10 @@
               <dt>Thời điểm tạo</dt>
               <dd id="job-created"></dd>
             </div>
+            <div class="meta-cell">
+              <dt>Cập nhật</dt>
+              <dd id="job-updated"></dd>
+            </div>
           </dl>
           <p id="job-error" class="notice" hidden></p>
           <div id="job-actions" class="actions action-bar" hidden>
@@ -215,6 +266,15 @@
             <select id="new-target"></select>
             <button id="move-job" class="secondary">Đổi máy</button>
             <button id="cancel-job" class="danger">Hủy việc</button>
+          </div>
+          <div id="step-progress-wrap" class="step-progress-wrap" hidden>
+            <div class="step-progress-head">
+              <span>Tiến độ các bước</span>
+              <span id="step-progress-text"></span>
+            </div>
+            <div class="step-progress-track">
+              <div id="step-progress-fill" class="step-progress-fill"></div>
+            </div>
           </div>
           <div class="steps-section">
             <div class="steps-heading">Tiến trình thực hiện</div>
@@ -276,6 +336,13 @@
         </button>
       </div>
       <div class="dialog-body">
+        <div class="template-strip">
+          <div class="template-head">
+            <span class="template-label">Mẫu nhanh</span>
+            <button type="button" id="save-template" class="template-save">Lưu mẫu hiện tại</button>
+          </div>
+          <div id="template-list" class="template-list" role="group" aria-label="Chọn mẫu công việc"></div>
+        </div>
         <div class="field-group">
           <label for="title-input">Tên công việc</label>
           <input id="title-input" required maxlength="160" autocomplete="off" placeholder="Ví dụ: Chạy bộ test và kiểm tra build trên Mac" autofocus>
@@ -304,11 +371,39 @@
         </button>
         <p class="notice error" id="form-error" role="alert" hidden></p>
       </div>
-      <div class="dialog-footer">
-        <button type="button" id="back" class="secondary">Đóng</button>
-        <button id="submit-job" class="primary">Thêm vào hàng chờ</button>
+      <div class="dialog-footer dialog-footer-split">
+        <span class="footer-hint">Nhấn <kbd>Ctrl</kbd> + <kbd>Enter</kbd> để gửi nhanh</span>
+        <div class="footer-buttons">
+          <button type="button" id="back" class="secondary">Đóng</button>
+          <button id="submit-job" class="primary">Thêm vào hàng chờ</button>
+        </div>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+    <div class="dialog-head">
+      <div class="dialog-title-wrap">
+        <h2 id="shortcuts-title">Phím tắt điều phối</h2>
+        <p class="dialog-sub">Thao tác nhanh không cần rời bàn phím</p>
+      </div>
+      <button type="button" id="close-shortcuts" class="icon-button close-btn" aria-label="Đóng">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6L6 18M6 6l12 12"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="dialog-body">
+      <ul class="shortcut-list">
+        <li><span>Tạo công việc mới</span><kbd>N</kbd></li>
+        <li><span>Làm mới trạng thái cụm máy ngay</span><kbd>R</kbd></li>
+        <li><span>Tìm kiếm trong danh sách công việc</span><kbd>/</kbd></li>
+        <li><span>Chuyển công việc trước / tiếp theo</span><span class="kbd-pair"><kbd>↑</kbd><kbd>↓</kbd></span></li>
+        <li><span>Đổi giao diện Sáng / Tối</span><kbd>D</kbd></li>
+        <li><span>Gửi nhanh trong hộp thoại tạo việc</span><span class="kbd-pair"><kbd>Ctrl</kbd><kbd>Enter</kbd></span></li>
+        <li><span>Mở / đóng bảng phím tắt</span><kbd>?</kbd></li>
+      </ul>
+    </div>
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite" data-visible="false"></div>

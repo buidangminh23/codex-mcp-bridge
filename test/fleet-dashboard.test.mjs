@@ -32,8 +32,12 @@ function request(origin, token, pathname, { method = "GET", headers = {}, body }
 async function appFixture(t, desktopConnect) {
   const token = randomBytes(32).toString("base64url");
   const windows = [];
-  const client = { async windows(host) { windows.push(host.id); return { windows: [{ app: "Editor", title: host.id }] }; },
-    async sessions(host) { return { sessions: [{ agent: "codex", title: host.id, status: "running" }] }; } };
+  let probes = 0;
+  const client = {
+    async probe(host) { probes += 1; return { hostname: host.id, platform: host.platform || "linux", freeBytes: 8 * 1024 ** 3, totalBytes: 16 * 1024 ** 3, agents: ["codex"] }; },
+    async windows(host) { windows.push(host.id); return { windows: [{ app: "Editor", title: host.id }] }; },
+    async sessions(host) { return { sessions: [{ agent: "codex", title: host.id, status: "running" }] }; },
+  };
   const queue = createFleetQueue({ hosts, client, load: () => null, save() {} });
   const app = createFleetServer({ hosts, queue, client, token, desktopConnect });
   await listen(app.server);
@@ -44,7 +48,7 @@ async function appFixture(t, desktopConnect) {
     await closed;
   });
   const origin = app.origin();
-  return { origin, token, windows, api: (pathname, opts) => request(origin, token, pathname, opts),
+  return { origin, token, windows, probeCount: () => probes, api: (pathname, opts) => request(origin, token, pathname, opts),
     post: (pathname, body = {}) => request(origin, token, pathname, { method: "POST", body }) };
 }
 
@@ -93,6 +97,16 @@ test("dashboard creates, retargets and cancels a job and reads windows from the 
     { sessions: [{ agent: "codex", title: "laptop", status: "running" }] });
   assert.equal((await box.post("/api/hosts/local/screen")).status, 400);
   assert.equal((await box.post("/api/hosts/laptop/rdp")).status, 400);
+  const activeJob = await (await box.post("/api/jobs", newJob)).json();
+  assert.equal((await box.post(`/api/jobs/${activeJob.id}/delete`)).status, 409);
+  assert.deepEqual(await (await box.post(`/api/jobs/${job.id}/delete`)).json(), { removed: job.id });
+  assert.equal((await box.post(`/api/jobs/${activeJob.id}/cancel`)).status, 200);
+  assert.deepEqual(await (await box.post("/api/jobs/prune")).json(), { removed: 1 });
+  assert.deepEqual((await (await box.api("/api/state")).json()).jobs, []);
+  const refreshed = await box.post("/api/refresh");
+  assert.equal(refreshed.status, 200);
+  assert.ok(box.probeCount() >= hosts.length);
+  assert.equal((await refreshed.json()).hosts.filter(host => host.online).length, hosts.length);
 });
 
 test("screen ticket opens one bidirectional VNC stream for its enrolled host", { timeout: 10000 }, async t => {

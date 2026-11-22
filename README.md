@@ -16,15 +16,15 @@ Every archived source day is listed below, newest first. Active installations co
 
 | Date (UTC) | Views | Unique visitors | Clones | Unique cloners | npm downloads | Active installations |
 |---|---:|---:|---:|---:|---:|---:|
-| 2026-11-21 | Unavailable | Unavailable | Unavailable | Unavailable | 258 | Unavailable |
-| 2026-11-20 | Unavailable | Unavailable | Unavailable | Unavailable | 801 | Unavailable |
-| 2026-11-19 | Unavailable | Unavailable | Unavailable | Unavailable | 582 | Unavailable |
-| 2026-11-18 | Unavailable | Unavailable | Unavailable | Unavailable | 74 | Unavailable |
-| 2026-11-17 | Unavailable | Unavailable | Unavailable | Unavailable | 103 | Unavailable |
-| 2026-11-16 | Unavailable | Unavailable | Unavailable | Unavailable | 76 | Unavailable |
-| 2026-11-15 | Unavailable | Unavailable | Unavailable | Unavailable | 887 | Unavailable |
-| 2026-11-14 | Unavailable | Unavailable | Unavailable | Unavailable | 208 | Unavailable |
-| 2026-11-13 | Unavailable | Unavailable | Unavailable | Unavailable | 332 | Unavailable |
+| 2026-11-21 | 2 | 1 | 160 | 72 | 258 | Unavailable |
+| 2026-11-20 | 22 | 7 | 304 | 81 | 801 | Unavailable |
+| 2026-11-19 | 13 | 10 | 289 | 51 | 582 | Unavailable |
+| 2026-11-18 | 14 | 7 | 75 | 33 | 74 | Unavailable |
+| 2026-11-17 | 17 | 6 | 33 | 31 | 103 | Unavailable |
+| 2026-11-16 | 23 | 12 | 73 | 54 | 76 | Unavailable |
+| 2026-11-15 | 17 | 10 | 48 | 29 | 887 | Unavailable |
+| 2026-11-14 | 7 | 7 | 39 | 22 | 208 | Unavailable |
+| 2026-11-13 | 8 | 3 | 35 | 15 | 332 | Unavailable |
 | 2026-11-12 | 21 | 12 | 38 | 23 | 565 | Unavailable |
 | 2026-11-11 | 6 | 5 | 30 | 22 | 122 | Unavailable |
 | 2026-11-10 | 27 | 12 | 42 | 22 | 93 | Unavailable |

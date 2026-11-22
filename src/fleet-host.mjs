@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { readlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -290,7 +291,11 @@ export async function listFleetProcesses({ platform = process.platform, env = pr
         const memoryBytes = Number(match[3]) * 1024;
         const uptimeSeconds = parsePosixEtime(match[4]);
         const rawState = match[5];
-        const name = match[6];
+        let name = match[6];
+        if (platform === "linux" && name === "MainThread") {
+          try { name = path.posix.basename(readlinkSync(`/proc/${pid}/exe`)); }
+          catch { return []; }
+        }
         const rawArgs = match[7];
         if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(memoryBytes) || memoryBytes < 0) return [];
         const info = describeCodeProcess(name, rawArgs);

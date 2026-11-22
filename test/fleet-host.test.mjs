@@ -220,8 +220,8 @@ test("native ps identifies a runtime and script launched from paths containing s
   await symlink(process.execPath, runtime);
   await writeFile(script, 'process.send("ready"); process.on("disconnect", () => process.exit(0));');
   const child = spawn(runtime, [script], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
-  const closed = once(child, "close");
-  t.after(async () => { if (child.connected) child.disconnect(); await closed; });
+  const exited = once(child, "exit");
+  t.after(async () => { if (child.connected) child.disconnect(); await exited; });
   await once(child, "message");
   const inventory = await listFleetProcesses({ run: async (bin, args, options) => {
     const { stdout } = await promisify(execFile)(bin, ["-ww", "-p", String(child.pid), ...args.slice(1)], options);

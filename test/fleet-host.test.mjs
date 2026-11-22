@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -206,6 +210,24 @@ test("process inventory keeps only agent, CI, dev-server and hidden code runs wi
   assert.equal(win.processes[0].category, "agent");
   assert.equal(win.processes[0].label, "Codex App Server");
   assert.equal(win.processes[0].uptimeSeconds, 90);
+});
+
+test("native ps identifies a runtime and script launched from paths containing spaces", { skip: !["linux", "darwin"].includes(process.platform) }, async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "fleet test "));
+  const runtime = path.join(directory, "node");
+  const script = path.join(directory, "server.js");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await symlink(process.execPath, runtime);
+  await writeFile(script, 'process.send("ready"); process.on("disconnect", () => process.exit(0));');
+  const child = spawn(runtime, [script], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const closed = once(child, "close");
+  t.after(async () => { if (child.connected) child.disconnect(); await closed; });
+  await once(child, "message");
+  const inventory = await listFleetProcesses({ run: async (bin, args, options) => {
+    const { stdout } = await promisify(execFile)(bin, ["-ww", "-p", String(child.pid), ...args.slice(1)], options);
+    return { stdout };
+  } });
+  assert.deepEqual(inventory.processes.map(p => [p.pid, p.name, p.label]), [[child.pid, "node", "node server.js"]]);
 });
 
 test("activity inventory reads background relay status, tasks and running processes with permission recheck", async () => {

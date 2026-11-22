@@ -216,9 +216,11 @@ export function describeCodeProcess(rawName, rawCmd = "") {
       const m = /-m\s+(uvicorn|http\.server|flask)\b/i.exec(cmd);
       return { category: "server", agent: null, label: "python -m " + m[1].toLowerCase() };
     }
-    const scriptToken = tokens.find(t => !t.startsWith("-") && scriptExtension.test(t));
+    const scriptIndex = tokens.findIndex(t => !t.startsWith("-") && scriptExtension.test(t));
+    const scriptToken = tokens[scriptIndex];
     if (!scriptToken && !tokens.length) return null;
-    const subToken = tokens.find(t => /^(?:dev|start|serve|watch|dashboard|build|test|lint|check)$/i.test(t));
+    const firstScriptArg = scriptIndex >= 0 ? tokens[scriptIndex + 1] : undefined;
+    const subToken = /^(?:dev|start|serve|watch|dashboard|build|test|lint|check)$/i.test(firstScriptArg) ? firstScriptArg : undefined;
     const isServer = serverPattern.test(scriptToken) || (subToken && /^(?:dev|start|serve|watch|dashboard)$/i.test(subToken));
     const isCi = !isServer && (ciSubcommandPattern.test(scriptToken) || (subToken && /^(?:build|test|lint|check)$/i.test(subToken)));
     return {

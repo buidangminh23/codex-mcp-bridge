@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -167,15 +171,24 @@ test("process inventory keeps only agent, CI, dev-server and hidden code runs wi
   const ci = describeCodeProcess("node", "node --test --token=supersecret test/app.test.mjs");
   assert.equal(ci.category, "ci");
   assert.doesNotMatch(ci.label, /supersecret/);
+  for (const [name, command, label] of [
+    ["npm", "npm --prefix /work/acme-client run build", "npm run build"],
+    ["kubectl", "kubectl --namespace internalteam get pods", "kubectl get"],
+    ["gh", "gh --repo internal-repository workflow list", "gh workflow"],
+    ["node", "node -e internalvalue", "node script"],
+    ["node", "node /work/internalteam.js", "node script"],
+    ["node", "node /work/mcp-server-internalteam/index.js", "MCP Server"],
+    ["pwsh", "pwsh -File internalteam.ps1", "pwsh script"],
+  ]) assert.equal(describeCodeProcess(name, command)?.label, label);
 
   const mac = await listFleetProcesses({ platform: "darwin", run: async (bin, args) => {
     assert.equal(bin, "/bin/ps");
-    assert.deepEqual(args, ["-axo", "pid=,pcpu=,rss=,etime=,state=,args="]);
+    assert.deepEqual(args, ["-axww", "-o", "pid=", "-o", "pcpu=", "-o", "rss=", "-o", "etime=", "-o", "state=", "-o", "ucomm=", "-o", "args="]);
     return { stdout: [
-      "  42 12.5 512000 01:12:05 R /usr/local/bin/codex exec --api-key=secret-value",
-      "  55  4.0 120000    05:10 S /usr/local/bin/node --test test/suite.mjs",
-      "  77  1.0  50000 10:00:00 S /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
-      "  99  0.4  65536    20:00 S /usr/local/bin/node server/hub.ts",
+      "  42 12.5 512000 01:12:05 R codex /usr/local/bin/codex exec --api-key=secret-value",
+      "  55  4.0 120000    05:10 S node /opt/Test Runtime/bin/node --test test/suite.mjs",
+      "  77  1.0  50000 10:00:00 S Finder /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+      "  99  0.4  65536    20:00 S node /usr/local/bin/node server/hub.ts",
     ].join("\n") };
   } });
   assert.equal(mac.totalProcesses, 3);
@@ -199,12 +212,33 @@ test("process inventory keeps only agent, CI, dev-server and hidden code runs wi
   assert.equal(win.processes[0].uptimeSeconds, 90);
 });
 
+test("native ps identifies a runtime and script launched from paths containing spaces", { skip: !["linux", "darwin"].includes(process.platform) }, async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "fleet test "));
+  const runtime = path.join(directory, "node");
+  const script = path.join(directory, "server.js");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await symlink(process.execPath, runtime);
+  await writeFile(script, 'process.send("ready"); process.on("disconnect", () => process.exit(0));');
+  const child = spawn(runtime, [script], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const exited = once(child, "exit");
+  t.after(async () => { if (child.connected) child.disconnect(); await exited; });
+  await once(child, "message");
+  const inventory = await listFleetProcesses({ run: async (bin, args, options) => {
+    const { stdout } = await promisify(execFile)(bin, ["-ww", "-p", String(child.pid), ...args.slice(1)], options);
+    return { stdout };
+  } });
+  assert.deepEqual(inventory.processes.map(p => [p.pid, p.name, p.label]), [[child.pid, "node", "node server.js"]]);
+});
+
 test("activity inventory reads background relay status, tasks and running processes with permission recheck", async () => {
   const taskId = randomUUID();
   const sample = await listFleetActivity({
-    relay: async method => method === "status"
+    relay: async (method, params) => {
+      assert.deepEqual(params, { summary: true });
+      return method === "status"
       ? { pid: 500, version: "2.5.1", accepting: true, active: 1, queued: 0, workers: [{ agent: "codex", ready: true, canAcceptWork: true, readiness: "ready", version: "0.167" }] }
-      : { tasks: [{ requestId: taskId, agent: "codex", status: "running", deliveryState: "sent", source: { kind: "local-client" }, output: "Working", createdAt: "2026-11-20T00:00:00Z", updatedAt: "2026-11-20T00:00:05Z" }] },
+      : { tasks: [{ requestId: taskId, agent: "codex", status: "running", deliveryState: "sent", source: { kind: "local-client" }, output: "Working", createdAt: "2026-11-20T00:00:00Z", updatedAt: "2026-11-20T00:00:05Z" }] };
+    },
     processes: async () => ({ totalProcesses: 1, processes: [{ pid: 500, name: "node", label: "Worker Relay Daemon", agent: null, memoryBytes: 50000000, cpuPercent: null, cpuSeconds: 2.1, uptimeSeconds: 120, threads: 10, state: "running", category: "agent", background: true }] }),
   });
   assert.equal(sample.relay.online, true);
@@ -212,6 +246,15 @@ test("activity inventory reads background relay status, tasks and running proces
   assert.equal(sample.tasks[0].requestId, taskId);
   assert.equal(sample.processes[0].role, "worker-relay");
   assert.equal(sample.processes[0].category, "agent");
+  const partial = await listFleetActivity({
+    relay: async method => {
+      if (method === "status") return { active: 2 };
+      throw new Error("list is unavailable");
+    },
+    processes: async () => ({ processes: [] }),
+  });
+  assert.equal(partial.relay.active, 2);
+  assert.match(partial.note, /danh sách tác vụ/);
 
   const { client } = fixture({ activity: async () => sample });
   for (const host of [local, remote]) assert.equal((await client.activity(host)).tasks[0].requestId, taskId);

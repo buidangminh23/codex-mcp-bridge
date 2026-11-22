@@ -53,18 +53,19 @@ export function httpStatus(error) {
   return match ? Number(match[1]) : undefined;
 }
 
-async function github(endpoint, paginate = false) {
+async function github(endpoint, paginate = false, token) {
   const args = ['api', '--hostname', 'github.com', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', endpoint];
   if (paginate) args.push('--paginate', '--slurp');
-  const { stdout } = await execute('gh', args, { timeout: 60000, maxBuffer: 32 * 1024 * 1024, windowsHide: true });
+  const env = token ? { ...process.env, GH_TOKEN: token } : process.env;
+  const { stdout } = await execute('gh', args, { env, timeout: 60000, maxBuffer: 32 * 1024 * 1024, windowsHide: true });
   return JSON.parse(stdout);
 }
 
-export async function collectSources(options, { gh = github, fetcher = fetch, now = new Date() } = {}) {
+export async function collectSources(options, { gh = github, trafficToken, fetcher = fetch, now = new Date() } = {}) {
   const snapshot = { collectedAt: now.toISOString(), errors: [] };
   const jobs = {
-    views: async () => traffic(await gh(`repos/${options.repo}/traffic/views`), 'views'),
-    clones: async () => traffic(await gh(`repos/${options.repo}/traffic/clones`), 'clones'),
+    views: async () => traffic(await gh(`repos/${options.repo}/traffic/views`, false, trafficToken), 'views'),
+    clones: async () => traffic(await gh(`repos/${options.repo}/traffic/clones`, false, trafficToken), 'clones'),
     repository: async () => {
       const data = await gh(`repos/${options.repo}`);
       return { stars: count(data.stargazers_count), forks: count(data.forks_count), subscribers: count(data.subscribers_count) };

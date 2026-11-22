@@ -58,6 +58,36 @@ test("outbound MCP advertises native tools and rejects missing caller before tar
   assert.deepEqual(f.calls, []);
 });
 
+test("advertised Desktop targets work for discovery, reads and sends with the same receipts as their short names", async (t) => {
+  const f = await fixture(t);
+  const { targets } = await f.call("agent_bridge_status");
+  assert.deepEqual(targets, ["codex-desktop", "claude-desktop"]);
+  const tools = (await f.client.listTools()).tools;
+  for (const name of ["list_agent_tasks", "read_agent_task", "send_to_agent_task"]) {
+    const allowed = tools.find((tool) => tool.name === name).inputSchema.properties.target.enum;
+    for (const target of [...targets, "codex", "claude"]) assert.ok(allowed.includes(target), name + " must accept " + target);
+  }
+  for (const target of targets) {
+    const provider = target === "codex-desktop" ? "codex" : "claude";
+    const idField = provider === "codex" ? "threadId" : "sessionId";
+    const request = { ...f.request, target, requestId: crypto.randomUUID() };
+    const firstCall = f.calls.length;
+    assert.equal((await f.call("list_agent_tasks", { target }))[0].conversationId, "fixture-task");
+    assert.equal((await f.call("read_agent_task", { target, conversationId: request.conversationId })).status, "idle");
+    await f.call("send_to_agent_task", request);
+    await new Promise(setImmediate);
+    const receipt = await f.call("read_agent_delivery", { requestId: request.requestId });
+    assert.equal(receipt.status, "accepted");
+    assert.equal(receipt.surface, provider);
+    const retry = await f.call("send_to_agent_task", { ...request, target: provider });
+    assert.equal(retry.status, "accepted");
+    const calls = f.calls.slice(firstCall);
+    assert.deepEqual(calls.map((call) => call.target), [provider, provider, provider]);
+    assert.equal(calls[1][idField], request.conversationId);
+    assert.equal(calls[2][idField], request.conversationId);
+  }
+});
+
 test("background tools use the fixture environment instead of the live service configuration", async (t) => {
   const f = await fixture(t);
   const result = await f.client.callTool({ name: "worker_status", arguments: {} });

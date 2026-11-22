@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { readlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -95,8 +96,9 @@ ConvertTo-Json -InputObject @($rows) -Compress
 `;
 const trackedExecutablePattern = /^(?:node|codex|claude|antigravity|language_server|python|python3|git|ssh|npm|pnpm|yarn|npx|bun|deno|vitest|jest|mocha|tsc|eslint|esbuild|vite|next|turbo|webpack|rollup|cargo|rustc|go|pytest|mypy|ruff|gradle|mvn|dotnet|msbuild|docker|kubectl|gh|playwright|cloudflared|ngrok|ollama|pwsh|powershell|bash|zsh|sh)$/i;
 const electronHelperPattern = /--type=(?:renderer|gpu-process|utility|zygote|crashpad|broker|ppapi)|--crash-reporter/i;
-const sensitiveTokenPattern = /(?:token|secret|password|passwd|apikey|api_key|bearer|authorization|cookie|private_key)/i;
-const safeScriptFolders = new Set(["src", "scripts", "server", "test", "tests", "bin", "app", "packages", "cmd", "tools"]);
+const scriptExtension = /\.(?:[mc]?[jt]sx?|py|ps1|sh|bash|zsh)$/i;
+const commonScriptName = /(?:^|\/)((?:(?:src|scripts|server|test|tests|bin|app|cmd|tools)\/)?(?:index|main|server|hub|proxy|gateway|daemon|build|test|start|dev)\.(?:[mc]?[jt]sx?|py|ps1|sh|bash|zsh))$/i;
+const knownOperations = new Set(["apply", "build", "check", "ci", "clippy", "compile", "compose", "dashboard", "deploy", "dev", "e2e", "exec", "fmt", "format", "get", "install", "lint", "logs", "preview", "ps", "publish", "run", "serve", "start", "test", "typecheck", "verify", "watch", "workflow"]);
 const safeGitSubcommands = new Set(["fetch", "pull", "push", "clone", "status", "diff", "rebase", "merge", "gc", "commit", "checkout", "switch", "log", "worktree", "submodule"]);
 const ciRunnersPattern = /^(?:vitest|jest|mocha|pytest|mypy|ruff|tsc|eslint|esbuild|turbo|webpack|rollup|gradle|mvn|msbuild|gh|playwright)$/i;
 const ciSubcommandPattern = /\b(?:--test|test|build|lint|typecheck|check|ci|verify|compile|clippy|fmt|format|e2e)\b/i;
@@ -116,28 +118,15 @@ function splitCommandTokens(raw) {
   return tokens;
 }
 
-function safePathLabel(token) {
-  const cleaned = String(token || "").replace(/^["']|["']$/g, "").trim();
-  if (!cleaned || cleaned.startsWith("-") || cleaned.includes("://") || cleaned.includes("=") || sensitiveTokenPattern.test(cleaned)) return null;
-  const scoped = /(@[a-z0-9._-]+\/[a-z0-9._-]+)/i.exec(cleaned.replace(/\\/g, "/"));
-  if (scoped && !sensitiveTokenPattern.test(scoped[1])) return scoped[1].slice(0, 64);
-  const parts = cleaned.replace(/\\/g, "/").split("/").filter(Boolean);
-  if (!parts.length) return null;
-  const base = parts.at(-1);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(base) || sensitiveTokenPattern.test(base)) return null;
-  const parent = parts.length >= 2 ? parts.at(-2) : null;
-  if (parent && safeScriptFolders.has(parent.toLowerCase())) return (parent + "/" + base).slice(0, 72);
-  return base.slice(0, 64);
+function scriptLabel(token) {
+  return commonScriptName.exec(token.replaceAll("\\", "/"))?.[1].toLowerCase() || "script";
 }
 
-function extractMcpName(cmd) {
-  const scoped = /(@[a-z0-9._-]+\/[a-z0-9._-]*mcp[a-z0-9._-]*)/i.exec(cmd.replace(/\\/g, "/"));
-  if (scoped) return scoped[1].slice(0, 48);
-  const named = /\b((?:next-devtools-mcp|context7-mcp|mcp-server-[a-z0-9_-]+|server-(?:memory|filesystem|fetch|sequential-thinking|everything|time)|[a-z0-9_-]+-mcp))\b/i.exec(cmd);
-  if (named) return named[1].slice(0, 48);
-  const sidecar = /sidecars\/([a-z0-9_-]+)\//i.exec(cmd.replace(/\\/g, "/"));
-  if (sidecar) return sidecar[1].slice(0, 48);
-  return null;
+function mcpLabel(cmd) {
+  const normalized = cmd.replaceAll("\\", "/");
+  const known = /\b(next-devtools-mcp|context7-mcp|server-(?:memory|filesystem|fetch|sequential-thinking|everything|time))\b/i.exec(normalized);
+  if (known) return "MCP: " + known[1].toLowerCase();
+  return /@[\w.-]+\/[\w.-]*mcp|\bmcp-server-|\b[\w-]+-mcp\b|\/sidecars\/[\w-]+\//i.test(normalized) ? "MCP Server" : null;
 }
 
 export function describeCodeProcess(rawName, rawCmd = "") {
@@ -148,8 +137,8 @@ export function describeCodeProcess(rawName, rawCmd = "") {
   if (electronHelperPattern.test(cmd)) return null;
   if (/[\\/]Elgato[\\/]StreamDeck[\\/]/i.test(cmd)) return null;
   if (lower === "antigravity") {
-    const mcp = extractMcpName(cmd);
-    if (mcp) return { category: "mcp", agent: "antigravity", label: "MCP: " + mcp };
+    const mcp = mcpLabel(cmd);
+    if (mcp) return { category: "mcp", agent: "antigravity", label: mcp };
     return null;
   }
   if (lower === "claude" && (!cmd.trim() || /[\\/]AnthropicClaude[\\/]app-/i.test(cmd) && !/\s(?:-p|--print|--output-format|mcp|serve|exec)\b/i.test(cmd))) {
@@ -158,10 +147,9 @@ export function describeCodeProcess(rawName, rawCmd = "") {
   if ((lower === "pwsh" || lower === "powershell" || lower === "bash" || lower === "zsh" || lower === "sh")) {
     const fileMatch = /(?:^|\s)(?:-File|-f)\s+(?:"([^"]+)"|'([^']+)'|(\S+))/i.exec(cmd)
       || (lower !== "pwsh" && lower !== "powershell" ? /\s([^\s-]+\.(?:sh|bash|zsh))(?:\s|$)/i.exec(cmd) : null);
-    const scriptName = fileMatch ? safePathLabel(fileMatch[1] || fileMatch[2] || fileMatch[3]) : null;
-    if (!scriptName) return null;
-    const isCi = ciSubcommandPattern.test(scriptName);
-    return { category: isCi ? "ci" : "script", agent: null, label: lower + " " + scriptName };
+    if (!fileMatch) return null;
+    const script = fileMatch[1] || fileMatch[2] || fileMatch[3];
+    return { category: ciSubcommandPattern.test(script) ? "ci" : "script", agent: null, label: lower + " " + scriptLabel(script) };
   }
 
   if (/background-relay-daemon\.m?js/i.test(cmd)) return { category: "agent", agent: null, label: "Worker Relay Daemon" };
@@ -190,10 +178,11 @@ export function describeCodeProcess(rawName, rawCmd = "") {
   }
   if (lower === "ollama") return { category: "agent", agent: null, label: "Ollama Local Model" };
 
-  const mcpName = extractMcpName(cmd);
-  if (mcpName) return { category: "mcp", agent: null, label: "MCP: " + mcpName };
+  const mcp = mcpLabel(cmd);
+  if (mcp) return { category: "mcp", agent: null, label: mcp };
 
   const tokens = splitCommandTokens(cmd).slice(1);
+  const operations = tokens.map(t => t.toLowerCase()).filter(t => knownOperations.has(t));
   if (lower === "git") {
     const sub = tokens.find(t => safeGitSubcommands.has(t.toLowerCase()));
     return { category: "script", agent: null, label: sub ? "git " + sub.toLowerCase() : "git" };
@@ -202,18 +191,17 @@ export function describeCodeProcess(rawName, rawCmd = "") {
     return { category: "server", agent: null, label: lower === "ssh" ? "SSH Tunnel / Relay" : lower + " tunnel" };
   }
   if (lower === "docker" || lower === "kubectl") {
-    const sub = tokens.find(t => /^[a-z][a-z0-9-]{1,24}$/.test(t));
+    const sub = operations[0];
     const isCi = sub && /^(?:build|test|compose)$/i.test(sub);
     return { category: isCi ? "ci" : "server", agent: null, label: sub ? lower + " " + sub : lower };
   }
 
   if (ciRunnersPattern.test(lower)) {
-    const sub = tokens.find(t => /^[a-z][a-z0-9:-]{1,28}$/i.test(t) && !sensitiveTokenPattern.test(t));
+    const sub = operations[0];
     return { category: "ci", agent: null, label: sub ? lower + " " + sub : lower };
   }
   if (lower === "npm" || lower === "pnpm" || lower === "yarn" || lower === "npx" || lower === "bun" || lower === "cargo" || lower === "go" || lower === "dotnet") {
-    const parts = tokens.filter(t => !t.startsWith("-") && /^[a-z0-9@._:/-]{1,40}$/i.test(t) && !sensitiveTokenPattern.test(t)).slice(0, 2);
-    const joined = parts.join(" ");
+    const joined = operations.slice(0, 2).join(" ");
     const isServer = serverPattern.test(joined);
     const isCi = !isServer && (ciSubcommandPattern.test(joined) || lower === "cargo" || lower === "go" || lower === "dotnet");
     return { category: isServer ? "server" : isCi ? "ci" : "script", agent: null, label: joined ? lower + " " + joined : lower };
@@ -229,20 +217,17 @@ export function describeCodeProcess(rawName, rawCmd = "") {
       const m = /-m\s+(uvicorn|http\.server|flask)\b/i.exec(cmd);
       return { category: "server", agent: null, label: "python -m " + m[1].toLowerCase() };
     }
-    const scriptToken = tokens.map(safePathLabel).find(Boolean);
-    if (!scriptToken) return null;
-    if (/npx-cli\.js$/i.test(scriptToken)) {
-      const pkg = tokens.map(safePathLabel).find(t => t && !/npx-cli\.js$/i.test(t));
-      if (!pkg) return null;
-      return { category: /mcp/i.test(pkg) ? "mcp" : serverPattern.test(pkg) ? "server" : "script", agent: null, label: "npx " + pkg };
-    }
-    const subToken = tokens.find(t => /^(?:dev|start|serve|watch|dashboard|build|test|lint|check)$/i.test(t));
+    const scriptIndex = tokens.findIndex(t => !t.startsWith("-") && scriptExtension.test(t));
+    const scriptToken = tokens[scriptIndex];
+    if (!scriptToken && !tokens.length) return null;
+    const firstScriptArg = scriptIndex >= 0 ? tokens[scriptIndex + 1] : undefined;
+    const subToken = /^(?:dev|start|serve|watch|dashboard|build|test|lint|check)$/i.test(firstScriptArg) ? firstScriptArg : undefined;
     const isServer = serverPattern.test(scriptToken) || (subToken && /^(?:dev|start|serve|watch|dashboard)$/i.test(subToken));
     const isCi = !isServer && (ciSubcommandPattern.test(scriptToken) || (subToken && /^(?:build|test|lint|check)$/i.test(subToken)));
     return {
       category: isServer ? "server" : isCi ? "ci" : "script",
       agent: null,
-      label: lower + " " + scriptToken + (subToken ? " " + subToken.toLowerCase() : ""),
+      label: lower + " " + scriptLabel(scriptToken || "") + (subToken ? " " + subToken.toLowerCase() : ""),
     };
   }
 
@@ -296,18 +281,22 @@ export async function listFleetProcesses({ platform = process.platform, env = pr
       });
     } else if (platform === "darwin" || platform === "linux") {
       const bin = platform === "darwin" ? "/bin/ps" : "ps";
-      const { stdout } = await run(bin, ["-axo", "pid=,pcpu=,rss=,etime=,state=,args="], { ...options, env: { ...env, LC_ALL: "C" } });
+      const nameField = platform === "darwin" ? "ucomm=" : "comm=";
+      const { stdout } = await run(bin, ["-axww", "-o", "pid=", "-o", "pcpu=", "-o", "rss=", "-o", "etime=", "-o", "state=", "-o", nameField, "-o", "args="], { ...options, env: { ...env, LC_ALL: "C" } });
       rows = stdout.split(/\r?\n/).flatMap(line => {
-        const match = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.+)$/.exec(line);
+        const match = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)$/.exec(line);
         if (!match) return [];
         const pid = Number(match[1]);
         const cpuPercent = Math.round(Number(match[2]) * 10) / 10;
         const memoryBytes = Number(match[3]) * 1024;
         const uptimeSeconds = parsePosixEtime(match[4]);
         const rawState = match[5];
-        const rawArgs = match[6].trim();
-        const firstToken = splitCommandTokens(rawArgs)[0] || "";
-        const name = cleanText(path.posix.basename(firstToken), 128);
+        let name = match[6];
+        if (platform === "linux" && name === "MainThread") {
+          try { name = path.posix.basename(readlinkSync(`/proc/${pid}/exe`)); }
+          catch { return []; }
+        }
+        const rawArgs = match[7];
         if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(memoryBytes) || memoryBytes < 0) return [];
         const info = describeCodeProcess(name, rawArgs);
         if (!info) return [];
@@ -346,8 +335,8 @@ function summarizeRelayTask(task) {
 
 export async function listFleetActivity({ relay = callBackgroundRelay, processes = listFleetProcesses } = {}) {
   const [statusResult, listResult, procResult] = await Promise.all([
-    Promise.resolve().then(() => relay("status")).then(value => ({ value }), error => ({ error })),
-    Promise.resolve().then(() => relay("list")).then(value => ({ value }), error => ({ error })),
+    Promise.resolve().then(() => relay("status", { summary: true })).then(value => ({ value }), error => ({ error })),
+    Promise.resolve().then(() => relay("list", { summary: true })).then(value => ({ value }), error => ({ error })),
     Promise.resolve().then(() => processes()).then(value => ({ value }), error => ({ error })),
   ]);
   const notes = [];
@@ -376,6 +365,7 @@ export async function listFleetActivity({ relay = callBackgroundRelay, processes
     relayView = { online: false, pid: null, version: null, startedAt: null, accepting: false, active: 0, queued: 0, workers: [] };
     notes.push("Dịch vụ worker-relay chạy ngầm hiện chưa sẵn sàng.");
   }
+  if (!Array.isArray(listResult.value?.tasks)) notes.push("Không đọc được danh sách tác vụ của worker-relay trên máy này.");
   const tasks = Array.isArray(listResult.value?.tasks)
     ? listResult.value.tasks
       .filter(task => RELAY_UUID.test(task?.requestId ?? "") && BACKGROUND_AGENTS.includes(task.agent)

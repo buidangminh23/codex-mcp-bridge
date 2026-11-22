@@ -12,7 +12,7 @@ export async function refreshHostedAnalytics({ env = process.env, api = githubAp
   const file = await branch(`repos/${repo}/contents/data.json?ref=analytics`);
   const previous = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
   const options = { repo, package: '@minhspark/codex-mcp-bridge' };
-  const snapshot = await collect(options);
+  const snapshot = await collect(options, { trafficToken: env.ANALYTICS_TRAFFIC_TOKEN });
   const history = mergeHistory(previous, options, snapshot);
   let usage = previous.usage;
   let usageFailed = false;
@@ -38,7 +38,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   console.log(`Published aggregate analytics: ${sha}`);
   for (const error of errors) {
     const status = error.status ? ` (HTTP ${error.status})` : '';
-    const hint = error.status === 403 && ['views', 'clones'].includes(error.source) ? ' GitHub traffic requires the ANALYTICS_TOKEN secret to be a token with push access (fine-grained: Administration read); the default workflow token cannot read traffic.' : '';
+    const hint = [401, 403].includes(error.status) && ['views', 'clones'].includes(error.source) ? ' Check the ANALYTICS_TOKEN repository secret. Use a valid fine-grained token scoped to this repository with Administration read permission.' : '';
     console.error(`::warning::${error.source} was not refreshed${status}; previous data retained.${hint}`);
   }
   if (usageFailed) console.error('::warning::Usage was not refreshed; previous data retained.');

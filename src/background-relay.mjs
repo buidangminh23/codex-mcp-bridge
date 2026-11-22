@@ -117,31 +117,38 @@ export class BackgroundRelay {
 
   canRead(actor, job) { return actor.kind === "local-client" || job.rootId === actor.rootId && job.binding.path === actor.binding.path; }
 
-  receipt(job) {
+  receipt(job, summary = false) {
+    const output = job.output ?? "";
+    const preview = summary ? output.slice(0, 600) : output;
+    const diagnostic = summary && job.diagnostic ? {
+      code: String(job.diagnostic.code ?? "").slice(0, 80),
+      reason: String(job.diagnostic.reason ?? "").slice(0, 300),
+    } : job.diagnostic;
     return { requestId: job.requestId, workerId: job.workerId, rootId: job.rootId, parentRequestId: job.parentRequestId,
       agent: job.agent, source: job.source, surface: "background-cli", status: job.status,
       deliveryState: job.deliveryState, sent: job.deliveryState === "sent" ? true : job.deliveryState === "not_sent" ? false : null,
       sessionId: job.sessionId ?? null, createdAt: job.createdAt, updatedAt: job.updatedAt,
-      ...(terminal.has(job.status) ? { output: job.output ?? "", outputTruncated: job.outputTruncated === true } : {}),
-      ...(job.diagnostic ? { diagnostic: job.diagnostic } : {}) };
+      ...(terminal.has(job.status) ? { output: preview, outputTruncated: job.outputTruncated === true || preview.length < output.length } : {}),
+      ...(diagnostic ? { diagnostic } : {}) };
   }
 
-  status(actor) {
+  status(actor, summary = false) {
     const visible = [...this.jobs.values()].filter(job => this.canRead(actor, job));
     return { schemaVersion: 1, version, pid: process.pid, runtimeId: this.env.AGENT_RELAY_RUNTIME_ID ?? null, startedAt: this.startedAt, transportReady: true,
       accepting: this.accepting, desktopRequired: false, opensApps: false, opensChats: false,
       active: this.active.size, queued: visible.filter(job => job.status === "queued").length,
       workers: BACKGROUND_AGENTS.map(agent => this.health.get(agent) ?? { agent, available: null, authenticated: null, ready: false, code: "WORKER_INSPECTION_PENDING" }),
-      recentErrors: visible.filter(job => job.diagnostic).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 10).map(job => this.receipt(job)) };
+      recentErrors: visible.filter(job => job.diagnostic).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 10).map(job => this.receipt(job, summary)) };
   }
 
   async handle(request) {
     if (!request || request.schemaVersion !== 1 || !RELAY_UUID.test(request.id ?? "") || typeof request.method !== "string") throw relayFailure("WORKER_REQUEST_INVALID", "Unsupported background relay request");
     const actor = this.authenticate(request);
     const params = request.params ?? {};
-    if (request.method === "status") return this.status(actor);
-    if (request.method === "list") return { workers: this.status(actor).workers,
-      tasks: [...this.jobs.values()].filter(job => this.canRead(actor, job)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50).map(job => this.receipt(job)) };
+    const summary = params.summary === true;
+    if (request.method === "status") return this.status(actor, summary);
+    if (request.method === "list") return { workers: this.status(actor, summary).workers,
+      tasks: [...this.jobs.values()].filter(job => this.canRead(actor, job)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50).map(job => this.receipt(job, summary)) };
     if (request.method === "read") {
       const job = this.jobs.get(params.requestId);
       if (!job || !this.canRead(actor, job)) throw relayFailure("WORKER_RECEIPT_NOT_FOUND", "No worker receipt is available to this caller for that request ID");

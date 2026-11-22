@@ -376,6 +376,28 @@ test("restart preserves uncertain work and resumes only receipts that were still
   assert.equal((await secondRestart.handle(box.request("read", { requestId: interrupted.requestId }))).diagnostic.reportId, unknown.diagnostic.reportId);
 });
 
+test("activity summaries fit the relay transport while individual receipts retain the full output", async t => {
+  const box = await fixture(t);
+  const output = "x".repeat(256 * 1024);
+  const { requestId } = await box.send();
+  await box.wait(requestId);
+  const original = box.relay.jobs.get(requestId);
+  original.output = output;
+  for (let i = 0; i < 20; i++) {
+    const id = randomUUID();
+    box.relay.jobs.set(id, { ...original, requestId: id });
+  }
+  const serving = await serveBackgroundRelay(box.relay, { protectPipe: async () => {} });
+  t.after(() => serving.close());
+  const connection = { endpoint: box.config.endpoint, token: box.config.token, workerId: null };
+  const list = await callBackgroundRelay("list", { summary: true }, { connection });
+  assert.equal(list.tasks.length, 21);
+  assert.ok(list.tasks.every(task => task.output.length === 600 && task.outputTruncated));
+  const full = await callBackgroundRelay("read", { requestId }, { connection });
+  assert.equal(full.output, output);
+  assert.equal(full.outputTruncated, false);
+});
+
 test("malformed durable receipts fail visibly without replacing their evidence", async (t) => {
   const box = await fixture(t, { initialize: false });
   const file = path.join(box.config.paths.jobs, `${randomUUID()}.json`);

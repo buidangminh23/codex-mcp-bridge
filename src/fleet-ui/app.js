@@ -536,6 +536,24 @@ function sessionNote(text) {
   return note;
 }
 
+function loadHostSnapshot(id, endpoint, cache) {
+  const snapshot = cache.get(id) || {};
+  if (snapshot.pending) return snapshot.pending;
+  cache.set(id, snapshot);
+  snapshot.pending = api("/api/hosts/" + encodeURIComponent(id) + "/" + endpoint, {})
+    .then(value => {
+      snapshot.value = value;
+      snapshot.error = null;
+      return value;
+    }, error => {
+      snapshot.value = null;
+      snapshot.error = error.message;
+      throw error;
+    })
+    .finally(() => { snapshot.pending = null; });
+  return snapshot.pending;
+}
+
 function inspectorView(id, sessionsBtn, windowsBtn, processesBtn) {
   const region = node("div", "session-region");
   region.id = "inspector-" + id;
@@ -678,17 +696,16 @@ function inspectorView(id, sessionsBtn, windowsBtn, processesBtn) {
   async function loadProcesses(manual = false) {
     if (mode !== "processes" || !region.isConnected) return;
     const seq = ++requestSeq;
-    const existing = hostActivity.get(id);
+    const existing = hostActivity.get(id)?.value;
     if (manual || !existing) region.replaceChildren(node("p", "hint", "Đang đọc tiến trình và dịch vụ chạy ngầm…"));
     else renderProcessesView(existing, null);
     let result, failure;
     try {
-      result = await api("/api/hosts/" + encodeURIComponent(id) + "/activity", {});
-      hostActivity.set(id, result);
-      renderActivity();
+      result = await loadHostSnapshot(id, "activity", hostActivity);
     } catch (error) {
       failure = error.message;
     }
+    renderActivity();
     if (seq !== requestSeq || mode !== "processes" || !region.isConnected) return;
     renderProcessesView(result, failure);
   }
@@ -765,14 +782,11 @@ function inspectorView(id, sessionsBtn, windowsBtn, processesBtn) {
     const seq = ++requestSeq;
     let result, failure;
     try {
-      result = await api("/api/hosts/" + encodeURIComponent(id) + "/sessions", {});
-      if (result) {
-        hostSessions.set(id, result);
-        renderActivity();
-      }
+      result = await loadHostSnapshot(id, "sessions", hostSessions);
     } catch (error) {
       failure = error.message;
     }
+    renderActivity();
     if (seq !== requestSeq || mode !== "sessions" || !region.isConnected) return;
     const sessions = (result?.sessions || []).map(item => ({
       title: item.title || "Phiên " + item.id,
@@ -1115,10 +1129,10 @@ function renderOverview(hosts, jobs) {
   const uncertainCount = jobs.filter(job => job.status === "uncertain").length;
   let liveAiCount = 0;
   let bgActiveCount = 0;
-  for (const host of hosts) {
-    const sess = hostSessions.get(host.id)?.sessions || [];
+  for (const host of onlineHosts) {
+    const sess = hostSessions.get(host.id)?.value?.sessions || [];
     liveAiCount += sess.filter(item => item.status === "running" || item.status === "waiting").length;
-    const act = hostActivity.get(host.id);
+    const act = hostActivity.get(host.id)?.value;
     if (act?.relay) bgActiveCount += (act.relay.active || 0) + (act.relay.queued || 0);
   }
   const activeCount = runningCount + queuedCount + uncertainCount + bgActiveCount;
@@ -1357,6 +1371,25 @@ function buildLiveItem({ agent, title, sourceLabel, host, timeText, statusText, 
   return row;
 }
 
+function openBackgroundTask(requestId, hostId) {
+  setActivityTab("background");
+  const list = el("bg-task-list");
+  const findTask = () => Array.from(list.children).find(item =>
+    item.dataset.requestId === requestId && item.dataset.hostId === hostId);
+  let details = findTask();
+  if (!details) {
+    el("bg-search").value = "";
+    el("bg-status-filter").value = "all";
+    el("bg-agent-filter").value = "all";
+    renderActivity();
+    details = findTask();
+  }
+  if (details) {
+    details.open = true;
+    details.querySelector("summary").focus();
+  }
+}
+
 function renderActivity() {
   const allHosts = state.hosts.filter(host => !hostFilter || host.id === hostFilter);
   const hostSelect = el("activity-host-filter");
@@ -1372,10 +1405,11 @@ function renderActivity() {
   const scopedHosts = chosenHostId ? allHosts.filter(h => h.id === chosenHostId) : allHosts;
   const hostById = new Map(allHosts.map(h => [h.id, h]));
 
-  el("activity-refresh").disabled = !online || activityScanning || allHosts.length === 0;
+  const hasOnlineHost = allHosts.some(host => host.online);
+  el("activity-refresh").disabled = !online || activityScanning || !hasOnlineHost;
   el("activity-refresh").dataset.busy = String(activityScanning);
   if (activityLastScan) {
-    setText(el("activity-stamp"), "Quét " + times.format(activityLastScan));
+    setText(el("activity-stamp"), "Lần quét đủ dữ liệu " + times.format(activityLastScan));
     el("activity-stamp").hidden = false;
   }
 
@@ -1410,7 +1444,12 @@ function renderActivity() {
   }
 
   for (const host of scopedHosts) {
-    const sess = hostSessions.get(host.id)?.sessions || [];
+    if (!host.online) continue;
+    const sessionsSnapshot = hostSessions.get(host.id);
+    const activitySnapshot = hostActivity.get(host.id);
+    if (sessionsSnapshot?.error) hostNotes.push({ host, note: "Chưa tải được phiên AI. " + sessionsSnapshot.error });
+    if (activitySnapshot?.error) hostNotes.push({ host, note: "Chưa tải được hoạt động ngầm. " + activitySnapshot.error });
+    const sess = sessionsSnapshot?.value?.sessions || [];
     for (const item of sess) {
       const entry = {
         agent: item.agent,
@@ -1425,7 +1464,7 @@ function renderActivity() {
       else passiveItems.push(entry);
     }
 
-    const act = hostActivity.get(host.id);
+    const act = activitySnapshot?.value;
     if (!act) continue;
     if (act.note) hostNotes.push({ host, note: act.note });
     totalProcCount += act.totalProcesses || (act.processes?.length || 0);
@@ -1441,11 +1480,7 @@ function renderActivity() {
           timeText: task.updatedAt ? dates.format(new Date(task.updatedAt)) : "",
           statusText: relayTaskStatuses[task.status] || task.status,
           tone: relayTaskTones[task.status] || "gray",
-          onClick: () => {
-            openBgTaskIds.add(task.requestId);
-            setActivityTab("background");
-            renderActivity();
-          },
+          onClick: () => openBackgroundTask(task.requestId, host.id),
         });
       }
     }
@@ -1468,11 +1503,11 @@ function renderActivity() {
     allBgTasks.length + " việc Agent ngầm",
     groupedAllProcs.length + " phiên code & CI ẩn",
   ];
-  setText(el("activity-total-pill"), activityLoadedOnce ? summaryParts.join(" · ") : "Đang quét…");
+  setText(el("activity-total-pill"), !hasOnlineHost ? "Không có máy trực tuyến" : activityLoadedOnce ? summaryParts.join(" · ") : "Đang quét…");
 
   const liveContainer = el("live-work-list");
   const recentBg = allBgTasks.filter(t => !["running", "queued"].includes(t.status)).slice(0, 3);
-  if (!activityLoadedOnce && !activeItems.length && !passiveItems.length && !recentBg.length) {
+  if (hasOnlineHost && !activityLoadedOnce && !activeItems.length && !passiveItems.length && !recentBg.length) {
     liveContainer.replaceChildren(node("p", "hint", "Đang quét phiên AI, việc chạy ngầm và tiến trình trên cụm máy…"));
   } else if (!activeItems.length && !passiveItems.length && !recentBg.length) {
     liveContainer.replaceChildren(node("p", "hint", "Hiện chưa có công việc điều phối, worker ngầm hay phiên AI nào đang mở trên máy đã chọn."));
@@ -1508,11 +1543,7 @@ function renderActivity() {
           timeText: task.createdAt ? dates.format(new Date(task.createdAt)) : "",
           statusText: relayTaskStatuses[task.status] || task.status,
           tone: relayTaskTones[task.status] || "gray",
-          onClick: () => {
-            openBgTaskIds.add(task.requestId);
-            setActivityTab("background");
-            renderActivity();
-          },
+          onClick: () => openBackgroundTask(task.requestId, task.host.id),
         }));
       }
     }
@@ -1521,22 +1552,25 @@ function renderActivity() {
 
   const relayContainer = el("relay-services");
   relayContainer.replaceChildren(...scopedHosts.map(host => {
-    const act = hostActivity.get(host.id);
+    const act = host.online ? hostActivity.get(host.id)?.value : null;
     const card = node("div", "relay-host-card");
     const top = node("div", "relay-host-top");
     const idWrap = node("div", "relay-host-id");
     idWrap.append(hostInline(host));
     const st = node("span", "badge");
     if (!host.online) badge(st, "Ngoại tuyến", "gray");
+    else if (hostActivity.get(host.id)?.error) badge(st, "Lỗi quét", "red");
     else if (!act) badge(st, "Đang quét", "gray");
     else if (act.supported === false) badge(st, "Bản cũ", "amber");
     else if (act.relay?.online) badge(st, act.relay.accepting ? "Hoạt động" : "Đang xả việc", act.relay.accepting ? "green" : "amber");
     else badge(st, "Chưa chạy", "red");
     top.append(idWrap, st);
     card.append(top);
+    if (!host.online) return card;
+    for (const { note } of hostNotes.filter(item => item.host === host)) card.append(sessionNote(note));
+    if (hostActivity.get(host.id)?.error) return card;
 
     if (act?.supported === false) {
-      card.append(node("p", "hint", act.note || "Cập nhật worker-relay trên máy này để đọc chi tiết dịch vụ ngầm."));
       return card;
     }
 
@@ -1581,7 +1615,7 @@ function renderActivity() {
     return b.memoryBytes - a.memoryBytes;
   }).slice(0, 6);
   if (!topSorted.length) {
-    topProcContainer.replaceChildren(node("p", "hint", activityLoadedOnce ? "Chưa ghi nhận tiến trình Agent hay phiên code nào đang chạy ẩn." : "Đang quét phiên code chạy ẩn…"));
+    topProcContainer.replaceChildren(node("p", "hint", activityLoadedOnce || !hasOnlineHost ? "Chưa ghi nhận tiến trình Agent hay phiên code nào đang chạy ẩn." : "Đang quét phiên code chạy ẩn…"));
   } else {
     const maxTopBytes = topSorted.reduce((max, item) => Math.max(max, item.memoryBytes || 0), 0);
     topProcContainer.replaceChildren(...topSorted.map(proc => {
@@ -1630,10 +1664,14 @@ function renderActivity() {
     } else {
       bgList.replaceChildren(...filteredBg.map(task => {
         const details = node("details", "bg-task-item");
-        details.open = openBgTaskIds.has(task.requestId);
+        details.dataset.requestId = task.requestId;
+        details.dataset.hostId = task.host.id;
+        const key = task.host.id + "/" + task.requestId;
+        details.open = openBgTaskIds.has(key);
         details.addEventListener("toggle", () => {
-          if (details.open) openBgTaskIds.add(task.requestId);
-          else openBgTaskIds.delete(task.requestId);
+          if (!details.isConnected) return;
+          if (details.open) openBgTaskIds.add(key);
+          else openBgTaskIds.delete(key);
         });
         const summary = node("summary", "bg-task-summary");
         const main = node("div", "bg-task-main");
@@ -1791,17 +1829,18 @@ async function refreshActivity(manual = false) {
   activityScanning = true;
   renderActivity();
   try {
-    await Promise.allSettled(targets.flatMap(host => [
-      api("/api/hosts/" + encodeURIComponent(host.id) + "/activity", {})
-        .then(result => { hostActivity.set(host.id, result); })
-        .catch(() => {}),
-      api("/api/hosts/" + encodeURIComponent(host.id) + "/sessions", {})
-        .then(result => { hostSessions.set(host.id, result); })
-        .catch(() => {}),
-    ]));
+    const scans = await Promise.all(targets.map(async host => {
+      const results = await Promise.allSettled([
+        loadHostSnapshot(host.id, "activity", hostActivity),
+        loadHostSnapshot(host.id, "sessions", hostSessions),
+      ]);
+      return results.every(result => result.status === "fulfilled");
+    }));
     activityLoadedOnce = true;
-    activityLastScan = new Date();
-    if (manual) showToast("Đã quét lại việc chạy ngầm và tiến trình.");
+    const completed = scans.filter(Boolean).length;
+    if (completed === targets.length) activityLastScan = new Date();
+    if (manual) showToast(completed === targets.length ? "Đã quét lại việc chạy ngầm và tiến trình."
+      : "Chỉ đọc đủ dữ liệu từ " + completed + "/" + targets.length + " máy. Xem lỗi ở từng máy.");
   } finally {
     activityScanning = false;
     render();
@@ -1865,6 +1904,10 @@ function render() {
 
 function applyLatestState(latest) {
   state = latest;
+  const onlineIds = new Set(latest.hosts.filter(host => host.online).map(host => host.id));
+  for (const cache of [hostActivity, hostSessions]) {
+    for (const id of cache.keys()) if (!onlineIds.has(id)) cache.delete(id);
+  }
   online = true;
   lastSyncedAt = new Date();
   pollError = latest.error || "";

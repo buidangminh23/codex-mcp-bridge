@@ -28,6 +28,24 @@ function dependencies(overrides = {}) {
   };
 }
 
+test('a rejected traffic credential leaves repository and release collection available', async () => {
+  const deps = dependencies();
+  const snapshot = await collectSources(options, {
+    ...deps, trafficToken: 'traffic-only',
+    gh: async (endpoint, paginate, token) => {
+      if (endpoint.includes('/traffic/')) {
+        assert.equal(token, 'traffic-only');
+        throw new Error('Bad credentials (HTTP 401)');
+      }
+      assert.equal(token, undefined);
+      return deps.gh(endpoint, paginate);
+    },
+  });
+  assert.deepEqual(snapshot.errors.map(({ source, status }) => [source, status]), [['clones', 401], ['views', 401]]);
+  assert.equal(snapshot.repository.stars, 10);
+  assert.equal(snapshot.releases[0].tag, 'v1');
+});
+
 test('validates CLI options and chooses OS-private storage defaults', () => {
   assert.throws(() => parseArgs(['--repo', '../bad/repo']), /Invalid repository/);
   assert.throws(() => parseArgs(['--package', '--output']), /Expected/);

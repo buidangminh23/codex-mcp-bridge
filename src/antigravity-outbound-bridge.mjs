@@ -20,7 +20,8 @@ import { createReloadControl, exitWhenClientCloses } from "./reload-control.mjs"
 
 const { version } = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const result = (value) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }], ...(value && typeof value === "object" && !Array.isArray(value) ? { structuredContent: value } : {}) });
-const targetSchema = { target: z.enum(["codex", "claude"]) };
+const desktopTargets = ["codex-desktop", "claude-desktop"];
+const targetSchema = { target: z.enum(["codex", "claude", ...desktopTargets]).transform((target) => target.replace(/-desktop$/, "")) };
 const taskSchema = { ...targetSchema, conversationId: z.string().uuid(), taskId: z.string().min(1).max(256).optional() };
 
 export function createAntigravityOutboundBridge({ resolveSender = resolveAntigravitySenderContext, targets = createAntigravityOutboundTargets(), deliveries = new AntigravityDeliveries(path.join(antigravityBridgeDirectory(), "outbound-deliveries")), rootPolicy = createHardenedRootPolicy(), env = process.env, channel = process } = {}) {
@@ -104,7 +105,7 @@ export function createAntigravityOutboundBridge({ resolveSender = resolveAntigra
     const identity = await resolveSender(extra?._meta);
     const metadataFields = Object.fromEntries(Object.entries(extra?._meta ?? {}).filter(([key]) => key.startsWith("antigravity.google/")).map(([key, value]) => [key, Array.isArray(value) ? "array" : typeof value]));
     const diagnostic = identity.status === "verified" ? null : bridgeDiagnostic(Object.assign(new Error(identity.reason ?? "Antigravity sender is not verified"), { code: "ANTIGRAVITY_SENDER_UNVERIFIED", phase: "sender" }), { component: "agent-bridge", operation: "agent_bridge_status", readOnly: true });
-    return { version, sender: identity, metadataFields, targets: ["codex-desktop", "claude-desktop"], permissions: "native-unchanged", createsConversations: false, ...(diagnostic ? { diagnostic } : {}) };
+    return { version, sender: identity, metadataFields, targets: desktopTargets, permissions: "native-unchanged", createsConversations: false, ...(diagnostic ? { diagnostic } : {}) };
   });
 
   register("list_agent_tasks", "List exact existing native tasks in this Antigravity conversation's project before selecting a destination. Dormant Claude tasks remain unavailable until their native session is already connected.", targetSchema, true, async (args, extra) => {

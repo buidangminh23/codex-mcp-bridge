@@ -167,15 +167,24 @@ test("process inventory keeps only agent, CI, dev-server and hidden code runs wi
   const ci = describeCodeProcess("node", "node --test --token=supersecret test/app.test.mjs");
   assert.equal(ci.category, "ci");
   assert.doesNotMatch(ci.label, /supersecret/);
+  for (const [name, command, label] of [
+    ["npm", "npm --prefix /work/acme-client run build", "npm run build"],
+    ["kubectl", "kubectl --namespace internalteam get pods", "kubectl get"],
+    ["gh", "gh --repo internal-repository workflow list", "gh workflow"],
+    ["node", "node -e internalvalue", "node script"],
+    ["node", "node /work/internalteam.js", "node script"],
+    ["node", "node /work/mcp-server-internalteam/index.js", "MCP Server"],
+    ["pwsh", "pwsh -File internalteam.ps1", "pwsh script"],
+  ]) assert.equal(describeCodeProcess(name, command)?.label, label);
 
   const mac = await listFleetProcesses({ platform: "darwin", run: async (bin, args) => {
     assert.equal(bin, "/bin/ps");
-    assert.deepEqual(args, ["-axo", "pid=,pcpu=,rss=,etime=,state=,args="]);
+    assert.deepEqual(args, ["-axww", "-o", "pid=", "-o", "pcpu=", "-o", "rss=", "-o", "etime=", "-o", "state=", "-o", "ucomm=", "-o", "args="]);
     return { stdout: [
-      "  42 12.5 512000 01:12:05 R /usr/local/bin/codex exec --api-key=secret-value",
-      "  55  4.0 120000    05:10 S /usr/local/bin/node --test test/suite.mjs",
-      "  77  1.0  50000 10:00:00 S /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
-      "  99  0.4  65536    20:00 S /usr/local/bin/node server/hub.ts",
+      "  42 12.5 512000 01:12:05 R codex /usr/local/bin/codex exec --api-key=secret-value",
+      "  55  4.0 120000    05:10 S node /Users/Test User/bin/node --test test/suite.mjs",
+      "  77  1.0  50000 10:00:00 S Finder /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+      "  99  0.4  65536    20:00 S node /usr/local/bin/node server/hub.ts",
     ].join("\n") };
   } });
   assert.equal(mac.totalProcesses, 3);
@@ -202,9 +211,12 @@ test("process inventory keeps only agent, CI, dev-server and hidden code runs wi
 test("activity inventory reads background relay status, tasks and running processes with permission recheck", async () => {
   const taskId = randomUUID();
   const sample = await listFleetActivity({
-    relay: async method => method === "status"
+    relay: async (method, params) => {
+      assert.deepEqual(params, { summary: true });
+      return method === "status"
       ? { pid: 500, version: "2.5.1", accepting: true, active: 1, queued: 0, workers: [{ agent: "codex", ready: true, canAcceptWork: true, readiness: "ready", version: "0.167" }] }
-      : { tasks: [{ requestId: taskId, agent: "codex", status: "running", deliveryState: "sent", source: { kind: "local-client" }, output: "Working", createdAt: "2026-11-20T00:00:00Z", updatedAt: "2026-11-20T00:00:05Z" }] },
+      : { tasks: [{ requestId: taskId, agent: "codex", status: "running", deliveryState: "sent", source: { kind: "local-client" }, output: "Working", createdAt: "2026-11-20T00:00:00Z", updatedAt: "2026-11-20T00:00:05Z" }] };
+    },
     processes: async () => ({ totalProcesses: 1, processes: [{ pid: 500, name: "node", label: "Worker Relay Daemon", agent: null, memoryBytes: 50000000, cpuPercent: null, cpuSeconds: 2.1, uptimeSeconds: 120, threads: 10, state: "running", category: "agent", background: true }] }),
   });
   assert.equal(sample.relay.online, true);
@@ -212,6 +224,15 @@ test("activity inventory reads background relay status, tasks and running proces
   assert.equal(sample.tasks[0].requestId, taskId);
   assert.equal(sample.processes[0].role, "worker-relay");
   assert.equal(sample.processes[0].category, "agent");
+  const partial = await listFleetActivity({
+    relay: async method => {
+      if (method === "status") return { active: 2 };
+      throw new Error("list is unavailable");
+    },
+    processes: async () => ({ processes: [] }),
+  });
+  assert.equal(partial.relay.active, 2);
+  assert.match(partial.note, /danh sách tác vụ/);
 
   const { client } = fixture({ activity: async () => sample });
   for (const host of [local, remote]) assert.equal((await client.activity(host)).tasks[0].requestId, taskId);

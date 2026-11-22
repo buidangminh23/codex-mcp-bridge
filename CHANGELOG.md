@@ -2,6 +2,15 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.7.2] - 2026-11-22
+
+### Fixed
+
+- Fleet process labels use known operations and script names to keep private paths and arbitrary arguments out of the dashboard. macOS and Linux process detection now handles executable paths containing spaces.
+- The fleet dashboard requests compact relay receipts, reports failed scans, drops offline hosts from live activity, and opens the selected background task even when a previous filter hid it.
+- Antigravity accepts the advertised `codex-desktop` and `claude-desktop` destinations for listing, reading and sending. Short destination names and existing receipts remain compatible.
+- Hosted analytics uses a separate credential for traffic so a rejected traffic token leaves repository and release statistics available.
+
 ## [2.7.1] - 2026-11-20
 
 ### Fixed

@@ -186,7 +186,7 @@ test("process inventory keeps only agent, CI, dev-server and hidden code runs wi
     assert.deepEqual(args, ["-axww", "-o", "pid=", "-o", "pcpu=", "-o", "rss=", "-o", "etime=", "-o", "state=", "-o", "ucomm=", "-o", "args="]);
     return { stdout: [
       "  42 12.5 512000 01:12:05 R codex /usr/local/bin/codex exec --api-key=secret-value",
-      "  55  4.0 120000    05:10 S node /Users/Test User/bin/node --test test/suite.mjs",
+      "  55  4.0 120000    05:10 S node /opt/Test Runtime/bin/node --test test/suite.mjs",
       "  77  1.0  50000 10:00:00 S Finder /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
       "  99  0.4  65536    20:00 S node /usr/local/bin/node server/hub.ts",
     ].join("\n") };

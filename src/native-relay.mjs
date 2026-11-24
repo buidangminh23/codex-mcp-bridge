@@ -435,7 +435,7 @@ async function readParentCommandLine(parentPid, platform) {
 
 export function nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentPid, localAppData = process.env.LOCALAPPDATA } = {}) {
   if (!Number.isSafeInteger(parentPid) || parentPid <= 0 || !Array.isArray(snapshot?.ancestors)
-      || snapshot.ancestors.length < 2 || snapshot.ancestors.length > 4 || !Array.isArray(snapshot.pipes)) return null;
+      || snapshot.ancestors.length < 2 || snapshot.ancestors.length > 5 || !Array.isArray(snapshot.pipes)) return null;
   const ancestors = snapshot.ancestors;
   let expectedPid = parentPid;
   const visited = new Set();
@@ -445,11 +445,15 @@ export function nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentP
     visited.add(ancestor.pid);
     expectedPid = ancestor.parentPid;
   }
-  const desktop = ancestors.at(-1);
-  const appServer = ancestors.at(-2);
-  const desktopPath = path.win32.normalize(desktop.executablePath);
+  const isDesktop = (ancestor) => path.win32.basename(ancestor.executablePath).toLowerCase() === "chatgpt.exe";
+  const firstDesktop = ancestors.findIndex(isDesktop);
+  if (firstDesktop < 1) return null;
+  const desktops = ancestors.slice(firstDesktop);
+  const desktopPath = path.win32.normalize(desktops[0].executablePath);
+  if (desktops.length > 2 || desktops.some((desktop) => path.win32.normalize(desktop.executablePath).toLowerCase() !== desktopPath.toLowerCase())) return null;
   if (!/^[a-z]:\\Program Files\\WindowsApps\\OpenAI\.Codex_[0-9.]+_(?:x64|arm64)__2p2nqsd0c76g0\\app\\ChatGPT\.exe$/i.test(desktopPath)) return null;
-  if (ancestors.slice(0, -2).some((ancestor) => path.win32.basename(ancestor.executablePath).toLowerCase() !== "node.exe")) return null;
+  const appServer = ancestors[firstDesktop - 1];
+  if (ancestors.slice(0, firstDesktop - 1).some((ancestor) => path.win32.basename(ancestor.executablePath).toLowerCase() !== "node.exe")) return null;
   const serverPath = path.win32.normalize(appServer.executablePath);
   const bundledServer = path.win32.join(path.win32.dirname(desktopPath), "resources", "codex.exe");
   const downloadedRoot = localAppData ? path.win32.join(localAppData, "OpenAI", "Codex", "bin") : null;
@@ -464,7 +468,8 @@ export function nativeToolsPipeCandidatesFromWindowsSnapshot(snapshot, { parentP
     else if (!args[index].startsWith("-")) { command = args[index]; break; }
   }
   if (command !== "app-server") return null;
-  const candidates = snapshot.pipes.filter((pipe) => pipe?.serverPid === desktop.pid
+  const desktopPids = new Set(desktops.map((desktop) => desktop.pid));
+  const candidates = snapshot.pipes.filter((pipe) => desktopPids.has(pipe?.serverPid)
     && typeof pipe.path === "string" && /^\\\\\.\\pipe\\codex-(?:app-tools|browser-use)-[a-z0-9-]+$/i.test(pipe.path));
   const paths = [...new Set(candidates.map((pipe) => pipe.path))].sort();
   return paths;
@@ -477,16 +482,20 @@ async function readWindowsNativePipeSnapshot(parentPid) {
 $ErrorActionPreference = 'Stop'
 $ancestors = @()
 $nextProcessId = ${parentPid}
-for ($depth = 0; $depth -lt 4; $depth++) {
+$desktopPids = @()
+for ($depth = 0; $depth -lt 5; $depth++) {
   $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId=$nextProcessId"
   if (!$ancestor) { break }
+  if ($desktopPids.Count -gt 0 -and ($ancestor.Name -ine 'ChatGPT.exe' -or $ancestor.ExecutablePath -ine $ancestors[-1].executablePath)) { break }
   $ancestors += @{ pid = [int]$ancestor.ProcessId; parentPid = [int]$ancestor.ParentProcessId; executablePath = $ancestor.ExecutablePath; commandLine = $ancestor.CommandLine }
-  if ($ancestor.Name -ieq 'ChatGPT.exe') { break }
-  if ($ancestor.Name -ine 'node.exe' -and $ancestor.Name -ine 'codex.exe') { break }
+  if ($ancestor.Name -ieq 'ChatGPT.exe') {
+    $desktopPids += [int]$ancestor.ProcessId
+    if ($desktopPids.Count -ge 2) { break }
+  } elseif ($ancestor.Name -ine 'node.exe' -and $ancestor.Name -ine 'codex.exe') { break }
   $nextProcessId = [int]$ancestor.ParentProcessId
 }
 $pipes = @()
-if ($ancestors.Count -ge 2 -and $ancestor.Name -ieq 'ChatGPT.exe') {
+if ($ancestors.Count -ge 2 -and $desktopPids.Count -gt 0) {
   Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -503,7 +512,7 @@ public static class CodexNativePipeOwner {
         $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $pipePath.Substring(9), [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
         $client.Connect(30)
         $serverProcessId = [uint32]0
-        if ([CodexNativePipeOwner]::GetNamedPipeServerProcessId($client.SafePipeHandle, [ref]$serverProcessId) -and $serverProcessId -eq $ancestor.ProcessId) {
+        if ([CodexNativePipeOwner]::GetNamedPipeServerProcessId($client.SafePipeHandle, [ref]$serverProcessId) -and $desktopPids -contains [int]$serverProcessId) {
           $pipes += @{ path = $pipePath; serverPid = [int]$serverProcessId }
         }
       } catch {} finally { if ($client) { $client.Dispose() } }

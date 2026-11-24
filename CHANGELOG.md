@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.7.4] - 2026-11-24
+
+### Fixed
+
+- Windows: the native relay reaches Codex Desktop 26.1120 again. That release starts the app-server from a Desktop helper process, while the main Desktop process still owns the native tools pipe, so relay discovery stopped at the helper, rejected the pipe and every Claude-to-Codex send failed with `RELAY_UNREACHABLE`. Discovery now accepts up to two Desktop processes from the same verified Codex package and a pipe owned by either of them. Pipes owned by any other process, other packages, other Desktop versions or deeper chains are still rejected.
+
 ## [2.7.3] - 2026-11-24
 
 ### Fixed

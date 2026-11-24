@@ -1604,6 +1604,36 @@ describe("native tools pipe discovery", () => {
     }
   });
 
+  it("accepts the Desktop 26.1120 helper process between the app-server and the pipe owner", () => {
+    const nested = () => {
+      const snapshot = modernSnapshot();
+      snapshot.ancestors[2].parentPid = 50;
+      snapshot.ancestors.push({ pid: 50, parentPid: 60, executablePath: desktopPath, commandLine: windowsCommandLine([desktopPath]) });
+      snapshot.pipes = [{ path: modernPipe, serverPid: 50 }];
+      return snapshot;
+    };
+    assert.deepEqual(nativeToolsPipeCandidatesFromWindowsSnapshot(nested(), { parentPid: 10, localAppData }), [modernPipe]);
+    const helperOwned = nested();
+    helperOwned.pipes = [{ path: modernPipe, serverPid: 30 }];
+    assert.deepEqual(nativeToolsPipeCandidatesFromWindowsSnapshot(helperOwned, { parentPid: 10, localAppData }), [modernPipe]);
+    const unrelated = nested();
+    unrelated.pipes = [{ path: modernPipe, serverPid: 60 }, { path: `${modernPipe}-x`, serverPid: 20 }];
+    assert.deepEqual(nativeToolsPipeCandidatesFromWindowsSnapshot(unrelated, { parentPid: 10, localAppData }), []);
+    const otherPackage = nested();
+    otherPackage.ancestors[3].executablePath = desktopPath.replace("2p2nqsd0c76g0", "otherpublisher");
+    assert.equal(nativeToolsPipeCandidatesFromWindowsSnapshot(otherPackage, { parentPid: 10, localAppData }), null);
+    const otherVersion = nested();
+    otherVersion.ancestors[3].executablePath = desktopPath.replace(/_[0-9.]+_/, "_99.1.1.0_");
+    assert.equal(nativeToolsPipeCandidatesFromWindowsSnapshot(otherVersion, { parentPid: 10, localAppData }), null);
+    const tooDeep = nested();
+    tooDeep.ancestors[3].parentPid = 70;
+    tooDeep.ancestors.push({ pid: 70, parentPid: 80, executablePath: desktopPath, commandLine: windowsCommandLine([desktopPath]) });
+    assert.equal(nativeToolsPipeCandidatesFromWindowsSnapshot(tooDeep, { parentPid: 10, localAppData }), null);
+    const nodeAboveDesktop = nested();
+    nodeAboveDesktop.ancestors[3].executablePath = String.raw`C:\Program Files\nodejs\node.exe`;
+    assert.equal(nativeToolsPipeCandidatesFromWindowsSnapshot(nodeAboveDesktop, { parentPid: 10, localAppData }), null);
+  });
+
   it("selects a local browser-use pipe owned by the exact Desktop ancestor", () => {
     const snapshot = modernSnapshot();
     snapshot.pipes.unshift({ path: `${modernPipe}-other`, serverPid: 99 });

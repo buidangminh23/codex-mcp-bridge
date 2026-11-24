@@ -48,7 +48,7 @@ import { fleetSender, FLEET_SESSION_TOOLS, registerFleetSessionTools } from "./f
 
 exitForVersionRequest(import.meta.url);
 
-const VERSION = "2.7.2";
+const VERSION = "2.7.3";
 void import("./telemetry.mjs").then(({ startUsageReporting }) => startUsageReporting({ version: VERSION })).catch(() => {});
 const log = (msg) => process.stderr.write(`[codex-mcp-bridge] ${msg}\n`);
 

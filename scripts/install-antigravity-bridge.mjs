@@ -45,7 +45,8 @@ function snapshot(file, jsonLabel) {
     if (length !== opened.size || !matches(opened, fs.fstatSync(descriptor)) || !matches(opened, fs.lstatSync(file))) throw new Error(`Configuration changed while reading: ${file}`);
     const text = buffer.subarray(0, length).toString("utf8");
     let value;
-    try { value = object(JSON.parse(text), file); }
+    const body = text.replace(/^\uFEFF/, "");
+    try { value = body.trim() ? object(JSON.parse(body), file) : {}; }
     catch (error) {
       if (jsonLabel) throw new Error(`Invalid ${jsonLabel}: expected a JSON object.`);
       throw error;

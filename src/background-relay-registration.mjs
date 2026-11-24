@@ -48,7 +48,8 @@ function snapshot(home, file) {
   const after = stat(file);
   if (!sameFile(before, after)) throw changed();
   let value;
-  try { value = text === null ? {} : JSON.parse(text); }
+  const body = text === null ? "" : text.replace(/^\uFEFF/, "");
+  try { value = body.trim() ? JSON.parse(body) : {}; }
   catch { throw invalid(); }
   if (!object(value)) throw invalid();
   return { file, text, value, stat: after, mode: after ? Number(after.mode & 0o777n) : 0o600 };

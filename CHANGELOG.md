@@ -2,6 +2,12 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.7.3] - 2026-11-24
+
+### Fixed
+
+- Setup no longer fails when Antigravity has created `~/.gemini/config/mcp_config.json` as an empty file before any MCP server is configured. An empty or whitespace-only configuration file (with or without a byte order mark) is now read as an empty object by the setup check, the Antigravity installer and the background relay registration, so `codex-bridge-setup` registers `agent-bridge` and `worker-relay` instead of reporting `Unexpected end of JSON input` or `WORKER_MCP_CONFIG_INVALID` ([#217](https://github.com/buidangminh23/codex-mcp-bridge/issues/217)).
+
 ## [2.7.2] - 2026-11-22
 
 ### Fixed

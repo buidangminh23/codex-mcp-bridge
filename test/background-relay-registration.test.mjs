@@ -279,3 +279,14 @@ test("uses the platform's home variable without writing to the alternate home", 
   assert.deepEqual(unix.files, f.files);
   assert.deepEqual(fs.readdirSync(alternate), []);
 });
+
+test("an empty MCP configuration file created by Antigravity is accepted as an empty object", (t) => {
+  for (const content of ["", " \n", "\uFEFF"]) {
+    const f = fixture(t);
+    fs.mkdirSync(path.dirname(f.files.mcp), { recursive: true });
+    fs.writeFileSync(f.files.mcp, content);
+    const result = f.configure();
+    assert.equal(result.configured, true);
+    assert.deepEqual(Object.keys(f.read("mcp").mcpServers), ["worker-relay"]);
+  }
+});

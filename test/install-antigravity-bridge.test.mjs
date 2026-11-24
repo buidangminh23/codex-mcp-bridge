@@ -673,3 +673,15 @@ test("JSON update readback detects a changed output without overwriting it", (t)
   assert.deepEqual(read(file), { concurrent: true });
   assert.equal(fs.existsSync(path.join(options.home, ".gemini/config/sidecars")), false);
 });
+
+test("an empty Antigravity MCP configuration file is treated as an empty object", () => {
+  for (const content of ["", "  \n", "\uFEFF"]) {
+    const options = fixture();
+    const file = path.join(options.home, ".gemini/config/mcp_config.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+    applyJsonEdits(planAntigravityInstallation(options).edits);
+    assert.deepEqual(read(file).mcpServers["agent-bridge"].args, outboundArgs);
+    assert.equal(planAntigravityInstallation(options).edits.length, 0);
+  }
+});

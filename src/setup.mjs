@@ -90,7 +90,9 @@ export function setupPaths(env = process.env, platform = process.platform) {
 function readJson(file) {
   const text = readRegularConfigFile(file, { missing: true, maxBytes: MAX_CONFIG });
   if (text === null) return null;
-  const value = JSON.parse(text.replace(/^\uFEFF/, ""));
+  const body = text.replace(/^\uFEFF/, "");
+  if (!body.trim()) return {};
+  const value = JSON.parse(body);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Expected a JSON object: ${file}`);
   return value;
 }

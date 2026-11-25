@@ -2,6 +2,14 @@
 
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [SemVer](https://semver.org/).
 
+## [2.7.5] - 2026-11-25
+
+### Fixed
+
+- Antigravity Desktop can now verify an outbound sender when the project stores its workspace as a plain folder. Both plain folders and Git folders must match the exact conversation workspace. Ambiguous folder definitions are rejected. Run `agent_bridge_status` inside the originating conversation to check its identity before sending.
+
+Upgrade with `npm install -g @minhspark/codex-mcp-bridge@latest --allow-scripts=@minhspark/codex-mcp-bridge --foreground-scripts`.
+
 ## [2.7.4] - 2026-11-24
 
 ### Fixed

@@ -159,6 +159,27 @@ test("requires exact native conversation, Desktop surface, cwd and project resou
   }
 });
 
+test("verifies a plain folder on Windows and macOS with the native project policy", async () => {
+  for (const make of [fixture, darwinFixture]) {
+    const f = make();
+    f.project.settings.sandboxMode = true;
+    const expected = await f.resolve();
+    assert.equal(expected.mode, "prompting");
+    const [resource] = f.project.projectResources.resources;
+    f.project.projectResources.resources = [{ folderUri: resource.gitFolder.folderUri }];
+    assert.deepEqual(await f.resolve(), expected);
+  }
+});
+
+test("rejects ambiguous, missing and mismatched plain folder resources", async () => {
+  const folderUri = "file:///C:/Work/Project";
+  for (const resource of [{ folderUri, gitFolder: { folderUri } }, { folderUri, gitFolder: null }, {}, { folderUri: "file:///C:/Other" }]) {
+    const f = fixture();
+    f.project.projectResources.resources = [resource];
+    assert.equal((await f.resolve()).status, "unverified");
+  }
+});
+
 test("project settings override global settings and denial or ask always prevents bypass", async () => {
   const changes = [
     (f) => { f.project.settings.permissionPreset = "AGENT_PERMISSION_PRESET_DEFAULT"; },

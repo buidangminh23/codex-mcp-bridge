@@ -149,8 +149,12 @@ export async function resolveAntigravitySenderContext(meta, dependencies = {}) {
     const project = await json(projectPath);
     const resources = project?.projectResources?.resources;
     if (project?.id !== projectId || !Array.isArray(resources) || resources.length !== 1) fail(reason);
-    const uri = resources[0]?.gitFolder?.folderUri;
+    reason = "Native Antigravity project folder could not be matched to the conversation workspace";
+    const [resource] = resources;
+    if (!object(resource) || Object.hasOwn(resource, "folderUri") === Object.hasOwn(resource, "gitFolder")) fail(reason);
+    const uri = Object.hasOwn(resource, "folderUri") ? resource.folderUri : resource.gitFolder?.folderUri;
     if (typeof uri !== "string" || await canonical(fileURLToPath(uri, { windows: platform === "win32" })) !== cwd) fail(reason);
+    reason = "Native Antigravity project permissions could not be verified";
     const policy = permissions(global, project);
     const after = await readAncestry({ parentPid, platform });
     if (!validAncestry(after, parentPid) || hash(before.slice(0, appIndex + 1)) !== hash(after.slice(0, appIndex + 1))) fail("Native Antigravity host changed during verification");

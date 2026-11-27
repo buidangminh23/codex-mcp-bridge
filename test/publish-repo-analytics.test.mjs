@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { publicFiles, sanitizeAnalytics, publishAnalytics, renderGithubViewsBadge, renderNpmDownloadsBadge } from '../scripts/publish-repo-analytics.mjs';
+import { mergeHistory } from '../scripts/collect-repo-analytics.mjs';
 
 const history = {
   schemaVersion: 1, repo: 'owner/repo', package: '@owner/pkg', updatedAt: '2026-09-15T12:00:00Z',
@@ -27,7 +28,7 @@ test('public data allowlists aggregate fields and excludes private identities/er
 
 test('dashboard escapes external text and renders all metric families without pretending missing is zero', () => {
   const files = publicFiles(history, usage);
-  assert.deepEqual(Object.keys(files).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html', 'stats-github-views.svg', 'stats-npm-downloads-month.svg', 'stats-npm-downloads.svg']);
+  assert.deepEqual(Object.keys(files).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html', 'stats-github-views.svg', 'stats-npm-downloads-month.svg', 'stats-npm-downloads.svg', 'stats-npm-license.svg', 'stats-npm-version.svg', 'stats-used-by.svg']);
   const svg = files['dashboard.svg'];
   assert.ok(svg.includes('&lt;script&gt;&amp;&quot;.zip'));
   assert.ok(!svg.includes('<script>'));
@@ -43,7 +44,7 @@ test('dashboard escapes external text and renders all metric families without pr
 test('all public badges intrinsically match flat badges without distorting their artwork', () => {
   const files = publicFiles(history, usage);
   const badges = Object.entries(files).filter(([name]) => name.startsWith('stats-'));
-  assert.equal(badges.length, 3);
+  assert.equal(badges.length, 6);
   for (const [name, svg] of badges) {
     const dimensions = svg.match(/^<svg\b[^>]* width="([\d.]+)" height="([\d.]+)" viewBox="0 0 ([\d.]+) ([\d.]+)"/);
     assert.ok(dimensions, `${name} declares intrinsic dimensions and a viewBox`);
@@ -53,7 +54,7 @@ test('all public badges intrinsically match flat badges without distorting their
   }
 });
 
-test('first publication creates an isolated seven-file tree and analytics ref only', async () => {
+test('first publication creates an isolated ten-file tree and analytics ref only', async () => {
   const calls = [];
   const gh = async (endpoint, options) => {
     calls.push({ endpoint, ...options });
@@ -63,10 +64,47 @@ test('first publication creates an isolated seven-file tree and analytics ref on
   assert.equal(await publishAnalytics('owner/repo', publicFiles(history), gh), 'commit-sha');
   const tree = calls.find(call => call.endpoint.endsWith('/git/trees')).body;
   assert.equal(tree.base_tree, undefined);
-  assert.equal(tree.tree.length, 7);
+  assert.equal(tree.tree.length, 10);
   assert.deepEqual(calls.find(call => call.endpoint.endsWith('/git/commits')).body.parents, []);
   assert.equal(calls.at(-1).body.ref, 'refs/heads/analytics');
   assert.ok(!JSON.stringify(calls).includes('heads/main'));
+});
+
+test('package badges survive failed refreshes across days and sanitized persistence', () => {
+  const options = { repo: history.repo, package: history.package };
+  const time = '2026-09-15T12:00:00Z';
+  let stored = mergeHistory(null, options, { collectedAt: time, npmMetadata: { version: '2.7.5', license: 'MIT', token: 'private-token' }, librariesio: { dependentRepos: 0, token: 'private-token' }, errors: [] });
+  const original = publicFiles(stored);
+  assert.match(original['stats-npm-version.svg'], /npm: v2\.7\.5/);
+  assert.match(original['stats-npm-license.svg'], /license: MIT/);
+  assert.match(original['stats-used-by.svg'], /Used by: 0/);
+  for (const collectedAt of ['2026-09-15T14:00:00Z', '2026-09-16T14:00:00Z', '2026-09-17T14:00:00Z']) {
+    stored = JSON.parse(publicFiles(stored)['data.json']);
+    stored = mergeHistory(stored, options, { collectedAt, errors: [{ source: 'npmMetadata' }, { source: 'librariesio' }] });
+    const files = publicFiles(stored);
+    for (const name of ['stats-npm-version.svg', 'stats-npm-license.svg', 'stats-used-by.svg']) assert.equal(files[name], original[name]);
+    assert.ok(!files['data.json'].includes('private-token'));
+    assert.equal(JSON.parse(files['data.json']).snapshots[0].sourceCollectedAt.npmMetadata, time);
+    assert.equal(JSON.parse(files['data.json']).snapshots[0].sourceCollectedAt.librariesio, time);
+  }
+  stored = mergeHistory(stored, options, { collectedAt: '2026-09-17T15:00:00Z', npmMetadata: { version: '2.7.6', license: 'MIT' }, librariesio: { dependentRepos: 4 }, errors: [] });
+  assert.match(publicFiles(stored)['stats-npm-version.svg'], /npm: v2\.7\.6/);
+  assert.match(publicFiles(stored)['stats-used-by.svg'], /Used by: 4/);
+});
+
+test('package badges distinguish unavailable data, escape text, and discard invalid metadata', () => {
+  const empty = publicFiles(history);
+  assert.match(empty['stats-used-by.svg'], /Used by: Unavailable/);
+  assert.match(empty['stats-npm-version.svg'], /npm: Unavailable/);
+  const input = structuredClone(history);
+  input.snapshots[0].npmMetadata = { version: '1.2.3', license: '<MIT>&"' };
+  const files = publicFiles(input);
+  assert.match(files['stats-npm-license.svg'], /&lt;MIT&gt;&amp;&quot;/);
+  assert.ok(!files['stats-npm-license.svg'].includes('<MIT>'));
+  input.snapshots[0].npmMetadata.version = '<script>';
+  input.snapshots[0].librariesio = { dependentRepos: -1 };
+  assert.equal(sanitizeAnalytics(input).snapshots[0].npmMetadata, undefined);
+  assert.equal(sanitizeAnalytics(input).snapshots[0].librariesio, undefined);
 });
 
 test('existing branch publication is non-forced and concurrent update failure propagates', async () => {

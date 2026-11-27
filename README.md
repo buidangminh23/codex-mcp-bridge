@@ -5,14 +5,14 @@
 <h1 align="center">codex-mcp-bridge</h1>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@minhspark/codex-mcp-bridge"><img src="https://img.shields.io/npm/v/@minhspark/codex-mcp-bridge?logo=npm&amp;color=CB3837" height="20" alt="npm" /></a>
+  <a href="https://www.npmjs.com/package/@minhspark/codex-mcp-bridge"><img src="https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-version.svg" height="20" alt="npm" /></a>
   <a href="https://www.npmjs.com/package/@minhspark/codex-mcp-bridge"><img src="https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads.svg" height="20" alt="npm downloads" /></a>
   <a href="https://www.npmcharts.com/compare/%40minhspark%2Fcodex-mcp-bridge?minimal=true"><img src="https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-downloads-month.svg" height="20" alt="npm downloads / month" /></a>
   <br />
-  <a href="https://github.com/buidangminh23/codex-mcp-bridge/network/dependents"><img src="https://img.shields.io/librariesio/dependent-repos/npm/@minhspark/codex-mcp-bridge?label=Used%20by&amp;logo=github&amp;color=0969da" height="20" alt="Used by repositories (Libraries.io)" /></a>
+  <a href="https://github.com/buidangminh23/codex-mcp-bridge/network/dependents"><img src="https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-used-by.svg" height="20" alt="Used by repositories (Libraries.io)" /></a>
   <a href="https://skills.sh/buidangminh23/codex-mcp-bridge/codex-bridge"><img src="https://skills.sh/b/buidangminh23/codex-mcp-bridge?label=skills.sh" height="20" alt="skills.sh installs" /></a>
   <a href="https://buidangminh23.github.io/codex-mcp-bridge/"><img src="https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-github-views.svg" height="20" alt="GitHub views / source window" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/npm/l/@minhspark/codex-mcp-bridge" height="20" alt="license" /></a>
+  <a href="LICENSE"><img src="https://raw.githubusercontent.com/buidangminh23/codex-mcp-bridge/analytics/stats-npm-license.svg" height="20" alt="license" /></a>
 </p>
 
 Connect **Claude, Codex, and Antigravity** through MCP. Send work between native Desktop conversations or use independent CLI background workers.
@@ -147,6 +147,8 @@ Include the **Bridge diagnostic** block when [reporting an issue](https://github
 - [Changelog](CHANGELOG.md) · [Releases](https://github.com/buidangminh23/codex-mcp-bridge/releases)
 
 ## Optional active-install statistics
+
+The npm version, license, and Libraries.io dependent-repository badges are generated SVGs hosted on the analytics branch. They refresh hourly and after the Publish workflow succeeds, retaining the last successful values when a source is unavailable. Badge tooltips show the last successful check; source indexing, workflow scheduling, and GitHub caching can delay updates.
 
 Usage reporting is **off by default**. Use `codex-mcp-bridge telemetry status` to inspect it, or `telemetry enable` / `telemetry disable` to change it. Reports include a random installation ID, UTC day, version, and OS; no chats, paths, accounts, or credentials. `DO_NOT_TRACK=1` or `CODEX_BRIDGE_TELEMETRY=0` disables reporting.
 

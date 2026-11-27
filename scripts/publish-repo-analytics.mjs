@@ -19,8 +19,10 @@ function sanitizeSnapshot(snapshot) {
   }
   if (snapshot.repository) output.repository = numericFields(snapshot.repository, ['stars', 'forks', 'subscribers']);
   if (snapshot.npm) output.npm = { start: date(snapshot.npm.start), end: date(snapshot.npm.end), downloads: (snapshot.npm.downloads || []).map(row => ({ day: date(row.day), downloads: number(row.downloads) })) };
+  if (typeof snapshot.npmMetadata?.version === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(snapshot.npmMetadata.version) && typeof snapshot.npmMetadata.license === 'string' && snapshot.npmMetadata.license.trim() && snapshot.npmMetadata.license.length <= 120) output.npmMetadata = { version: snapshot.npmMetadata.version, license: snapshot.npmMetadata.license };
+  if (number(snapshot.librariesio?.dependentRepos) !== null) output.librariesio = { dependentRepos: snapshot.librariesio.dependentRepos };
   if (snapshot.releases) output.releases = snapshot.releases.map(release => ({ tag: String(release.tag ?? '').slice(0, 120), assets: (release.assets || []).map(asset => ({ name: String(asset.name ?? '').slice(0, 180), downloads: number(asset.downloads) })) }));
-  output.sourceCollectedAt = Object.fromEntries(['views', 'clones', 'npm', 'repository', 'releases'].filter(source => output[source]).map(source => [source, date(snapshot.sourceCollectedAt?.[source] || snapshot.collectedAt)]));
+  output.sourceCollectedAt = Object.fromEntries(['views', 'clones', 'npm', 'npmMetadata', 'librariesio', 'repository', 'releases'].filter(source => output[source]).map(source => [source, date(snapshot.sourceCollectedAt?.[source] || snapshot.collectedAt)]));
   return output;
 }
 
@@ -122,6 +124,19 @@ export function renderGithubViewsBadge(data, { now = Date.now() } = {}) {
   const color = value == null ? '#555' : stale || undated ? '#92400e' : '#0369a1';
   const detail = `${validWindow ? `${start} to ${end} UTC` : 'Source window unavailable'}. Source: ${displayTime(time)}. Archived badge; freshness is relative to generation time.`;
   return renderBadge(label, message, color, detail);
+}
+
+export function renderPackageBadge(data, kind) {
+  const settings = {
+    version: { source: 'npmMetadata', label: 'npm', color: '#CB3837', value: row => `v${row.version}`, provider: 'npm registry latest dist-tag' },
+    license: { source: 'npmMetadata', label: 'license', color: '#007ec6', value: row => row.license, provider: 'npm registry' },
+    dependents: { source: 'librariesio', label: 'Used by', color: '#0969da', value: row => format(row.dependentRepos), provider: 'Libraries.io dependent repositories (not active installations)' },
+  }[kind];
+  if (!settings) throw new Error('Invalid package badge kind.');
+  const snapshot = [...data.snapshots].sort((a, b) => String(b.collectedAt).localeCompare(String(a.collectedAt))).find(row => row[settings.source]);
+  const value = snapshot?.[settings.source];
+  const time = snapshot?.sourceCollectedAt?.[settings.source];
+  return renderBadge(settings.label, value ? settings.value(value) : 'Unavailable', value ? settings.color : '#555', `${settings.provider}. Last successful check: ${displayTime(time)}. Refreshed hourly and after successful publication; previous values retained on source failure.`);
 }
 
 function renderBadge(label, message, color, detail) {
@@ -238,7 +253,7 @@ export function publicFiles(history, usage) {
   const table = ['| Date (UTC) | Views | Unique visitors | Clones | Unique cloners | npm downloads | Active installations |', '|---|---:|---:|---:|---:|---:|---:|', ...days.map(day => `| ${day} | ${[data.daily.views[day]?.count, data.daily.views[day]?.uniques, data.daily.clones[day]?.count, data.daily.clones[day]?.uniques, data.daily.npm[day]?.downloads, usageDays[day]].map(format).join(' | ')} |`)].join('\n');
   const readme = `# Public repository analytics\n\n![Repository dashboard](dashboard.svg)\n\n[Aggregate JSON history](data.json) · [Repository](https://github.com/${data.repo})\n\nAll dates and source windows use UTC. Source timestamps on the dashboard show when each metric was last available. Downloads and clones include automation and do not measure people. Unique visitors/cloners apply only to the source window; never sum daily unique counts across dates. Active installations cover consenting installations only, with distinct counts for each whole period. Operating system and version breakdowns cover 30 days; an installation may appear in multiple version groups after upgrading.\n\nThis branch contains only aggregate statistics. No installation identifiers, prompts, account details, credentials, private error messages, or local paths are published. Missing metrics mean unavailable, not zero.\n\n## Daily history\n\nEvery archived source day is listed below, newest first. Active installations count consenting installations that reported that UTC day.\n\n${table}\n`;
   const pagesUrl = `https://${data.repo.split('/')[0]}.github.io/${data.repo.split('/')[1]}/`;
-  return { 'stats-github-views.svg': renderGithubViewsBadge(data), 'stats-npm-downloads.svg': renderNpmDownloadsBadge(data), 'stats-npm-downloads-month.svg': renderNpmDownloadsBadge(data, { period: 'window' }), 'dashboard.svg': renderPublicDashboard(data), 'README.md': readme.replace('![Repository dashboard]', `[Live dashboard · refreshes every 30 seconds](${pagesUrl})\n\n![Repository dashboard]`), 'data.json': `${JSON.stringify(data, null, 2)}\n`, 'index.html': renderLiveDashboard(data) };
+  return { 'stats-npm-version.svg': renderPackageBadge(data, 'version'), 'stats-npm-license.svg': renderPackageBadge(data, 'license'), 'stats-used-by.svg': renderPackageBadge(data, 'dependents'), 'stats-github-views.svg': renderGithubViewsBadge(data), 'stats-npm-downloads.svg': renderNpmDownloadsBadge(data), 'stats-npm-downloads-month.svg': renderNpmDownloadsBadge(data, { period: 'window' }), 'dashboard.svg': renderPublicDashboard(data), 'README.md': readme.replace('![Repository dashboard]', `[Live dashboard · refreshes every 30 seconds](${pagesUrl})\n\n![Repository dashboard]`), 'data.json': `${JSON.stringify(data, null, 2)}\n`, 'index.html': renderLiveDashboard(data) };
 }
 
 export function githubEnvironment(token, env = process.env) {

@@ -81,7 +81,7 @@ test('hosted refresh reads, writes and verifies the analytics branch with the br
   ]);
   assert.ok(calls.every(call => call.token === 'bot-token'));
   assert.deepEqual(collected, [{ repo, package: '@minhspark/codex-mcp-bridge' }]);
-  assert.deepEqual((await readdir(directory)).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html', 'stats-github-views.svg', 'stats-npm-downloads-month.svg', 'stats-npm-downloads.svg']);
+  assert.deepEqual((await readdir(directory)).sort(), ['README.md', 'dashboard.svg', 'data.json', 'index.html', 'stats-github-views.svg', 'stats-npm-downloads-month.svg', 'stats-npm-downloads.svg', 'stats-npm-license.svg', 'stats-npm-version.svg', 'stats-used-by.svg']);
 });
 
 test('hosted refresh keeps the default gh credentials when no branch token is set', async t => {
@@ -100,6 +100,12 @@ test('Pages approval cannot block hourly data collection or keep newer runs wait
   const refreshJob = workflow.split('  refresh:')[1].split(/\n  \w+:/)[0];
   const deployJob = workflow.split('  deploy:')[1].split(/\n  \w+:/)[0];
   assert.ok(workflow.includes('cancel-in-progress: true'));
+  assert.ok(workflow.includes("cron: '17 * * * *'"));
+  assert.ok(workflow.includes('workflow_dispatch:'));
+  assert.match(workflow, /workflow_run:\s+workflows: \[Publish\]\s+types: \[completed\]/);
+  assert.ok(refreshJob.includes("if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'"));
+  assert.ok(refreshJob.includes('ref: ${{ github.event.repository.default_branch }}'));
+  assert.ok(workflow.includes("github.event.workflow_run.conclusion != 'success' && '-skipped'"));
   assert.ok(!refreshJob.includes('environment:'));
   assert.ok(refreshJob.includes('node scripts/refresh-hosted-analytics.mjs'));
   assert.ok(refreshJob.includes('actions/upload-pages-artifact@'));

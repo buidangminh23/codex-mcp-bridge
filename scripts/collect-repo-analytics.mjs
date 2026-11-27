@@ -85,11 +85,25 @@ export async function collectSources(options, { gh = github, trafficToken, fetch
       if (data.package !== options.package || !Array.isArray(data.downloads)) throw new Error('Invalid npm response.');
       return { start: day(data.start), end: day(data.end), downloads: data.downloads.map(row => ({ day: day(row.day), downloads: count(row.downloads) })) };
     },
+    npmMetadata: async () => {
+      const response = await fetcher(`https://registry.npmjs.org/${encodeURIComponent(options.package)}/latest`, { signal: AbortSignal.timeout(30000) });
+      if (!response.ok) throw new Error('npm metadata request failed.');
+      const data = await response.json();
+      if (data.name !== options.package || typeof data.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(data.version) || typeof data.license !== 'string' || !data.license.trim() || data.license.length > 120) throw new Error('Invalid npm metadata.');
+      return { version: data.version, license: data.license };
+    },
+    librariesio: async () => {
+      const response = await fetcher(`https://libraries.io/api/npm/${encodeURIComponent(options.package)}`, { signal: AbortSignal.timeout(30000) });
+      if (!response.ok) throw new Error('Libraries.io request failed.');
+      const data = await response.json();
+      if (data.name !== options.package) throw new Error('Invalid Libraries.io package.');
+      return { dependentRepos: count(data.dependent_repos_count) };
+    },
   };
   await Promise.all(Object.entries(jobs).map(async ([source, job]) => {
     try { snapshot[source] = await job(); }
     catch (error) {
-      const entry = { source, message: source === 'npm' ? 'Request failed or response invalid. Check npm package, network, and npm API availability.' : 'Request failed or response invalid. Check gh authentication, repository permissions, network, and GitHub API limits.' };
+      const entry = { source, message: ['npm', 'npmMetadata', 'librariesio'].includes(source) ? 'Request failed or response invalid. Check package identity, network, and source API availability.' : 'Request failed or response invalid. Check gh authentication, repository permissions, network, and GitHub API limits.' };
       const status = httpStatus(error);
       if (status) entry.status = status;
       snapshot.errors.push(entry);
@@ -106,7 +120,7 @@ export function mergeHistory(previous, options, snapshot) {
   const index = history.snapshots.findIndex(row => day(row.collectedAt) === collectionDay);
   const prior = index < 0 ? {} : history.snapshots[index];
   const merged = { ...prior, ...snapshot, sourceCollectedAt: { ...prior.sourceCollectedAt } };
-  for (const source of ['views', 'clones', 'npm', 'repository', 'releases']) {
+  for (const source of ['views', 'clones', 'npm', 'npmMetadata', 'librariesio', 'repository', 'releases']) {
     if (Object.hasOwn(snapshot, source)) merged.sourceCollectedAt[source] = snapshot.collectedAt;
   }
   if (index < 0) history.snapshots.push(merged);

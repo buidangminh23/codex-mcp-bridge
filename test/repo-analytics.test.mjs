@@ -20,6 +20,8 @@ function dependencies(overrides = {}) {
       return { stargazers_count: 10, forks_count: 4, subscribers_count: 1, description: 'not persisted' };
     },
     fetcher: async (url) => {
+      if (url === 'https://registry.npmjs.org/%40owner%2Fpkg/latest') return { ok: true, json: async () => ({ name: '@owner/pkg', version: '2.7.5', license: 'MIT', private: 'not persisted' }) };
+      if (url === 'https://libraries.io/api/npm/%40owner%2Fpkg') return { ok: true, json: async () => ({ name: '@owner/pkg', dependent_repos_count: 0, private: 'not persisted' }) };
       assert.equal(url, 'https://api.npmjs.org/downloads/range/last-month/%40owner%2Fpkg');
       return { ok: true, json: async () => ({ package: '@owner/pkg', start: '2026-08-15', end: '2026-09-14', downloads: [{ day: '2026-09-14', downloads: 20 }] }) };
     },
@@ -63,6 +65,8 @@ test('collects only aggregate fields, paginates releases, and preserves source w
   assert.deepEqual(snapshot.releases, [{ id: 1, tag: 'v1', assets: [{ id: 2, name: 'package.zip', downloads: 5 }] }]);
   assert.equal(snapshot.views.uniques, 3);
   assert.equal(snapshot.npm.start, '2026-08-15');
+  assert.deepEqual(snapshot.npmMetadata, { version: '2.7.5', license: 'MIT' });
+  assert.deepEqual(snapshot.librariesio, { dependentRepos: 0 });
 });
 
 test('overlapping days upsert counts and never add unique totals across windows', async () => {
@@ -109,7 +113,7 @@ test('invalid counts or package identity become isolated source failures', async
     gh: async (endpoint, paginate) => endpoint.endsWith('/traffic/views') ? { count: -1, uniques: 1, views: [] } : base.gh(endpoint, paginate),
     fetcher: async () => ({ ok: true, json: async () => ({ package: 'wrong', start: '2026-08-15', end: '2026-09-14', downloads: [] }) }),
   }));
-  assert.deepEqual(snapshot.errors.map(row => row.source), ['npm', 'views']);
+  assert.deepEqual(snapshot.errors.map(row => row.source), ['librariesio', 'npm', 'npmMetadata', 'views']);
   assert.equal(snapshot.views, undefined);
   assert.equal(snapshot.repository.stars, 10);
 });
@@ -120,7 +124,7 @@ test('persists partial results, refuses corrupt history, and excludes simultaneo
     const opts = { ...options, output };
     await runCollection(opts, dependencies());
     const partial = await runCollection(opts, dependencies({ fetcher: async () => { throw new Error('offline'); } }));
-    assert.equal(partial.errors.length, 1);
+    assert.equal(partial.errors.length, 3);
     const stored = JSON.parse(await readFile(path.join(output, 'history.json'), 'utf8'));
     assert.equal(stored.daily.npm['2026-09-14'].downloads, 20);
     assert.equal(await readFile(path.join(output, 'index.html'), 'utf8'), '<html>owner/repo</html>');
@@ -133,5 +137,26 @@ test('persists partial results, refuses corrupt history, and excludes simultaneo
     assert.equal(await readFile(path.join(output, 'history.json'), 'utf8'), '{broken');
   } finally {
     await rm(output, { recursive: true, force: true });
+  }
+});
+
+test('package badges reject invalid upstream values and isolate source failures', async () => {
+  const base = dependencies();
+  for (const [prefix, source, body] of [
+    ['https://registry.npmjs.org/', 'npmMetadata', { name: '@owner/pkg', version: '<invalid>', license: 'MIT' }],
+    ['https://registry.npmjs.org/', 'npmMetadata', { name: '@owner/pkg', version: '2.7.5', license: {} }],
+    ['https://libraries.io/', 'librariesio', { name: '@owner/pkg', dependent_repos_count: -1 }],
+    ['https://libraries.io/', 'librariesio', { name: '@owner/pkg', dependent_repos_count: '0' }],
+    ['https://libraries.io/', 'librariesio', { name: '@owner/pkg', dependent_repos_count: null }],
+  ]) {
+    const result = await collectSources(options, dependencies({ fetcher: async url => url.startsWith(prefix) ? { ok: true, json: async () => body } : base.fetcher(url) }));
+    assert.deepEqual(result.errors.map(row => row.source), [source]);
+    assert.equal(result[source], undefined);
+    assert.equal(result.npm.downloads[0].downloads, 20);
+  }
+  for (const fetcher of [async () => ({ ok: false }), async () => { throw new Error('timeout private detail'); }, async () => ({ ok: true, json: async () => { throw new Error('malformed JSON'); } })]) {
+    const result = await collectSources(options, dependencies({ fetcher }));
+    assert.deepEqual(result.errors.map(row => row.source), ['librariesio', 'npm', 'npmMetadata']);
+    assert.ok(!JSON.stringify(result).includes('private detail'));
   }
 });
